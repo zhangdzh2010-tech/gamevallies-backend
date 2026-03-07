@@ -1,0 +1,171 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-engine
+  namespace: playforge
+  labels:
+    app: ai-engine
+    version: v1
+spec:
+  type: ClusterIP
+  ports:
+  - port: 3005
+    targetPort: 3005
+    protocol: TCP
+    name: http
+  selector:
+    app: ai-engine
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-engine
+  namespace: playforge
+  labels:
+    app: ai-engine
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: ai-engine
+  template:
+    metadata:
+      labels:
+        app: ai-engine
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3005"
+        prometheus.io/path: "/metrics"
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - ai-engine
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: ai-engine
+        image: playforge-ai-engine:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 3005
+          protocol: TCP
+        env:
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: playforge-config
+              key: LOG_LEVEL
+        - name: LLM_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: playforge-secret
+              key: LLM_API_KEY
+        - name: AI_MODEL_TYPE
+          valueFrom:
+            configMapKeyRef:
+              name: playforge-config
+              key: AI_MODEL_TYPE
+        - name: AI_MAX_TOKENS
+          valueFrom:
+            configMapKeyRef:
+              name: playforge-config
+              key: AI_MAX_TOKENS
+        - name: AI_ENGINE_TIMEOUT
+          valueFrom:
+            configMapKeyRef:
+              name: playforge-config
+              key: AI_ENGINE_TIMEOUT
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: playforge-secret
+              key: REDIS_URL
+        - name: INTERNAL_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: playforge-secret
+              key: INTERNAL_API_KEY
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "1000m"
+          limits:
+            memory: "1Gi"
+            cpu: "2000m"
+          # Uncomment for GPU support (if cluster has GPUs)
+          # nvidia.com/gpu: "1"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 40
+          periodSeconds: 10
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 20
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 2
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep 15"]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ai-engine-hpa
+  namespace: playforge
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ai-engine
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 75
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 85
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Pods
+        value: 1
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+      - type: Pods
+        value: 1
+        periodSeconds: 30
+      selectPolicy: Max

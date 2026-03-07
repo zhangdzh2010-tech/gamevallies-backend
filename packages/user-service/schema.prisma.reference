@@ -1,0 +1,64 @@
+// This is a reference file showing the expected Prisma schema for the user-service
+// The actual schema should be in ../../prisma/schema.prisma (workspace root)
+
+model User {
+  id            String   @id @default(uuid())
+  username      String   @unique
+  email         String?  @unique
+  phone         String?
+  password_hash String
+  display_name  String
+  bio           String?
+  avatar_url    String?
+  role          String   @default("USER")
+  is_active     Boolean  @default(true)
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  refresh_tokens RefreshToken[]
+  user_games     UserGame[]
+  game_sessions  GameSession[]
+  followers      Follow[]       @relation("follower")
+  following      Follow[]       @relation("following")
+}
+
+model RefreshToken {
+  id         String   @id @default(uuid())
+  token      String   @unique
+  user_id    String
+  user       User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  expires_at DateTime
+  is_revoked Boolean  @default(false)
+  created_at DateTime @default(now())
+}
+
+model UserGame {
+  id        String   @id @default(uuid())
+  user_id   String
+  user      User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  game_id   String
+  is_owner  Boolean  @default(false)
+  added_at  DateTime @default(now())
+  updated_at DateTime @updatedAt
+}
+
+model GameSession {
+  id       String   @id @default(uuid())
+  user_id  String
+  user     User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  game_id  String
+  score    Int?
+  started_at DateTime @default(now())
+  ended_at DateTime?
+}
+
+model Follow {
+  id            String   @id @default(uuid())
+  follower_id   String
+  follower      User     @relation("follower", fields: [follower_id], references: [id], onDelete: Cascade)
+  following_id  String
+  following     User     @relation("following", fields: [following_id], references: [id], onDelete: Cascade)
+  created_at    DateTime @default(now())
+
+  @@unique([follower_id, following_id])
+}

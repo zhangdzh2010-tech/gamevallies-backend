@@ -1,0 +1,278 @@
+// PlayForge Database Schema
+// PostgreSQL 16 + Prisma ORM
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== 用户系统 ====================
+
+enum AuthProvider {
+  email
+  phone
+  wechat
+  google
+  apple
+}
+
+enum UserRole {
+  user
+  creator
+  moderator
+  admin
+}
+
+model User {
+  id            String       @id @default(uuid()) @db.Uuid
+  username      String       @unique @db.VarChar(32)
+  displayName   String?      @map("display_name") @db.VarChar(64)
+  avatarUrl     String?      @map("avatar_url")
+  email         String?      @unique @db.VarChar(255)
+  phone         String?      @unique @db.VarChar(20)
+  passwordHash  String?      @map("password_hash")
+  authProvider  AuthProvider @default(email) @map("auth_provider")
+  wxOpenId      String?      @unique @map("wx_open_id")
+  wxUnionId     String?      @map("wx_union_id")
+  role          UserRole     @default(user)
+  isPro         Boolean      @default(false) @map("is_pro")
+  proExpires    DateTime?    @map("pro_expires") @db.Timestamptz
+  bio           String?      @db.VarChar(200)
+  followerCount Int          @default(0) @map("follower_count")
+  followingCount Int         @default(0) @map("following_count")
+  gameCount     Int          @default(0) @map("game_count")
+  totalPlays    BigInt       @default(0) @map("total_plays")
+  createdAt     DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime     @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  games              Game[]              @relation("GameAuthor")
+  socialInteractions SocialInteraction[] @relation("UserInteractions")
+  comments           Comment[]           @relation("UserComments")
+  earnings           CreatorEarning[]    @relation("CreatorEarnings")
+  notifications      Notification[]      @relation("UserNotifications")
+  refreshTokens      RefreshToken[]      @relation("UserRefreshTokens")
+  followingRelations UserFollow[]        @relation("FollowerUser")
+  followerRelations  UserFollow[]        @relation("FollowingUser")
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  token     String   @unique @db.VarChar(500)
+  expiresAt DateTime @map("expires_at") @db.Timestamptz
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz
+
+  user User @relation("UserRefreshTokens", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+  @@map("refresh_tokens")
+}
+
+// ==================== 游戏系统 ====================
+
+enum GameStatus {
+  draft
+  generating
+  review
+  published
+  banned
+}
+
+model Game {
+  id            String     @id @default(uuid()) @db.Uuid
+  authorId      String     @map("author_id") @db.Uuid
+  title         String     @db.VarChar(64)
+  description   String?
+  slug          String?    @unique @db.VarChar(128)
+  status        GameStatus @default(draft)
+  gameType      String?    @map("game_type") @db.VarChar(32)
+  tags          String[]   @default([])
+  forkedFrom    String?    @map("forked_from") @db.Uuid
+  forkDepth     Int        @default(0) @map("fork_depth")
+  codeBundleId  String?    @map("code_bundle_id") @db.VarChar(255) // MongoDB ObjectId reference
+  version       Int        @default(1)
+  thumbnailUrl  String?    @map("thumbnail_url")
+  playCount     BigInt     @default(0) @map("play_count")
+  likeCount     BigInt     @default(0) @map("like_count")
+  forkCount     BigInt     @default(0) @map("fork_count")
+  commentCount  Int        @default(0) @map("comment_count")
+  avgPlayTime   Float      @default(0) @map("avg_play_time")
+  qualityScore  Float      @default(0) @map("quality_score") // AI评分 0-100
+  createdAt     DateTime   @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime   @updatedAt @map("updated_at") @db.Timestamptz
+  publishedAt   DateTime?  @map("published_at") @db.Timestamptz
+
+  // Relations
+  author            User                @relation("GameAuthor", fields: [authorId], references: [id])
+  parentGame        Game?               @relation("GameForks", fields: [forkedFrom], references: [id])
+  forks             Game[]              @relation("GameForks")
+  socialInteractions SocialInteraction[] @relation("GameInteractions")
+  comments          Comment[]           @relation("GameComments")
+  earnings          CreatorEarning[]    @relation("GameEarnings")
+
+  @@index([authorId])
+  @@index([gameType, qualityScore(sort: Desc)])
+  @@index([forkedFrom])
+  @@index([status, publishedAt(sort: Desc)])
+  @@index([status, playCount(sort: Desc)])
+  @@map("games")
+}
+
+// ==================== 社交互动 ====================
+
+enum InteractionTargetType {
+  game
+  user
+  comment
+}
+
+enum InteractionAction {
+  like
+  follow
+  play
+  fork
+  share
+  report
+}
+
+model SocialInteraction {
+  id         BigInt                @id @default(autoincrement())
+  userId     String                @map("user_id") @db.Uuid
+  targetType InteractionTargetType @map("target_type")
+  targetId   String                @map("target_id") @db.Uuid
+  action     InteractionAction
+  metadata   Json?                 @db.JsonB // { play_duration, score, device }
+  createdAt  DateTime              @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  user User @relation("UserInteractions", fields: [userId], references: [id])
+  game Game? @relation("GameInteractions", fields: [targetId], references: [id])
+
+  @@unique([userId, targetType, targetId, action], name: "unique_interaction")
+  @@index([targetType, targetId])
+  @@index([userId, action])
+  @@map("social_interactions")
+}
+
+model UserFollow {
+  id          BigInt   @id @default(autoincrement())
+  followerId  String   @map("follower_id") @db.Uuid
+  followingId String   @map("following_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  follower  User @relation("FollowerUser", fields: [followerId], references: [id], onDelete: Cascade)
+  following User @relation("FollowingUser", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@unique([followerId, followingId], name: "unique_follow")
+  @@index([followingId, createdAt(sort: Desc)])
+  @@index([followerId, createdAt(sort: Desc)])
+  @@map("user_follows")
+}
+
+// ==================== 评论系统 ====================
+
+enum CommentStatus {
+  visible
+  hidden
+  deleted
+}
+
+model Comment {
+  id        String        @id @default(uuid()) @db.Uuid
+  gameId    String        @map("game_id") @db.Uuid
+  userId    String        @map("user_id") @db.Uuid
+  parentId  String?       @map("parent_id") @db.Uuid
+  content   String
+  likeCount Int           @default(0) @map("like_count")
+  status    CommentStatus @default(visible)
+  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime      @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  game     Game      @relation("GameComments", fields: [gameId], references: [id])
+  user     User      @relation("UserComments", fields: [userId], references: [id])
+  parent   Comment?  @relation("CommentReplies", fields: [parentId], references: [id])
+  replies  Comment[] @relation("CommentReplies")
+
+  @@index([gameId, createdAt(sort: Desc)])
+  @@index([userId])
+  @@index([parentId])
+  @@map("comments")
+}
+
+// ==================== 创作者收益 ====================
+
+enum EarningType {
+  ad_revenue
+  tip
+  prize
+  referral
+}
+
+enum EarningStatus {
+  pending
+  settled
+  withdrawn
+}
+
+model CreatorEarning {
+  id          BigInt        @id @default(autoincrement())
+  creatorId   String        @map("creator_id") @db.Uuid
+  gameId      String?       @map("game_id") @db.Uuid
+  earningType EarningType   @map("earning_type")
+  amount      Decimal       @db.Decimal(12, 4)
+  currency    String        @default("CNY") @db.VarChar(3)
+  status      EarningStatus @default(pending)
+  periodStart DateTime?     @map("period_start") @db.Date
+  periodEnd   DateTime?     @map("period_end") @db.Date
+  settledAt   DateTime?     @map("settled_at") @db.Timestamptz
+  createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  creator User  @relation("CreatorEarnings", fields: [creatorId], references: [id])
+  game    Game? @relation("GameEarnings", fields: [gameId], references: [id])
+
+  @@index([creatorId, status])
+  @@index([creatorId, createdAt(sort: Desc)])
+  @@map("creator_earnings")
+}
+
+// ==================== 通知系统 ====================
+
+enum NotificationType {
+  like
+  follow
+  comment
+  fork
+  system
+  challenge
+  earning
+}
+
+model Notification {
+  id        String           @id @default(uuid()) @db.Uuid
+  userId    String           @map("user_id") @db.Uuid
+  actorId   String?          @map("actor_id") @db.Uuid
+  type      NotificationType
+  targetId  String?          @map("target_id") @db.Uuid
+  content   String?
+  isRead    Boolean          @default(false) @map("is_read")
+  metadata  Json?            @db.JsonB
+  createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  user User @relation("UserNotifications", fields: [userId], references: [id])
+
+  @@index([userId, isRead, createdAt(sort: Desc)])
+  @@map("notifications")
+}

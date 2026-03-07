@@ -1,0 +1,170 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: playforge-ingress
+  namespace: playforge
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    # HTTPS and TLS
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    # WebSocket support
+    nginx.ingress.kubernetes.io/websocket-services: "user-service,game-service,social-service,feed-service"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # Rate limiting
+    nginx.ingress.kubernetes.io/limit-rps: "1000"
+    nginx.ingress.kubernetes.io/limit-connections: "100"
+    # CORS
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET,POST,PUT,DELETE,OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    # Request/Response Size
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    # Gzip compression
+    nginx.ingress.kubernetes.io/enable-gzip: "true"
+    nginx.ingress.kubernetes.io/gzip-level: "6"
+    # Security headers
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Frame-Options: DENY";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "X-XSS-Protection: 1; mode=block";
+      more_set_headers "Referrer-Policy: strict-origin-when-cross-origin";
+spec:
+  tls:
+  - hosts:
+    - playforge-api.example.com
+    - api.playforge.com
+    secretName: playforge-tls
+  rules:
+  # User Service routes
+  - host: playforge-api.example.com
+    http:
+      paths:
+      - path: /api/users
+        pathType: Prefix
+        backend:
+          service:
+            name: user-service
+            port:
+              number: 3000
+      - path: /api/auth
+        pathType: Prefix
+        backend:
+          service:
+            name: user-service
+            port:
+              number: 3000
+      - path: /health
+        pathType: Prefix
+        backend:
+          service:
+            name: user-service
+            port:
+              number: 3000
+      - path: /metrics
+        pathType: Prefix
+        backend:
+          service:
+            name: user-service
+            port:
+              number: 3000
+      - path: /ws
+        pathType: Prefix
+        backend:
+          service:
+            name: user-service
+            port:
+              number: 3000
+      # Game Service routes
+      - path: /api/games
+        pathType: Prefix
+        backend:
+          service:
+            name: game-service
+            port:
+              number: 3001
+      - path: /api/leaderboards
+        pathType: Prefix
+        backend:
+          service:
+            name: game-service
+            port:
+              number: 3001
+      - path: /api/achievements
+        pathType: Prefix
+        backend:
+          service:
+            name: game-service
+            port:
+              number: 3001
+      # Social Service routes
+      - path: /api/social
+        pathType: Prefix
+        backend:
+          service:
+            name: social-service
+            port:
+              number: 3002
+      - path: /api/follows
+        pathType: Prefix
+        backend:
+          service:
+            name: social-service
+            port:
+              number: 3002
+      - path: /api/comments
+        pathType: Prefix
+        backend:
+          service:
+            name: social-service
+            port:
+              number: 3002
+      # Feed Service routes
+      - path: /api/feed
+        pathType: Prefix
+        backend:
+          service:
+            name: feed-service
+            port:
+              number: 3003
+      - path: /api/notifications
+        pathType: Prefix
+        backend:
+          service:
+            name: feed-service
+            port:
+              number: 3003
+      # AI Engine routes
+      - path: /api/ai
+        pathType: Prefix
+        backend:
+          service:
+            name: ai-engine
+            port:
+              number: 3005
+  # Alternative DNS entry
+  - host: api.playforge.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: user-service
+            port:
+              number: 3000
+---
+# Certificate resource (if using cert-manager)
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: playforge-cert
+  namespace: playforge
+spec:
+  secretName: playforge-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+  - playforge-api.example.com
+  - api.playforge.com

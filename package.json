@@ -1,0 +1,48 @@
+{
+  "name": "playforge-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PlayForge Backend - AI-Powered Game Creation Platform",
+  "workspaces": [
+    "packages/shared",
+    "packages/user-service",
+    "packages/game-service",
+    "packages/social-service",
+    "packages/feed-service"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "dev:user": "npm run dev --workspace=packages/user-service",
+    "dev:game": "npm run start:dev --workspace=packages/game-service",
+    "dev:social": "npm run dev --workspace=packages/social-service",
+    "dev:feed": "npm run dev --workspace=packages/feed-service",
+    "dev:ai": "cd packages/ai-engine && uvicorn src.main:app --reload --host 0.0.0.0 --port 8000",
+    "dev:all": "concurrently \"npm run dev:user\" \"npm run dev:game\" \"npm run dev:social\" \"npm run dev:feed\" \"npm run dev:ai\"",
+    "test": "npm run test --workspaces",
+    "test:cov": "npm run test:cov --workspaces",
+    "lint": "eslint 'packages/*/src/**/*.ts'",
+    "lint:fix": "eslint 'packages/*/src/**/*.ts' --fix",
+    "format": "prettier --write 'packages/*/src/**/*.ts'",
+    "db:generate": "npx prisma generate",
+    "db:migrate": "npx prisma migrate dev",
+    "db:push": "npx prisma db push",
+    "db:seed": "npx ts-node prisma/seed.ts",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "concurrently": "^8.2.2",
+    "eslint": "^8.56.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "prettier": "^3.2.0",
+    "typescript": "^5.5.0",
+    "ts-node": "^10.9.2"
+  },
+  "dependencies": {
+    "prisma": "^5.10.0",
+    "@prisma/client": "^5.10.0"
+  }
+}

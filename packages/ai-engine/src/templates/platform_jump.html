@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Platform Jump - PlayForge</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background-color: {{BACKGROUND_COLOR}};
+            font-family: 'Arial', sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+            touch-action: none;
+        }
+        
+        #gameContainer {
+            position: relative;
+            width: 100%;
+            height: 100vh;
+            max-width: 600px;
+            max-height: 800px;
+        }
+        
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            background-color: #000;
+            border: 3px solid {{PRIMARY_COLOR}};
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <canvas id="gameCanvas"></canvas>
+    </div>
+
+    <script>
+        const GAME_CONFIG = {
+            LIVES: {{LIVES}},
+            SPEED_MULTIPLIER: {{SPEED_MULTIPLIER}}
+        };
+
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        function resizeCanvas() {
+            const container = document.getElementById('gameContainer');
+            canvas.width = container.clientWidth;
+            canvas.height = container.clientHeight;
+        }
+        
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+        
+        const COLORS = {
+            bg: '{{BACKGROUND_COLOR}}',
+            primary: '{{PRIMARY_COLOR}}',
+            secondary: '{{SECONDARY_COLOR}}',
+            text: '{{TEXT_COLOR}}'
+        };
+        
+        const game = {
+            score: 0,
+            gameOver: false,
+            cameraY: 0,
+            difficulty: 1,
+            platformSpeed: 0.5 * GAME_CONFIG.SPEED_MULTIPLIER
+        };
+        
+        const player = {
+            x: canvas.width / 2 - 15,
+            y: canvas.height - 100,
+            width: 30,
+            height: 30,
+            velocityY: 0,
+            velocityX: 0,
+            speed: 5,
+            jumpPower: 12,
+            gravity: 0.6,
+            maxFallSpeed: 15
+        };
+        
+        let platforms = [];
+        let particles = [];
+        let scrollOffset = 0;
+        
+        function generatePlatforms() {
+            platforms = [];
+            let y = canvas.height;
+            
+            while (y > -1000) {
+                const platformWidth = 80 - (Math.min(game.difficulty, 5) * 10);
+                const minGap = 60 + (game.difficulty * 5);
+                const maxGap = 100 + (game.difficulty * 10);
+                
+                platforms.push({
+                    x: Math.random() * (canvas.width - platformWidth),
+                    y: y,
+                    width: Math.max(40, platformWidth),
+                    height: 15,
+                    color: Math.random() > 0.8 ? COLORS.secondary : COLORS.primary,
+                    isMoving: Math.random() > 0.7
+                });
+                
+                y -= (minGap + Math.random() * (maxGap - minGap));
+            }
+        }
+        
+        function drawPlayer() {
+            ctx.save();
+            ctx.translate(player.x + player.width / 2, player.y - game.cameraY + player.height / 2);
+            
+            // Player body
+            ctx.fillStyle = COLORS.primary;
+            ctx.fillRect(-player.width / 2, -player.height / 2, player.width, player.height);
+            
+            // Player details
+            ctx.fillStyle = COLORS.secondary;
+            ctx.fillRect(-player.width / 3, -player.height / 3, player.width / 3, player.height / 3);
+            ctx.fillRect(player.width / 6, -player.height / 3, player.width / 3, player.height / 3);
+            
+            ctx.restore();
+        }
+        
+        function drawPlatforms() {
+            for (let i = 0; i < platforms.length; i++) {
+                const p = platforms[i];
+                const screenY = p.y - game.cameraY;
+                
+                if (screenY < -50 || screenY > canvas.height) continue;
+                
+                ctx.fillStyle = p.color;
+                ctx.fillRect(p.x, screenY, p.width, p.height);
+                
+                ctx.strokeStyle = p.isMoving ? COLORS.secondary : COLORS.primary;
+                ctx.lineWidth = 2;
+                ctx.strokeRect(p.x, screenY, p.width, p.height);
+                
+                if (p.isMoving) {
+                    ctx.fillStyle = 'rgba(255, 0, 110, 0.3)';
+                    ctx.fillRect(p.x, screenY, p.width, p.height);
+                }
+            }
+        }
+        
+        function updateMovingPlatforms() {
+            platforms.forEach(p => {
+                if (p.isMoving) {
+                    const moveSpeed = 2 * GAME_CONFIG.SPEED_MULTIPLIER;
+                    p.x += Math.sin(game.score / 10 + p.y / 100) * moveSpeed;
+                    
+                    if (p.x < 0) p.x = 0;
+                    if (p.x + p.width > canvas.width) p.x = canvas.width - p.width;
+                }
+            });
+        }
+        
+        function update() {
+            if (game.gameOver) return;
+            
+            // Apply gravity
+            player.velocityY += player.gravity;
+            if (player.velocityY > player.maxFallSpeed) {
+                player.velocityY = player.maxFallSpeed;
+            }
+            
+            player.y += player.velocityY;
+            player.x += player.velocityX;
+            
+            // Boundaries
+            if (player.x < 0) player.x = 0;
+            if (player.x + player.width > canvas.width) player.x = canvas.width - player.width;
+            
+            // Update moving platforms
+            updateMovingPlatforms();
+            
+            // Platform collision
+            let onPlatform = false;
+            for (let i = 0; i < platforms.length; i++) {
+                const p = platforms[i];
+                
+                if (player.velocityY > 0 &&
+                    player.y + player.height >= p.y &&
+                    player.y + player.height <= p.y + p.height + 10 &&
+                    player.x + player.width > p.x &&
+                    player.x < p.x + p.width) {
+                    
+                    player.velocityY = -player.jumpPower;
+                    game.score += Math.floor(game.difficulty);
+                    onPlatform = true;
+                    createExplosion(player.x + player.width / 2, player.y);
+                    
+                    // Remove distant platforms and generate new ones
+                    if (platforms[i].y > game.cameraY + canvas.height + 100) {
+                        platforms.splice(i, 1);
+                        
+                        if (platforms.length < 20) {
+                            const lastPlatform = platforms[platforms.length - 1];
+                            let y = lastPlatform.y;
+                            
+                            for (let j = 0; j < 3; j++) {
+                                const platformWidth = 80 - (Math.min(game.difficulty, 5) * 10);
+                                const minGap = 60 + (game.difficulty * 5);
+                                const maxGap = 100 + (game.difficulty * 10);
+                                
+                                y -= (minGap + Math.random() * (maxGap - minGap));
+                                
+                                platforms.push({
+                                    x: Math.random() * (canvas.width - Math.max(40, platformWidth)),
+                                    y: y,
+                                    width: Math.max(40, platformWidth),
+                                    height: 15,
+                                    color: Math.random() > 0.8 ? COLORS.secondary : COLORS.primary,
+                                    isMoving: Math.random() > 0.7
+                                });
+                            }
+                        }
+                    }
+                    
+                    break;
+                }
+            }
+            
+            // Update camera to follow player
+            game.cameraY = Math.max(0, player.y - canvas.height / 3);
+            game.difficulty = 1 + (game.score / 500) * GAME_CONFIG.SPEED_MULTIPLIER;
+            
+            // Game over if falling too far
+            if (player.y - game.cameraY > canvas.height) {
+                game.gameOver = true;
+            }
+            
+            // Update particles
+            for (let i = particles.length - 1; i >= 0; i--) {
+                particles[i].life--;
+                if (particles[i].life <= 0) {
+                    particles.splice(i, 1);
+                }
+            }
+        }
+        
+        function createExplosion(x, y) {
+            const particleCount = 8;
+            for (let i = 0; i < particleCount; i++) {
+                const angle = (Math.PI * 2 * i) / particleCount;
+                particles.push({
+                    x: x,
+                    y: y - game.cameraY,
+                    vx: Math.cos(angle) * 3,
+                    vy: Math.sin(angle) * 3,
+                    life: 15,
+                    color: COLORS.primary,
+                    maxLife: 15
+                });
+            }
+        }
+        
+        function drawParticles() {
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const p = particles[i];
+                p.x += p.vx;
+                p.y += p.vy;
+                
+                const alpha = p.life / p.maxLife;
+                ctx.fillStyle = p.color.slice(0, 7) + Math.round(255 * alpha).toString(16).padStart(2, '0');
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+        
+        function draw() {
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw grid
+            ctx.strokeStyle = 'rgba(0, 255, 65, 0.05)';
+            for (let y = -game.cameraY % 40; y < canvas.height; y += 40) {
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(canvas.width, y);
+                ctx.stroke();
+            }
+            
+            drawPlatforms();
+            drawPlayer();
+            drawParticles();
+            
+            // Draw UI
+            ctx.fillStyle = COLORS.text;
+            ctx.font = 'bold 24px Arial';
+            ctx.fillText('Score: ' + Math.floor(game.score), 20, 35);
+            ctx.fillText('Height: ' + Math.floor(game.cameraY / 10), 20, 65);
+            ctx.font = 'bold 18px Arial';
+            ctx.fillText('Difficulty: ' + game.difficulty.toFixed(1) + 'x', canvas.width - 180, 35);
+            
+            if (game.gameOver) {
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = COLORS.secondary;
+                ctx.font = 'bold 48px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - 50);
+                ctx.font = '24px Arial';
+                ctx.fillStyle = COLORS.text;
+                ctx.fillText('Score: ' + Math.floor(game.score), canvas.width / 2, canvas.height / 2 + 10);
+                ctx.fillText('Tap to restart', canvas.width / 2, canvas.height / 2 + 60);
+                ctx.textAlign = 'left';
+            }
+        }
+        
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+        
+        // Input handling
+        canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            const touch = e.touches[0];
+            const rect = canvas.getBoundingClientRect();
+            const touchX = touch.clientX - rect.left;
+            
+            if (touchX < player.x + player.width / 2) {
+                player.velocityX = -player.speed;
+            } else {
+                player.velocityX = player.speed;
+            }
+        });
+        
+        canvas.addEventListener('touchend', () => {
+            player.velocityX = 0;
+        });
+        
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            
+            if (mouseX < player.x + player.width / 2) {
+                player.velocityX = -player.speed;
+            } else {
+                player.velocityX = player.speed;
+            }
+        });
+        
+        canvas.addEventListener('mouseleave', () => {
+            player.velocityX = 0;
+        });
+        
+        canvas.addEventListener('click', () => {
+            if (game.gameOver) {
+                game.gameOver = false;
+                game.score = 0;
+                game.cameraY = 0;
+                game.difficulty = 1;
+                player.x = canvas.width / 2 - 15;
+                player.y = canvas.height - 100;
+                player.velocityY = 0;
+                player.velocityX = 0;
+                particles = [];
+                generatePlatforms();
+            }
+        });
+        
+        generatePlatforms();
+        gameLoop();
+    </script>
+</body>
+</html>

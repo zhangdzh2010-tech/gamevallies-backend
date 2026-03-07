@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Rhythm Tap - PlayForge</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background-color: {{BACKGROUND_COLOR}};
+            font-family: 'Arial', sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+            touch-action: none;
+        }
+        
+        #gameContainer {
+            position: relative;
+            width: 100%;
+            height: 100vh;
+            max-width: 600px;
+            max-height: 800px;
+        }
+        
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            background-color: #000;
+            border: 3px solid {{PRIMARY_COLOR}};
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <canvas id="gameCanvas"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        function resizeCanvas() {
+            const container = document.getElementById('gameContainer');
+            canvas.width = container.clientWidth;
+            canvas.height = container.clientHeight;
+        }
+        
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+        
+        const COLORS = {
+            bg: '{{BACKGROUND_COLOR}}',
+            primary: '{{PRIMARY_COLOR}}',
+            secondary: '{{SECONDARY_COLOR}}',
+            text: '{{TEXT_COLOR}}'
+        };
+        
+        const game = {
+            score: 0,
+            combo: 0,
+            maxCombo: 0,
+            gameOver: false,
+            frameCount: 0,
+            bpm: 120,
+            beatDuration: (60 / 120) * 1000 // ms per beat
+        };
+        
+        const LANES = 4;
+        const LANE_WIDTH = canvas.width / LANES;
+        const TAP_ZONE_HEIGHT = 100;
+        
+        const tapZones = [];
+        for (let i = 0; i < LANES; i++) {
+            tapZones.push({
+                x: i * LANE_WIDTH,
+                y: canvas.height - TAP_ZONE_HEIGHT,
+                width: LANE_WIDTH,
+                height: TAP_ZONE_HEIGHT,
+                isActive: false,
+                activeTimer: 0
+            });
+        }
+        
+        let notes = [];
+        let particles = [];
+        
+        class Note {
+            constructor(lane, beatTime) {
+                this.lane = lane;
+                this.x = lane * LANE_WIDTH;
+                this.y = 0;
+                this.width = LANE_WIDTH - 5;
+                this.height = 30;
+                this.speed = (canvas.height - TAP_ZONE_HEIGHT) / 2000; // 2 seconds to reach tap zone
+                this.beatTime = beatTime;
+                this.tapped = false;
+            }
+            
+            update() {
+                this.y += this.speed * 16; // assuming 60fps
+            }
+            
+            draw() {
+                if (this.tapped) return;
+                
+                ctx.fillStyle = COLORS.primary;
+                ctx.fillRect(this.x + 2, this.y, this.width, this.height);
+                
+                ctx.strokeStyle = COLORS.secondary;
+                ctx.lineWidth = 2;
+                ctx.strokeRect(this.x + 2, this.y, this.width, this.height);
+                
+                ctx.fillStyle = 'rgba(0, 255, 65, 0.2)';
+                ctx.fillRect(this.x + 2, this.y, this.width, this.height);
+            }
+            
+            isInTapZone() {
+                return this.y + this.height >= canvas.height - TAP_ZONE_HEIGHT - 20 &&
+                       this.y + this.height <= canvas.height - TAP_ZONE_HEIGHT + 40;
+            }
+        }
+        
+        function generateNotes() {
+            notes = [];
+            const songDuration = 8000; // 8 seconds
+            const beatDuration = (60 / game.bpm) * 1000; // ms
+            
+            for (let time = 0; time < songDuration; time += beatDuration) {
+                const lane = Math.floor(Math.random() * LANES);
+                notes.push(new Note(lane, time));
+            }
+        }
+        
+        function drawTapZones() {
+            for (let i = 0; i < LANES; i++) {
+                const zone = tapZones[i];
+                
+                if (zone.isActive) {
+                    ctx.fillStyle = COLORS.primary + '60';
+                    ctx.fillRect(zone.x, zone.y, zone.width, zone.height);
+                    zone.activeTimer--;
+                    if (zone.activeTimer <= 0) {
+                        zone.isActive = false;
+                    }
+                }
+                
+                ctx.strokeStyle = COLORS.secondary;
+                ctx.lineWidth = 3;
+                ctx.strokeRect(zone.x, zone.y, zone.width, zone.height);
+                
+                ctx.fillStyle = COLORS.text;
+                ctx.font = 'bold 16px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('TAP', zone.x + zone.width / 2, zone.y + zone.height / 2 + 5);
+                ctx.textAlign = 'left';
+            }
+        }
+        
+        function update() {
+            if (game.gameOver) return;
+            
+            game.frameCount++;
+            
+            // Update notes
+            for (let i = notes.length - 1; i >= 0; i--) {
+                notes[i].update();
+                
+                if (notes[i].y > canvas.height) {
+                    if (!notes[i].tapped) {
+                        game.combo = 0; // Missed note
+                    }
+                    notes.splice(i, 1);
+                }
+            }
+        }
+        
+        function tapLane(laneIndex) {
+            tapZones[laneIndex].isActive = true;
+            tapZones[laneIndex].activeTimer = 10;
+            
+            let tappedNote = false;
+            
+            for (let i = notes.length - 1; i >= 0; i--) {
+                if (notes[i].lane === laneIndex && !notes[i].tapped && notes[i].isInTapZone()) {
+                    notes[i].tapped = true;
+                    tappedNote = true;
+                    
+                    // Calculate timing accuracy
+                    const perfectionZone = TAP_ZONE_HEIGHT / 3;
+                    const distFromCenter = Math.abs((notes[i].y + notes[i].height) - (canvas.height - TAP_ZONE_HEIGHT / 2));
+                    
+                    let points = 0;
+                    if (distFromCenter < perfectionZone / 3) {
+                        points = 100; // Perfect
+                        game.combo++;
+                    } else if (distFromCenter < perfectionZone) {
+                        points = 50; // Good
+                        game.combo++;
+                    } else {
+                        points = 10; // OK
+                        game.combo = 0;
+                    }
+                    
+                    game.score += points * (1 + Math.floor(game.combo / 5));
+                    game.maxCombo = Math.max(game.maxCombo, game.combo);
+                    
+                    createExplosion(notes[i].x + notes[i].width / 2, notes[i].y, true);
+                    break;
+                }
+            }
+            
+            if (!tappedNote) {
+                game.combo = 0; // Wrong tap
+                createExplosion(tapZones[laneIndex].x + tapZones[laneIndex].width / 2, tapZones[laneIndex].y, false);
+            }
+        }
+        
+        function createExplosion(x, y, isPositive = false) {
+            const particleCount = isPositive ? 12 : 8;
+            const color = isPositive ? COLORS.primary : COLORS.secondary;
+            
+            for (let i = 0; i < particleCount; i++) {
+                const angle = (Math.PI * 2 * i) / particleCount;
+                particles.push({
+                    x: x,
+                    y: y,
+                    vx: Math.cos(angle) * 3,
+                    vy: Math.sin(angle) * 3,
+                    life: 20,
+                    color: color,
+                    maxLife: 20
+                });
+            }
+        }
+        
+        function drawParticles() {
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const p = particles[i];
+                p.x += p.vx;
+                p.y += p.vy;
+                
+                const alpha = p.life / p.maxLife;
+                ctx.fillStyle = p.color.slice(0, 7) + Math.round(255 * alpha).toString(16).padStart(2, '0');
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+                ctx.fill();
+                
+                p.life--;
+                if (p.life <= 0) {
+                    particles.splice(i, 1);
+                }
+            }
+        }
+        
+        function draw() {
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw lane separators
+            ctx.strokeStyle = 'rgba(0, 255, 65, 0.1)';
+            ctx.lineWidth = 2;
+            for (let i = 1; i < LANES; i++) {
+                ctx.beginPath();
+                ctx.moveTo(i * LANE_WIDTH, 0);
+                ctx.lineTo(i * LANE_WIDTH, canvas.height);
+                ctx.stroke();
+            }
+            
+            // Draw notes
+            notes.forEach(n => n.draw());
+            
+            drawParticles();
+            
+            // Draw tap zones
+            drawTapZones();
+            
+            // Draw UI
+            ctx.fillStyle = COLORS.text;
+            ctx.font = 'bold 24px Arial';
+            ctx.fillText('Score: ' + game.score, 20, 35);
+            ctx.fillText('Combo: ' + game.combo, 20, 65);
+            ctx.fillText('Best: ' + game.maxCombo, canvas.width - 200, 35);
+            
+            if (notes.length === 0 && game.frameCount > 300) {
+                game.gameOver = true;
+            }
+            
+            if (game.gameOver) {
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = COLORS.primary;
+                ctx.font = 'bold 48px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('SONG END', canvas.width / 2, canvas.height / 2 - 50);
+                ctx.font = '24px Arial';
+                ctx.fillStyle = COLORS.text;
+                ctx.fillText('Score: ' + game.score, canvas.width / 2, canvas.height / 2 + 10);
+                ctx.fillText('Max Combo: ' + game.maxCombo, canvas.width / 2, canvas.height / 2 + 50);
+                ctx.fillText('Tap to restart', canvas.width / 2, canvas.height / 2 + 100);
+                ctx.textAlign = 'left';
+            }
+        }
+        
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+        
+        // Handle taps
+        canvas.addEventListener('touchstart', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            for (let i = 0; i < e.touches.length; i++) {
+                const touchX = e.touches[i].clientX - rect.left;
+                const laneIndex = Math.floor(touchX / LANE_WIDTH);
+                if (laneIndex >= 0 && laneIndex < LANES) {
+                    tapLane(laneIndex);
+                }
+            }
+        });
+        
+        canvas.addEventListener('click', (e) => {
+            if (game.gameOver) {
+                game.score = 0;
+                game.combo = 0;
+                game.maxCombo = 0;
+                game.gameOver = false;
+                game.frameCount = 0;
+                notes = [];
+                particles = [];
+                generateNotes();
+            } else {
+                const rect = canvas.getBoundingClientRect();
+                const mouseX = e.clientX - rect.left;
+                const laneIndex = Math.floor(mouseX / LANE_WIDTH);
+                if (laneIndex >= 0 && laneIndex < LANES) {
+                    tapLane(laneIndex);
+                }
+            }
+        });
+        
+        generateNotes();
+        gameLoop();
+    </script>
+</body>
+</html>
