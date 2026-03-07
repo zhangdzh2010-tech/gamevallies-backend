@@ -86,6 +86,7 @@ enum GameStatus {
   review
   published
   banned
+  failed
 }
 
 model Game {

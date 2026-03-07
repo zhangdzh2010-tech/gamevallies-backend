@@ -185,9 +185,16 @@ export class AuthService {
       } as any,
       {
         secret: this.configService.get<string>('JWT_SECRET'),
-        expiresIn: 900,
+        expiresIn: this.configService.get<string>('JWT_EXPIRES_IN', '24h') as any,
       },
     );
+
+    const expiresInStr = this.configService.get<string>('JWT_EXPIRES_IN', '24h');
+    const expiresInSeconds = expiresInStr.endsWith('h')
+      ? parseInt(expiresInStr) * 3600
+      : expiresInStr.endsWith('m')
+        ? parseInt(expiresInStr) * 60
+        : parseInt(expiresInStr);
 
     // Generate refresh token (7 days)
     const refreshToken = randomUUID();
@@ -207,7 +214,7 @@ export class AuthService {
     return {
       accessToken,
       refreshToken,
-      expiresIn: 15 * 60, // 15 minutes in seconds
+      expiresIn: expiresInSeconds,
     };
   }
 

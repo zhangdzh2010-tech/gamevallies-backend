@@ -185,7 +185,7 @@ export class GameService {
 
       await this.prisma.game.update({
         where: { id: gameId },
-        data: { status: 'draft' },
+        data: { status: 'failed' },
       });
 
       this.wsGateway.emitNotification(userId, {
