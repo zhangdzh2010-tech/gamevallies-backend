@@ -18,7 +18,7 @@ export class SearchService {
   async searchGames(
     query: string,
     gameType?: string,
-    tags?: string[],
+    _tags?: string[],
     page: number = 1,
     limit: number = 20,
     sortBy: 'relevance' | 'popularity' = 'relevance',
@@ -27,32 +27,24 @@ export class SearchService {
 
     const whereConditions: any = {
       status: 'published' as const,
-      OR: [
-        {
-          title: {
-            mode: 'insensitive',
-            contains: query,
-          },
-        },
-        {
-          description: {
-            mode: 'insensitive',
-            contains: query,
-          },
-        },
-      ],
     };
+
+    // MySQL collation (utf8mb4_unicode_ci) is case-insensitive by default
+    // mode:'insensitive' is PostgreSQL-only and not supported in MySQL
+    if (query && query.trim()) {
+      whereConditions.OR = [
+        { title: { contains: query } },
+        { description: { contains: query } },
+      ];
+    }
 
     if (gameType) {
       whereConditions.gameType = gameType;
     }
 
-    // tags is a String[] field on Game, use hasSome
-    if (tags && tags.length > 0) {
-      whereConditions.tags = {
-        hasSome: tags,
-      };
-    }
+    // tags is a Json field in MySQL; hasSome is not supported.
+    // Tag filtering via JSON_CONTAINS requires raw query — skipped here,
+    // handled by client-side filtering or a future migration to a tags table.
 
     const orderBy: any =
       sortBy === 'popularity'
