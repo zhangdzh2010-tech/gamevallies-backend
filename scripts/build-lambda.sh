@@ -34,7 +34,8 @@ build_service() {
 
   # 2. 编译 TypeScript
   echo "🔧 编译 TypeScript..."
-  npm run build
+  rm -rf dist tsconfig.tsbuildinfo
+  npx tsc -p tsconfig.json
 
   # 3. 生成 Prisma Client（针对 linux-musl 目标）
   if [ -f "$ROOT_DIR/prisma/schema.prisma" ]; then
