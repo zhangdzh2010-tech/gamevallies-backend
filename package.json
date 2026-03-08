@@ -28,6 +28,11 @@
     "db:push": "npx prisma db push",
     "db:seed": "npx ts-node prisma/seed.ts",
     "db:init-games": "npx ts-node scripts/init-games.ts",
+    "lambda:build": "bash scripts/build-lambda.sh all",
+    "lambda:build:user": "bash scripts/build-lambda.sh user-service",
+    "lambda:build:game": "bash scripts/build-lambda.sh game-service",
+    "lambda:build:social": "bash scripts/build-lambda.sh social-service",
+    "lambda:build:feed": "bash scripts/build-lambda.sh feed-service",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f"
