@@ -7,9 +7,10 @@
   python scripts/deploy.py user-service     # 部署单个服务
 
 所需环境变量（参考 .env.deploy.example）:
-  VOLCENGINE_ACCESS_KEY / VOLCENGINE_SECRET_KEY
-  DATABASE_URL / REDIS_URL
-  JWT_SECRET / JWT_REFRESH_SECRET
+  必填: VOLCENGINE_ACCESS_KEY, VOLCENGINE_SECRET_KEY
+  可选: VOLCENGINE_REGION (默认 cn-beijing)
+        VOLCENGINE_API_HOST (默认 open.volcengineapi.com)
+        VOLCENGINE_VPC_ID, VOLCENGINE_SUBNET_ID (不填则跳过 VPC 配置)
 """
 
 import os
@@ -31,11 +32,36 @@ SERVICES = [
     {"svc": "feed-service",   "name": "gamevallies-feed-service",   "port": 3004},
 ]
 
+# ─── 从环境变量读取所有配置 ────────────────────────────────────────────────────
+#
+# VOLCENGINE_ACCESS_KEY / VOLCENGINE_SECRET_KEY
+#   火山引擎控制台 → 访问控制 → API 访问密钥
+#
+# VOLCENGINE_REGION
+#   部署目标地域，如 cn-beijing / cn-shanghai / cn-guangzhou
+#   影响 HMAC 签名中的 region 字段，API 据此路由到对应地域的函数
+#
+# VOLCENGINE_API_HOST
+#   火山引擎 OpenAPI 统一接入点，一般无需修改
+#   默认: open.volcengineapi.com
+#   所有地域共用同一个接入点，region 通过签名传递而非 URL 区分
+#
+# VOLCENGINE_VPC_ID / VOLCENGINE_SUBNET_ID
+#   函数所在私有网络（VPC）和子网 ID
+#   控制台 → 私有网络 → VPC 列表 → 复制 VPC ID
+#   控制台 → 私有网络 → 子网列表 → 复制子网 ID
+#   格式: vpc-xxxxxxxxxx / subnet-xxxxxxxxxx
+#   不填则跳过 VPC 更新（保留控制台已设置的值）
+#
 AK        = os.environ.get("VOLCENGINE_ACCESS_KEY", "")
 SK        = os.environ.get("VOLCENGINE_SECRET_KEY", "")
-REGION    = os.environ.get("VOLCENGINE_REGION", "cn-beijing")
-VPC_ID    = os.environ.get("VOLCENGINE_VPC_ID", "")
-SUBNET_ID = os.environ.get("VOLCENGINE_SUBNET_ID", "")
+REGION    = os.environ.get("VOLCENGINE_REGION",   "cn-beijing")
+API_HOST  = os.environ.get("VOLCENGINE_API_HOST", "open.volcengineapi.com")
+VPC_ID    = os.environ.get("VOLCENGINE_VPC_ID",   "")
+SUBNET_ID = os.environ.get("VOLCENGINE_SUBNET_ID","")
+
+# VeFaaS API 版本（火山引擎函数服务接口版本，一般不需要修改）
+VEFAAS_API_VERSION = "2021-04-30"
 
 
 # ─── Volcengine HMAC-SHA256 签名 ──────────────────────────────────────────────
@@ -44,10 +70,14 @@ def _sign(key: bytes, msg: str) -> bytes:
     return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
 
 
-def volcengine_request(action: str, version: str, body: dict) -> dict:
-    host    = "open.volcengineapi.com"
-    service = "vefaas"
+def volcengine_request(action: str, body: dict) -> dict:
+    """
+    调用火山引擎 VeFaaS OpenAPI。
 
+    请求结构：
+      POST https://{API_HOST}/?Action={action}&Version={VEFAAS_API_VERSION}
+      Authorization: HMAC-SHA256 Credential={AK}/{date}/{REGION}/vefaas/request, ...
+    """
     t          = datetime.datetime.utcnow()
     x_date     = t.strftime("%Y%m%dT%H%M%SZ")
     date_stamp = t.strftime("%Y%m%d")
@@ -55,10 +85,10 @@ def volcengine_request(action: str, version: str, body: dict) -> dict:
     payload      = json.dumps(body, separators=(",", ":"))
     payload_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
-    query             = f"Action={action}&Version={version}"
+    query             = f"Action={action}&Version={VEFAAS_API_VERSION}"
     canonical_headers = (
         f"content-type:application/json\n"
-        f"host:{host}\n"
+        f"host:{API_HOST}\n"
         f"x-content-sha256:{payload_hash}\n"
         f"x-date:{x_date}\n"
     )
@@ -68,6 +98,7 @@ def volcengine_request(action: str, version: str, body: dict) -> dict:
         canonical_headers, signed_headers, payload_hash,
     ])
 
+    service          = "vefaas"
     credential_scope = f"{date_stamp}/{REGION}/{service}/request"
     string_to_sign   = "\n".join([
         "HMAC-SHA256", x_date, credential_scope,
@@ -84,15 +115,14 @@ def volcengine_request(action: str, version: str, body: dict) -> dict:
         f"HMAC-SHA256 Credential={AK}/{credential_scope}, "
         f"SignedHeaders={signed_headers}, Signature={signature}"
     )
-    headers = {
-        "Content-Type":    "application/json",
-        "X-Date":          x_date,
-        "X-Content-Sha256": payload_hash,
-        "Authorization":   authorization,
-    }
     resp = requests.post(
-        f"https://{host}/?{query}",
-        headers=headers,
+        f"https://{API_HOST}/?{query}",
+        headers={
+            "Content-Type":     "application/json",
+            "X-Date":           x_date,
+            "X-Content-Sha256": payload_hash,
+            "Authorization":    authorization,
+        },
         data=payload,
         timeout=120,
     )
@@ -130,7 +160,7 @@ def deploy_service(svc: dict) -> bool:
 
     # 1. 上传代码
     print("  🚀 上传代码...")
-    resp = volcengine_request("UpdateFunctionCode", "2021-04-30", {
+    resp = volcengine_request("UpdateFunctionCode", {
         "FunctionName": name,
         "SourceType":   "Zip",
         "Code":         {"ZipFile": zip_b64},
@@ -141,23 +171,21 @@ def deploy_service(svc: dict) -> bool:
         return False
     print("  ✅ 代码上传成功")
 
-    # 2. 更新配置（环境变量 + VPC）
+    # 2. 更新配置（环境变量 + 可选 VPC）
     print("  ⚙️  更新配置...")
     config_body: dict = {
         "FunctionName": name,
         "EnvConf":      build_env(svc["port"]),
     }
     if VPC_ID and SUBNET_ID:
-        config_body["VpcConfig"] = {
-            "VpcId":    VPC_ID,
-            "SubnetId": SUBNET_ID,
-        }
-    resp = volcengine_request("UpdateFunctionConfiguration", "2021-04-30", config_body)
+        config_body["VpcConfig"] = {"VpcId": VPC_ID, "SubnetId": SUBNET_ID}
+
+    resp = volcengine_request("UpdateFunctionConfiguration", config_body)
     err = resp.get("ResponseMetadata", {}).get("Error")
     if err:
         print(f"  ❌ 配置更新失败: {err.get('Code')} — {err.get('Message')}")
         return False
-    print("  ✅ 环境变量更新成功")
+    print("  ✅ 配置更新成功")
     return True
 
 
@@ -169,9 +197,11 @@ def main():
         print("   参考: cp .env.deploy.example .env.deploy && source .env.deploy")
         sys.exit(1)
 
-    if not VPC_ID or not SUBNET_ID:
-        print("⚠️  未设置 VOLCENGINE_VPC_ID / VOLCENGINE_SUBNET_ID，跳过 VPC 配置更新")
-        print("   （首次部署请确保已在控制台手动设置 VPC，或补充这两个环境变量）")
+    print(f"📍 部署配置:")
+    print(f"   地域 (REGION):   {REGION}")
+    print(f"   API 地址 (HOST): {API_HOST}")
+    print(f"   VPC ID:          {VPC_ID  or '未设置（跳过 VPC 配置）'}")
+    print(f"   Subnet ID:       {SUBNET_ID or '未设置（跳过 VPC 配置）'}")
 
     target   = sys.argv[1] if len(sys.argv) > 1 else "all"
     services = SERVICES if target == "all" else [s for s in SERVICES if s["svc"] == target]
@@ -180,7 +210,7 @@ def main():
         print(f"❌ 未知服务: {target}，可选: {[s['svc'] for s in SERVICES]} | all")
         sys.exit(1)
 
-    print(f"\n🚀 开始部署（区域: {REGION}）")
+    print(f"\n🚀 开始部署 {len(services)} 个服务...")
     failed = []
     for svc in services:
         print(f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
