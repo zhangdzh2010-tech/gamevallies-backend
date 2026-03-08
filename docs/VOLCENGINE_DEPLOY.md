@@ -17,8 +17,9 @@
 9. [Step 7 — 部署 AI Engine（容器实例）](#step-7--部署-ai-engine容器实例)
 10. [Step 8 — 配置 API 网关路由](#step-8--配置-api-网关路由)
 11. [Step 9 — 验证部署](#step-9--验证部署)
-12. [环境变量速查表](#环境变量速查表)
-13. [常见问题](#常见问题)
+12. [自动化部署（CI/CD）](#自动化部署cicd)
+13. [环境变量速查表](#环境变量速查表)
+14. [常见问题](#常见问题)
 
 ---
 
@@ -147,7 +148,7 @@ ve configure
 ### 2.2 获取连接信息
 
 实例详情页 → **连接信息**，记录：
-- **内网地址**（形如 `rm-xxx.mysql.volces.com`）
+- **内网地址**（形如 `rm-xxx.mysql.volces.com`）：mysql5f64263dff43.rds.ivolces.com
 - **端口**：3306
 
 > 函数服务使用内网地址，延迟低、免流量费。
@@ -173,7 +174,7 @@ ve configure
 ### 3.2 获取连接信息
 
 实例详情页记录：
-- **内网地址**（形如 `redis-xxx.redis.volces.com`）
+- **内网地址**（形如 `redis-xxx.redis.volces.com`）；redis-shzlsq69qwdo5877a.redis.ivolces.com
 - **端口**：6379
 
 ---
@@ -193,7 +194,12 @@ ve configure
 
 ```bash
 # 设置云端 DATABASE_URL
-export DATABASE_URL="mysql://gamevallies:你的密码@外网地址:3306/gamevallies"
+export DATABASE_URL="mysql://gamevallies:你的密码@mysql-5f64263dff43-public.rds.volces.com:3306/gamevallies"
+npx prisma db push
+
+export DATABASE_URL="mysql://gamevallies:gamevallies@2026@mysql-5f64263dff43-public.rds.volces.com:3306/gamevallies"
+
+
 
 # 推送 Schema（建表）
 npx prisma db push
@@ -255,10 +261,11 @@ npm run lambda:build:feed
 | 字段 | 值 |
 |------|-----|
 | 函数名称 | `gv-user-service` |
-| 运行时 | `Node.js 20` |
-| 触发方式 | 事件触发（后续配置 HTTP 触发器） |
-| 代码来源 | 上传 zip 包 |
-| 处理程序 | `dist/lambda.main` |
+| 运行时 | `Native Node.js 20.x` |
+| 部署方式 | 本地上传代码（zip 包） |
+| Webserver 模式 | **是** |
+| 启动命令 | `node dist/main.js` |
+| 监听端口 | `3001` |
 | 描述 | 用户认证服务 |
 
 3. 上传 `user-service.zip`
@@ -278,57 +285,32 @@ npm run lambda:build:feed
 
 函数详情 → **环境变量** → 添加以下变量（**每个服务都需要配置**）：
 
-#### user-service 环境变量
+> 4 个服务的环境变量基本相同，统一配置如下：
+
+| 变量名 | 值 | 备注 |
+|--------|-----|------|
+| `NODE_ENV` | `production` | |
+| `PORT` | `3001` / `3002` / `3003` / `3004` | 各服务对应端口 |
+| `DATABASE_URL` | `mysql://gamevallies:密码@mysql5f64263dff43.rds.ivolces.com:3306/gamevallies` | 内网地址 |
+| `REDIS_URL` | `redis://:密码@redis-shzlsq69qwdo5877a.redis.ivolces.com:6379` | 内网地址 |
+| `JWT_SECRET` | 32位以上随机字符串 | 4个服务保持一致 |
+| `JWT_REFRESH_SECRET` | 32位以上随机字符串（与上面不同） | |
+| `CORS_ORIGIN` | `*`（或前端域名） | |
+
+**game-service 额外添加：**
 
 | 变量名 | 值 |
 |--------|-----|
-| `NODE_ENV` | `production` |
-| `DATABASE_URL` | `mysql://gamevallies:密码@内网地址:3306/gamevallies` |
-| `REDIS_HOST` | Redis 内网地址 |
-| `REDIS_PORT` | `6379` |
-| `REDIS_PASSWORD` | Redis 密码 |
-| `JWT_SECRET` | 自定义强密钥（32位以上随机字符串） |
-| `JWT_REFRESH_SECRET` | 自定义强密钥（不同于上面） |
-| `JWT_EXPIRES_IN` | `24h` |
-| `JWT_REFRESH_EXPIRES_IN` | `7d` |
-| `CORS_ORIGIN` | `*`（或前端域名） |
-
-#### game-service 环境变量
-
-| 变量名 | 值 |
-|--------|-----|
-| `NODE_ENV` | `production` |
-| `DATABASE_URL` | `mysql://gamevallies:密码@内网地址:3306/gamevallies` |
-| `REDIS_HOST` | Redis 内网地址 |
-| `REDIS_PORT` | `6379` |
-| `REDIS_PASSWORD` | Redis 密码 |
-| `JWT_SECRET` | （与 user-service 相同） |
 | `AI_ENGINE_URL` | `http://gv-ai-engine内网IP:8000`（Step 7 完成后填写） |
-| `CORS_ORIGIN` | `*` |
 
-#### social-service 环境变量
+**各服务端口对应：**
 
-| 变量名 | 值 |
-|--------|-----|
-| `NODE_ENV` | `production` |
-| `DATABASE_URL` | `mysql://gamevallies:密码@内网地址:3306/gamevallies` |
-| `REDIS_HOST` | Redis 内网地址 |
-| `REDIS_PORT` | `6379` |
-| `REDIS_PASSWORD` | Redis 密码 |
-| `JWT_SECRET` | （与 user-service 相同） |
-| `CORS_ORIGIN` | `*` |
-
-#### feed-service 环境变量
-
-| 变量名 | 值 |
-|--------|-----|
-| `NODE_ENV` | `production` |
-| `DATABASE_URL` | `mysql://gamevallies:密码@内网地址:3306/gamevallies` |
-| `REDIS_HOST` | Redis 内网地址 |
-| `REDIS_PORT` | `6379` |
-| `REDIS_PASSWORD` | Redis 密码 |
-| `JWT_SECRET` | （与 user-service 相同） |
-| `CORS_ORIGIN` | `*` |
+| 服务 | PORT |
+|------|------|
+| gv-user-service | `3001` |
+| gv-game-service | `3002` |
+| gv-social-service | `3003` |
+| gv-feed-service | `3004` |
 
 ### 6.3 添加 HTTP 触发器
 
@@ -552,6 +534,52 @@ ve faas update-function \
   --zip-file .lambda-dist/user-service.zip \
   --region cn-beijing
 ```
+
+---
+
+## 自动化部署（CI/CD）
+
+> 配置完成后，每次 `git push main` 自动构建并部署所有服务，无需手动上传 zip。
+
+### 方式一：GitHub Actions 自动部署（推荐）
+
+已配置 `.github/workflows/deploy.yml`，触发条件：推送到 `main` 分支。
+
+**配置步骤：**
+
+1. 打开 GitHub 仓库 → **Settings** → **Secrets and variables** → **Actions**
+2. 添加以下 Secrets：
+
+| Secret 名称 | 值 |
+|------------|-----|
+| `VOLCENGINE_ACCESS_KEY` | 火山引擎控制台 → 访问控制 → 密钥管理 |
+| `VOLCENGINE_SECRET_KEY` | 同上 |
+| `DATABASE_URL` | `mysql://gamevallies:密码@mysql5f64263dff43.rds.ivolces.com:3306/gamevallies` |
+| `REDIS_URL` | `redis://:密码@redis-shzlsq69qwdo5877a.redis.ivolces.com:6379` |
+| `JWT_SECRET` | 生成的 JWT 密钥 |
+| `JWT_REFRESH_SECRET` | 生成的 JWT 刷新密钥 |
+| `CORS_ORIGIN` | `*` 或实际前端域名 |
+
+3. 推送代码触发部署，或在 GitHub Actions 页面手动点击 **Run workflow**。
+
+### 方式二：本地一键部署
+
+```bash
+# 1. 复制并编辑配置文件
+cp .env.deploy.example .env.deploy
+# 编辑 .env.deploy 填入实际值
+
+# 2. 加载环境变量
+source .env.deploy
+
+# 3. 构建并部署所有服务（自动完成）
+npm run lambda:build && python scripts/deploy.py
+
+# 或只部署单个服务
+python scripts/deploy.py user-service
+```
+
+> **提示：** 首次部署需要在控制台手动创建函数（Step 6.1），后续更新代码只需运行上述脚本即可。
 
 ---
 

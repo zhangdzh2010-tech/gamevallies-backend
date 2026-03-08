@@ -1,0 +1,54 @@
+name: 部署到火山引擎函数服务
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:  # 支持手动触发
+
+env:
+  VOLCENGINE_REGION: cn-beijing
+
+jobs:
+  build-and-deploy:
+    name: 构建 & 部署
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: 安装依赖
+        run: npm install
+
+      - name: 生成 Prisma Client
+        run: npx prisma generate
+
+      - name: 构建所有服务（打 zip 包）
+        run: npm run lambda:build
+
+      - name: 配置 Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: 安装部署依赖
+        run: pip install requests
+
+      - name: 部署所有服务到火山引擎
+        env:
+          VOLCENGINE_ACCESS_KEY: ${{ secrets.VOLCENGINE_ACCESS_KEY }}
+          VOLCENGINE_SECRET_KEY: ${{ secrets.VOLCENGINE_SECRET_KEY }}
+          VOLCENGINE_REGION:     ${{ env.VOLCENGINE_REGION }}
+          DATABASE_URL:          ${{ secrets.DATABASE_URL }}
+          REDIS_URL:             ${{ secrets.REDIS_URL }}
+          JWT_SECRET:            ${{ secrets.JWT_SECRET }}
+          JWT_REFRESH_SECRET:    ${{ secrets.JWT_REFRESH_SECRET }}
+          CORS_ORIGIN:           ${{ secrets.CORS_ORIGIN }}
+        run: python scripts/deploy.py
