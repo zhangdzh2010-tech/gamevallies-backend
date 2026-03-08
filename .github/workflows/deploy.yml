@@ -7,9 +7,10 @@ on:
   workflow_dispatch:  # 支持手动触发
 
 env:
-  VOLCENGINE_REGION:    cn-shanghai
-  VOLCENGINE_VPC_ID:    vpc-1fui3r5jdt2bk1m79k8anl32c
-  VOLCENGINE_SUBNET_ID: subnet-1kse5at0gc9a859xbtim3pgrs
+  VOLCENGINE_REGION:             cn-shanghai
+  VOLCENGINE_VPC_ID:             vpc-1fui3r5jdt2bk1m79k8anl32c
+  VOLCENGINE_SUBNET_ID:          subnet-1kse5at0gc9a859xbtim3pgrs
+  # VOLCENGINE_SECURITY_GROUP_ID: sg-xxxxxxxxxx   # 填写后自动绑定 VPC
 
 jobs:
   build-and-deploy:
@@ -41,15 +42,16 @@ jobs:
           python-version: '3.12'
 
       - name: 安装部署依赖
-        run: pip install requests
+        run: pip install requests volcengine-python-sdk
 
       - name: 部署所有服务到火山引擎
         env:
-          VOLCENGINE_ACCESS_KEY: ${{ secrets.VOLCENGINE_ACCESS_KEY }}
-          VOLCENGINE_SECRET_KEY: ${{ secrets.VOLCENGINE_SECRET_KEY }}
-          VOLCENGINE_REGION:    ${{ env.VOLCENGINE_REGION }}
-          VOLCENGINE_VPC_ID:    ${{ env.VOLCENGINE_VPC_ID }}
-          VOLCENGINE_SUBNET_ID: ${{ env.VOLCENGINE_SUBNET_ID }}
+          VOLCENGINE_ACCESS_KEY:        ${{ secrets.VOLCENGINE_ACCESS_KEY }}
+          VOLCENGINE_SECRET_KEY:        ${{ secrets.VOLCENGINE_SECRET_KEY }}
+          VOLCENGINE_REGION:            ${{ env.VOLCENGINE_REGION }}
+          VOLCENGINE_VPC_ID:            ${{ env.VOLCENGINE_VPC_ID }}
+          VOLCENGINE_SUBNET_ID:         ${{ env.VOLCENGINE_SUBNET_ID }}
+          VOLCENGINE_SECURITY_GROUP_ID: ${{ secrets.VOLCENGINE_SECURITY_GROUP_ID }}
           DATABASE_URL:          ${{ secrets.DATABASE_URL }}
           REDIS_URL:             ${{ secrets.REDIS_URL }}
           JWT_SECRET:            ${{ secrets.JWT_SECRET }}
