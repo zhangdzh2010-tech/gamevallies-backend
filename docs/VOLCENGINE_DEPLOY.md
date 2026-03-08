@@ -174,7 +174,7 @@ ve configure
 ### 3.2 获取连接信息
 
 实例详情页记录：
-- **内网地址**（形如 `redis-xxx.redis.volces.com`）；redis-shzlsq69qwdo5877a.redis.ivolces.com
+- **内网地址** redis-shzlsq69qwdo5877a.redis.ivolces.com
 - **端口**：6379
 
 ---
@@ -194,10 +194,9 @@ ve configure
 
 ```bash
 # 设置云端 DATABASE_URL
-export DATABASE_URL="mysql://gamevallies:你的密码@mysql-5f64263dff43-public.rds.volces.com:3306/gamevallies"
+export DATABASE_URL="mysql://gamevallies:密码@mysql-5f64263dff43-public.rds.volces.com:3306/gamevallies"
 npx prisma db push
 
-export DATABASE_URL="mysql://gamevallies:gamevallies@2026@mysql-5f64263dff43-public.rds.volces.com:3306/gamevallies"
 
 
 
@@ -550,15 +549,17 @@ ve faas update-function \
 1. 打开 GitHub 仓库 → **Settings** → **Secrets and variables** → **Actions**
 2. 添加以下 Secrets：
 
-| Secret 名称 | 值 |
-|------------|-----|
-| `VOLCENGINE_ACCESS_KEY` | 火山引擎控制台 → 访问控制 → 密钥管理 |
-| `VOLCENGINE_SECRET_KEY` | 同上 |
-| `DATABASE_URL` | `mysql://gamevallies:密码@mysql5f64263dff43.rds.ivolces.com:3306/gamevallies` |
-| `REDIS_URL` | `redis://:密码@redis-shzlsq69qwdo5877a.redis.ivolces.com:6379` |
-| `JWT_SECRET` | 生成的 JWT 密钥 |
-| `JWT_REFRESH_SECRET` | 生成的 JWT 刷新密钥 |
-| `CORS_ORIGIN` | `*` 或实际前端域名 |
+| Secret 名称 | 值 | 说明 |
+|------------|-----|------|
+| `VOLCENGINE_ACCESS_KEY` | AK 字符串 | 控制台 → 访问控制 → 密钥管理 |
+| `VOLCENGINE_SECRET_KEY` | SK 字符串 | 同上 |
+| `VOLCENGINE_VPC_ID` | `vpc-xxxxxx` | 控制台 → 私有网络 → VPC 列表，复制 ID |
+| `VOLCENGINE_SUBNET_ID` | `subnet-xxxxxx` | 控制台 → 私有网络 → 子网，复制 ID |
+| `DATABASE_URL` | `mysql://gamevallies:密码@mysql5f64263dff43.rds.ivolces.com:3306/gamevallies` | 内网地址 |
+| `REDIS_URL` | `redis://:密码@redis-shzlsq69qwdo5877a.redis.ivolces.com:6379` | 内网地址 |
+| `JWT_SECRET` | 32位随机字符串 | |
+| `JWT_REFRESH_SECRET` | 32位随机字符串 | |
+| `CORS_ORIGIN` | `*` 或实际前端域名 | |
 
 3. 推送代码触发部署，或在 GitHub Actions 页面手动点击 **Run workflow**。
 

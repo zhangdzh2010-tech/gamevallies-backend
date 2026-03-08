@@ -46,6 +46,8 @@ jobs:
           VOLCENGINE_ACCESS_KEY: ${{ secrets.VOLCENGINE_ACCESS_KEY }}
           VOLCENGINE_SECRET_KEY: ${{ secrets.VOLCENGINE_SECRET_KEY }}
           VOLCENGINE_REGION:     ${{ env.VOLCENGINE_REGION }}
+          VOLCENGINE_VPC_ID:     ${{ secrets.VOLCENGINE_VPC_ID }}
+          VOLCENGINE_SUBNET_ID:  ${{ secrets.VOLCENGINE_SUBNET_ID }}
           DATABASE_URL:          ${{ secrets.DATABASE_URL }}
           REDIS_URL:             ${{ secrets.REDIS_URL }}
           JWT_SECRET:            ${{ secrets.JWT_SECRET }}

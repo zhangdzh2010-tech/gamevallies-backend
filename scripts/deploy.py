@@ -31,9 +31,11 @@ SERVICES = [
     {"svc": "feed-service",   "name": "gamevallies-feed-service",   "port": 3004},
 ]
 
-AK     = os.environ.get("VOLCENGINE_ACCESS_KEY", "")
-SK     = os.environ.get("VOLCENGINE_SECRET_KEY", "")
-REGION = os.environ.get("VOLCENGINE_REGION", "cn-beijing")
+AK        = os.environ.get("VOLCENGINE_ACCESS_KEY", "")
+SK        = os.environ.get("VOLCENGINE_SECRET_KEY", "")
+REGION    = os.environ.get("VOLCENGINE_REGION", "cn-beijing")
+VPC_ID    = os.environ.get("VOLCENGINE_VPC_ID", "")
+SUBNET_ID = os.environ.get("VOLCENGINE_SUBNET_ID", "")
 
 
 # ─── Volcengine HMAC-SHA256 签名 ──────────────────────────────────────────────
@@ -139,12 +141,18 @@ def deploy_service(svc: dict) -> bool:
         return False
     print("  ✅ 代码上传成功")
 
-    # 2. 更新环境变量
-    print("  ⚙️  更新环境变量...")
-    resp = volcengine_request("UpdateFunctionConfiguration", "2021-04-30", {
+    # 2. 更新配置（环境变量 + VPC）
+    print("  ⚙️  更新配置...")
+    config_body: dict = {
         "FunctionName": name,
         "EnvConf":      build_env(svc["port"]),
-    })
+    }
+    if VPC_ID and SUBNET_ID:
+        config_body["VpcConfig"] = {
+            "VpcId":    VPC_ID,
+            "SubnetId": SUBNET_ID,
+        }
+    resp = volcengine_request("UpdateFunctionConfiguration", "2021-04-30", config_body)
     err = resp.get("ResponseMetadata", {}).get("Error")
     if err:
         print(f"  ❌ 配置更新失败: {err.get('Code')} — {err.get('Message')}")
@@ -160,6 +168,10 @@ def main():
         print("❌ 请设置 VOLCENGINE_ACCESS_KEY 和 VOLCENGINE_SECRET_KEY")
         print("   参考: cp .env.deploy.example .env.deploy && source .env.deploy")
         sys.exit(1)
+
+    if not VPC_ID or not SUBNET_ID:
+        print("⚠️  未设置 VOLCENGINE_VPC_ID / VOLCENGINE_SUBNET_ID，跳过 VPC 配置更新")
+        print("   （首次部署请确保已在控制台手动设置 VPC，或补充这两个环境变量）")
 
     target   = sys.argv[1] if len(sys.argv) > 1 else "all"
     services = SERVICES if target == "all" else [s for s in SERVICES if s["svc"] == target]
