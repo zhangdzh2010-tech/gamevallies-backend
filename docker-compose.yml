@@ -28,7 +28,7 @@ services:
     container_name: gamevallies-redis
     restart: unless-stopped
     ports:
-      - "6380:6379"
+      - "6381:6379"
     command: redis-server --requirepass playforge_dev_2026 --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data

@@ -31,19 +31,24 @@ const SNAKE_HTML = `<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no,viewport-fit=cover">
 <title>贪吃蛇</title>
 <style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { background: #1a1a2e; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; font-family: 'Arial', sans-serif; color: #fff; }
-h1 { font-size: 2rem; margin-bottom: 10px; color: #16c79a; text-shadow: 0 0 20px #16c79a; }
-#score-board { display: flex; gap: 40px; margin-bottom: 15px; font-size: 1.1rem; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; -webkit-tap-highlight-color: transparent; user-select: none; -webkit-user-select: none; }
+body { background: #1a1a2e; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); font-family: 'Arial', sans-serif; color: #fff; }
+h1 { font-size: clamp(1.2rem, 5vw, 2rem); margin-bottom: 8px; color: #16c79a; text-shadow: 0 0 20px #16c79a; }
+#score-board { display: flex; gap: clamp(16px, 5vw, 40px); margin-bottom: 10px; font-size: clamp(0.85rem, 3vw, 1.1rem); }
 .score-item { text-align: center; }
-.score-item span { display: block; font-size: 1.8rem; font-weight: bold; color: #f5a623; }
+.score-item span { display: block; font-size: clamp(1.2rem, 5vw, 1.8rem); font-weight: bold; color: #f5a623; }
 canvas { border: 3px solid #16c79a; border-radius: 8px; box-shadow: 0 0 30px rgba(22,199,154,0.4); }
-#message { margin-top: 15px; font-size: 1.1rem; color: #aaa; }
-#btn { margin-top: 10px; padding: 10px 30px; background: #16c79a; color: #1a1a2e; border: none; border-radius: 25px; font-size: 1rem; font-weight: bold; cursor: pointer; transition: transform 0.1s; }
-#btn:hover { transform: scale(1.05); }
+#message { margin-top: 8px; font-size: clamp(0.8rem, 3vw, 1.1rem); color: #aaa; text-align: center; }
+#btn { margin-top: 8px; padding: 12px 30px; min-height: 48px; background: #16c79a; color: #1a1a2e; border: none; border-radius: 25px; font-size: clamp(0.9rem, 3.5vw, 1rem); font-weight: bold; cursor: pointer; transition: transform 0.1s; }
+#btn:active { transform: scale(0.97); }
+#dpad { display: flex; flex-direction: column; align-items: center; margin-top: 10px; gap: 2px; }
+.dpad-row { display: flex; gap: 2px; }
+.dpad-btn { width: 52px; height: 52px; background: rgba(22,199,154,0.2); border: 2px solid #16c79a; border-radius: 8px; color: #16c79a; font-size: 1.4rem; display: flex; align-items: center; justify-content: center; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.dpad-btn:active { background: rgba(22,199,154,0.5); }
 </style>
 </head>
 <body>
@@ -53,13 +58,20 @@ canvas { border: 3px solid #16c79a; border-radius: 8px; box-shadow: 0 0 30px rgb
   <div class="score-item">最高<span id="best">0</span></div>
   <div class="score-item">长度<span id="len">3</span></div>
 </div>
-<canvas id="c" width="400" height="400"></canvas>
+<canvas id="c"></canvas>
 <div id="message">按空格键 / 点击开始</div>
 <button id="btn" onclick="startGame()">开始游戏</button>
+<div id="dpad">
+  <div><button class="dpad-btn" id="btn-up">↑</button></div>
+  <div class="dpad-row"><button class="dpad-btn" id="btn-left">←</button><button class="dpad-btn" id="btn-down">↓</button><button class="dpad-btn" id="btn-right">→</button></div>
+</div>
 <script>
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
-const GRID = 20, SIZE = 400 / GRID;
+const GRID = 20;
+const SZ = Math.min(window.innerWidth - 16, window.innerHeight - 260, 360);
+canvas.width = SZ; canvas.height = SZ;
+const cellSz = SZ / GRID;
 let snake, dir, food, score, best = 0, running = false, interval;
 function startGame() {
   snake = [{x:10,y:10},{x:9,y:10},{x:8,y:10}];
@@ -73,6 +85,7 @@ function placeFood() {
   do { food = {x:Math.floor(Math.random()*GRID), y:Math.floor(Math.random()*GRID)}; }
   while (snake.some(s=>s.x===food.x&&s.y===food.y));
 }
+function setDir(d) { if (d && !(d.x===-dir.x && d.y===-dir.y)) dir = d; }
 function loop() {
   const head = {x: snake[0].x + dir.x, y: snake[0].y + dir.y};
   if (head.x<0||head.x>=GRID||head.y<0||head.y>=GRID||snake.some(s=>s.x===head.x&&s.y===head.y)) {
@@ -87,16 +100,16 @@ function loop() {
   update();
 }
 function update() {
-  ctx.fillStyle = '#0f0f23'; ctx.fillRect(0, 0, 400, 400);
+  ctx.fillStyle = '#0f0f23'; ctx.fillRect(0, 0, SZ, SZ);
   ctx.strokeStyle = 'rgba(255,255,255,0.03)';
-  for(let i=0;i<GRID;i++){ctx.beginPath();ctx.moveTo(i*SIZE,0);ctx.lineTo(i*SIZE,400);ctx.stroke();ctx.beginPath();ctx.moveTo(0,i*SIZE);ctx.lineTo(400,i*SIZE);ctx.stroke();}
+  for(let i=0;i<GRID;i++){ctx.beginPath();ctx.moveTo(i*cellSz,0);ctx.lineTo(i*cellSz,SZ);ctx.stroke();ctx.beginPath();ctx.moveTo(0,i*cellSz);ctx.lineTo(SZ,i*cellSz);ctx.stroke();}
   ctx.fillStyle = '#f5a623'; ctx.shadowColor = '#f5a623'; ctx.shadowBlur = 15;
-  ctx.beginPath(); ctx.arc(food.x*SIZE+SIZE/2, food.y*SIZE+SIZE/2, SIZE/2-2, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(food.x*cellSz+cellSz/2, food.y*cellSz+cellSz/2, cellSz/2-2, 0, Math.PI*2); ctx.fill();
   ctx.shadowBlur = 0;
   snake.forEach((s,i) => {
     const ratio = 1 - i/snake.length * 0.7;
     ctx.fillStyle = \`rgba(22, \${Math.floor(199*ratio)}, 154, \${ratio})\`;
-    ctx.beginPath(); ctx.roundRect(s.x*SIZE+1, s.y*SIZE+1, SIZE-2, SIZE-2, 4); ctx.fill();
+    ctx.beginPath(); ctx.roundRect(s.x*cellSz+1, s.y*cellSz+1, cellSz-2, cellSz-2, 4); ctx.fill();
   });
   document.getElementById('score').textContent = score;
   document.getElementById('best').textContent = best;
@@ -106,8 +119,20 @@ document.addEventListener('keydown', e => {
   if (!running && e.code === 'Space') { startGame(); return; }
   const map = {ArrowUp:{x:0,y:-1},ArrowDown:{x:0,y:1},ArrowLeft:{x:-1,y:0},ArrowRight:{x:1,y:0},KeyW:{x:0,y:-1},KeyS:{x:0,y:1},KeyA:{x:-1,y:0},KeyD:{x:1,y:0}};
   const d = map[e.code];
-  if (d && !(d.x===-dir.x && d.y===-dir.y)) { dir = d; e.preventDefault(); }
+  if (d) { setDir(d); e.preventDefault(); }
 });
+document.getElementById('btn-up').addEventListener('touchstart',e=>{e.preventDefault();if(!running)startGame();else setDir({x:0,y:-1});},{passive:false});
+document.getElementById('btn-down').addEventListener('touchstart',e=>{e.preventDefault();if(!running)startGame();else setDir({x:0,y:1});},{passive:false});
+document.getElementById('btn-left').addEventListener('touchstart',e=>{e.preventDefault();if(!running)startGame();else setDir({x:-1,y:0});},{passive:false});
+document.getElementById('btn-right').addEventListener('touchstart',e=>{e.preventDefault();if(!running)startGame();else setDir({x:1,y:0});},{passive:false});
+let touchStartX=0,touchStartY=0;
+canvas.addEventListener('touchstart',e=>{e.preventDefault();const t=e.touches[0];touchStartX=t.clientX;touchStartY=t.clientY;},{passive:false});
+canvas.addEventListener('touchend',e=>{
+  e.preventDefault();
+  const dx=e.changedTouches[0].clientX-touchStartX,dy=e.changedTouches[0].clientY-touchStartY;
+  if(Math.abs(dx)<10&&Math.abs(dy)<10){if(!running)startGame();return;}
+  if(Math.abs(dx)>Math.abs(dy)){setDir(dx>0?{x:1,y:0}:{x:-1,y:0});}else{setDir(dy>0?{x:0,y:1}:{x:0,y:-1});}
+},{passive:false});
 update();
 </script>
 </body>
@@ -117,16 +142,17 @@ const BREAKOUT_HTML = `<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no,viewport-fit=cover">
 <title>打砖块</title>
 <style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { background: #0d1117; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; font-family: Arial, sans-serif; color: #fff; }
-h1 { font-size: 2rem; margin-bottom: 8px; color: #58a6ff; }
-#info { display: flex; gap: 40px; margin-bottom: 12px; font-size: 1rem; }
-.v { font-size: 1.6rem; font-weight: bold; color: #ffa657; }
-canvas { border: 2px solid #30363d; border-radius: 6px; cursor: none; }
-#msg { margin-top: 12px; font-size: 1rem; color: #8b949e; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; -webkit-tap-highlight-color: transparent; user-select: none; -webkit-user-select: none; }
+body { background: #0d1117; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); font-family: Arial, sans-serif; color: #fff; }
+h1 { font-size: clamp(1.2rem, 5vw, 2rem); margin-bottom: 8px; color: #58a6ff; }
+#info { display: flex; gap: clamp(16px, 5vw, 40px); margin-bottom: 10px; font-size: clamp(0.85rem, 3vw, 1rem); }
+.v { font-size: clamp(1.2rem, 5vw, 1.6rem); font-weight: bold; color: #ffa657; }
+canvas { border: 2px solid #30363d; border-radius: 6px; }
+#msg { margin-top: 10px; font-size: clamp(0.8rem, 3vw, 1rem); color: #8b949e; text-align: center; }
 </style>
 </head>
 <body>
@@ -136,13 +162,16 @@ canvas { border: 2px solid #30363d; border-radius: 6px; cursor: none; }
   <div>生命 <span class="v" id="lv">3</span></div>
   <div>关卡 <span class="v" id="lv2">1</span></div>
 </div>
-<canvas id="c" width="480" height="400"></canvas>
-<div id="msg">点击画布开始 · 移动鼠标控制挡板</div>
+<canvas id="c"></canvas>
+<div id="msg">点击/触摸开始 · 移动控制挡板</div>
 <script>
 const C = document.getElementById('c'), ctx = C.getContext('2d');
-const W = 480, H = 400;
-let bx=W/2, by=H-60, bdx=3.5, bdy=-3.5;
-let px=W/2-40, pw=80, ph=10, py=H-20;
+const CW = Math.min(window.innerWidth - 16, 480);
+const CH = Math.round(CW * 400 / 480);
+C.width = CW; C.height = CH;
+const scale = CW / 480;
+let bx=CW/2, by=CH-60*scale, bdx=3.5*scale, bdy=-3.5*scale;
+let px=CW/2-40*scale, pw=80*scale, ph=10*scale, py=CH-20*scale;
 let lives=3, score=0, level=1, running=false, won=false, lost=false;
 const COLS=10, ROWS=5;
 const COLORS=['#ff6b6b','#ffa657','#ffd700','#7ce38b','#58a6ff','#d2a8ff'];
@@ -150,32 +179,34 @@ let bricks=[];
 function initBricks(){
   bricks=[];
   for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++)
-    bricks.push({x:c*46+5,y:r*24+40,w:42,h:20,alive:true,color:COLORS[r%COLORS.length],hp:r<2?1:r<4?2:3});
+    bricks.push({x:c*46*scale+5*scale,y:r*24*scale+40*scale,w:42*scale,h:20*scale,alive:true,color:COLORS[r%COLORS.length],hp:r<2?1:r<4?2:3});
 }
-function reset(){ bx=W/2; by=H-60; const spd=3.5+level*0.3; bdx=(Math.random()>0.5?1:-1)*spd; bdy=-spd; if(!won) initBricks(); won=false; lost=false; }
+function reset(){ bx=CW/2; by=CH-60*scale; const spd=(3.5+level*0.3)*scale; bdx=(Math.random()>0.5?1:-1)*spd; bdy=-spd; if(!won) initBricks(); won=false; lost=false; }
 function start(){ running=true; reset(); loop(); }
-C.addEventListener('mousemove',e=>{ const r=C.getBoundingClientRect(); px=e.clientX-r.left-pw/2; px=Math.max(0,Math.min(W-pw,px)); });
+C.addEventListener('mousemove',e=>{ const r=C.getBoundingClientRect(); px=e.clientX-r.left-pw/2; px=Math.max(0,Math.min(CW-pw,px)); });
 C.addEventListener('click',()=>{ if(!running) start(); });
+C.addEventListener('touchstart',e=>{e.preventDefault();if(!running)start();},{passive:false});
+C.addEventListener('touchmove',e=>{ e.preventDefault(); const rect=C.getBoundingClientRect(); px=Math.max(0,Math.min(CW-pw,e.touches[0].clientX-rect.left-pw/2)); },{passive:false});
 function loop(){
   if(!running) return;
-  ctx.fillStyle='#0d1117'; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#0d1117'; ctx.fillRect(0,0,CW,CH);
   ctx.fillStyle='#58a6ff'; ctx.beginPath(); ctx.roundRect(px,py,pw,ph,5); ctx.fill();
-  const grad=ctx.createRadialGradient(bx,by,2,bx,by,8);
+  const grad=ctx.createRadialGradient(bx,by,2*scale,bx,by,8*scale);
   grad.addColorStop(0,'#fff'); grad.addColorStop(1,'#ffa657');
-  ctx.fillStyle=grad; ctx.beginPath(); ctx.arc(bx,by,8,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle=grad; ctx.beginPath(); ctx.arc(bx,by,8*scale,0,Math.PI*2); ctx.fill();
   bricks.forEach(b=>{
     if(!b.alive) return;
     ctx.fillStyle=b.hp===1?b.color:b.hp===2?b.color+'cc':b.color+'88';
     ctx.beginPath(); ctx.roundRect(b.x,b.y,b.w,b.h,3); ctx.fill();
   });
   bx+=bdx; by+=bdy;
-  if(bx<8||bx>W-8) bdx=-bdx;
-  if(by<8) bdy=-bdy;
-  if(by>H){ lives--; document.getElementById('lv').textContent=lives; if(lives<=0){ running=false; return; } reset(); }
-  if(by>py-8&&by<py+ph&&bx>px-8&&bx<px+pw+8){ bdy=-Math.abs(bdy); const rel=(bx-(px+pw/2))/(pw/2); bdx=rel*5; }
+  if(bx<8*scale||bx>CW-8*scale) bdx=-bdx;
+  if(by<8*scale) bdy=-bdy;
+  if(by>CH){ lives--; document.getElementById('lv').textContent=lives; if(lives<=0){ running=false; return; } reset(); }
+  if(by>py-8*scale&&by<py+ph&&bx>px-8*scale&&bx<px+pw+8*scale){ bdy=-Math.abs(bdy); const rel=(bx-(px+pw/2))/(pw/2); bdx=rel*5*scale; }
   bricks.forEach(b=>{
     if(!b.alive) return;
-    if(bx>b.x-8&&bx<b.x+b.w+8&&by>b.y-8&&by<b.y+b.h+8){
+    if(bx>b.x-8*scale&&bx<b.x+b.w+8*scale&&by>b.y-8*scale&&by<b.y+b.h+8*scale){
       b.hp--; if(b.hp<=0){ b.alive=false; score+=10+level*5; document.getElementById('sc').textContent=score; }
       if(bx<b.x||bx>b.x+b.w) bdx=-bdx; else bdy=-bdy;
     }
@@ -183,8 +214,8 @@ function loop(){
   if(bricks.every(b=>!b.alive)){ level++; document.getElementById('lv2').textContent=level; reset(); }
   requestAnimationFrame(loop);
 }
-initBricks(); ctx.fillStyle='#0d1117'; ctx.fillRect(0,0,W,H);
-ctx.fillStyle='#58a6ff'; ctx.font='bold 22px Arial'; ctx.textAlign='center'; ctx.fillText('点击开始游戏',W/2,H/2); ctx.textAlign='left';
+initBricks(); ctx.fillStyle='#0d1117'; ctx.fillRect(0,0,CW,CH);
+ctx.fillStyle='#58a6ff'; ctx.font='bold '+Math.round(22*scale)+'px Arial'; ctx.textAlign='center'; ctx.fillText('点击开始游戏',CW/2,CH/2); ctx.textAlign='left';
 </script>
 </body>
 </html>`;
@@ -193,26 +224,27 @@ const MEMORY_HTML = `<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no,viewport-fit=cover">
 <title>记忆翻牌</title>
 <style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: Arial, sans-serif; color: #fff; }
-h1 { font-size: 1.8rem; margin-bottom: 10px; color: #e94560; }
-#controls { display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; justify-content: center; }
-.diff-btn { padding: 6px 16px; border: 2px solid #e94560; background: transparent; color: #fff; border-radius: 20px; cursor: pointer; font-size: 0.85rem; }
-.diff-btn.active, .diff-btn:hover { background: #e94560; }
-#info { display: flex; gap: 30px; margin-bottom: 15px; font-size: 1rem; }
-.iv { font-size: 1.5rem; font-weight: bold; color: #ffd700; }
-#board { display: grid; gap: 8px; }
-.card { width: 70px; height: 70px; border-radius: 10px; cursor: pointer; perspective: 600px; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; -webkit-tap-highlight-color: transparent; user-select: none; -webkit-user-select: none; }
+body { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); font-family: Arial, sans-serif; color: #fff; }
+h1 { font-size: clamp(1.2rem, 5vw, 1.8rem); margin-bottom: 8px; color: #e94560; }
+#controls { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; justify-content: center; }
+.diff-btn { padding: 8px 14px; min-height: 40px; border: 2px solid #e94560; background: transparent; color: #fff; border-radius: 20px; cursor: pointer; font-size: clamp(0.75rem, 3vw, 0.85rem); }
+.diff-btn.active, .diff-btn:active { background: #e94560; }
+#info { display: flex; gap: clamp(14px, 4vw, 30px); margin-bottom: 12px; font-size: clamp(0.85rem, 3vw, 1rem); }
+.iv { font-size: clamp(1.1rem, 4.5vw, 1.5rem); font-weight: bold; color: #ffd700; }
+#board { display: grid; gap: 6px; }
+.card { border-radius: 10px; cursor: pointer; perspective: 600px; }
 .card-inner { width: 100%; height: 100%; position: relative; transform-style: preserve-3d; transition: transform 0.4s; }
 .card.flipped .card-inner { transform: rotateY(180deg); }
-.card-front, .card-back { position: absolute; width: 100%; height: 100%; backface-visibility: hidden; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 2rem; }
+.card-front, .card-back { position: absolute; width: 100%; height: 100%; backface-visibility: hidden; border-radius: 10px; display: flex; align-items: center; justify-content: center; }
 .card-front { background: linear-gradient(135deg, #0f3460, #16213e); border: 2px solid #e94560; }
 .card-back { background: linear-gradient(135deg, #1a1a2e, #0f3460); border: 2px solid #ffd700; transform: rotateY(180deg); }
 .card.matched .card-back { background: linear-gradient(135deg, #1a6b3c, #0f3460); border-color: #4caf50; }
-#result { margin-top: 15px; font-size: 1.1rem; color: #4caf50; font-weight: bold; }
+#result { margin-top: 12px; font-size: clamp(0.9rem, 3.5vw, 1.1rem); color: #4caf50; font-weight: bold; }
 </style>
 </head>
 <body>
@@ -233,6 +265,7 @@ h1 { font-size: 1.8rem; margin-bottom: 10px; color: #e94560; }
 <script>
 const EMOJIS = ['🎮','🎯','🚀','⭐','🌈','🎸','🦋','🐉','🌺','💎','🎪','🏆','🎭','🦄','🌙'];
 let cols=3, rows=3, cards=[], flipped=[], moves=0, pairs=0, total=0, lock=false, timer=null, sec=0;
+const cardSize = Math.floor((Math.min(window.innerWidth - 40, 360)) / 4) - 6;
 function setDiff(c, r, name) {
   cols=c; rows=r;
   document.querySelectorAll('.diff-btn').forEach(b=>b.classList.toggle('active',b.textContent.startsWith(name)));
@@ -251,12 +284,13 @@ function init() {
 function shuffle(arr) { for(let i=arr.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [arr[i],arr[j]]=[arr[j],arr[i]]; } return arr; }
 function render() {
   const board = document.getElementById('board');
-  board.style.gridTemplateColumns = \`repeat(\${cols}, 70px)\`;
+  board.style.gridTemplateColumns = \`repeat(\${cols}, \${cardSize}px)\`;
   board.innerHTML = '';
   cards.forEach((emoji,i)=>{
     const card = document.createElement('div');
     card.className='card';
-    card.innerHTML=\`<div class="card-inner"><div class="card-front">❓</div><div class="card-back">\${emoji}</div></div>\`;
+    card.style.width=cardSize+'px'; card.style.height=cardSize+'px';
+    card.innerHTML=\`<div class="card-inner"><div class="card-front" style="font-size:\${Math.round(cardSize*0.45)}px">❓</div><div class="card-back" style="font-size:\${Math.round(cardSize*0.45)}px">\${emoji}</div></div>\`;
     card.addEventListener('click',()=>flip(card,i));
     board.appendChild(card);
   });
@@ -286,22 +320,24 @@ const WHACK_MOLE_HTML = `<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no,viewport-fit=cover">
 <title>打地鼠</title>
 <style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { background: #2d5016; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: Arial, sans-serif; color: #fff; user-select: none; }
-h1 { font-size: 2rem; margin-bottom: 10px; text-shadow: 2px 2px 4px rgba(0,0,0,0.5); }
-#hud { display: flex; gap: 40px; margin-bottom: 20px; background: rgba(0,0,0,0.4); padding: 10px 30px; border-radius: 30px; }
-.hud-item { text-align: center; font-size: 0.85rem; color: #ccc; }
-.hud-val { font-size: 1.8rem; font-weight: bold; color: #ffd700; display: block; }
-#grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; padding: 20px; background: rgba(0,0,0,0.3); border-radius: 20px; }
-.hole { width: 110px; height: 90px; background: #1a3009; border-radius: 50% 50% 45% 45%; border: 4px solid #4a7c2f; position: relative; overflow: hidden; cursor: pointer; }
-.mole { position: absolute; bottom: -110%; left: 50%; transform: translateX(-50%); font-size: 3rem; transition: bottom 0.15s ease-out; line-height: 1; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; -webkit-tap-highlight-color: transparent; user-select: none; -webkit-user-select: none; }
+body { background: #2d5016; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); font-family: Arial, sans-serif; color: #fff; }
+h1 { font-size: clamp(1.2rem, 5vw, 2rem); margin-bottom: 8px; text-shadow: 2px 2px 4px rgba(0,0,0,0.5); }
+#hud { display: flex; gap: clamp(14px, 4vw, 40px); margin-bottom: 16px; background: rgba(0,0,0,0.4); padding: 10px 24px; border-radius: 30px; }
+.hud-item { text-align: center; font-size: clamp(0.7rem, 2.5vw, 0.85rem); color: #ccc; }
+.hud-val { font-size: clamp(1.3rem, 5vw, 1.8rem); font-weight: bold; color: #ffd700; display: block; }
+#grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: clamp(8px, 3vw, 15px); padding: clamp(10px, 3vw, 20px); background: rgba(0,0,0,0.3); border-radius: 20px; }
+.hole { width: min(110px, 28vw); height: min(90px, 22vw); background: #1a3009; border-radius: 50% 50% 45% 45%; border: 4px solid #4a7c2f; position: relative; overflow: hidden; cursor: pointer; }
+.mole { position: absolute; bottom: -110%; left: 50%; transform: translateX(-50%); font-size: clamp(1.8rem, 7vw, 3rem); transition: bottom 0.15s ease-out; line-height: 1; }
 .hole.up .mole { bottom: 5%; }
 .hole.bonk .mole { filter: brightness(0.5) sepia(1) hue-rotate(-20deg); }
-#start-btn { margin-top: 20px; padding: 12px 40px; background: #ffd700; color: #1a1a1a; border: none; border-radius: 30px; font-size: 1.1rem; font-weight: bold; cursor: pointer; }
-#result { margin-top: 15px; font-size: 1.2rem; color: #ffd700; font-weight: bold; }
+#start-btn { margin-top: 16px; padding: 14px 40px; min-height: 48px; background: #ffd700; color: #1a1a1a; border: none; border-radius: 30px; font-size: clamp(0.95rem, 3.5vw, 1.1rem); font-weight: bold; cursor: pointer; }
+#start-btn:active { transform: scale(0.97); }
+#result { margin-top: 12px; font-size: clamp(0.9rem, 3.5vw, 1.2rem); color: #ffd700; font-weight: bold; }
 </style>
 </head>
 <body>
@@ -369,21 +405,23 @@ const GAME_2048_HTML = `<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no,viewport-fit=cover">
 <title>2048</title>
 <style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { background: #faf8ef; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; font-family: 'Arial', sans-serif; }
-h1 { font-size: 3rem; font-weight: bold; color: #776e65; margin-bottom: 5px; }
-#top { display: flex; gap: 15px; margin-bottom: 15px; align-items: center; }
-.score-box { background: #bbada0; color: #fff; padding: 8px 20px; border-radius: 6px; text-align: center; min-width: 80px; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; -webkit-tap-highlight-color: transparent; user-select: none; -webkit-user-select: none; }
+body { background: #faf8ef; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); font-family: 'Arial', sans-serif; }
+h1 { font-size: clamp(2rem, 8vw, 3rem); font-weight: bold; color: #776e65; margin-bottom: 5px; }
+#top { display: flex; gap: 12px; margin-bottom: 12px; align-items: center; }
+.score-box { background: #bbada0; color: #fff; padding: 6px 16px; border-radius: 6px; text-align: center; min-width: 70px; }
 .score-box .label { font-size: 0.7rem; text-transform: uppercase; }
-.score-box .val { font-size: 1.4rem; font-weight: bold; }
-#new-btn { padding: 10px 20px; background: #8f7a66; color: #fff; border: none; border-radius: 6px; font-size: 0.9rem; font-weight: bold; cursor: pointer; }
-#board { background: #bbada0; border-radius: 8px; padding: 10px; display: grid; grid-template-columns: repeat(4,1fr); gap: 10px; }
-.cell { width: 90px; height: 90px; background: rgba(238,228,218,0.35); border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 1.8rem; font-weight: bold; }
-.t2{background:#eee4da;color:#776e65}.t4{background:#ede0c8;color:#776e65}.t8{background:#f2b179;color:#fff}.t16{background:#f59563;color:#fff}.t32{background:#f67c5f;color:#fff}.t64{background:#f65e3b;color:#fff}.t128{background:#edcf72;color:#fff;font-size:1.5rem}.t256{background:#edcc61;color:#fff;font-size:1.5rem}.t512{background:#edc850;color:#fff;font-size:1.5rem}.t1024{background:#edc53f;color:#fff;font-size:1.2rem}.t2048{background:#edc22e;color:#fff;font-size:1.2rem}
-#msg { margin-top: 15px; font-size: 1.1rem; color: #776e65; }
+.score-box .val { font-size: clamp(1.1rem, 4vw, 1.4rem); font-weight: bold; }
+#new-btn { padding: 12px 18px; min-height: 48px; background: #8f7a66; color: #fff; border: none; border-radius: 6px; font-size: clamp(0.8rem, 3vw, 0.9rem); font-weight: bold; cursor: pointer; }
+#new-btn:active { opacity: 0.85; }
+#board { background: #bbada0; border-radius: 8px; padding: 8px; display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; }
+.cell { background: rgba(238,228,218,0.35); border-radius: 4px; display: flex; align-items: center; justify-content: center; font-weight: bold; }
+.t2{background:#eee4da;color:#776e65}.t4{background:#ede0c8;color:#776e65}.t8{background:#f2b179;color:#fff}.t16{background:#f59563;color:#fff}.t32{background:#f67c5f;color:#fff}.t64{background:#f65e3b;color:#fff}.t128{background:#edcf72;color:#fff}.t256{background:#edcc61;color:#fff}.t512{background:#edc850;color:#fff}.t1024{background:#edc53f;color:#fff}.t2048{background:#edc22e;color:#fff}
+#msg { margin-top: 12px; font-size: clamp(0.85rem, 3.5vw, 1.1rem); color: #776e65; }
 </style>
 </head>
 <body>
@@ -397,6 +435,11 @@ h1 { font-size: 3rem; font-weight: bold; color: #776e65; margin-bottom: 5px; }
 <div id="msg">用方向键或滑动控制</div>
 <script>
 let grid, score = 0, best = 0, won = false;
+const cellSz2048 = Math.floor((Math.min(window.innerWidth - 40, 380)) / 4) - 8;
+const board2048 = document.getElementById('board');
+board2048.style.width = (cellSz2048 * 4 + 8 * 3 + 8 * 2) + 'px';
+const cellFontSz = Math.round(cellSz2048 * 0.38);
+document.querySelector('style').sheet.insertRule('.cell{width:'+cellSz2048+'px;height:'+cellSz2048+'px;font-size:'+cellFontSz+'px;}',0);
 function newGame(){ grid = Array(4).fill(null).map(()=>Array(4).fill(0)); score=0; won=false; addTile(); addTile(); render(); document.getElementById('msg').textContent='用方向键或滑动控制'; }
 function addTile(){
   const empty=[]; grid.forEach((r,i)=>r.forEach((v,j)=>{ if(!v) empty.push([i,j]); }));
@@ -442,11 +485,12 @@ const SPACE_SHOOTER_HTML = `<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no,viewport-fit=cover">
 <title>太空射击</title>
 <style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { background: #000; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; font-family: Arial, sans-serif; overflow: hidden; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; -webkit-tap-highlight-color: transparent; user-select: none; -webkit-user-select: none; }
+body { background: #000; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); font-family: Arial, sans-serif; overflow: hidden; }
 canvas { display: block; border: 1px solid #1a1a3e; }
 #ui { position: absolute; top: 0; left: 50%; transform: translateX(-50%); display: flex; gap: 30px; padding: 10px 20px; background: rgba(0,0,0,0.7); color: #fff; font-size: 0.9rem; }
 .ui-item { text-align: center; }
@@ -559,8 +603,9 @@ const STACK_TOWER_HTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no">
 <title>叠叠高塔</title>
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:#1a1a2e;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:Arial,sans-serif;color:#fff;overflow:hidden;user-select:none;-webkit-user-select:none}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;-webkit-tap-highlight-color:transparent}
+body{background:#1a1a2e;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);font-family:Arial,sans-serif;color:#fff;user-select:none;-webkit-user-select:none}
 h1{font-size:1.5rem;color:#f5a623;margin-bottom:8px}
 #sc-wrap{display:flex;gap:40px;margin-bottom:10px}
 .sv{font-size:1.8rem;font-weight:bold;color:#16c79a}
@@ -646,9 +691,10 @@ const FRUIT_NINJA_HTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no">
 <title>水果忍者</title>
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:#0d1b2a;height:100vh;overflow:hidden;font-family:Arial,sans-serif;user-select:none;-webkit-user-select:none}
-#hud{position:fixed;top:0;left:0;right:0;display:flex;justify-content:space-between;padding:12px 20px;background:rgba(0,0,0,0.6);color:#fff;font-size:1rem;z-index:10}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;-webkit-tap-highlight-color:transparent}
+body{background:#0d1b2a;height:100vh;font-family:Arial,sans-serif;user-select:none;-webkit-user-select:none}
+#hud{position:fixed;top:0;left:0;right:0;display:flex;justify-content:space-between;padding:calc(12px + env(safe-area-inset-top)) 20px 12px;background:rgba(0,0,0,0.6);color:#fff;font-size:1rem;z-index:10}
 .hv{font-size:1.6rem;font-weight:bold;color:#ffd700;display:block}
 #overlay{position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;z-index:20}
 #overlay h2{font-size:2rem;color:#ffd700;margin-bottom:12px}
@@ -731,9 +777,10 @@ const BUBBLE_POP_HTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no">
 <title>泡泡消消</title>
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:linear-gradient(180deg,#0d1b3e,#1a0533);height:100vh;overflow:hidden;font-family:Arial,sans-serif;user-select:none;-webkit-user-select:none}
-#hud{position:fixed;top:0;left:0;right:0;display:flex;justify-content:space-around;padding:12px;background:rgba(0,0,0,0.5);color:#fff;z-index:10}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;-webkit-tap-highlight-color:transparent}
+body{background:linear-gradient(180deg,#0d1b3e,#1a0533);height:100vh;font-family:Arial,sans-serif;user-select:none;-webkit-user-select:none}
+#hud{position:fixed;top:0;left:0;right:0;display:flex;justify-content:space-around;padding:calc(12px + env(safe-area-inset-top)) 12px 12px;background:rgba(0,0,0,0.5);color:#fff;z-index:10}
 .hl{font-size:0.75rem;color:#aaa;display:block;text-align:center}
 .hv{font-size:1.5rem;font-weight:bold;color:#fff;display:block;text-align:center}
 #overlay{position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;z-index:20}
@@ -819,17 +866,18 @@ const STAR_BLAST_HTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no">
 <title>消消星</title>
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:#1a0533;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;font-family:Arial,sans-serif;color:#fff;user-select:none;-webkit-user-select:none;padding-top:10px}
-h1{font-size:1.4rem;color:#f59e0b;margin-bottom:6px}
-#hud{display:flex;gap:20px;margin-bottom:10px;background:rgba(255,255,255,0.08);padding:8px 20px;border-radius:20px}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;-webkit-tap-highlight-color:transparent}
+body{background:#1a0533;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);font-family:Arial,sans-serif;color:#fff;user-select:none;-webkit-user-select:none}
+h1{font-size:clamp(1.1rem,4.5vw,1.4rem);color:#f59e0b;margin-bottom:6px}
+#hud{display:flex;gap:clamp(12px,4vw,20px);margin-bottom:8px;background:rgba(255,255,255,0.08);padding:8px 16px;border-radius:20px}
 .hl{font-size:0.7rem;color:#aaa;display:block;text-align:center}
-.hv{font-size:1.4rem;font-weight:bold;color:#ffd700;display:block;text-align:center}
-#board{display:grid;gap:3px;margin-bottom:8px}
-.cell{width:46px;height:46px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.4rem;cursor:pointer;transition:transform 0.12s,opacity 0.25s;-webkit-tap-highlight-color:transparent;border:2px solid transparent}
+.hv{font-size:clamp(1.1rem,4.5vw,1.4rem);font-weight:bold;color:#ffd700;display:block;text-align:center}
+#board{display:grid;gap:3px;margin-bottom:6px}
+.cell{border-radius:10px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:transform 0.12s,opacity 0.25s;-webkit-tap-highlight-color:transparent;border:2px solid transparent}
 .cell.removing{transform:scale(0);opacity:0}
-#msg{font-size:0.85rem;color:#aaa;min-height:20px;text-align:center;margin-bottom:6px}
-#btn{padding:12px 36px;background:#f59e0b;color:#000;border:none;border-radius:25px;font-size:1rem;font-weight:bold;cursor:pointer;display:none;margin-top:8px}
+#msg{font-size:clamp(0.75rem,3vw,0.85rem);color:#aaa;min-height:20px;text-align:center;margin-bottom:6px}
+#btn{padding:12px 36px;min-height:48px;background:#f59e0b;color:#000;border:none;border-radius:25px;font-size:clamp(0.9rem,3.5vw,1rem);font-weight:bold;cursor:pointer;display:none;margin-top:8px}
 </style>
 </head>
 <body>
@@ -847,6 +895,8 @@ var COLS=6,ROWS=7;
 var COLORS=['#ef4444','#f97316','#eab308','#22c55e','#3b82f6','#a855f7'];
 var EMOJIS=['🔴','🟠','🟡','🟢','🔵','🟣'];
 var grid=[],score=0,best=0,timeLeft=60,running=false,animating=false,gameInt;
+var cs=Math.floor((Math.min(window.innerWidth-20,300))/COLS)-3;
+document.querySelector('style').sheet.insertRule('.cell{width:'+cs+'px;height:'+cs+'px;font-size:'+Math.round(cs*0.55)+'px;}',0);
 function init(){
   score=0;timeLeft=60;running=true;animating=false;
   document.getElementById('sc').textContent=0;document.getElementById('tm').textContent=60;
@@ -858,7 +908,7 @@ function init(){
   render();
 }
 function render(){
-  var board=document.getElementById('board');board.style.gridTemplateColumns='repeat('+COLS+', 46px)';board.innerHTML='';
+  var board=document.getElementById('board');board.style.gridTemplateColumns='repeat('+COLS+', '+cs+'px)';board.innerHTML='';
   for(var r=0;r<ROWS;r++){for(var c=0;c<COLS;c++){
     var cell=document.createElement('div'),ci=grid[r][c];cell.className='cell';
     if(ci>=0){cell.style.background=COLORS[ci]+'33';cell.style.borderColor=COLORS[ci];cell.textContent=EMOJIS[ci];(function(rr,cc){cell.addEventListener('touchstart',function(e){e.preventDefault();tap(rr,cc);},{passive:false});cell.addEventListener('click',function(){tap(rr,cc);});})(r,c);}
@@ -899,9 +949,10 @@ const RHYTHM_TAP_HTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no">
 <title>节奏达人</title>
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:#0a0a1a;height:100vh;overflow:hidden;font-family:Arial,sans-serif;user-select:none;-webkit-user-select:none}
-#hud{position:fixed;top:0;left:0;right:0;display:flex;justify-content:space-around;padding:12px;background:rgba(0,0,0,0.6);color:#fff;z-index:10}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;-webkit-tap-highlight-color:transparent}
+body{background:#0a0a1a;height:100vh;font-family:Arial,sans-serif;user-select:none;-webkit-user-select:none}
+#hud{position:fixed;top:0;left:0;right:0;display:flex;justify-content:space-around;padding:calc(12px + env(safe-area-inset-top)) 12px 12px;background:rgba(0,0,0,0.6);color:#fff;z-index:10}
 .hl{font-size:0.75rem;color:#888;display:block;text-align:center}
 .hv{font-size:1.5rem;font-weight:bold;display:block;text-align:center}
 #overlay{position:fixed;inset:0;background:rgba(0,0,0,0.88);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;z-index:20}
@@ -986,9 +1037,10 @@ const CATCH_FRUITS_HTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no">
 <title>接水果</title>
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:#1a4a0a;height:100vh;overflow:hidden;font-family:Arial,sans-serif;user-select:none;-webkit-user-select:none}
-#hud{position:fixed;top:0;left:0;right:0;display:flex;justify-content:space-around;padding:12px;background:rgba(0,0,0,0.55);color:#fff;z-index:10}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;-webkit-tap-highlight-color:transparent}
+body{background:#1a4a0a;height:100vh;font-family:Arial,sans-serif;user-select:none;-webkit-user-select:none}
+#hud{position:fixed;top:0;left:0;right:0;display:flex;justify-content:space-around;padding:calc(12px + env(safe-area-inset-top)) 12px 12px;background:rgba(0,0,0,0.55);color:#fff;z-index:10}
 .hl{font-size:0.75rem;color:#aaa;display:block;text-align:center}
 .hv{font-size:1.5rem;font-weight:bold;display:block;text-align:center;color:#ffd700}
 #overlay{position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;z-index:20}

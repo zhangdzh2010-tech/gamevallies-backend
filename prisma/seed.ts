@@ -14,44 +14,60 @@ const snakeGameHtml = `<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no,viewport-fit=cover">
 <title>贪吃蛇</title>
 <style>
-  body { margin:0; background:#1a1a2e; display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; font-family:Arial,sans-serif; color:#eee; }
-  h1 { color:#00d4ff; text-shadow:0 0 10px #00d4ff; margin-bottom:10px; font-size:2em; }
-  #score { font-size:1.2em; margin-bottom:10px; color:#ffd700; }
-  canvas { border:3px solid #00d4ff; box-shadow:0 0 20px #00d4ff55; background:#0d0d1a; }
-  #msg { margin-top:12px; font-size:1em; color:#aaa; }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{height:100%;overflow:hidden;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none;}
+  body{background:#1a1a2e;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);font-family:Arial,sans-serif;color:#eee;}
+  h1{color:#00d4ff;text-shadow:0 0 10px #00d4ff;margin-bottom:8px;font-size:clamp(1.2rem,5vw,2rem);}
+  #score{font-size:clamp(0.9rem,3.5vw,1.2em);margin-bottom:8px;color:#ffd700;}
+  canvas{border:3px solid #00d4ff;box-shadow:0 0 20px #00d4ff55;background:#0d0d1a;}
+  #msg{margin-top:8px;font-size:clamp(0.8rem,3vw,1em);color:#aaa;text-align:center;}
+  #dpad{display:flex;flex-direction:column;align-items:center;margin-top:10px;gap:2px;}
+  #dpad-row{display:flex;gap:2px;}
+  .dpad-btn{width:52px;height:52px;background:rgba(0,212,255,0.2);border:2px solid #00d4ff;border-radius:8px;color:#00d4ff;font-size:1.4rem;display:flex;align-items:center;justify-content:center;cursor:pointer;-webkit-tap-highlight-color:transparent;user-select:none;}
+  .dpad-btn:active{background:rgba(0,212,255,0.5);}
 </style>
 </head>
 <body>
 <h1>🐍 贪吃蛇</h1>
 <div id="score">得分: <span id="s">0</span>　最高: <span id="hi">0</span></div>
-<canvas id="c" width="400" height="400"></canvas>
-<div id="msg">WASD 或方向键控制 · 空格暂停</div>
+<canvas id="c"></canvas>
+<div id="msg">WASD 或方向键 · 空格暂停</div>
+<div id="dpad">
+  <div><button class="dpad-btn" id="btn-up">↑</button></div>
+  <div id="dpad-row"><button class="dpad-btn" id="btn-left">←</button><button class="dpad-btn" id="btn-down">↓</button><button class="dpad-btn" id="btn-right">→</button></div>
+</div>
 <script>
-const c=document.getElementById('c'),ctx=c.getContext('2d'),sz=20,cols=20,rows=20;
+const c=document.getElementById('c'),ctx=c.getContext('2d');
+const GRID=20;
+const SZ=Math.min(window.innerWidth-16,window.innerHeight-220,360);
+c.width=SZ;c.height=SZ;
+const cellSz=SZ/GRID;
+const cols=GRID,rows=GRID;
 let snake=[{x:10,y:10}],dir={x:1,y:0},food={},score=0,hi=0,running=false,paused=false,loop;
-function rnd(){return Math.floor(Math.random()*20);}
+function rnd(){return Math.floor(Math.random()*GRID);}
 function placeFood(){do{food={x:rnd(),y:rnd()};}while(snake.some(s=>s.x===food.x&&s.y===food.y));}
 function draw(){
-  ctx.clearRect(0,0,400,400);
+  ctx.clearRect(0,0,SZ,SZ);
   ctx.fillStyle='#ff4757';ctx.shadowColor='#ff4757';ctx.shadowBlur=15;
-  ctx.fillRect(food.x*sz+2,food.y*sz+2,sz-4,sz-4);ctx.shadowBlur=0;
+  ctx.fillRect(food.x*cellSz+2,food.y*cellSz+2,cellSz-4,cellSz-4);ctx.shadowBlur=0;
   snake.forEach((s,i)=>{
-    const g=ctx.createLinearGradient(s.x*sz,s.y*sz,(s.x+1)*sz,(s.y+1)*sz);
+    const g=ctx.createLinearGradient(s.x*cellSz,s.y*cellSz,(s.x+1)*cellSz,(s.y+1)*cellSz);
     g.addColorStop(0,i===0?'#00d4ff':'#00ff88');g.addColorStop(1,i===0?'#0088cc':'#008844');
     ctx.fillStyle=g;ctx.shadowColor=i===0?'#00d4ff':'#00ff88';ctx.shadowBlur=i===0?12:4;
-    ctx.beginPath();ctx.roundRect(s.x*sz+1,s.y*sz+1,sz-2,sz-2,4);ctx.fill();
+    ctx.beginPath();ctx.roundRect(s.x*cellSz+1,s.y*cellSz+1,cellSz-2,cellSz-2,4);ctx.fill();
   });ctx.shadowBlur=0;
   if(!running){
-    ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(0,0,400,400);
-    ctx.fillStyle='#00d4ff';ctx.font='bold 28px Arial';ctx.textAlign='center';
-    ctx.fillText(score?'游戏结束! 按空格重新开始':'按空格开始游戏',200,200);
-    if(score){ctx.font='18px Arial';ctx.fillStyle='#ffd700';ctx.fillText('得分: '+score,200,240);}
+    ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(0,0,SZ,SZ);
+    ctx.fillStyle='#00d4ff';ctx.font='bold '+Math.round(SZ*0.07)+'px Arial';ctx.textAlign='center';
+    ctx.fillText(score?'游戏结束! 按空格重开':'按空格开始',SZ/2,SZ/2);
+    if(score){ctx.font=Math.round(SZ*0.05)+'px Arial';ctx.fillStyle='#ffd700';ctx.fillText('得分: '+score,SZ/2,SZ/2+SZ*0.1);}
   }
   if(paused&&running){
-    ctx.fillStyle='rgba(0,0,0,0.5)';ctx.fillRect(0,0,400,400);
-    ctx.fillStyle='#ffd700';ctx.font='bold 32px Arial';ctx.textAlign='center';ctx.fillText('⏸ 暂停',200,200);
+    ctx.fillStyle='rgba(0,0,0,0.5)';ctx.fillRect(0,0,SZ,SZ);
+    ctx.fillStyle='#ffd700';ctx.font='bold '+Math.round(SZ*0.08)+'px Arial';ctx.textAlign='center';ctx.fillText('⏸ 暂停',SZ/2,SZ/2);
   }
 }
 function step(){
@@ -66,11 +82,24 @@ function step(){
   draw();
 }
 function start(){snake=[{x:10,y:10}];dir={x:1,y:0};score=0;document.getElementById('s').textContent=0;placeFood();running=true;paused=false;clearInterval(loop);loop=setInterval(step,150);}
+function setDir(d){if(d&&!(d.x===-dir.x&&d.y===-dir.y))dir=d;}
 document.addEventListener('keydown',e=>{
   const k={ArrowUp:{x:0,y:-1},ArrowDown:{x:0,y:1},ArrowLeft:{x:-1,y:0},ArrowRight:{x:1,y:0},w:{x:0,y:-1},s:{x:0,y:1},a:{x:-1,y:0},d:{x:1,y:0}};
   if(e.code==='Space'){e.preventDefault();if(!running)start();else paused=!paused;}
-  if(k[e.key]&&!(k[e.key].x===-dir.x&&k[e.key].y===-dir.y)){dir=k[e.key];e.preventDefault();}
+  if(k[e.key]){setDir(k[e.key]);e.preventDefault();}
 });
+document.getElementById('btn-up').addEventListener('touchstart',e=>{e.preventDefault();if(!running)start();else setDir({x:0,y:-1});},{passive:false});
+document.getElementById('btn-down').addEventListener('touchstart',e=>{e.preventDefault();if(!running)start();else setDir({x:0,y:1});},{passive:false});
+document.getElementById('btn-left').addEventListener('touchstart',e=>{e.preventDefault();if(!running)start();else setDir({x:-1,y:0});},{passive:false});
+document.getElementById('btn-right').addEventListener('touchstart',e=>{e.preventDefault();if(!running)start();else setDir({x:1,y:0});},{passive:false});
+let touchStartX=0,touchStartY=0;
+c.addEventListener('touchstart',e=>{e.preventDefault();const t=e.touches[0];touchStartX=t.clientX;touchStartY=t.clientY;if(!running)start();},{passive:false});
+c.addEventListener('touchend',e=>{
+  e.preventDefault();
+  const dx=e.changedTouches[0].clientX-touchStartX,dy=e.changedTouches[0].clientY-touchStartY;
+  if(Math.abs(dx)<10&&Math.abs(dy)<10){if(!running)start();else paused=!paused;return;}
+  if(Math.abs(dx)>Math.abs(dy)){setDir(dx>0?{x:1,y:0}:{x:-1,y:0});}else{setDir(dy>0?{x:0,y:1}:{x:0,y:-1});}
+},{passive:false});
 placeFood();draw();
 </script>
 </body>
@@ -80,38 +109,45 @@ const breakoutGameHtml = `<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no,viewport-fit=cover">
 <title>打砖块</title>
 <style>
-  body{margin:0;background:linear-gradient(135deg,#1a1a2e,#16213e,#0f3460);display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:Arial,sans-serif;color:#eee;}
-  h1{color:#e94560;text-shadow:0 0 15px #e94560;margin-bottom:8px;font-size:2em;}
-  #info{font-size:1.1em;margin-bottom:8px;color:#ffd700;}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{height:100%;overflow:hidden;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none;}
+  body{background:linear-gradient(135deg,#1a1a2e,#16213e,#0f3460);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);font-family:Arial,sans-serif;color:#eee;}
+  h1{color:#e94560;text-shadow:0 0 15px #e94560;margin-bottom:6px;font-size:clamp(1.2rem,5vw,2rem);}
+  #info{font-size:clamp(0.85rem,3vw,1.1em);margin-bottom:6px;color:#ffd700;}
   canvas{border:3px solid #e94560;box-shadow:0 0 20px #e9456055;}
 </style>
 </head>
 <body>
 <h1>🧱 打砖块</h1>
 <div id="info">分数:<span id="sc">0</span>　生命:<span id="lv">3</span>　关卡:<span id="lev">1</span></div>
-<canvas id="c" width="480" height="500"></canvas>
+<canvas id="c"></canvas>
 <script>
 const c=document.getElementById('c'),ctx=c.getContext('2d');
+const CW=Math.min(window.innerWidth-16,420);
+const CH=Math.round(CW*500/480);
+c.width=CW;c.height=CH;
+const scale=CW/480;
 const colors=['#e94560','#f5a623','#7ed321','#00d4ff','#b8e986','#ff6b6b','#4ecdc4'];
 let bricks=[],ball={},paddle={},score=0,lives=3,level=1,started=false,lost=false;
 function initBricks(){
   bricks=[];const rows=4+level,cols=10;
   for(let r=0;r<rows;r++)for(let cc=0;cc<cols;cc++)
-    bricks.push({x:4+cc*47,y:40+r*28,w:43,h:22,color:colors[(r+cc)%colors.length],hp:Math.ceil((r+1)/2)});
+    bricks.push({x:(4+cc*47)*scale,y:(40+r*28)*scale,w:43*scale,h:22*scale,color:colors[(r+cc)%colors.length],hp:Math.ceil((r+1)/2)});
 }
-function initBall(){ball={x:240,y:400,vx:(Math.random()>.5?1:-1)*3,vy:-4.5,r:8};}
-function initPaddle(){paddle={x:190,y:460,w:100,h=14};}
+function initBall(){ball={x:CW/2,y:CH*0.8,vx:(Math.random()>.5?1:-1)*3*scale,vy:-4.5*scale,r:8*scale};}
+function initPaddle(){paddle={x:CW/2-50*scale,y:CH-40*scale,w:100*scale,h:14*scale};}
 function draw(){
-  ctx.clearRect(0,0,480,500);
+  ctx.clearRect(0,0,CW,CH);
   bricks.forEach(b=>{if(b.hp<=0)return;
     const g=ctx.createLinearGradient(b.x,b.y,b.x+b.w,b.y+b.h);
     g.addColorStop(0,b.color);g.addColorStop(1,'#000');
     ctx.fillStyle=g;ctx.shadowColor=b.color;ctx.shadowBlur=8;
     ctx.beginPath();ctx.roundRect(b.x,b.y,b.w,b.h,4);ctx.fill();
-    ctx.shadowBlur=0;ctx.fillStyle='rgba(255,255,255,0.5)';ctx.font='bold 11px Arial';ctx.textAlign='center';
-    if(b.hp>1)ctx.fillText('★'.repeat(b.hp),b.x+b.w/2,b.y+b.h/2+4);
+    ctx.shadowBlur=0;ctx.fillStyle='rgba(255,255,255,0.5)';ctx.font='bold '+Math.round(11*scale)+'px Arial';ctx.textAlign='center';
+    if(b.hp>1)ctx.fillText('★'.repeat(b.hp),b.x+b.w/2,b.y+b.h/2+4*scale);
   });
   const pg=ctx.createLinearGradient(paddle.x,paddle.y,paddle.x+paddle.w,paddle.y);
   pg.addColorStop(0,'#e94560');pg.addColorStop(0.5,'#ff6b6b');pg.addColorStop(1,'#e94560');
@@ -122,20 +158,20 @@ function draw(){
   ctx.fillStyle=bg;ctx.shadowColor='#00d4ff';ctx.shadowBlur=15;
   ctx.beginPath();ctx.arc(ball.x,ball.y,ball.r,0,Math.PI*2);ctx.fill();ctx.shadowBlur=0;
   if(!started){
-    ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(0,0,480,500);
-    ctx.fillStyle='#00d4ff';ctx.font='bold 26px Arial';ctx.textAlign='center';
-    ctx.fillText(lost?'游戏结束！按空格重试':'鼠标移动挡板 · 空格开始',240,250);
-    if(lost){ctx.font='20px Arial';ctx.fillStyle='#ffd700';ctx.fillText('最终分数: '+score,240,290);}
+    ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(0,0,CW,CH);
+    ctx.fillStyle='#00d4ff';ctx.font='bold '+Math.round(22*scale)+'px Arial';ctx.textAlign='center';
+    ctx.fillText(lost?'游戏结束！按空格重试':'触摸/鼠标控制 · 空格开始',CW/2,CH/2);
+    if(lost){ctx.font=Math.round(18*scale)+'px Arial';ctx.fillStyle='#ffd700';ctx.fillText('最终分数: '+score,CW/2,CH/2+30*scale);}
   }
 }
 function update(){
   if(!started)return;
   ball.x+=ball.vx;ball.y+=ball.vy;
-  if(ball.x<=ball.r||ball.x>=480-ball.r)ball.vx*=-1;
+  if(ball.x<=ball.r||ball.x>=CW-ball.r)ball.vx*=-1;
   if(ball.y<=ball.r)ball.vy*=-1;
-  if(ball.y>=500+ball.r){lives--;document.getElementById('lv').textContent=lives;if(lives<=0){started=false;lost=true;}else initBall();}
+  if(ball.y>=CH+ball.r){lives--;document.getElementById('lv').textContent=lives;if(lives<=0){started=false;lost=true;}else initBall();}
   if(ball.y+ball.r>=paddle.y&&ball.y-ball.r<=paddle.y+paddle.h&&ball.x>=paddle.x&&ball.x<=paddle.x+paddle.w){
-    ball.vy=-Math.abs(ball.vy);ball.vx=((ball.x-(paddle.x+paddle.w/2))/(paddle.w/2))*5;
+    ball.vy=-Math.abs(ball.vy);ball.vx=((ball.x-(paddle.x+paddle.w/2))/(paddle.w/2))*5*scale;
   }
   bricks.forEach(b=>{if(b.hp<=0)return;
     if(ball.x+ball.r>b.x&&ball.x-ball.r<b.x+b.w&&ball.y+ball.r>b.y&&ball.y-ball.r<b.y+b.h){
@@ -145,8 +181,10 @@ function update(){
   });
   if(bricks.every(b=>b.hp<=0)){level++;document.getElementById('lev').textContent=level;initBricks();initBall();}
 }
-c.addEventListener('mousemove',e=>{const r=c.getBoundingClientRect();paddle.x=Math.max(0,Math.min(480-paddle.w,e.clientX-r.left-paddle.w/2));});
+c.addEventListener('mousemove',e=>{const r=c.getBoundingClientRect();paddle.x=Math.max(0,Math.min(CW-paddle.w,e.clientX-r.left-paddle.w/2));});
+c.addEventListener('touchmove',e=>{e.preventDefault();const rect=c.getBoundingClientRect();paddle.x=Math.max(0,Math.min(CW-paddle.w,e.touches[0].clientX-rect.left-paddle.w/2));},{passive:false});
 document.addEventListener('keydown',e=>{if(e.code==='Space'){e.preventDefault();if(!started){lost=false;lives=3;score=0;level=1;document.getElementById('sc').textContent=0;document.getElementById('lv').textContent=3;document.getElementById('lev').textContent=1;initBricks();initBall();initPaddle();started=true;}}});
+c.addEventListener('touchstart',e=>{e.preventDefault();if(!started){lost=false;lives=3;score=0;level=1;document.getElementById('sc').textContent=0;document.getElementById('lv').textContent=3;document.getElementById('lev').textContent=1;initBricks();initBall();initPaddle();started=true;}},{passive:false});
 initBricks();initBall();initPaddle();
 setInterval(()=>{update();draw();},16);
 </script>
@@ -157,21 +195,23 @@ const whackMoleHtml = `<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no,viewport-fit=cover">
 <title>打地鼠</title>
 <style>
-  *{box-sizing:border-box;}
-  body{margin:0;background:linear-gradient(180deg,#87CEEB 0%,#87CEEB 60%,#228B22 60%,#228B22 100%);display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;font-family:'Comic Sans MS',cursive;user-select:none;}
-  h1{color:#fff;text-shadow:2px 2px 4px #333;font-size:2.2em;margin:0 0 5px;}
-  #info{display:flex;gap:30px;font-size:1.3em;font-weight:bold;color:#fff;text-shadow:1px 1px 3px #333;margin-bottom:10px;}
-  .info-box{background:rgba(0,0,0,0.3);padding:6px 18px;border-radius:20px;}
-  #grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;padding:20px;background:rgba(0,0,0,0.15);border-radius:20px;}
-  .hole{width:120px;height:100px;background:radial-gradient(ellipse,#5C3317 0%,#3B1F0A 70%);border-radius:50%;display:flex;align-items:flex-end;justify-content:center;overflow:hidden;cursor:pointer;position:relative;box-shadow:inset 0 -8px 20px rgba(0,0,0,0.5);}
-  .mole{font-size:56px;transition:transform 0.15s;transform:translateY(100%);line-height:1;}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{height:100%;overflow:hidden;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none;}
+  body{background:linear-gradient(180deg,#87CEEB 0%,#87CEEB 60%,#228B22 60%,#228B22 100%);display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);font-family:'Comic Sans MS',cursive;}
+  h1{color:#fff;text-shadow:2px 2px 4px #333;font-size:clamp(1.3rem,5vw,2.2em);margin:0 0 5px;}
+  #info{display:flex;gap:clamp(10px,4vw,30px);font-size:clamp(1rem,3.5vw,1.3em);font-weight:bold;color:#fff;text-shadow:1px 1px 3px #333;margin-bottom:8px;}
+  .info-box{background:rgba(0,0,0,0.3);padding:6px 14px;border-radius:20px;}
+  #grid{display:grid;grid-template-columns:repeat(3,1fr);gap:clamp(8px,3vw,16px);padding:clamp(10px,3vw,20px);background:rgba(0,0,0,0.15);border-radius:20px;}
+  .hole{width:min(110px,28vw);height:min(90px,22vw);background:radial-gradient(ellipse,#5C3317 0%,#3B1F0A 70%);border-radius:50%;display:flex;align-items:flex-end;justify-content:center;overflow:hidden;cursor:pointer;position:relative;box-shadow:inset 0 -8px 20px rgba(0,0,0,0.5);}
+  .mole{font-size:clamp(30px,9vw,56px);transition:transform 0.15s;transform:translateY(100%);line-height:1;}
   .mole.up{transform:translateY(5%);}
   .mole.hit{transform:translateY(5%) scale(1.3);filter:brightness(2);}
-  #btn{margin-top:15px;padding:12px 40px;font-size:1.2em;background:#ff6b6b;color:#fff;border:none;border-radius:30px;cursor:pointer;box-shadow:0 4px 15px rgba(255,107,107,0.5);font-weight:bold;transition:transform .1s;}
-  #btn:hover{transform:scale(1.05);}
-  #timer-bar{width:300px;height:12px;background:#ccc;border-radius:6px;margin-top:8px;overflow:hidden;}
+  #btn{margin-top:12px;padding:14px 40px;font-size:clamp(1rem,4vw,1.2em);min-height:48px;background:#ff6b6b;color:#fff;border:none;border-radius:30px;cursor:pointer;box-shadow:0 4px 15px rgba(255,107,107,0.5);font-weight:bold;transition:transform .1s;}
+  #btn:active{transform:scale(0.97);}
+  #timer-bar{width:min(300px,85vw);height:12px;background:#ccc;border-radius:6px;margin-top:8px;overflow:hidden;}
   #timer-fill{height:100%;background:linear-gradient(90deg,#00d4ff,#ff6b6b);transition:width 0.1s;width:100%;}
 </style>
 </head>
@@ -249,25 +289,28 @@ const puzzle2048Html = `<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no,viewport-fit=cover">
 <title>2048</title>
 <style>
-  body{margin:0;background:#1a1a2e;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;font-family:'Arial Rounded MT Bold',Arial,sans-serif;color:#eee;touch-action:none;}
-  h1{color:#ffd700;text-shadow:0 0 10px #ffd700;margin:0 0 10px;font-size:2.5em;}
-  #scoreboard{display:flex;gap:20px;margin-bottom:12px;}
-  .sb{background:#333;padding:8px 20px;border-radius:10px;text-align:center;}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{height:100%;overflow:hidden;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none;}
+  body{background:#1a1a2e;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);font-family:'Arial Rounded MT Bold',Arial,sans-serif;color:#eee;touch-action:none;}
+  h1{color:#ffd700;text-shadow:0 0 10px #ffd700;margin:0 0 8px;font-size:clamp(1.5rem,7vw,2.5em);}
+  #scoreboard{display:flex;gap:16px;margin-bottom:10px;}
+  .sb{background:#333;padding:6px 16px;border-radius:10px;text-align:center;}
   .sb-label{font-size:.75em;color:#aaa;text-transform:uppercase;}
   .sb-val{font-size:1.4em;font-weight:bold;color:#ffd700;}
-  #grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;background:#2d2d44;padding:12px;border-radius:14px;width:340px;}
-  .cell{width:76px;height:76px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:1.6em;font-weight:bold;transition:all .12s;background:#3a3a55;color:#888;}
+  #grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;background:#2d2d44;padding:10px;border-radius:14px;}
+  .cell{border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:bold;transition:all .12s;background:#3a3a55;color:#888;}
   .v2{background:#ede0c8;color:#776e65;}.v4{background:#ede0c8;color:#776e65;}
   .v8{background:#f2b179;color:#fff;}.v16{background:#f59563;color:#fff;}
   .v32{background:#f67c5f;color:#fff;}.v64{background:#f65e3b;color:#fff;}
-  .v128{background:#edcf72;color:#fff;font-size:1.3em;}.v256{background:#edcc61;color:#fff;font-size:1.3em;}
-  .v512{background:#edc850;color:#fff;font-size:1.3em;}.v1024{background:#edc53f;color:#fff;font-size:1.1em;}
-  .v2048{background:#edc22e;color:#fff;font-size:1.1em;box-shadow:0 0 30px #ffd700;}
-  #hint{margin-top:12px;color:#888;font-size:.9em;}
-  #newgame{margin-top:10px;padding:10px 28px;background:#f65e3b;color:#fff;border:none;border-radius:8px;font-size:1em;cursor:pointer;font-weight:bold;transition:transform .1s;}
-  #newgame:hover{transform:scale(1.05);}
+  .v128{background:#edcf72;color:#fff;}.v256{background:#edcc61;color:#fff;}
+  .v512{background:#edc850;color:#fff;}.v1024{background:#edc53f;color:#fff;}
+  .v2048{background:#edc22e;color:#fff;box-shadow:0 0 30px #ffd700;}
+  #hint{margin-top:10px;color:#888;font-size:clamp(0.75rem,3vw,.9em);}
+  #newgame{margin-top:10px;padding:12px 28px;min-height:48px;background:#f65e3b;color:#fff;border:none;border-radius:8px;font-size:clamp(0.9rem,3.5vw,1em);cursor:pointer;font-weight:bold;transition:transform .1s;}
+  #newgame:active{transform:scale(0.97);}
 </style>
 </head>
 <body>
@@ -282,6 +325,9 @@ const puzzle2048Html = `<!DOCTYPE html>
 <script>
 let board,score,hi=0;
 const grid=document.getElementById('grid');
+const cellSize=Math.floor((Math.min(window.innerWidth-40,340))/4)-8;
+grid.style.width=(cellSize*4+8*3+20*2)+'px';
+document.querySelectorAll('style')[0].sheet.insertRule('.cell{width:'+cellSize+'px;height:'+cellSize+'px;font-size:'+Math.round(cellSize*0.35)+'px;}',0);
 function init(){
   board=Array.from({length:4},()=>Array(4).fill(0));score=0;
   document.getElementById('sc').textContent=0;addTile();addTile();render();
@@ -337,9 +383,12 @@ const flappyBirdHtml = `<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no,viewport-fit=cover">
 <title>飞翔小鸟</title>
 <style>
-  body{margin:0;overflow:hidden;font-family:Arial,sans-serif;}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{height:100%;overflow:hidden;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none;}
+  body{background:#87CEEB;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);}
   canvas{display:block;}
 </style>
 </head>
@@ -347,7 +396,7 @@ const flappyBirdHtml = `<!DOCTYPE html>
 <canvas id="c"></canvas>
 <script>
 const c=document.getElementById('c'),ctx=c.getContext('2d');
-c.width=window.innerWidth>480?480:window.innerWidth;c.height=640;
+c.width=window.innerWidth>480?480:window.innerWidth;c.height=Math.min(window.innerHeight,640);
 const W=c.width,H=c.height;
 let bird,pipes,score,hi=0,state='idle',frame=0;
 const GRAVITY=0.35,FLAP=-7,PIPE_GAP=160,PIPE_W=60,PIPE_SPEED=2.5;
@@ -456,24 +505,27 @@ const memoryCardHtml = `<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no,viewport-fit=cover">
 <title>记忆翻牌</title>
 <style>
-  body{margin:0;background:linear-gradient(135deg,#667eea,#764ba2);display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;font-family:Arial,sans-serif;color:#fff;}
-  h1{font-size:2em;margin:0 0 5px;text-shadow:0 2px 8px rgba(0,0,0,0.3);}
-  #info{display:flex;gap:25px;margin-bottom:15px;font-size:1.1em;}
-  .ib{background:rgba(255,255,255,0.2);padding:6px 20px;border-radius:20px;backdrop-filter:blur(5px);}
-  #grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;padding:20px;background:rgba(255,255,255,0.1);border-radius:20px;backdrop-filter:blur(5px);}
-  .card{width:90px;height:90px;cursor:pointer;perspective:600px;}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{height:100%;overflow:hidden;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none;}
+  body{background:linear-gradient(135deg,#667eea,#764ba2);display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);font-family:Arial,sans-serif;color:#fff;}
+  h1{font-size:clamp(1.2rem,5vw,2em);margin:0 0 5px;text-shadow:0 2px 8px rgba(0,0,0,0.3);}
+  #info{display:flex;gap:clamp(10px,4vw,25px);margin-bottom:12px;font-size:clamp(0.85rem,3.5vw,1.1em);}
+  .ib{background:rgba(255,255,255,0.2);padding:6px 16px;border-radius:20px;backdrop-filter:blur(5px);}
+  #grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;padding:16px;background:rgba(255,255,255,0.1);border-radius:20px;backdrop-filter:blur(5px);}
+  .card{cursor:pointer;perspective:600px;}
   .card-inner{width:100%;height:100%;transform-style:preserve-3d;transition:transform .4s;position:relative;}
   .card.flip .card-inner{transform:rotateY(180deg);}
-  .card-front,.card-back{position:absolute;width:100%;height:100%;backface-visibility:hidden;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:2.4em;box-shadow:0 4px 15px rgba(0,0,0,0.2);}
+  .card-front,.card-back{position:absolute;width:100%;height:100%;backface-visibility:hidden;border-radius:12px;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 15px rgba(0,0,0,0.2);}
   .card-front{background:linear-gradient(135deg,#a18cd1,#fbc2eb);}
   .card-back{background:linear-gradient(135deg,#fff9c4,#fff);transform:rotateY(180deg);}
   .card.matched .card-inner{animation:pulse .4s;}
   @keyframes pulse{0%{transform:rotateY(180deg) scale(1)}50%{transform:rotateY(180deg) scale(1.15)}100%{transform:rotateY(180deg) scale(1)}}
-  #result{margin-top:15px;font-size:1.2em;min-height:28px;text-shadow:0 1px 4px rgba(0,0,0,0.3);}
-  button{margin-top:10px;padding:10px 30px;font-size:1em;background:#ff6b6b;border:none;border-radius:20px;color:#fff;cursor:pointer;font-weight:bold;box-shadow:0 4px 15px rgba(255,107,107,0.4);transition:transform .1s;}
-  button:hover{transform:scale(1.05);}
+  #result{margin-top:12px;font-size:clamp(0.9rem,3.5vw,1.2em);min-height:24px;text-shadow:0 1px 4px rgba(0,0,0,0.3);}
+  button{margin-top:10px;padding:12px 30px;min-height:48px;font-size:clamp(0.9rem,3.5vw,1em);background:#ff6b6b;border:none;border-radius:20px;color:#fff;cursor:pointer;font-weight:bold;box-shadow:0 4px 15px rgba(255,107,107,0.4);transition:transform .1s;}
+  button:active{transform:scale(0.97);}
 </style>
 </head>
 <body>
@@ -490,6 +542,9 @@ const memoryCardHtml = `<!DOCTYPE html>
 const emojis='🐶🐱🦊🐸🐻🦁🐯🐼'.split('');
 let cards,flipped=[],matched=0,moves=0,lock=false,timer,seconds=0,started=false;
 const grid=document.getElementById('grid');
+const cs=Math.floor((Math.min(window.innerWidth-40,360))/4)-12;
+document.querySelectorAll('style')[0].sheet.insertRule('.card{width:'+cs+'px;height:'+cs+'px;}',0);
+document.querySelectorAll('style')[0].sheet.insertRule('.card-front,.card-back{font-size:'+Math.round(cs*0.5)+'px;}',1);
 function startGame(){
   clearInterval(timer);matched=0;moves=0;seconds=0;flipped=[];lock=false;started=false;
   document.getElementById('mv').textContent=0;document.getElementById('mt').textContent=0;document.getElementById('ti').textContent=0;document.getElementById('result').textContent='';
