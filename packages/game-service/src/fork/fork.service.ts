@@ -42,7 +42,7 @@ export class ForkService {
           authorId: userId,
           title: `${originalGame.title} (Fork)`,
           description: originalGame.description,
-          tags: originalGame.tags,
+          tags: originalGame.tags ?? [],
           gameType: originalGame.gameType,
           status: 'draft',
           forkedFrom: gameId,

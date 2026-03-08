@@ -5,7 +5,7 @@ This document provides a quick reference to all deployment-related files created
 ## 📋 File Structure
 
 ```
-playforge-backend/
+gamevallies-backend/
 ├── docs/
 │   └── DEPLOYMENT_SOP.md                    # Comprehensive deployment guide (Chinese)
 ├── infrastructure/
@@ -300,7 +300,7 @@ For detailed troubleshooting steps, see section 九 in `docs/DEPLOYMENT_SOP.md`:
 
 - **DevOps Team:** devops@playforge.com
 - **On-Call:** See PagerDuty schedule
-- **Slack:** #playforge-deployments
+- **Slack:** #gamevallies-deployments
 
 ## 📝 Version History
 

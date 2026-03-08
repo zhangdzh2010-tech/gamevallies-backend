@@ -10,7 +10,7 @@
 ### Local Development (2 minutes)
 
 ```bash
-cd /sessions/magical-gifted-pascal/mnt/willgame/playforge-backend/packages/ai-engine
+cd /sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend/packages/ai-engine
 
 # Install dependencies
 pip install -r requirements.txt
@@ -26,7 +26,7 @@ Docs at: `http://localhost:8000/docs`
 
 ## 📦 Project Summary
 
-**Location**: `/sessions/magical-gifted-pascal/mnt/willgame/playforge-backend/packages/ai-engine`
+**Location**: `/sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend/packages/ai-engine`
 
 ### Statistics
 - **Total Files**: 28
@@ -198,13 +198,13 @@ gunicorn -w 4 \
 
 ```bash
 # Build
-docker build -t playforge-ai-engine:latest .
+docker build -t gamevallies-ai-engine:latest .
 
 # Run
 docker run -p 8000:8000 \
   -e ENVIRONMENT=production \
   -e LLM_MODE=mock \
-  playforge-ai-engine:latest
+  gamevallies-ai-engine:latest
 ```
 
 ### 4. Docker Compose
@@ -243,7 +243,7 @@ services:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: playforge-ai-engine
+  name: gamevallies-ai-engine
 spec:
   replicas: 3
   selector:
@@ -256,7 +256,7 @@ spec:
     spec:
       containers:
       - name: ai-engine
-        image: playforge-ai-engine:latest
+        image: gamevallies-ai-engine:latest
         ports:
         - containerPort: 8000
         env:
@@ -285,7 +285,7 @@ ENVIRONMENT=development              # development, production, testing
 
 # Database
 MONGO_URL=mongodb://localhost:27017
-MONGO_DB_NAME=playforge
+MONGO_DB_NAME=gamevallies
 
 # Cache
 REDIS_URL=redis://localhost:6379

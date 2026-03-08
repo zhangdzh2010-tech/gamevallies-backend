@@ -146,6 +146,8 @@ export class GameService {
         game_spec: gameSpec = {},
         generation_time_ms: genTimeMs = 0,
         code_size_bytes: codeSizeBytes = 0,
+        quality_score: qualityScore = 0,
+        quality_breakdown: qualityBreakdown = {},
       } = response.data;
 
       this.emitStage(userId, gameId, 'qa_checking');
@@ -165,6 +167,8 @@ export class GameService {
           gameSpec,
           genTimeMs,
           codeSizeBytes,
+          qualityScore,
+          qualityBreakdown,
         },
         previewUrl: bundlePreviewUrl,
       });
@@ -175,6 +179,7 @@ export class GameService {
           status: 'draft',
           version: 1,
           gameType: gameSpec?.game_type || null,
+          qualityScore,
         },
       });
 
@@ -310,7 +315,7 @@ export class GameService {
         data: {
           title: dto.title || game.title,
           description: dto.description || game.description,
-          tags: dto.tags || game.tags,
+          tags: dto.tags ?? game.tags ?? [],
           gameType: dto.gameType || game.gameType,
           status: 'published',
           publishedAt: new Date(),

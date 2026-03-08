@@ -1,50 +1,31 @@
 services:
   # ============== 数据层 ==============
-  postgres:
-    image: postgres:16-alpine
-    container_name: playforge-postgres
+  mysql:
+    image: mysql:8.0
+    container_name: gamevallies-mysql
     restart: unless-stopped
     ports:
-      - "5433:5432"
+      - "3306:3306"
     environment:
-      POSTGRES_USER: playforge
-      POSTGRES_PASSWORD: playforge_dev_2026
-      POSTGRES_DB: playforge
+      MYSQL_ROOT_PASSWORD: playforge_dev_2026
+      MYSQL_DATABASE: gamevallies
+      MYSQL_USER: gamevallies
+      MYSQL_PASSWORD: playforge_dev_2026
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - mysql_data:/var/lib/mysql
       - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U playforge"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "gamevallies", "-pplayforge_dev_2026"]
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
-      - playforge-network
-
-  mongo:
-    image: mongo:7
-    container_name: playforge-mongo
-    restart: unless-stopped
-    ports:
-      - "27017:27017"
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: playforge
-      MONGO_INITDB_ROOT_PASSWORD: playforge_dev_2026
-      MONGO_INITDB_DATABASE: playforge
-    volumes:
-      - mongo_data:/data/db
-      - ./scripts/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js
-    healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongosh --quiet
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - playforge-network
+      - gamevallies-network
 
   redis:
     image: redis:7-alpine
-    container_name: playforge-redis
+    container_name: gamevallies-redis
     restart: unless-stopped
     ports:
       - "6380:6379"
@@ -57,116 +38,112 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - playforge-network
+      - gamevallies-network
 
   # ============== 业务服务层 ==============
   user-service:
     build:
       context: .
       dockerfile: packages/user-service/Dockerfile
-    container_name: playforge-user-service
+    container_name: gamevallies-user-service
     restart: unless-stopped
     ports:
       - "3001:3001"
     environment:
       NODE_ENV: development
       PORT: 3001
-      DATABASE_URL: postgresql://playforge:playforge_dev_2026@postgres:5432/playforge
+      DATABASE_URL: mysql://gamevallies:playforge_dev_2026@mysql:3306/gamevallies?connection_limit=2
       REDIS_URL: redis://:playforge_dev_2026@redis:6379
       JWT_SECRET: playforge_jwt_secret_dev_2026
       JWT_REFRESH_SECRET: playforge_refresh_secret_dev_2026
     depends_on:
-      postgres:
+      mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
     networks:
-      - playforge-network
+      - gamevallies-network
 
   game-service:
     build:
       context: .
       dockerfile: packages/game-service/Dockerfile
-    container_name: playforge-game-service
+    container_name: gamevallies-game-service
     restart: unless-stopped
     ports:
       - "3002:3002"
     environment:
       NODE_ENV: development
       PORT: 3002
-      DATABASE_URL: postgresql://playforge:playforge_dev_2026@postgres:5432/playforge
-      MONGO_URL: mongodb://playforge:playforge_dev_2026@mongo:27017/playforge?authSource=admin
+      DATABASE_URL: mysql://gamevallies:playforge_dev_2026@mysql:3306/gamevallies?connection_limit=2
       REDIS_URL: redis://:playforge_dev_2026@redis:6379
       AI_ENGINE_URL: http://ai-engine:8000
       APP_URL: ${GAME_SERVICE_URL:-http://localhost:3002}
       JWT_SECRET: playforge_jwt_secret_dev_2026
       CORS_ORIGIN: "*"
     depends_on:
-      postgres:
-        condition: service_healthy
-      mongo:
+      mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
     networks:
-      - playforge-network
+      - gamevallies-network
 
   social-service:
     build:
       context: .
       dockerfile: packages/social-service/Dockerfile
-    container_name: playforge-social-service
+    container_name: gamevallies-social-service
     restart: unless-stopped
     ports:
       - "3003:3003"
     environment:
       NODE_ENV: development
       PORT: 3003
-      DATABASE_URL: postgresql://playforge:playforge_dev_2026@postgres:5432/playforge
+      DATABASE_URL: mysql://gamevallies:playforge_dev_2026@mysql:3306/gamevallies?connection_limit=2
       REDIS_URL: redis://:playforge_dev_2026@redis:6379
       JWT_SECRET: playforge_jwt_secret_dev_2026
     depends_on:
-      postgres:
+      mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
     networks:
-      - playforge-network
+      - gamevallies-network
 
   feed-service:
     build:
       context: .
       dockerfile: packages/feed-service/Dockerfile
-    container_name: playforge-feed-service
+    container_name: gamevallies-feed-service
     restart: unless-stopped
     ports:
       - "3004:3004"
     environment:
       NODE_ENV: development
       PORT: 3004
-      DATABASE_URL: postgresql://playforge:playforge_dev_2026@postgres:5432/playforge
+      DATABASE_URL: mysql://gamevallies:playforge_dev_2026@mysql:3306/gamevallies?connection_limit=2
       REDIS_URL: redis://:playforge_dev_2026@redis:6379
       JWT_SECRET: playforge_jwt_secret_dev_2026
     depends_on:
-      postgres:
+      mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
     networks:
-      - playforge-network
+      - gamevallies-network
 
   ai-engine:
     build:
       context: ./packages/ai-engine
       dockerfile: Dockerfile
-    container_name: playforge-ai-engine
+    container_name: gamevallies-ai-engine
     restart: unless-stopped
     ports:
       - "8001:8000"
     environment:
       ENVIRONMENT: development
-      MONGO_URL: mongodb://playforge:playforge_dev_2026@mongo:27017/playforge?authSource=admin
-      MONGO_DB_NAME: playforge
+      DATABASE_URL: mysql://gamevallies:playforge_dev_2026@mysql:3306/gamevallies
       REDIS_URL: redis://:playforge_dev_2026@redis:6379
       LLM_MODE: ${LLM_MODE:-mock}
       LLM_API_KEY: ${LLM_API_KEY:-}
@@ -181,17 +158,17 @@ services:
       QA_MAX_RETRIES: "3"
       PIPELINE_TIMEOUT_S: "60"
     depends_on:
-      mongo:
+      mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
     networks:
-      - playforge-network
+      - gamevallies-network
 
   # ============== API网关 ==============
   nginx:
     image: nginx:alpine
-    container_name: playforge-gateway
+    container_name: gamevallies-gateway
     restart: unless-stopped
     ports:
       - "80:80"
@@ -205,13 +182,12 @@ services:
       - feed-service
       - ai-engine
     networks:
-      - playforge-network
+      - gamevallies-network
 
 volumes:
-  postgres_data:
-  mongo_data:
+  mysql_data:
   redis_data:
 
 networks:
-  playforge-network:
+  gamevallies-network:
     driver: bridge

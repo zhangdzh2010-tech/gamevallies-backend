@@ -98,8 +98,8 @@ export class AuthService {
     const user = await this.prisma.user.findFirst({
       where: {
         OR: [
-          { email: { equals: dto.account.toLowerCase(), mode: 'insensitive' } },
-          { username: { equals: dto.account.toLowerCase(), mode: 'insensitive' } },
+          { email: dto.account.toLowerCase() },
+          { username: dto.account.toLowerCase() },
         ],
       },
     });
@@ -282,7 +282,7 @@ export class AuthService {
     const user = await this.prisma.user.findFirst({
       where: {
         OR: [
-          { email: { equals: normalizedTarget, mode: 'insensitive' } },
+          { email: normalizedTarget },
           { phone: normalizedTarget },
         ],
       },

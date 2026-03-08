@@ -14,6 +14,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { GameService } from './game.service';
+import { CreatorReputationService } from './creator-reputation.service';
 import { CreateGameDto, PublishGameDto, IterateGameDto } from './dto';
 import { JwtAuthGuard } from '../common/jwt-auth.guard';
 import { ok, toPage } from '../common/api-response';
@@ -23,7 +24,10 @@ import { presentGame } from '../common/game-presenter';
 export class GameController {
   private readonly logger = new Logger(GameController.name);
 
-  constructor(private gameService: GameService) {}
+  constructor(
+    private gameService: GameService,
+    private reputationService: CreatorReputationService,
+  ) {}
 
   @Post('/generate')
   @UseGuards(JwtAuthGuard)
@@ -188,6 +192,18 @@ export class GameController {
       return ok(await this.gameService.getShareData(id));
     } catch (error) {
       this.logger.error(`Error getting share data: ${error.message}`);
+      throw error;
+    }
+  }
+
+  @Get('/creator/:creatorId/reputation')
+  @HttpCode(HttpStatus.OK)
+  async getCreatorReputation(@Param('creatorId') creatorId: string) {
+    try {
+      const reputation = await this.reputationService.getReputation(creatorId);
+      return ok(reputation);
+    } catch (error) {
+      this.logger.error(`Error getting creator reputation: ${error.message}`);
       throw error;
     }
   }

@@ -6,7 +6,7 @@ Complete NestJS microservice for user authentication, profiles, and management i
 ## Directory Structure
 
 ```
-/sessions/magical-gifted-pascal/mnt/willgame/playforge-backend/packages/user-service/
+/sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend/packages/user-service/
 ├── src/
 │   ├── main.ts                           # Application entry point
 │   ├── app.module.ts                     # Root NestJS module

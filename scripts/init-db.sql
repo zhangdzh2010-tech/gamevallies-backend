@@ -1,11 +1,9 @@
--- PlayForge PostgreSQL Initialization Script
+-- Gamevallies MySQL 8.0 Initialization Script
 -- This runs on first container start
 
--- Enable UUID extension
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+-- 设置字符集
+ALTER DATABASE gamevallies CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
--- Enable full-text search
-CREATE EXTENSION IF NOT EXISTS "pg_trgm";
-
--- Grant privileges
-GRANT ALL PRIVILEGES ON DATABASE playforge TO playforge;
+-- 授权
+GRANT ALL PRIVILEGES ON gamevallies.* TO 'gamevallies'@'%';
+FLUSH PRIVILEGES;

@@ -321,7 +321,7 @@ Redis:
 
 - [ ] Read STARTUP_GUIDE.md quick start section
 - [ ] Ensure Docker and Docker Compose are installed
-- [ ] Navigate to `/sessions/magical-gifted-pascal/mnt/willgame/playforge-backend`
+- [ ] Navigate to `/sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend`
 - [ ] Run `./start.sh` for full Docker deployment
 - [ ] Wait for all services to report healthy
 - [ ] Open http://localhost:80 to test API Gateway

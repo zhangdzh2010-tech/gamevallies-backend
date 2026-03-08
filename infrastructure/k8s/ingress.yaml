@@ -1,8 +1,8 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: playforge-ingress
-  namespace: playforge
+  name: gamevallies-ingress
+  namespace: gamevallies
   annotations:
     kubernetes.io/ingress.class: "nginx"
     # HTTPS and TLS
@@ -32,12 +32,12 @@ metadata:
 spec:
   tls:
   - hosts:
-    - playforge-api.example.com
+    - gamevallies-api.example.com
     - api.playforge.com
-    secretName: playforge-tls
+    secretName: gamevallies-tls
   rules:
   # User Service routes
-  - host: playforge-api.example.com
+  - host: gamevallies-api.example.com
     http:
       paths:
       - path: /api/users
@@ -158,13 +158,13 @@ spec:
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: playforge-cert
-  namespace: playforge
+  name: gamevallies-cert
+  namespace: gamevallies
 spec:
-  secretName: playforge-tls
+  secretName: gamevallies-tls
   issuerRef:
     name: letsencrypt-prod
     kind: ClusterIssuer
   dnsNames:
-  - playforge-api.example.com
+  - gamevallies-api.example.com
   - api.playforge.com

@@ -181,7 +181,7 @@ curl -X POST http://localhost:8000/api/v1/ai/qa-check \
 
 ### Build Image
 ```bash
-docker build -t playforge-ai-engine:latest .
+docker build -t gamevallies-ai-engine:latest .
 ```
 
 ### Run Container
@@ -189,7 +189,7 @@ docker build -t playforge-ai-engine:latest .
 docker run -p 8000:8000 \
   -e ENVIRONMENT=production \
   -e LLM_MODE=mock \
-  playforge-ai-engine:latest
+  gamevallies-ai-engine:latest
 ```
 
 ### With Docker Compose

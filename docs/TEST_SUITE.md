@@ -16,7 +16,7 @@ The test suite covers all backend services with comprehensive unit tests, servic
 ## Test Files Location
 
 ```
-/sessions/magical-gifted-pascal/mnt/willgame/playforge-backend/
+/sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend/
 
 packages/
 ├── user-service/test/

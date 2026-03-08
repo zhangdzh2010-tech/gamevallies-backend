@@ -30,7 +30,7 @@ describe('NotificationService', () => {
 
   beforeEach(async () => {
     const NotificationService = class {
-      constructor(private prisma: PrismaService) {}
+      constructor(private prisma: any) {}
 
       async createNotification(
         userId: string,
@@ -87,18 +87,8 @@ describe('NotificationService', () => {
       }
     };
 
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        NotificationService,
-        {
-          provide: PrismaService,
-          useValue: mockPrismaService,
-        },
-      ],
-    }).compile();
-
-    service = module.get<any>(NotificationService);
-    prismaService = module.get<PrismaService>(PrismaService);
+    service = new NotificationService(mockPrismaService as any);
+    prismaService = mockPrismaService as any;
 
     jest.clearAllMocks();
   });

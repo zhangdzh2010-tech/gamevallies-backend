@@ -10,9 +10,8 @@ class Settings(BaseSettings):
     # Environment
     ENVIRONMENT: Literal["development", "production", "testing"] = "development"
 
-    # Database
-    MONGO_URL: str = "mongodb://localhost:27017"
-    MONGO_DB_NAME: str = "playforge"
+    # Database (MySQL，game_bundles/game_templates 已迁入 MySQL)
+    DATABASE_URL: str = "mysql://gamevallies_user:change_me@localhost:3306/gamevallies"
 
     # Cache
     REDIS_URL: str = "redis://localhost:6379"

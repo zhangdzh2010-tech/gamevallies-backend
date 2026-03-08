@@ -137,8 +137,8 @@ All errors are returned in the following format:
 Build and run with Docker:
 
 ```bash
-docker build -t playforge-user-service .
-docker run -p 3001:3001 --env-file .env.local playforge-user-service
+docker build -t gamevallies-user-service .
+docker run -p 3001:3001 --env-file .env.local gamevallies-user-service
 ```
 
 ## Contributing

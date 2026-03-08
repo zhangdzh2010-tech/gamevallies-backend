@@ -4,7 +4,7 @@ PLAYFORGE USER-SERVICE - PROJECT COMPLETION REPORT
 
 Date: 2024-03-05
 Status: COMPLETE & PRODUCTION-READY
-Base Path: /sessions/magical-gifted-pascal/mnt/willgame/playforge-backend/packages/user-service
+Base Path: /sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend/packages/user-service
 
 ================================================================================
 PROJECT SUMMARY

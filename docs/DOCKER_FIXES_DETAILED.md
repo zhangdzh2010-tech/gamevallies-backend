@@ -443,7 +443,7 @@ CONTAINER READY ✓
 
 ### Verify Dockerfiles are Syntactically Valid
 ```bash
-cd /sessions/magical-gifted-pascal/mnt/willgame/playforge-backend
+cd /sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend
 docker build -f packages/game-service/Dockerfile -t test:game .
 docker build -f packages/social-service/Dockerfile -t test:social .
 docker build -f packages/feed-service/Dockerfile -t test:feed .

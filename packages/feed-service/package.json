@@ -1,5 +1,5 @@
 {
-  "name": "@playforge/feed-service",
+  "name": "@gamevallies/feed-service",
   "version": "1.0.0",
   "description": "Feed service for PlayForge - trending, search, tags, challenges",
   "main": "dist/main.js",
@@ -20,6 +20,7 @@
     "@nestjs/config": "^3.0.0",
     "@nestjs/jwt": "^11.0.0",
     "@prisma/client": "^5.10.0",
+    "@codegenie/serverless-express": "^4.3.4",
     "ioredis": "^5.3.0",
     "class-validator": "^0.14.0",
     "class-transformer": "^0.5.1"

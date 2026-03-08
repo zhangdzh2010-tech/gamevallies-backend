@@ -3,11 +3,11 @@ version: '3.8'
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: playforge_user_db
+    container_name: gamevallies_user_db
     environment:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
-      POSTGRES_DB: playforge_user_db
+      POSTGRES_DB: gamevallies_user_db
     ports:
       - "5432:5432"
     volumes:
@@ -20,7 +20,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: playforge_user_redis
+    container_name: gamevallies_user_redis
     ports:
       - "6379:6379"
     healthcheck:
@@ -35,11 +35,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: playforge_user_service
+    container_name: gamevallies_user_service
     environment:
       NODE_ENV: development
       PORT: 3001
-      DATABASE_URL: postgresql://user:password@postgres:5432/playforge_user_db
+      DATABASE_URL: postgresql://user:password@postgres:5432/gamevallies_user_db
       JWT_SECRET: dev-secret-key-change-in-production
       JWT_REFRESH_SECRET: dev-refresh-secret-key-change-in-production
       REDIS_URL: redis://redis:6379
@@ -61,4 +61,4 @@ volumes:
 
 networks:
   default:
-    name: playforge_network
+    name: gamevallies_network

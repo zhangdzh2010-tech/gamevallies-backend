@@ -91,18 +91,8 @@ describe('CommentService', () => {
       }
     };
 
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        CommentService,
-        {
-          provide: PrismaService,
-          useValue: mockPrismaService,
-        },
-      ],
-    }).compile();
-
-    service = module.get<any>(CommentService);
-    prismaService = module.get<PrismaService>(PrismaService);
+    service = new CommentService(mockPrismaService as any);
+    prismaService = mockPrismaService as any;
 
     jest.clearAllMocks();
   });

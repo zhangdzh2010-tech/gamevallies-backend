@@ -10,7 +10,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FRONTEND_DIR="$(dirname "$SCRIPT_DIR")/playforge-miniprogram"
+FRONTEND_DIR="$(dirname "$SCRIPT_DIR")/gamevallies-miniprogram"
 MODE=${1:-start}
 
 case $MODE in
@@ -88,9 +88,9 @@ case $MODE in
 
         RETRIES=30
         while [ $RETRIES -gt 0 ]; do
-            PG=$(docker inspect --format='{{.State.Health.Status}}' playforge-postgres 2>/dev/null || echo "starting")
-            MG=$(docker inspect --format='{{.State.Health.Status}}' playforge-mongo 2>/dev/null || echo "starting")
-            RD=$(docker inspect --format='{{.State.Health.Status}}' playforge-redis 2>/dev/null || echo "starting")
+            PG=$(docker inspect --format='{{.State.Health.Status}}' gamevallies-postgres 2>/dev/null || echo "starting")
+            MG=$(docker inspect --format='{{.State.Health.Status}}' gamevallies-mongo 2>/dev/null || echo "starting")
+            RD=$(docker inspect --format='{{.State.Health.Status}}' gamevallies-redis 2>/dev/null || echo "starting")
             if [ "$PG" = "healthy" ] && [ "$MG" = "healthy" ] && [ "$RD" = "healthy" ]; then
                 echo -e "${GREEN}  [OK] PostgreSQL (5433), MongoDB (27017), Redis (6380) 就绪${NC}"
                 break
@@ -210,9 +210,9 @@ echo -e "\n${YELLOW}[3/5] 等待数据库就绪...${NC}"
 
 RETRIES=30
 while [ $RETRIES -gt 0 ]; do
-    PG=$(docker inspect --format='{{.State.Health.Status}}' playforge-postgres 2>/dev/null || echo "starting")
-    MG=$(docker inspect --format='{{.State.Health.Status}}' playforge-mongo 2>/dev/null || echo "starting")
-    RD=$(docker inspect --format='{{.State.Health.Status}}' playforge-redis 2>/dev/null || echo "starting")
+    PG=$(docker inspect --format='{{.State.Health.Status}}' gamevallies-postgres 2>/dev/null || echo "starting")
+    MG=$(docker inspect --format='{{.State.Health.Status}}' gamevallies-mongo 2>/dev/null || echo "starting")
+    RD=$(docker inspect --format='{{.State.Health.Status}}' gamevallies-redis 2>/dev/null || echo "starting")
 
     if [ "$PG" = "healthy" ] && [ "$MG" = "healthy" ] && [ "$RD" = "healthy" ]; then
         echo -e "${GREEN}  ✓ PostgreSQL  - healthy${NC}"

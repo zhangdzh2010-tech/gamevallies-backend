@@ -31,8 +31,8 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/willgame/playforge-backend.git
-cd playforge-backend
+git clone https://github.com/willgame/gamevallies-backend.git
+cd gamevallies-backend
 
 # 检查分支（开发使用develop分支）
 git branch -a
@@ -192,20 +192,20 @@ wscat -c ws://localhost:3000/ws
 docker compose build
 
 # 方式B: 单独构建特定服务
-docker build -f packages/user-service/Dockerfile -t playforge-user-service:latest packages/user-service
-docker build -f packages/game-service/Dockerfile -t playforge-game-service:latest packages/game-service
-docker build -f packages/social-service/Dockerfile -t playforge-social-service:latest packages/social-service
-docker build -f packages/feed-service/Dockerfile -t playforge-feed-service:latest packages/feed-service
-docker build -f packages/ai-engine/Dockerfile -t playforge-ai-engine:latest packages/ai-engine
+docker build -f packages/user-service/Dockerfile -t gamevallies-user-service:latest packages/user-service
+docker build -f packages/game-service/Dockerfile -t gamevallies-game-service:latest packages/game-service
+docker build -f packages/social-service/Dockerfile -t gamevallies-social-service:latest packages/social-service
+docker build -f packages/feed-service/Dockerfile -t gamevallies-feed-service:latest packages/feed-service
+docker build -f packages/ai-engine/Dockerfile -t gamevallies-ai-engine:latest packages/ai-engine
 
 # 方式C: 使用buildx构建多平台镜像（用于发布）
-docker buildx build --platform linux/amd64,linux/arm64 -t playforge-user-service:latest --push packages/user-service
+docker buildx build --platform linux/amd64,linux/arm64 -t gamevallies-user-service:latest --push packages/user-service
 ```
 
 **镜像标签规范：**
-- 开发版: `playforge-user-service:latest`
-- 版本发布: `playforge-user-service:v1.2.3`
-- 分支版本: `playforge-user-service:main-abc1234`（commit hash）
+- 开发版: `gamevallies-user-service:latest`
+- 版本发布: `gamevallies-user-service:v1.2.3`
+- 分支版本: `gamevallies-user-service:main-abc1234`（commit hash）
 
 ### 步骤2: 启动容器
 
@@ -372,7 +372,7 @@ kubectl get pvc -n playforge postgres-data
 
 # 初始化PostgreSQL（等待Pod就绪）
 kubectl wait --for=condition=ready pod -l app=postgres -n playforge --timeout=300s
-kubectl exec -it postgres-0 -n playforge -- psql -U postgres -c "CREATE DATABASE playforge;"
+kubectl exec -it postgres-0 -n playforge -- psql -U postgres -c "CREATE DATABASE gamevallies;"
 
 # 部署MongoDB（可选）
 kubectl apply -f infrastructure/k8s/mongo.yaml
@@ -387,7 +387,7 @@ kubectl apply -f infrastructure/k8s/configmap.yaml
 
 # 验证ConfigMap
 kubectl get configmap -n playforge
-kubectl describe cm playforge-config -n playforge
+kubectl describe cm gamevallies-config -n playforge
 
 # 创建Secret（敏感数据，需要先编码）
 # 重要：先修改secret.yaml中的base64值为实际值
@@ -403,7 +403,7 @@ kubectl apply -f infrastructure/k8s/secret.yaml
 
 # 验证Secret
 kubectl get secret -n playforge
-kubectl describe secret playforge-secret -n playforge
+kubectl describe secret gamevallies-secret -n playforge
 
 # 警告：不要将实际Secret值提交到Git
 # 使用kubectl直接创建Secret，或使用Sealed Secrets/External Secrets
@@ -465,19 +465,19 @@ kubectl apply -f infrastructure/k8s/ingress.yaml
 
 # 验证Ingress
 kubectl get ingress -n playforge
-kubectl describe ingress playforge-ingress -n playforge
+kubectl describe ingress gamevallies-ingress -n playforge
 
 # 获取Ingress外部IP地址
 kubectl get ingress -n playforge -o wide
 
 # 配置DNS解析（或更新/etc/hosts）
-# playforge-api.example.com -> <INGRESS_EXTERNAL_IP>
+# gamevallies-api.example.com -> <INGRESS_EXTERNAL_IP>
 
 # 验证HTTPS（如已配置TLS）
-curl -k https://playforge-api.example.com/health
+curl -k https://gamevallies-api.example.com/health
 
 # 验证WebSocket路由
-# 访问 https://playforge-api.example.com/ws
+# 访问 https://gamevallies-api.example.com/ws
 ```
 
 **如果使用自签名证书：**
@@ -486,7 +486,7 @@ curl -k https://playforge-api.example.com/health
 openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes
 
 # 创建TLS Secret
-kubectl create secret tls playforge-tls -n playforge --cert=cert.pem --key=key.pem
+kubectl create secret tls gamevallies-tls -n playforge --cert=cert.pem --key=key.pem
 
 # 在ingress.yaml中引用该Secret
 ```
@@ -598,7 +598,7 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_DB: playforge_test
+          POSTGRES_DB: gamevallies_test
           POSTGRES_USER: test
           POSTGRES_PASSWORD: test
         options: >-
@@ -685,8 +685,8 @@ jobs:
 ```
 
 **Docker镜像标签规范：**
-- main分支: `playforge-user-service:latest`, `playforge-user-service:v1.2.3`
-- develop分支: `playforge-user-service:develop`, `playforge-user-service:dev-<short-sha>`
+- main分支: `gamevallies-user-service:latest`, `gamevallies-user-service:v1.2.3`
+- develop分支: `gamevallies-user-service:develop`, `gamevallies-user-service:dev-<short-sha>`
 
 #### 6. 部署到测试环境阶段
 ```yaml
@@ -777,16 +777,16 @@ git push origin feature/new-game-type
 
 ```bash
 # 查看最新的工作流运行
-gh run list --repo willgame/playforge-backend
+gh run list --repo willgame/gamevallies-backend
 
 # 查看特定工作流的详细日志
-gh run view <run-id> --repo willgame/playforge-backend
+gh run view <run-id> --repo willgame/gamevallies-backend
 
 # 实时查看工作流日志
-gh run watch <run-id> --repo willgame/playforge-backend
+gh run watch <run-id> --repo willgame/gamevallies-backend
 
 # 重新运行失败的工作流
-gh run rerun <run-id> --repo willgame/playforge-backend
+gh run rerun <run-id> --repo willgame/gamevallies-backend
 ```
 
 ---
@@ -866,7 +866,7 @@ gh run rerun <run-id> --repo willgame/playforge-backend
 # 新版本: 1个pod  旧版本: 9个pod
 
 kubectl set image deployment/user-service \
-  user-service=playforge-user-service:v1.2.3 \
+  user-service=gamevallies-user-service:v1.2.3 \
   -n playforge
 
 # 修改副本数（使用blue-green或weighted routing）
@@ -886,7 +886,7 @@ kubectl logs -n playforge -l app=user-service --tail=50 -f
 # - API P95延迟 <= 200ms
 # - 无数据库死锁或超时
 
-curl -s http://playforge-api.example.com/metrics | grep user_login_count
+curl -s http://gamevallies-api.example.com/metrics | grep user_login_count
 ```
 
 **第2阶段：50%流量（30分钟监控）**
@@ -917,7 +917,7 @@ kubectl rollout undo deployment/user-service -n playforge
 
 # 2. 全量部署新版本
 kubectl set image deployment/user-service \
-  user-service=playforge-user-service:v1.2.3 \
+  user-service=gamevallies-user-service:v1.2.3 \
   -n playforge
 
 kubectl scale deployment user-service --replicas=10 -n playforge
@@ -933,8 +933,8 @@ kubectl rollout status deployment/user-service -n playforge --timeout=5m
 # （由于已全部更新，此步骤自动完成）
 
 # 6. 更新生产标签
-docker tag playforge-user-service:v1.2.3 playforge-user-service:production
-docker push playforge-user-service:production
+docker tag gamevallies-user-service:v1.2.3 gamevallies-user-service:production
+docker push gamevallies-user-service:production
 ```
 
 ### 发布后验证步骤
@@ -942,21 +942,21 @@ docker push playforge-user-service:production
 ```bash
 # 1. 健康检查
 echo "=== Health Check ==="
-curl -s https://playforge-api.example.com/health | jq .
-curl -s https://playforge-api.example.com/api/users?limit=1 | jq .
+curl -s https://gamevallies-api.example.com/health | jq .
+curl -s https://gamevallies-api.example.com/api/users?limit=1 | jq .
 
 # 2. 烟雾测试（Smoke Testing）
 echo "=== Smoke Test ==="
 # 用户登录流程
-curl -X POST https://playforge-api.example.com/api/auth/login \
+curl -X POST https://gamevallies-api.example.com/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"test@example.com","password":"password"}'
 
 # 游戏列表
-curl -s https://playforge-api.example.com/api/games | jq '.data | length'
+curl -s https://gamevallies-api.example.com/api/games | jq '.data | length'
 
 # 社交功能（关注）
-curl -X POST https://playforge-api.example.com/api/social/follow \
+curl -X POST https://gamevallies-api.example.com/api/social/follow \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{"userId":"<target-user-id>"}'
@@ -1069,7 +1069,7 @@ kubectl rollout status deployment/user-service -n playforge --timeout=5m
 kubectl get pods -n playforge -l app=user-service
 
 # 4. 确认服务恢复
-curl -s http://playforge-api.example.com/health | jq .
+curl -s http://gamevallies-api.example.com/health | jq .
 
 # 5. 查看回滚前的版本
 kubectl rollout history deployment/user-service -n playforge
@@ -1088,7 +1088,7 @@ kubectl logs -n playforge -l app=user-service --tail=200 | grep -i error
 
 # 2. 减少新版本副本数（如金丝雀发布中）
 kubectl set image deployment/user-service \
-  user-service=playforge-user-service:v1.2.2 \
+  user-service=gamevallies-user-service:v1.2.2 \
   -n playforge
 
 # 3. 逐步增加旧版本副本数
@@ -1131,8 +1131,8 @@ kubectl scale deployment user-service --replicas=0 -n playforge
 # 2. 从备份恢复数据库
 # 如使用AWS RDS
 aws rds restore-db-instance-from-db-snapshot \
-  --db-instance-identifier playforge-db-restored \
-  --db-snapshot-identifier playforge-snapshot-2024-01-15-10-00
+  --db-instance-identifier gamevallies-db-restored \
+  --db-snapshot-identifier gamevallies-snapshot-2024-01-15-10-00
 
 # 3. 验证恢复的数据
 # 运行数据一致性检查脚本
@@ -1152,7 +1152,7 @@ kubectl wait --for=condition=ready pod -l app=user-service -n playforge --timeou
 pg_dump -U postgres playforge > playforge_backup_$(date +%Y%m%d_%H%M%S).sql
 
 # MongoDB: mongodump
-mongodump --db playforge --out /backups/playforge_$(date +%Y%m%d_%H%M%S)
+mongodump --db playforge --out /backups/gamevallies_$(date +%Y%m%d_%H%M%S)
 
 # 验证备份
 psql -U postgres playforge < playforge_backup.sql  # 测试恢复
@@ -1381,10 +1381,10 @@ playforge_http_requests_total             # 请求总数（按method/path/status
 playforge_http_errors_total               # 错误请求数
 
 # 业务指标
-playforge_user_login_total                # 登录次数
+gamevallies_user_login_total                # 登录次数
 playforge_game_created_total              # 创建游戏数
 playforge_game_played_total               # 游戏播放次数
-playforge_user_earnings_usd               # 用户收益
+gamevallies_user_earnings_usd               # 用户收益
 
 # 数据库指标
 playforge_db_query_duration_seconds       # 查询耗时
@@ -1513,7 +1513,7 @@ container_memory_usage_bytes               # 容器内存使用
       "title": "Daily Active Users",
       "targets": [
         {
-          "expr": "increase(playforge_user_login_total[24h])"
+          "expr": "increase(gamevallies_user_login_total[24h])"
         }
       ]
     },
@@ -1529,7 +1529,7 @@ container_memory_usage_bytes               # 容器内存使用
       "title": "Total Revenue",
       "targets": [
         {
-          "expr": "sum(playforge_user_earnings_usd)"
+          "expr": "sum(gamevallies_user_earnings_usd)"
         }
       ]
     }
@@ -1545,7 +1545,7 @@ container_memory_usage_bytes               # 容器内存使用
 
 ```yaml
 groups:
-- name: playforge-p0-alerts
+- name: gamevallies-p0-alerts
   interval: 30s
   rules:
   - alert: ServiceDown
@@ -1656,12 +1656,12 @@ receivers:
 - name: 'default'
   slack_configs:
   - api_url: https://hooks.slack.com/services/YOUR/WEBHOOK
-    channel: '#playforge-alerts'
+    channel: '#gamevallies-alerts'
 
 - name: 'p0-oncall'
   slack_configs:
   - api_url: https://hooks.slack.com/services/YOUR/WEBHOOK
-    channel: '#playforge-p0'
+    channel: '#gamevallies-p0'
   opsgenie_configs:
   - api_key: 'YOUR-OPSGENIE-KEY'
     priority: 'P1'
@@ -1674,7 +1674,7 @@ receivers:
 - name: 'p1-team'
   slack_configs:
   - api_url: https://hooks.slack.com/services/YOUR/WEBHOOK
-    channel: '#playforge-p1'
+    channel: '#gamevallies-p1'
   email_configs:
   - to: 'team@playforge.com'
 ```
@@ -1804,7 +1804,7 @@ kubectl delete networkpolicies --all -n playforge
 # 原因4: 密码错误
 # 症状: "FATAL: password authentication failed"
 # 解决:
-kubectl get secret playforge-secret -n playforge -o yaml
+kubectl get secret gamevallies-secret -n playforge -o yaml
 # 检查POSTGRES_PASSWORD是否正确，base64解码验证:
 echo "encoded-password" | base64 -d
 
@@ -1812,7 +1812,7 @@ echo "encoded-password" | base64 -d
 # 症状: "FATAL: database 'playforge' does not exist"
 # 解决:
 # 进入postgres pod创建数据库
-kubectl exec postgres-0 -n playforge -- psql -U postgres -c "CREATE DATABASE playforge;"
+kubectl exec postgres-0 -n playforge -- psql -U postgres -c "CREATE DATABASE gamevallies;"
 ```
 
 ### 问题3: AI引擎超时
@@ -1866,9 +1866,9 @@ kubectl exec <ai-engine-pod> -n playforge -- env | grep PROXY
 # 症状: "Invalid API key" or "Unauthorized"
 # 解决:
 # 检查Secret中的LLM_API_KEY
-kubectl get secret playforge-secret -n playforge -o jsonpath='{.data.LLM_API_KEY}' | base64 -d
+kubectl get secret gamevallies-secret -n playforge -o jsonpath='{.data.LLM_API_KEY}' | base64 -d
 # 更新Secret:
-kubectl patch secret playforge-secret -n playforge \
+kubectl patch secret gamevallies-secret -n playforge \
   -p '{"data":{"LLM_API_KEY":"'$(echo -n "new-key" | base64 -w0)'"}}'
 # 重启AI引擎pod以读取新的环境变量
 kubectl rollout restart deployment ai-engine -n playforge
@@ -2086,10 +2086,10 @@ kubectl delete -f <file.yaml> -n playforge
 ### 常用Docker命令
 ```bash
 # 镜像操作
-docker build -t playforge-user-service:latest .
-docker tag playforge-user-service:latest registry.example.com/playforge-user-service:latest
-docker push registry.example.com/playforge-user-service:latest
-docker pull registry.example.com/playforge-user-service:latest
+docker build -t gamevallies-user-service:latest .
+docker tag gamevallies-user-service:latest registry.example.com/gamevallies-user-service:latest
+docker push registry.example.com/gamevallies-user-service:latest
+docker pull registry.example.com/gamevallies-user-service:latest
 
 # 容器操作
 docker compose up -d

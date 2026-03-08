@@ -1,6 +1,6 @@
 // PlayForge MongoDB Initialization Script
 
-db = db.getSiblingDB('playforge');
+db = db.getSiblingDB('gamevallies');
 
 // Create game_bundles collection with schema validation
 db.createCollection('game_bundles', {

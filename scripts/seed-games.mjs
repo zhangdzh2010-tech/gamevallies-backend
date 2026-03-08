@@ -8,8 +8,8 @@ import { MongoClient } from 'mongodb';
 import { randomUUID } from 'crypto';
 import { createHash } from 'crypto';
 
-const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://playforge:playforge_dev_2026@localhost:5433/playforge';
-const MONGO_URL = process.env.MONGO_URL || 'mongodb://playforge:playforge_dev_2026@localhost:27017/playforge?authSource=admin';
+const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://gamevallies:playforge_dev_2026@localhost:5433/playforge';
+const MONGO_URL = process.env.MONGO_URL || 'mongodb://gamevallies:playforge_dev_2026@localhost:27017/gamevallies?authSource=admin';
 const APP_URL = process.env.APP_URL || 'http://localhost:3002';
 
 const prisma = new PrismaClient({ datasources: { db: { url: DATABASE_URL } } });

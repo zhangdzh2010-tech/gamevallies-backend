@@ -61,18 +61,8 @@ describe('WebSocketGateway', () => {
       }
     };
 
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        WebSocketGateway,
-        {
-          provide: JwtService,
-          useValue: mockJwtService,
-        },
-      ],
-    }).compile();
-
-    gateway = module.get<any>(WebSocketGateway);
-    jwtService = module.get<JwtService>(JwtService);
+    gateway = new WebSocketGateway(mockJwtService as any);
+    jwtService = mockJwtService as any;
 
     jest.clearAllMocks();
   });

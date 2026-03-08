@@ -1,8 +1,8 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: playforge-config
-  namespace: playforge
+  name: gamevallies-config
+  namespace: gamevallies
 data:
   # Environment configuration
   NODE_ENV: "production"
@@ -18,10 +18,10 @@ data:
   # Database hosts (internal to cluster)
   POSTGRES_HOST: "postgres"
   POSTGRES_PORT: "5432"
-  POSTGRES_DB: "playforge"
+  POSTGRES_DB: "gamevallies"
   MONGO_HOST: "mongo"
   MONGO_PORT: "27017"
-  MONGO_DB: "playforge"
+  MONGO_DB: "gamevallies"
   REDIS_HOST: "redis"
   REDIS_PORT: "6379"
   

@@ -166,13 +166,11 @@ export class UserService {
           {
             username: {
               contains: query.toLowerCase(),
-              mode: 'insensitive',
             },
           },
           {
             displayName: {
               contains: query,
-              mode: 'insensitive',
             },
           },
         ],
@@ -200,13 +198,11 @@ export class UserService {
           {
             username: {
               contains: query.toLowerCase(),
-              mode: 'insensitive',
             },
           },
           {
             displayName: {
               contains: query,
-              mode: 'insensitive',
             },
           },
         ],

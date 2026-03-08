@@ -315,8 +315,8 @@ npm run start:prod
 
 Docker build:
 ```bash
-docker build -t playforge-game-service .
-docker run -p 3002:3002 --env-file .env playforge-game-service
+docker build -t gamevallies-game-service .
+docker run -p 3002:3002 --env-file .env gamevallies-game-service
 ```
 
 ## Logging

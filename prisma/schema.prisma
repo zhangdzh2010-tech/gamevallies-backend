@@ -1,5 +1,5 @@
-// PlayForge Database Schema
-// PostgreSQL 16 + Prisma ORM
+// Gamevallies Database Schema
+// MySQL 8.0 + Prisma ORM
 
 generator client {
   provider      = "prisma-client-js"
@@ -7,7 +7,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "mysql"
   url      = env("DATABASE_URL")
 }
 
@@ -29,26 +29,26 @@ enum UserRole {
 }
 
 model User {
-  id            String       @id @default(uuid()) @db.Uuid
-  username      String       @unique @db.VarChar(32)
-  displayName   String?      @map("display_name") @db.VarChar(64)
-  avatarUrl     String?      @map("avatar_url")
-  email         String?      @unique @db.VarChar(255)
-  phone         String?      @unique @db.VarChar(20)
-  passwordHash  String?      @map("password_hash")
-  authProvider  AuthProvider @default(email) @map("auth_provider")
-  wxOpenId      String?      @unique @map("wx_open_id")
-  wxUnionId     String?      @map("wx_union_id")
-  role          UserRole     @default(user)
-  isPro         Boolean      @default(false) @map("is_pro")
-  proExpires    DateTime?    @map("pro_expires") @db.Timestamptz
-  bio           String?      @db.VarChar(200)
-  followerCount Int          @default(0) @map("follower_count")
-  followingCount Int         @default(0) @map("following_count")
-  gameCount     Int          @default(0) @map("game_count")
-  totalPlays    BigInt       @default(0) @map("total_plays")
-  createdAt     DateTime     @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt     DateTime     @updatedAt @map("updated_at") @db.Timestamptz
+  id             String       @id @default(uuid()) @db.VarChar(36)
+  username       String       @unique @db.VarChar(32)
+  displayName    String?      @map("display_name") @db.VarChar(64)
+  avatarUrl      String?      @map("avatar_url")
+  email          String?      @unique @db.VarChar(255)
+  phone          String?      @unique @db.VarChar(20)
+  passwordHash   String?      @map("password_hash")
+  authProvider   AuthProvider @default(email) @map("auth_provider")
+  wxOpenId       String?      @unique @map("wx_open_id")
+  wxUnionId      String?      @map("wx_union_id")
+  role           UserRole     @default(user)
+  isPro          Boolean      @default(false) @map("is_pro")
+  proExpires     DateTime?    @map("pro_expires") @db.DateTime(3)
+  bio            String?      @db.VarChar(200)
+  followerCount  Int          @default(0) @map("follower_count")
+  followingCount Int          @default(0) @map("following_count")
+  gameCount      Int          @default(0) @map("game_count")
+  totalPlays     BigInt       @default(0) @map("total_plays")
+  createdAt      DateTime     @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt      DateTime     @updatedAt @map("updated_at") @db.DateTime(3)
 
   // Relations
   games              Game[]              @relation("GameAuthor")
@@ -64,12 +64,12 @@ model User {
 }
 
 model RefreshToken {
-  id        String   @id @default(uuid()) @db.Uuid
-  userId    String   @map("user_id") @db.Uuid
-  token     String   @unique @db.VarChar(500)
-  expiresAt DateTime @map("expires_at") @db.Timestamptz
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
-  revokedAt DateTime? @map("revoked_at") @db.Timestamptz
+  id        String    @id @default(uuid()) @db.VarChar(36)
+  userId    String    @map("user_id") @db.VarChar(36)
+  token     String    @unique @db.VarChar(500)
+  expiresAt DateTime  @map("expires_at") @db.DateTime(3)
+  createdAt DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  revokedAt DateTime? @map("revoked_at") @db.DateTime(3)
 
   user User @relation("UserRefreshTokens", fields: [userId], references: [id], onDelete: Cascade)
 
@@ -90,43 +90,84 @@ enum GameStatus {
 }
 
 model Game {
-  id            String     @id @default(uuid()) @db.Uuid
-  authorId      String     @map("author_id") @db.Uuid
-  title         String     @db.VarChar(64)
-  description   String?
-  slug          String?    @unique @db.VarChar(128)
-  status        GameStatus @default(draft)
-  gameType      String?    @map("game_type") @db.VarChar(32)
-  tags          String[]   @default([])
-  forkedFrom    String?    @map("forked_from") @db.Uuid
-  forkDepth     Int        @default(0) @map("fork_depth")
-  codeBundleId  String?    @map("code_bundle_id") @db.VarChar(255) // MongoDB ObjectId reference
-  version       Int        @default(1)
-  thumbnailUrl  String?    @map("thumbnail_url")
-  playCount     BigInt     @default(0) @map("play_count")
-  likeCount     BigInt     @default(0) @map("like_count")
-  forkCount     BigInt     @default(0) @map("fork_count")
-  commentCount  Int        @default(0) @map("comment_count")
-  avgPlayTime   Float      @default(0) @map("avg_play_time")
-  qualityScore  Float      @default(0) @map("quality_score") // AI评分 0-100
-  createdAt     DateTime   @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt     DateTime   @updatedAt @map("updated_at") @db.Timestamptz
-  publishedAt   DateTime?  @map("published_at") @db.Timestamptz
+  id           String     @id @default(uuid()) @db.VarChar(36)
+  authorId     String     @map("author_id") @db.VarChar(36)
+  title        String     @db.VarChar(64)
+  description  String?    @db.Text
+  slug         String?    @unique @db.VarChar(128)
+  status       GameStatus @default(draft)
+  gameType     String?    @map("game_type") @db.VarChar(32)
+  tags         Json       @default("[]")
+  forkedFrom   String?    @map("forked_from") @db.VarChar(36)
+  forkDepth    Int        @default(0) @map("fork_depth")
+  codeBundleId String?    @map("code_bundle_id") @db.VarChar(255)
+  version      Int        @default(1)
+  thumbnailUrl String?    @map("thumbnail_url")
+  playCount    BigInt     @default(0) @map("play_count")
+  likeCount    BigInt     @default(0) @map("like_count")
+  forkCount    BigInt     @default(0) @map("fork_count")
+  commentCount Int        @default(0) @map("comment_count")
+  avgPlayTime  Float      @default(0) @map("avg_play_time")
+  qualityScore Float      @default(0) @map("quality_score")
+  createdAt    DateTime   @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt    DateTime   @updatedAt @map("updated_at") @db.DateTime(3)
+  publishedAt  DateTime?  @map("published_at") @db.DateTime(3)
 
   // Relations
-  author            User                @relation("GameAuthor", fields: [authorId], references: [id])
-  parentGame        Game?               @relation("GameForks", fields: [forkedFrom], references: [id])
-  forks             Game[]              @relation("GameForks")
+  author             User                @relation("GameAuthor", fields: [authorId], references: [id])
+  parentGame         Game?               @relation("GameForks", fields: [forkedFrom], references: [id])
+  forks              Game[]              @relation("GameForks")
   socialInteractions SocialInteraction[] @relation("GameInteractions")
-  comments          Comment[]           @relation("GameComments")
-  earnings          CreatorEarning[]    @relation("GameEarnings")
+  comments           Comment[]           @relation("GameComments")
+  earnings           CreatorEarning[]    @relation("GameEarnings")
+  bundles            GameBundle[]        @relation("GameBundles")
 
   @@index([authorId])
-  @@index([gameType, qualityScore(sort: Desc)])
+  @@index([gameType, qualityScore])
   @@index([forkedFrom])
-  @@index([status, publishedAt(sort: Desc)])
-  @@index([status, playCount(sort: Desc)])
+  @@index([status, publishedAt])
+  @@index([status, playCount])
   @@map("games")
+}
+
+// ==================== 游戏代码存储（原 MongoDB game_bundles） ====================
+
+model GameBundle {
+  id             String   @id @default(uuid()) @db.VarChar(36)
+  gameId         String   @map("game_id") @db.VarChar(36)
+  version        Int      @default(1)
+  htmlCode       String   @map("html_code") @db.LongText
+  cssCode        String?  @map("css_code") @db.LongText
+  jsCode         String?  @map("js_code") @db.LongText
+  spec           Json?
+  aiConversation Json?    @map("ai_conversation")
+  generationMeta Json?    @map("generation_meta")
+  metadata       Json?
+  previewUrl     String?  @map("preview_url")
+  codeSizeBytes  Int?     @map("code_size_bytes")
+  createdAt      DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  game Game @relation("GameBundles", fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@unique([gameId, version], name: "uk_game_version")
+  @@index([gameId])
+  @@index([createdAt])
+  @@map("game_bundles")
+}
+
+// ==================== 游戏模板（原 MongoDB game_templates） ====================
+
+model GameTemplate {
+  id         String   @id @default(uuid()) @db.VarChar(36)
+  templateId String   @unique @map("template_id") @db.VarChar(255)
+  gameType   String?  @map("game_type") @db.VarChar(32)
+  content    Json?
+  createdAt  DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  @@index([gameType])
+  @@map("game_templates")
 }
 
 // ==================== 社交互动 ====================
@@ -148,15 +189,14 @@ enum InteractionAction {
 
 model SocialInteraction {
   id         BigInt                @id @default(autoincrement())
-  userId     String                @map("user_id") @db.Uuid
+  userId     String                @map("user_id") @db.VarChar(36)
   targetType InteractionTargetType @map("target_type")
-  targetId   String                @map("target_id") @db.Uuid
+  targetId   String                @map("target_id") @db.VarChar(36)
   action     InteractionAction
-  metadata   Json?                 @db.JsonB // { play_duration, score, device }
-  createdAt  DateTime              @default(now()) @map("created_at") @db.Timestamptz
+  metadata   Json?
+  createdAt  DateTime              @default(now()) @map("created_at") @db.DateTime(3)
 
-  // Relations
-  user User @relation("UserInteractions", fields: [userId], references: [id])
+  user User  @relation("UserInteractions", fields: [userId], references: [id])
   game Game? @relation("GameInteractions", fields: [targetId], references: [id])
 
   @@unique([userId, targetType, targetId, action], name: "unique_interaction")
@@ -167,16 +207,16 @@ model SocialInteraction {
 
 model UserFollow {
   id          BigInt   @id @default(autoincrement())
-  followerId  String   @map("follower_id") @db.Uuid
-  followingId String   @map("following_id") @db.Uuid
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  followerId  String   @map("follower_id") @db.VarChar(36)
+  followingId String   @map("following_id") @db.VarChar(36)
+  createdAt   DateTime @default(now()) @map("created_at") @db.DateTime(3)
 
   follower  User @relation("FollowerUser", fields: [followerId], references: [id], onDelete: Cascade)
   following User @relation("FollowingUser", fields: [followingId], references: [id], onDelete: Cascade)
 
   @@unique([followerId, followingId], name: "unique_follow")
-  @@index([followingId, createdAt(sort: Desc)])
-  @@index([followerId, createdAt(sort: Desc)])
+  @@index([followingId, createdAt])
+  @@index([followerId, createdAt])
   @@map("user_follows")
 }
 
@@ -189,23 +229,22 @@ enum CommentStatus {
 }
 
 model Comment {
-  id        String        @id @default(uuid()) @db.Uuid
-  gameId    String        @map("game_id") @db.Uuid
-  userId    String        @map("user_id") @db.Uuid
-  parentId  String?       @map("parent_id") @db.Uuid
-  content   String
+  id        String        @id @default(uuid()) @db.VarChar(36)
+  gameId    String        @map("game_id") @db.VarChar(36)
+  userId    String        @map("user_id") @db.VarChar(36)
+  parentId  String?       @map("parent_id") @db.VarChar(36)
+  content   String        @db.Text
   likeCount Int           @default(0) @map("like_count")
   status    CommentStatus @default(visible)
-  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt DateTime      @updatedAt @map("updated_at") @db.Timestamptz
+  createdAt DateTime      @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime      @updatedAt @map("updated_at") @db.DateTime(3)
 
-  // Relations
-  game     Game      @relation("GameComments", fields: [gameId], references: [id])
-  user     User      @relation("UserComments", fields: [userId], references: [id])
-  parent   Comment?  @relation("CommentReplies", fields: [parentId], references: [id])
-  replies  Comment[] @relation("CommentReplies")
+  game    Game      @relation("GameComments", fields: [gameId], references: [id])
+  user    User      @relation("UserComments", fields: [userId], references: [id])
+  parent  Comment?  @relation("CommentReplies", fields: [parentId], references: [id])
+  replies Comment[] @relation("CommentReplies")
 
-  @@index([gameId, createdAt(sort: Desc)])
+  @@index([gameId, createdAt])
   @@index([userId])
   @@index([parentId])
   @@map("comments")
@@ -228,23 +267,22 @@ enum EarningStatus {
 
 model CreatorEarning {
   id          BigInt        @id @default(autoincrement())
-  creatorId   String        @map("creator_id") @db.Uuid
-  gameId      String?       @map("game_id") @db.Uuid
+  creatorId   String        @map("creator_id") @db.VarChar(36)
+  gameId      String?       @map("game_id") @db.VarChar(36)
   earningType EarningType   @map("earning_type")
   amount      Decimal       @db.Decimal(12, 4)
   currency    String        @default("CNY") @db.VarChar(3)
   status      EarningStatus @default(pending)
   periodStart DateTime?     @map("period_start") @db.Date
   periodEnd   DateTime?     @map("period_end") @db.Date
-  settledAt   DateTime?     @map("settled_at") @db.Timestamptz
-  createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  settledAt   DateTime?     @map("settled_at") @db.DateTime(3)
+  createdAt   DateTime      @default(now()) @map("created_at") @db.DateTime(3)
 
-  // Relations
   creator User  @relation("CreatorEarnings", fields: [creatorId], references: [id])
   game    Game? @relation("GameEarnings", fields: [gameId], references: [id])
 
   @@index([creatorId, status])
-  @@index([creatorId, createdAt(sort: Desc)])
+  @@index([creatorId, createdAt])
   @@map("creator_earnings")
 }
 
@@ -261,19 +299,18 @@ enum NotificationType {
 }
 
 model Notification {
-  id        String           @id @default(uuid()) @db.Uuid
-  userId    String           @map("user_id") @db.Uuid
-  actorId   String?          @map("actor_id") @db.Uuid
+  id        String           @id @default(uuid()) @db.VarChar(36)
+  userId    String           @map("user_id") @db.VarChar(36)
+  actorId   String?          @map("actor_id") @db.VarChar(36)
   type      NotificationType
-  targetId  String?          @map("target_id") @db.Uuid
-  content   String?
+  targetId  String?          @map("target_id") @db.VarChar(36)
+  content   String?          @db.Text
   isRead    Boolean          @default(false) @map("is_read")
-  metadata  Json?            @db.JsonB
-  createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  metadata  Json?
+  createdAt DateTime         @default(now()) @map("created_at") @db.DateTime(3)
 
-  // Relations
   user User @relation("UserNotifications", fields: [userId], references: [id])
 
-  @@index([userId, isRead, createdAt(sort: Desc)])
+  @@index([userId, isRead, createdAt])
   @@map("notifications")
 }

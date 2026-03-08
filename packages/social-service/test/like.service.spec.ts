@@ -74,18 +74,8 @@ describe('LikeService', () => {
       }
     };
 
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        LikeService,
-        {
-          provide: PrismaService,
-          useValue: mockPrismaService,
-        },
-      ],
-    }).compile();
-
-    service = module.get<any>(LikeService);
-    prismaService = module.get<PrismaService>(PrismaService);
+    service = new LikeService(mockPrismaService as any);
+    prismaService = mockPrismaService as any;
 
     jest.clearAllMocks();
   });

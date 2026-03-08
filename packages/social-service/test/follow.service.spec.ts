@@ -6,11 +6,15 @@ describe('FollowService', () => {
   let service: any;
   let prismaService: PrismaService;
 
-  const mockPrismaService = {
+  const mockPrismaService: any = {
     socialInteraction: {
       findUnique: jest.fn(),
       create: jest.fn(),
       delete: jest.fn(),
+      findMany: jest.fn(),
+      count: jest.fn(),
+    },
+    follow: {
       findMany: jest.fn(),
       count: jest.fn(),
     },
@@ -22,7 +26,7 @@ describe('FollowService', () => {
 
   beforeEach(async () => {
     const FollowService = class {
-      constructor(private prisma: PrismaService) {}
+      constructor(private prisma: any) {}
 
       async follow(followerId: string, followingId: string) {
         const existingFollow = await this.prisma.socialInteraction.findUnique({
@@ -128,18 +132,8 @@ describe('FollowService', () => {
       }
     };
 
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        FollowService,
-        {
-          provide: PrismaService,
-          useValue: mockPrismaService,
-        },
-      ],
-    }).compile();
-
-    service = module.get<any>(FollowService);
-    prismaService = module.get<PrismaService>(PrismaService);
+    service = new FollowService(mockPrismaService as any);
+    prismaService = mockPrismaService as any;
 
     jest.clearAllMocks();
   });
@@ -225,7 +219,7 @@ describe('FollowService', () => {
         },
       ];
 
-      mockPrismaService.follow.findMany.mockResolvedValueOnce(followers);
+      mockPrismaService.socialInteraction.findMany.mockResolvedValueOnce(followers);
 
       const result = await service.getFollowers('user-456', 20, 0);
 
@@ -239,7 +233,7 @@ describe('FollowService', () => {
     });
 
     it('should support pagination for followers', async () => {
-      mockPrismaService.follow.findMany.mockResolvedValueOnce([]);
+      mockPrismaService.socialInteraction.findMany.mockResolvedValueOnce([]);
 
       await service.getFollowers('user-456', 10, 20);
 
@@ -260,7 +254,7 @@ describe('FollowService', () => {
         },
       ];
 
-      mockPrismaService.follow.findMany.mockResolvedValueOnce(following);
+      mockPrismaService.socialInteraction.findMany.mockResolvedValueOnce(following);
 
       const result = await service.getFollowing('user-123', 20, 0);
 
@@ -270,7 +264,7 @@ describe('FollowService', () => {
 
   describe('count', () => {
     it('should return follower count', async () => {
-      mockPrismaService.follow.count.mockResolvedValueOnce(42);
+      mockPrismaService.socialInteraction.count.mockResolvedValueOnce(42);
 
       const count = await service.getFollowerCount('user-456');
 
@@ -281,7 +275,7 @@ describe('FollowService', () => {
     });
 
     it('should return following count', async () => {
-      mockPrismaService.follow.count.mockResolvedValueOnce(15);
+      mockPrismaService.socialInteraction.count.mockResolvedValueOnce(15);
 
       const count = await service.getFollowingCount('user-123');
 

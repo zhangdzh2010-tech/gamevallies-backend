@@ -8,13 +8,12 @@ export class TagService {
   async getTrendingTags(page: number = 1, limit: number = 20) {
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
-    // Tags are stored as String[] on Game model
+    // Tags are stored as JSON on Game model (MySQL)
     // Aggregate tags from recently published games
     const games = await this.prisma.game.findMany({
       where: {
         status: 'published' as const,
         publishedAt: { gte: thirtyDaysAgo },
-        tags: { isEmpty: false },
       },
       select: { tags: true },
     });
@@ -22,7 +21,7 @@ export class TagService {
     // Count tag occurrences
     const tagCounts = new Map<string, number>();
     for (const game of games) {
-      for (const tag of game.tags) {
+      for (const tag of (game.tags as string[]) || []) {
         tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
       }
     }
@@ -54,14 +53,13 @@ export class TagService {
     const games = await this.prisma.game.findMany({
       where: {
         status: 'published' as const,
-        tags: { isEmpty: false },
       },
       select: { tags: true },
     });
 
     const tagCounts = new Map<string, number>();
     for (const game of games) {
-      for (const tag of game.tags) {
+      for (const tag of (game.tags as string[]) || []) {
         tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
       }
     }

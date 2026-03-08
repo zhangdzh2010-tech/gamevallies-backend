@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**Location**: `/sessions/magical-gifted-pascal/mnt/willgame/playforge-backend/packages/ai-engine`
+**Location**: `/sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend/packages/ai-engine`
 
 **Status**: ✅ COMPLETE - All files implemented with full functionality
 
@@ -606,8 +606,8 @@ gunicorn -w 4 -k uvicorn.workers.UvicornWorker src.main:app
 
 ### Docker
 ```bash
-docker build -t playforge-ai-engine .
-docker run -p 8000:8000 playforge-ai-engine
+docker build -t gamevallies-ai-engine .
+docker run -p 8000:8000 gamevallies-ai-engine
 ```
 
 ---
