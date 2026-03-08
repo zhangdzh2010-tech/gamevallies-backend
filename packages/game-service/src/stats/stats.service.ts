@@ -9,14 +9,15 @@ export class StatsService {
 
   async incrementPlayCount(gameId: string): Promise<void> {
     try {
-      await this.prisma.game.update({
+      const updated = await this.prisma.game.update({
         where: { id: gameId },
-        data: {
-          playCount: {
-            increment: 1,
-          },
-        },
+        data: { playCount: { increment: 1 } },
+        select: { playCount: true },
       });
+      // Refresh quality score every 10 plays
+      if (Number(updated.playCount) % 10 === 0) {
+        setImmediate(() => this.refreshQualityScore(gameId));
+      }
     } catch (error) {
       this.logger.error(`Failed to increment play count: ${error.message}`);
       throw error;
@@ -27,12 +28,10 @@ export class StatsService {
     try {
       await this.prisma.game.update({
         where: { id: gameId },
-        data: {
-          likeCount: {
-            increment: delta,
-          },
-        },
+        data: { likeCount: { increment: delta } },
       });
+      // Refresh quality score on every like (likes are less frequent)
+      setImmediate(() => this.refreshQualityScore(gameId));
     } catch (error) {
       this.logger.error(`Failed to increment like count: ${error.message}`);
       throw error;
@@ -68,6 +67,56 @@ export class StatsService {
     } catch (error) {
       this.logger.error(`Failed to increment comment count: ${error.message}`);
       throw error;
+    }
+  }
+
+  /**
+   * P2.1 – Recompute qualityScore after behavior data accumulates.
+   * Called after play/like events once playCount >= 10.
+   * Formula: 40% AI score + 40% retention + 20% like rate
+   */
+  async refreshQualityScore(gameId: string): Promise<void> {
+    try {
+      const game = await this.prisma.game.findUnique({
+        where: { id: gameId },
+        select: {
+          qualityScore: true,
+          playCount: true,
+          likeCount: true,
+          avgPlayTime: true,
+        },
+      });
+      if (!game) return;
+
+      const playCount = Number(game.playCount ?? 0);
+      if (playCount < 10) return; // not enough data yet
+
+      const likeCount = Number(game.likeCount ?? 0);
+      const avgPlayTime = game.avgPlayTime ?? 0;
+      const currentAiScore = game.qualityScore ?? 5.0;
+      const expectedPlayTime = 60.0;
+
+      const likeRate = Math.min(likeCount / playCount, 1.0);
+      const likeScore = likeRate * 10.0;
+      const retentionRatio = Math.min(avgPlayTime / expectedPlayTime, 2.0);
+      const retentionScore = Math.min(retentionRatio * 5.0, 10.0);
+
+      const newScore = Math.min(
+        10,
+        Math.max(0, 0.4 * currentAiScore + 0.4 * retentionScore + 0.2 * likeScore),
+      );
+
+      await this.prisma.game.update({
+        where: { id: gameId },
+        data: { qualityScore: Math.round(newScore * 100) / 100 },
+      });
+
+      this.logger.log(
+        `qualityScore refreshed ${gameId}: ${currentAiScore.toFixed(2)} → ${newScore.toFixed(2)}` +
+          ` (plays=${playCount}, likes=${likeCount}, avgTime=${avgPlayTime.toFixed(1)}s)`,
+      );
+    } catch (error) {
+      this.logger.error(`Failed to refresh quality score: ${error.message}`);
     }
   }
 

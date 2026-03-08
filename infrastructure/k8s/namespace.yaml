@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: playforge
+  name: gamevallies
   labels:
-    name: playforge
+    name: gamevallies
     environment: production
   annotations:
     description: "PlayForge gaming platform namespace"

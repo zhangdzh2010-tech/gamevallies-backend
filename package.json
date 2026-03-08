@@ -1,5 +1,5 @@
 {
-  "name": "playforge-backend",
+  "name": "gamevallies-backend",
   "version": "1.0.0",
   "private": true,
   "description": "PlayForge Backend - AI-Powered Game Creation Platform",
@@ -27,6 +27,7 @@
     "db:migrate": "npx prisma migrate dev",
     "db:push": "npx prisma db push",
     "db:seed": "npx ts-node prisma/seed.ts",
+    "db:init-games": "npx ts-node scripts/init-games.ts",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f"

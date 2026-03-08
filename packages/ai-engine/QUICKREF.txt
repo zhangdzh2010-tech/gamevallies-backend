@@ -4,11 +4,11 @@
 
 PROJECT LOCATION
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-/sessions/magical-gifted-pascal/mnt/willgame/playforge-backend/packages/ai-engine
+/sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend/packages/ai-engine
 
 INSTANT START (LOCAL)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-cd /sessions/magical-gifted-pascal/mnt/willgame/playforge-backend/packages/ai-engine
+cd /sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend/packages/ai-engine
 pip install -r requirements.txt
 python -m uvicorn src.main:app --reload
 
@@ -68,8 +68,8 @@ Copy .env.example to .env and configure:
 
 DOCKER
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Build:  docker build -t playforge-ai-engine:latest .
-Run:    docker run -p 8000:8000 playforge-ai-engine:latest
+Build:  docker build -t gamevallies-ai-engine:latest .
+Run:    docker run -p 8000:8000 gamevallies-ai-engine:latest
 
 TESTING
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

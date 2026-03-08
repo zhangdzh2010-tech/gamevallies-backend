@@ -34,7 +34,7 @@ describe('ForkService', () => {
 
   beforeEach(async () => {
     const ForkService = class {
-      constructor(private prisma: PrismaService) {}
+      constructor(private prisma: any) {}
 
       async forkGame(sourceGameId: string, userId: string) {
         const sourceGame = await this.prisma.game.findUnique({
@@ -103,18 +103,8 @@ describe('ForkService', () => {
       }
     };
 
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        ForkService,
-        {
-          provide: PrismaService,
-          useValue: mockMockPrismaService,
-        },
-      ],
-    }).compile();
-
-    service = module.get<any>(ForkService);
-    prismaService = module.get<PrismaService>(PrismaService);
+    service = new ForkService(mockMockPrismaService as any);
+    prismaService = mockMockPrismaService as any;
 
     jest.clearAllMocks();
   });

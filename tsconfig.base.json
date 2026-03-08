@@ -20,8 +20,8 @@
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "paths": {
-      "@playforge/shared": ["packages/shared/src"],
-      "@playforge/shared/*": ["packages/shared/src/*"]
+      "@gamevallies/shared": ["packages/shared/src"],
+      "@gamevallies/shared/*": ["packages/shared/src/*"]
     }
   },
   "exclude": ["node_modules", "dist"]

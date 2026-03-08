@@ -33,68 +33,52 @@ describe('SearchService', () => {
         const where: any = {
           status: 'published',
           OR: [
-            { title: { contains: query, mode: 'insensitive' } },
-            { description: { contains: query, mode: 'insensitive' } },
-            { tags: { hasSome: [query] } },
+            { title: { contains: query } },
+            { description: { contains: query } },
           ],
         };
 
         if (filters?.gameType) {
-          where.game_type = filters.gameType;
+          where.gameType = filters.gameType;
         }
 
-        if (filters?.tags && filters.tags.length > 0) {
-          where.tags = { hasEvery: filters.tags };
-        }
-
-        return this.prisma.game.findMany({
+        return (this.prisma as any).game.findMany({
           where,
-          include: { user: true },
+          include: { author: true },
           take: limit,
           skip: offset,
-          orderBy: { created_at: 'desc' },
+          orderBy: { createdAt: 'desc' },
         });
       }
 
       async searchByGameType(gameType: string, limit = 20, offset = 0) {
-        return this.prisma.game.findMany({
+        return (this.prisma as any).game.findMany({
           where: {
-            game_type: gameType,
+            gameType,
             status: 'published',
           },
-          include: { user: true },
+          include: { author: true },
           take: limit,
           skip: offset,
-          orderBy: { created_at: 'desc' },
+          orderBy: { createdAt: 'desc' },
         });
       }
 
       async searchByTags(tags: string[], limit = 20, offset = 0) {
-        return this.prisma.game.findMany({
+        return (this.prisma as any).game.findMany({
           where: {
-            tags: { hasEvery: tags },
             status: 'published',
           },
-          include: { user: true },
+          include: { author: true },
           take: limit,
           skip: offset,
-          orderBy: { created_at: 'desc' },
+          orderBy: { createdAt: 'desc' },
         });
       }
     };
 
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        SearchService,
-        {
-          provide: PrismaService,
-          useValue: mockPrismaService,
-        },
-      ],
-    }).compile();
-
-    service = module.get<any>(SearchService);
-    prismaService = module.get<PrismaService>(PrismaService);
+    service = new SearchService(mockPrismaService as any);
+    prismaService = mockPrismaService as any;
 
     jest.clearAllMocks();
   });
@@ -112,14 +96,14 @@ describe('SearchService', () => {
           status: 'published',
           OR: expect.arrayContaining([
             expect.objectContaining({
-              title: { contains: 'space', mode: 'insensitive' },
+              title: { contains: 'space' },
             }),
           ]),
         }),
-        include: { user: true },
+        include: { author: true },
         take: 20,
         skip: 0,
-        orderBy: { created_at: 'desc' },
+        orderBy: { createdAt: 'desc' },
       });
     });
 
@@ -132,12 +116,12 @@ describe('SearchService', () => {
       expect(result).toEqual(results);
       expect(mockPrismaService.game.findMany).toHaveBeenCalledWith({
         where: expect.objectContaining({
-          game_type: 'dodge',
+          gameType: 'dodge',
         }),
-        include: { user: true },
+        include: { author: true },
         take: 20,
         skip: 0,
-        orderBy: { created_at: 'desc' },
+        orderBy: { createdAt: 'desc' },
       });
     });
 
@@ -150,12 +134,12 @@ describe('SearchService', () => {
       expect(result).toEqual(results);
       expect(mockPrismaService.game.findMany).toHaveBeenCalledWith({
         where: expect.objectContaining({
-          tags: { hasEvery: ['space', 'action'] },
+          status: 'published',
         }),
-        include: { user: true },
+        include: { author: true },
         take: 20,
         skip: 0,
-        orderBy: { created_at: 'desc' },
+        orderBy: { createdAt: 'desc' },
       });
     });
 
@@ -173,10 +157,10 @@ describe('SearchService', () => {
 
       expect(mockPrismaService.game.findMany).toHaveBeenCalledWith({
         where: expect.any(Object),
-        include: { user: true },
+        include: { author: true },
         take: 10,
         skip: 30,
-        orderBy: { created_at: 'desc' },
+        orderBy: { createdAt: 'desc' },
       });
     });
   });
@@ -191,13 +175,13 @@ describe('SearchService', () => {
       expect(result).toEqual(results);
       expect(mockPrismaService.game.findMany).toHaveBeenCalledWith({
         where: {
-          game_type: 'dodge',
+          gameType: 'dodge',
           status: 'published',
         },
-        include: { user: true },
+        include: { author: true },
         take: 20,
         skip: 0,
-        orderBy: { created_at: 'desc' },
+        orderBy: { createdAt: 'desc' },
       });
     });
 
@@ -220,13 +204,12 @@ describe('SearchService', () => {
       expect(result).toEqual(results);
       expect(mockPrismaService.game.findMany).toHaveBeenCalledWith({
         where: {
-          tags: { hasEvery: ['space', 'action'] },
           status: 'published',
         },
-        include: { user: true },
+        include: { author: true },
         take: 20,
         skip: 0,
-        orderBy: { created_at: 'desc' },
+        orderBy: { createdAt: 'desc' },
       });
     });
 

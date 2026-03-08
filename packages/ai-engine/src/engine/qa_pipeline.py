@@ -1,14 +1,15 @@
 """Stage 06: QA Pipeline – 6-checkpoint validation with auto-fix loop.
 
 Checkpoints:
-  L1  Syntax        – HTML structure parseable
+  L1  Syntax        – HTML structure parseable, required tags present
   L2  Security      – no forbidden APIs (eval, fetch, localStorage, …)
-  L3  Startup       – canvas present, game loop present, no obvious crash
-  L4  Playability   – touch events, game-over state, score variable
-  L5  Performance   – file size within limits, no obvious blocking loops
-  L6  Content Safety – basic keyword filter (production: WeChat msgSecCheck)
+  L3  Startup       – canvas present + sized, game loop present, no obvious crash
+  L4  Playability   – state-machine validated: gameOver SET to true, restart fn,
+                      score incremented, input handlers present
+  L5  Performance   – file size limits, blocking-loop detection (while/for infinite)
+  L6  Content Safety – word-boundary safe regex + Chinese keyword filter
 
-Auto-fix loop: on failure, build targeted fix-prompt → call Claude → retry (max 3×).
+Auto-fix loop: on failure, build targeted fix-prompt → call LLM → retry (max 3×).
 """
 
 from __future__ import annotations
@@ -43,12 +44,26 @@ FORBIDDEN_PATTERNS: List[Tuple[str, str]] = [
 ]
 
 # ---------------------------------------------------------------------------
-# L6 – Basic content safety keywords
+# L6 – Content safety: word-boundary English + Chinese keywords
 # ---------------------------------------------------------------------------
 
-UNSAFE_KEYWORDS = [
-    "violence", "gore", "blood", "porn", "sexy", "nude", "kill",
-    "hack", "exploit", "phishing", "malware",
+# Use \b word boundaries to avoid false positives (kill → skill)
+UNSAFE_EN_PATTERNS: List[Tuple[str, str]] = [
+    (r"\bviolence\b", "violence"),
+    (r"\bgore\b", "gore"),
+    (r"\bbloodpool\b|\bbloodsplatter\b", "blood imagery"),
+    (r"\bporn\b|\bpornograph", "explicit content"),
+    (r"\bnude\b|\bnudity\b", "nudity"),
+    (r"\bhack\b.*\bbank\b|\bphish", "phishing/hacking"),
+    (r"\bmalware\b|\bexploit\b", "malware/exploit"),
+]
+
+# Chinese unsafe keywords (no word boundary needed for CJK)
+UNSAFE_ZH_KEYWORDS: List[Tuple[str, str]] = [
+    ("色情", "adult content"),
+    ("赌博", "gambling"),
+    ("暴力血腥", "gore"),
+    ("政治敏感", "political content"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -83,35 +98,29 @@ class QAPipeline:
         warnings: List[QACheckError] = []
         summary: dict = {}
 
-        # L1 – Syntax
         l1_errors = self._check_l1_syntax(html_code)
         summary["L1_syntax"] = len(l1_errors) == 0
         errors.extend(l1_errors)
 
-        # L2 – Security
         l2_errors = self._check_l2_security(html_code)
         summary["L2_security"] = len(l2_errors) == 0
         errors.extend(l2_errors)
 
-        # L3 – Startup
         l3_errors, l3_warnings = self._check_l3_startup(html_code)
         summary["L3_startup"] = len(l3_errors) == 0
         errors.extend(l3_errors)
         warnings.extend(l3_warnings)
 
-        # L4 – Playability
         l4_errors, l4_warnings = self._check_l4_playability(html_code)
         summary["L4_playability"] = len(l4_errors) == 0
         errors.extend(l4_errors)
         warnings.extend(l4_warnings)
 
-        # L5 – Performance / size
         l5_errors, l5_warnings = self._check_l5_performance(html_code)
         summary["L5_performance"] = len(l5_errors) == 0
         errors.extend(l5_errors)
         warnings.extend(l5_warnings)
 
-        # L6 – Content safety
         l6_errors = self._check_l6_content_safety(html_code)
         summary["L6_content"] = len(l6_errors) == 0
         errors.extend(l6_errors)
@@ -133,7 +142,7 @@ class QAPipeline:
         game_spec: Optional[GameSpec] = None,
         max_retries: int = None,
     ) -> QAResult:
-        max_retries = max_retries or settings.QA_MAX_RETRIES
+        max_retries = max_retries if max_retries is not None else settings.QA_MAX_RETRIES
 
         for attempt in range(max_retries + 1):
             result = self.check(code)
@@ -148,10 +157,9 @@ class QAPipeline:
                 logger.warning("QA failed but LLM auto-fix disabled (mock mode)")
                 break
 
-            logger.info(f"QA failed attempt {attempt}, triggering auto-fix. Errors: {len(result.errors)}")
+            logger.info(f"QA attempt {attempt} failed ({len(result.errors)} errors), triggering LLM auto-fix")
             code = await self._fix_with_llm(code, result.errors, game_spec)
 
-        # Final check after last fix attempt
         final = self.check(code)
         return QAResult(
             success=final.passed,
@@ -161,25 +169,45 @@ class QAPipeline:
         )
 
     # ------------------------------------------------------------------
-    # Individual checkpoint implementations
+    # L1: Syntax – structural HTML completeness
     # ------------------------------------------------------------------
 
     def _check_l1_syntax(self, code: str) -> List[QACheckError]:
         errors = []
         lower = code.lower()
-        for tag in ("<html", "<body", "</body>", "</html>"):
+        for tag in ("<html", "<head", "<body", "</body>", "</html>"):
             if tag not in lower:
                 errors.append(QACheckError(
                     type="L1_syntax",
                     message=f"Missing required HTML tag: {tag}",
                     severity="error",
                 ))
+        # Must start with DOCTYPE
+        if not re.search(r"<!doctype\s+html", lower):
+            errors.append(QACheckError(
+                type="L1_syntax",
+                message="Missing <!DOCTYPE html> declaration",
+                severity="error",
+            ))
+        # charset meta
+        if "charset" not in lower:
+            errors.append(QACheckError(
+                type="L1_syntax",
+                message="Missing charset meta tag",
+                severity="error",
+            ))
         return errors
+
+    # ------------------------------------------------------------------
+    # L2: Security – forbidden API usage
+    # ------------------------------------------------------------------
 
     def _check_l2_security(self, code: str) -> List[QACheckError]:
         errors = []
         for pattern, label in FORBIDDEN_PATTERNS:
-            if re.search(pattern, code, re.IGNORECASE):
+            # Case-sensitive: Function() is dangerous eval-equivalent (capital F);
+            # lowercase function declarations must not be flagged.
+            if re.search(pattern, code):
                 errors.append(QACheckError(
                     type="L2_security",
                     message=f"Forbidden API detected: {label}",
@@ -187,56 +215,137 @@ class QAPipeline:
                 ))
         return errors
 
+    # ------------------------------------------------------------------
+    # L3: Startup – canvas initialisation and game loop
+    # ------------------------------------------------------------------
+
     def _check_l3_startup(self, code: str) -> Tuple[List[QACheckError], List[QACheckError]]:
         errors, warnings = [], []
-        if "<canvas" not in code.lower():
+
+        if not re.search(r"<canvas", code, re.IGNORECASE):
             errors.append(QACheckError(
                 type="L3_startup",
-                message="No <canvas> element found – game cannot render",
+                message="No <canvas> element – game cannot render",
                 severity="error",
             ))
+
+        if "getContext" not in code:
+            errors.append(QACheckError(
+                type="L3_startup",
+                message="No canvas.getContext() – canvas not initialised",
+                severity="error",
+            ))
+
+        # Canvas must have width/height set (not just declared)
+        if not re.search(r"canvas\.(width|height)\s*=", code):
+            errors.append(QACheckError(
+                type="L3_startup",
+                message="Canvas width/height never set – game renders at 0×0",
+                severity="error",
+            ))
+
         if "requestAnimationFrame" not in code and "setInterval" not in code:
             warnings.append(QACheckError(
                 type="L3_startup",
                 message="No game loop (requestAnimationFrame / setInterval) detected",
                 severity="warning",
             ))
-        if "getContext" not in code:
+
+        # Detect obvious JS syntax errors: unmatched braces
+        open_braces = code.count("{")
+        close_braces = code.count("}")
+        if abs(open_braces - close_braces) > 5:
             errors.append(QACheckError(
                 type="L3_startup",
-                message="No canvas.getContext() call – canvas not initialised",
+                message=f"Likely JS syntax error: {open_braces} open braces vs {close_braces} close braces",
                 severity="error",
             ))
+
         return errors, warnings
+
+    # ------------------------------------------------------------------
+    # L4: Playability – state-machine validation (P0 improved version)
+    # ------------------------------------------------------------------
 
     def _check_l4_playability(self, code: str) -> Tuple[List[QACheckError], List[QACheckError]]:
         errors, warnings = [], []
-        has_touch = any(ev in code for ev in ("touchstart", "touchmove", "touchend"))
+
+        # ── game-over state: must be ASSIGNED true, not just declared ──
+        gameover_set = bool(re.search(
+            r"(gameOver|game[._]over|isOver|game_over)\s*=\s*true",
+            code, re.IGNORECASE,
+        ))
+        # Also accept patterns like: state = 'gameover', state = states.OVER
+        gameover_state_change = bool(re.search(
+            r"(state|gameState)\s*=\s*['\"]?(gameover|game_over|over|ended|lost)['\"]?",
+            code, re.IGNORECASE,
+        ))
+        if not gameover_set and not gameover_state_change:
+            errors.append(QACheckError(
+                type="L4_playability",
+                message="Game-over state never set to true – game cannot end",
+                severity="error",
+            ))
+
+        # ── restart / reset logic ──
+        has_restart = bool(re.search(
+            r"function\s+(restart|reset|init|newGame|startGame)\s*\(",
+            code, re.IGNORECASE,
+        ))
+        # Accept arrow fn / method form too
+        has_restart = has_restart or bool(re.search(
+            r"(restart|reset|newGame)\s*[=:]\s*(function|\(|\(\))",
+            code, re.IGNORECASE,
+        ))
+        if not has_restart:
+            warnings.append(QACheckError(
+                type="L4_playability",
+                message="No restart/reset function detected – player cannot retry",
+                severity="warning",
+            ))
+
+        # ── score system: must be incremented, not just declared ──
+        has_score_increment = bool(re.search(
+            r"score\s*[\+\-]=|score\s*\+\+|\bscore\b\s*=\s*\bscore\b\s*\+",
+            code, re.IGNORECASE,
+        ))
+        if not has_score_increment:
+            warnings.append(QACheckError(
+                type="L4_playability",
+                message="Score variable exists but is never incremented",
+                severity="warning",
+            ))
+
+        # ── touch / keyboard input ──
+        has_touch = bool(re.search(r"touchstart|touchmove|touchend", code))
+        has_keyboard = bool(re.search(r"keydown|keyup|keypress|ArrowUp|ArrowDown", code))
+        has_mouse = bool(re.search(r"click|mousedown|mousemove", code))
+        if not has_touch and not has_keyboard and not has_mouse:
+            errors.append(QACheckError(
+                type="L4_playability",
+                message="No user input handlers – game is not interactive",
+                severity="error",
+            ))
         if not has_touch:
             warnings.append(QACheckError(
                 type="L4_playability",
                 message="No touch event handlers – game may not work on mobile",
                 severity="warning",
             ))
-        if "game.over" not in code and "gameOver" not in code and "game_over" not in code:
-            errors.append(QACheckError(
-                type="L4_playability",
-                message="No game-over state detected – game cannot end",
-                severity="error",
-            ))
-        if "score" not in code.lower():
-            warnings.append(QACheckError(
-                type="L4_playability",
-                message="No score variable detected",
-                severity="warning",
-            ))
+
+        # ── viewport meta for mobile ──
         if "viewport" not in code.lower():
             warnings.append(QACheckError(
                 type="L4_playability",
                 message="Missing viewport meta tag for mobile",
                 severity="warning",
             ))
+
         return errors, warnings
+
+    # ------------------------------------------------------------------
+    # L5: Performance – size + blocking loop detection (P0 improved)
+    # ------------------------------------------------------------------
 
     def _check_l5_performance(self, code: str) -> Tuple[List[QACheckError], List[QACheckError]]:
         errors, warnings = [], []
@@ -245,7 +354,7 @@ class QAPipeline:
         if size_kb > 500:
             errors.append(QACheckError(
                 type="L5_performance",
-                message=f"File size {size_kb:.1f} KB exceeds 500 KB limit",
+                message=f"File size {size_kb:.1f} KB exceeds 500 KB hard limit",
                 severity="error",
             ))
         elif size_kb > 300:
@@ -254,26 +363,62 @@ class QAPipeline:
                 message=f"File size {size_kb:.1f} KB exceeds 300 KB WeChat limit",
                 severity="warning",
             ))
-
-        # Detect potential infinite loops (while(true) without break)
-        if re.search(r"while\s*\(\s*true\s*\)", code) and "break" not in code:
-            errors.append(QACheckError(
+        elif size_kb < 2:
+            warnings.append(QACheckError(
                 type="L5_performance",
-                message="Potential infinite loop detected (while(true) with no break)",
-                severity="error",
+                message=f"File size only {size_kb:.1f} KB – game may be too minimal",
+                severity="warning",
             ))
+
+        # Detect while(true) / for(;;) without break inside script tags
+        script_match = re.search(r"<script[^>]*>(.*?)</script>", code, re.DOTALL | re.IGNORECASE)
+        if script_match:
+            script = script_match.group(1)
+            has_infinite_while = bool(re.search(r"while\s*\(\s*true\s*\)", script))
+            has_infinite_for = bool(re.search(r"for\s*\(\s*;;\s*\)", script))
+            has_break = "break" in script
+            if (has_infinite_while or has_infinite_for) and not has_break:
+                errors.append(QACheckError(
+                    type="L5_performance",
+                    message="Potential infinite loop detected (while(true)/for(;;) with no break) – will freeze browser",
+                    severity="error",
+                ))
+
+            # Detect synchronous sleep-like patterns (busy wait)
+            if re.search(r"while\s*\(.*Date\.now\(\)|while\s*\(.*performance\.now\(\)", script):
+                errors.append(QACheckError(
+                    type="L5_performance",
+                    message="Busy-wait loop detected – blocks main thread",
+                    severity="error",
+                ))
+
         return errors, warnings
+
+    # ------------------------------------------------------------------
+    # L6: Content Safety – word-boundary English + Chinese (P0 improved)
+    # ------------------------------------------------------------------
 
     def _check_l6_content_safety(self, code: str) -> List[QACheckError]:
         errors = []
-        lower = code.lower()
-        for kw in UNSAFE_KEYWORDS:
-            if kw in lower:
+
+        # English: use pre-compiled word-boundary patterns
+        for pattern, label in UNSAFE_EN_PATTERNS:
+            if re.search(pattern, code, re.IGNORECASE):
                 errors.append(QACheckError(
                     type="L6_content",
-                    message=f"Potentially unsafe content keyword: '{kw}'",
+                    message=f"Unsafe content detected: {label}",
                     severity="error",
                 ))
+
+        # Chinese: substring match (CJK has no word boundaries)
+        for keyword, label in UNSAFE_ZH_KEYWORDS:
+            if keyword in code:
+                errors.append(QACheckError(
+                    type="L6_content",
+                    message=f"Unsafe content detected (ZH): {label}",
+                    severity="error",
+                ))
+
         return errors
 
     # ------------------------------------------------------------------

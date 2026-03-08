@@ -38,9 +38,12 @@ from ..api.models import (
 )
 from ..config.settings import settings
 from .code_generator import CodeGenerator
+from .code_reviewer import CodeReviewer
 from .dialogue_engine import DialogueEngine
 from .game_designer import GameDesigner
 from .qa_pipeline import QAPipeline
+from .quality_scorer import QualityScorer, QAStaticResult
+from .runtime_qa import run_runtime_qa
 from .template_engine import TemplateEngine
 
 logger = logging.getLogger(__name__)
@@ -57,6 +60,8 @@ class PipelineOrchestrator:
         self.template_engine = TemplateEngine()
         self.code_generator = CodeGenerator(llm_mode=settings.LLM_MODE)
         self.qa_pipeline = QAPipeline()
+        self.code_reviewer = CodeReviewer()
+        self.quality_scorer = QualityScorer()
 
     # ------------------------------------------------------------------
     # Main pipeline entry point (stages 02-06)
@@ -107,9 +112,34 @@ class PipelineOrchestrator:
         self._notify(progress_cb, PipelineStage.qa_checking, 75, "质量检测中…")
         qa_result = await self._stage_qa(code_result.html_code, game_spec)
 
+        # ── Stage 06b: Runtime QA (Playwright) ──────────────────────
+        self._notify(progress_cb, PipelineStage.qa_checking, 82, "运行时检测中…")
+        runtime_result = await run_runtime_qa(qa_result.code, timeout_s=6.0)
+
+        # ── Stage 06c: LLM Code Review ───────────────────────────────
+        self._notify(progress_cb, PipelineStage.qa_checking, 92, "AI 质量审查中…")
+        review_result = await self.code_reviewer.review(qa_result.code)
+
         self._notify(progress_cb, PipelineStage.completed, 100, "生成完成！")
 
         elapsed = int(time.time() * 1000) - start_ms
+        code_bytes = len(qa_result.code.encode("utf-8"))
+
+        # ── Quality Scoring ──────────────────────────────────────────
+        static_result = QAStaticResult(
+            passed=qa_result.success,
+            error_count=len(qa_result.last_errors),
+            warning_count=0,
+            retries=qa_result.retries,
+            strategy=code_result.strategy,
+            code_size_bytes=code_bytes,
+        )
+        score_breakdown = self.quality_scorer.compute(
+            static=static_result,
+            runtime=runtime_result,
+            review=review_result,
+        )
+
         return RunPipelineResponse(
             game_id=request.game_id,
             html_code=qa_result.code,
@@ -118,7 +148,9 @@ class PipelineOrchestrator:
             qa_passed=qa_result.success,
             qa_retries=qa_result.retries,
             generation_time_ms=elapsed,
-            code_size_bytes=len(qa_result.code.encode("utf-8")),
+            code_size_bytes=code_bytes,
+            quality_score=score_breakdown.final_score,
+            quality_breakdown=score_breakdown.details,
         )
 
     # ------------------------------------------------------------------

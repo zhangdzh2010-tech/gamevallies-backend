@@ -1,4 +1,4 @@
-name: PlayForge CI/CD Pipeline
+name: Gamevallies CI/CD Pipeline
 
 on:
   push:
@@ -15,7 +15,7 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAMESPACE: willgame
-  KUBE_NAMESPACE: playforge
+  VOLC_REGION: cn-beijing
 
 jobs:
   # ============================================================
@@ -55,19 +55,20 @@ jobs:
     needs: lint
 
     services:
-      postgres:
-        image: postgres:16-alpine
+      mysql:
+        image: mysql:8.0
         env:
-          POSTGRES_DB: playforge_test
-          POSTGRES_USER: test_user
-          POSTGRES_PASSWORD: test_password
+          MYSQL_ROOT_PASSWORD: root_password
+          MYSQL_DATABASE: gamevallies_test
+          MYSQL_USER: test_user
+          MYSQL_PASSWORD: test_password
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "mysqladmin ping -h localhost -u test_user -ptest_password"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
         ports:
-          - 5432:5432
+          - 3306:3306
 
       redis:
         image: redis:7-alpine
@@ -78,16 +79,6 @@ jobs:
           --health-retries 5
         ports:
           - 6379:6379
-
-      mongo:
-        image: mongo:7-alpine
-        options: >-
-          --health-cmd mongosh
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 27017:27017
 
     steps:
       - name: Checkout code
@@ -104,28 +95,26 @@ jobs:
 
       - name: Generate Prisma client
         env:
-          DATABASE_URL: postgresql://test_user:test_password@localhost:5432/playforge_test
+          DATABASE_URL: mysql://test_user:test_password@localhost:3306/gamevallies_test
         run: npx prisma generate
 
       - name: Run database migrations
         env:
-          DATABASE_URL: postgresql://test_user:test_password@localhost:5432/playforge_test
+          DATABASE_URL: mysql://test_user:test_password@localhost:3306/gamevallies_test
         run: npx prisma migrate deploy
 
       - name: Run unit tests
         env:
-          DATABASE_URL: postgresql://test_user:test_password@localhost:5432/playforge_test
+          DATABASE_URL: mysql://test_user:test_password@localhost:3306/gamevallies_test
           REDIS_URL: redis://localhost:6379/0
-          MONGO_URL: mongodb://localhost:27017/playforge_test
           JWT_SECRET: test-secret-key-12345678901234567890
           NODE_ENV: test
         run: npm run test:unit -- --coverage
 
       - name: Run integration tests
         env:
-          DATABASE_URL: postgresql://test_user:test_password@localhost:5432/playforge_test
+          DATABASE_URL: mysql://test_user:test_password@localhost:3306/gamevallies_test
           REDIS_URL: redis://localhost:6379/0
-          MONGO_URL: mongodb://localhost:27017/playforge_test
           JWT_SECRET: test-secret-key-12345678901234567890
           NODE_ENV: test
         run: npm run test:integration
@@ -270,7 +259,7 @@ jobs:
         id: meta-user
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-user-service
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-user-service
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -286,14 +275,14 @@ jobs:
           push: true
           tags: ${{ steps.meta-user.outputs.tags }}
           labels: ${{ steps.meta-user.outputs.labels }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-user-service:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-user-service:buildcache,mode=max
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-user-service:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-user-service:buildcache,mode=max
 
       - name: Extract metadata (game-service)
         id: meta-game
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-game-service
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-game-service
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -309,14 +298,14 @@ jobs:
           push: true
           tags: ${{ steps.meta-game.outputs.tags }}
           labels: ${{ steps.meta-game.outputs.labels }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-game-service:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-game-service:buildcache,mode=max
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-game-service:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-game-service:buildcache,mode=max
 
       - name: Extract metadata (social-service)
         id: meta-social
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-social-service
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-social-service
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -332,14 +321,14 @@ jobs:
           push: true
           tags: ${{ steps.meta-social.outputs.tags }}
           labels: ${{ steps.meta-social.outputs.labels }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-social-service:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-social-service:buildcache,mode=max
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-social-service:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-social-service:buildcache,mode=max
 
       - name: Extract metadata (feed-service)
         id: meta-feed
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-feed-service
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-feed-service
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -355,14 +344,14 @@ jobs:
           push: true
           tags: ${{ steps.meta-feed.outputs.tags }}
           labels: ${{ steps.meta-feed.outputs.labels }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-feed-service:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-feed-service:buildcache,mode=max
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-feed-service:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-feed-service:buildcache,mode=max
 
       - name: Extract metadata (ai-engine)
         id: meta-ai
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-ai-engine
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-ai-engine
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -378,8 +367,8 @@ jobs:
           push: true
           tags: ${{ steps.meta-ai.outputs.tags }}
           labels: ${{ steps.meta-ai.outputs.labels }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-ai-engine:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-ai-engine:buildcache,mode=max
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-ai-engine:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-ai-engine:buildcache,mode=max
 
       - name: Image digest
         run: |
@@ -390,7 +379,7 @@ jobs:
           echo "ai-engine: ${{ steps.build-ai.outputs.digest }}"
 
   # ============================================================
-  # STAGE 7: Deploy to Staging
+  # STAGE 7: Deploy to Staging (火山引擎函数服务)
   # ============================================================
   deploy-staging:
     name: Deploy to Staging
@@ -399,61 +388,56 @@ jobs:
     if: github.ref == 'refs/heads/develop'
     environment:
       name: staging
-      url: https://staging-api.playforge.example.com
+      url: https://staging-api.gamevallies.com
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up kubectl
-        uses: azure/setup-kubectl@v3
-        with:
-          version: 'v1.28.0'
-
-      - name: Configure kubeconfig
-        env:
-          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG_STAGING }}
+      - name: Install Volcengine CLI
         run: |
-          mkdir -p $HOME/.kube
-          echo "$KUBE_CONFIG" | base64 -d > $HOME/.kube/config
-          chmod 600 $HOME/.kube/config
+          pip install --quiet volcengine-cli
+          volc configure set \
+            --access-key "${{ secrets.VOLC_ACCESSKEY }}" \
+            --secret-key "${{ secrets.VOLC_SECRETKEY }}" \
+            --region "${{ env.VOLC_REGION }}"
 
-      - name: Update Deployment images (staging)
+      - name: Deploy functions to staging
         env:
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          kubectl set image deployment/user-service \
-            user-service=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-user-service:${{ github.sha }} \
-            -n ${{ env.KUBE_NAMESPACE }} --record
+          SERVICES=("user-service" "game-service" "social-service" "feed-service" "ai-engine")
+          for SVC in "${SERVICES[@]}"; do
+            echo "Deploying gamevallies-${SVC}-staging ..."
+            volc faas update-function \
+              --region "${{ env.VOLC_REGION }}" \
+              --function-name "gamevallies-${SVC}-staging" \
+              --body "{\"ImageConfig\":{\"Image\":\"${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-${SVC}:${IMAGE_TAG}\"}}"
+          done
 
-          kubectl set image deployment/game-service \
-            game-service=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-game-service:${{ github.sha }} \
-            -n ${{ env.KUBE_NAMESPACE }} --record
-
-          kubectl set image deployment/social-service \
-            social-service=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-social-service:${{ github.sha }} \
-            -n ${{ env.KUBE_NAMESPACE }} --record
-
-          kubectl set image deployment/feed-service \
-            feed-service=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-feed-service:${{ github.sha }} \
-            -n ${{ env.KUBE_NAMESPACE }} --record
-
-          kubectl set image deployment/ai-engine \
-            ai-engine=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-ai-engine:${{ github.sha }} \
-            -n ${{ env.KUBE_NAMESPACE }} --record
-
-      - name: Wait for rollout to complete
+      - name: Wait for functions to become active
         run: |
-          kubectl rollout status deployment/user-service -n ${{ env.KUBE_NAMESPACE }} --timeout=5m
-          kubectl rollout status deployment/game-service -n ${{ env.KUBE_NAMESPACE }} --timeout=5m
-          kubectl rollout status deployment/social-service -n ${{ env.KUBE_NAMESPACE }} --timeout=5m
-          kubectl rollout status deployment/feed-service -n ${{ env.KUBE_NAMESPACE }} --timeout=5m
-          kubectl rollout status deployment/ai-engine -n ${{ env.KUBE_NAMESPACE }} --timeout=5m
+          SERVICES=("user-service" "game-service" "social-service" "feed-service" "ai-engine")
+          for SVC in "${SERVICES[@]}"; do
+            echo "Waiting for gamevallies-${SVC}-staging ..."
+            for i in $(seq 1 18); do
+              STATUS=$(volc faas get-function \
+                --region "${{ env.VOLC_REGION }}" \
+                --function-name "gamevallies-${SVC}-staging" \
+                --query "Result.Status" --output text 2>/dev/null || echo "Unknown")
+              echo "  Attempt $i: $STATUS"
+              [ "$STATUS" = "Active" ] && break
+              [ $i -eq 18 ] && echo "Timeout waiting for $SVC" && exit 1
+              sleep 10
+            done
+          done
 
       - name: Run smoke tests
+        env:
+          STAGING_BASE_URL: ${{ secrets.STAGING_BASE_URL }}
         run: |
-          kubectl run smoke-test --image=curlimages/curl:latest -n ${{ env.KUBE_NAMESPACE }} -- \
-            curl -f http://user-service:3000/health
+          curl -sf "${STAGING_BASE_URL}/api/v1/health" | grep -q "ok" || exit 1
+          echo "Smoke test passed"
 
       - name: Send Slack notification
         if: always()
@@ -465,7 +449,7 @@ jobs:
           fields: repo,message,commit,author
 
   # ============================================================
-  # STAGE 8: Deploy to Production (with approval)
+  # STAGE 8: Deploy to Production (火山引擎函数服务 Canary)
   # ============================================================
   deploy-production:
     name: Deploy to Production (Canary)
@@ -474,134 +458,129 @@ jobs:
     if: github.ref == 'refs/heads/main'
     environment:
       name: production
-      url: https://api.playforge.example.com
+      url: https://api.gamevallies.com
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up kubectl
-        uses: azure/setup-kubectl@v3
-        with:
-          version: 'v1.28.0'
-
-      - name: Configure kubeconfig
-        env:
-          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG_PRODUCTION }}
+      - name: Install Volcengine CLI
         run: |
-          mkdir -p $HOME/.kube
-          echo "$KUBE_CONFIG" | base64 -d > $HOME/.kube/config
-          chmod 600 $HOME/.kube/config
+          pip install --quiet volcengine-cli
+          volc configure set \
+            --access-key "${{ secrets.VOLC_ACCESSKEY }}" \
+            --secret-key "${{ secrets.VOLC_SECRETKEY }}" \
+            --region "${{ env.VOLC_REGION }}"
 
-      - name: Verify current state
-        run: |
-          kubectl get deployments -n ${{ env.KUBE_NAMESPACE }}
-          kubectl get pods -n ${{ env.KUBE_NAMESPACE }}
-
-      - name: Canary deployment - 10% traffic
+      - name: Publish new version for all services
+        id: publish
         env:
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          # Deploy to 1 out of 10 pods (10% traffic)
-          kubectl set image deployment/user-service \
-            user-service=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-user-service:${{ github.sha }} \
-            -n ${{ env.KUBE_NAMESPACE }} --record
-          
-          # Scale to 10 replicas (1 new, 9 old)
-          kubectl scale deployment/user-service --replicas=10 -n ${{ env.KUBE_NAMESPACE }}
-          
-          # Wait for new pods
-          sleep 30
-          kubectl get pods -n ${{ env.KUBE_NAMESPACE }} -l app=user-service
+          SERVICES=("user-service" "game-service" "social-service" "feed-service" "ai-engine")
+          for SVC in "${SERVICES[@]}"; do
+            echo "Updating image for gamevallies-${SVC} ..."
+            volc faas update-function \
+              --region "${{ env.VOLC_REGION }}" \
+              --function-name "gamevallies-${SVC}" \
+              --body "{\"ImageConfig\":{\"Image\":\"${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-${SVC}:${IMAGE_TAG}\"}}"
+          done
 
-      - name: Monitor canary metrics (10%)
+      - name: Wait for functions to become active
         run: |
-          sleep 300  # Monitor for 5 minutes
-          
-          # Check error rate
-          ERROR_RATE=$(kubectl logs -n ${{ env.KUBE_NAMESPACE }} -l app=user-service --tail=100 | grep -c ERROR || true)
-          
-          if [ $ERROR_RATE -gt 10 ]; then
-            echo "High error rate detected in canary deployment"
+          SERVICES=("user-service" "game-service" "social-service" "feed-service" "ai-engine")
+          for SVC in "${SERVICES[@]}"; do
+            for i in $(seq 1 18); do
+              STATUS=$(volc faas get-function \
+                --region "${{ env.VOLC_REGION }}" \
+                --function-name "gamevallies-${SVC}" \
+                --query "Result.Status" --output text 2>/dev/null || echo "Unknown")
+              echo "gamevallies-${SVC}: $STATUS (attempt $i)"
+              [ "$STATUS" = "Active" ] && break
+              [ $i -eq 18 ] && echo "Timeout for $SVC" && exit 1
+              sleep 10
+            done
+          done
+
+      - name: Canary 10% - shift traffic
+        run: |
+          SERVICES=("user-service" "game-service" "social-service" "feed-service" "ai-engine")
+          for SVC in "${SERVICES[@]}"; do
+            volc faas update-alias \
+              --region "${{ env.VOLC_REGION }}" \
+              --function-name "gamevallies-${SVC}" \
+              --alias-name "production" \
+              --body '{"RoutingConfig":{"AdditionalVersionWeights":[{"Qualifier":"$LATEST","Weight":10}]}}'
+          done
+
+      - name: Monitor canary at 10% (5 min)
+        env:
+          PROD_BASE_URL: ${{ secrets.PROD_BASE_URL }}
+        run: |
+          sleep 300
+          ERRORS=0
+          for i in $(seq 1 5); do
+            curl -sf "${PROD_BASE_URL}/api/v1/health" || ERRORS=$((ERRORS+1))
+            sleep 5
+          done
+          if [ $ERRORS -gt 1 ]; then
+            echo "Health check failures: $ERRORS/5 — aborting canary"
             exit 1
           fi
+          echo "Canary 10% healthy"
 
-      - name: Canary deployment - 50% traffic
+      - name: Canary 50% - shift traffic
         run: |
-          # Scale to 10 replicas (5 new, 5 old)
-          kubectl scale deployment/user-service --replicas=10 -n ${{ env.KUBE_NAMESPACE }}
-          
-          # Similar for other services
-          kubectl scale deployment/game-service --replicas=6 -n ${{ env.KUBE_NAMESPACE }}
-          kubectl scale deployment/social-service --replicas=6 -n ${{ env.KUBE_NAMESPACE }}
-          kubectl scale deployment/feed-service --replicas=6 -n ${{ env.KUBE_NAMESPACE }}
-          
-          sleep 30
+          SERVICES=("user-service" "game-service" "social-service" "feed-service" "ai-engine")
+          for SVC in "${SERVICES[@]}"; do
+            volc faas update-alias \
+              --region "${{ env.VOLC_REGION }}" \
+              --function-name "gamevallies-${SVC}" \
+              --alias-name "production" \
+              --body '{"RoutingConfig":{"AdditionalVersionWeights":[{"Qualifier":"$LATEST","Weight":50}]}}'
+          done
 
-      - name: Monitor canary metrics (50%)
-        run: |
-          sleep 300  # Monitor for 5 minutes
-          
-          # Health check
-          kubectl exec -n ${{ env.KUBE_NAMESPACE }} \
-            $(kubectl get pod -n ${{ env.KUBE_NAMESPACE }} -l app=user-service -o jsonpath='{.items[0].metadata.name}') \
-            -- curl -s http://localhost:3000/health | grep -q "ok" || exit 1
-
-      - name: Full production deployment
+      - name: Monitor canary at 50% (5 min)
         env:
-          IMAGE_TAG: ${{ github.sha }}
+          PROD_BASE_URL: ${{ secrets.PROD_BASE_URL }}
         run: |
-          # Deploy remaining services to 100%
-          kubectl set image deployment/game-service \
-            game-service=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-game-service:${{ github.sha }} \
-            -n ${{ env.KUBE_NAMESPACE }} --record
+          sleep 300
+          ERRORS=0
+          for i in $(seq 1 5); do
+            curl -sf "${PROD_BASE_URL}/api/v1/health" || ERRORS=$((ERRORS+1))
+            sleep 5
+          done
+          if [ $ERRORS -gt 1 ]; then
+            echo "Health check failures: $ERRORS/5 — aborting canary"
+            exit 1
+          fi
+          echo "Canary 50% healthy"
 
-          kubectl set image deployment/social-service \
-            social-service=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-social-service:${{ github.sha }} \
-            -n ${{ env.KUBE_NAMESPACE }} --record
-
-          kubectl set image deployment/feed-service \
-            feed-service=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-feed-service:${{ github.sha }} \
-            -n ${{ env.KUBE_NAMESPACE }} --record
-
-          kubectl set image deployment/ai-engine \
-            ai-engine=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-ai-engine:${{ github.sha }} \
-            -n ${{ env.KUBE_NAMESPACE }} --record
-
-          # Final completion: all services to latest
-          kubectl set image deployment/user-service \
-            user-service=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/playforge-user-service:${{ github.sha }} \
-            -n ${{ env.KUBE_NAMESPACE }} --record
-
-      - name: Wait for all rollouts
+      - name: Full rollout 100%
         run: |
-          kubectl rollout status deployment/user-service -n ${{ env.KUBE_NAMESPACE }} --timeout=5m
-          kubectl rollout status deployment/game-service -n ${{ env.KUBE_NAMESPACE }} --timeout=5m
-          kubectl rollout status deployment/social-service -n ${{ env.KUBE_NAMESPACE }} --timeout=5m
-          kubectl rollout status deployment/feed-service -n ${{ env.KUBE_NAMESPACE }} --timeout=5m
-          kubectl rollout status deployment/ai-engine -n ${{ env.KUBE_NAMESPACE }} --timeout=5m
-
-      - name: Run end-to-end tests
-        run: |
-          # Wait for services to be ready
-          sleep 30
-          
-          # Basic connectivity tests
-          kubectl run e2e-test --image=curlimages/curl:latest -n ${{ env.KUBE_NAMESPACE }} -- \
-            sh -c "curl -f http://user-service:3000/health && \
-                   curl -f http://game-service:3001/health && \
-                   curl -f http://social-service:3002/health && \
-                   curl -f http://feed-service:3003/health && \
-                   curl -f http://ai-engine:3005/health"
+          SERVICES=("user-service" "game-service" "social-service" "feed-service" "ai-engine")
+          for SVC in "${SERVICES[@]}"; do
+            volc faas update-alias \
+              --region "${{ env.VOLC_REGION }}" \
+              --function-name "gamevallies-${SVC}" \
+              --alias-name "production" \
+              --body '{"RoutingConfig":{"AdditionalVersionWeights":[]}}'
+          done
+          echo "Full rollout complete — all traffic on new version"
 
       - name: Post-deployment verification
+        env:
+          PROD_BASE_URL: ${{ secrets.PROD_BASE_URL }}
         run: |
-          echo "=== Deployment Status ==="
-          kubectl get deployments -n ${{ env.KUBE_NAMESPACE }} -o wide
-          echo "=== Pod Status ==="
-          kubectl get pods -n ${{ env.KUBE_NAMESPACE }} -o wide
-          echo "=== Service Status ==="
-          kubectl get svc -n ${{ env.KUBE_NAMESPACE }}
+          SERVICES=("user-service" "game-service" "social-service" "feed-service" "ai-engine")
+          for SVC in "${SERVICES[@]}"; do
+            STATUS=$(volc faas get-function \
+              --region "${{ env.VOLC_REGION }}" \
+              --function-name "gamevallies-${SVC}" \
+              --query "Result.Status" --output text)
+            echo "gamevallies-${SVC}: $STATUS"
+          done
+          curl -sf "${PROD_BASE_URL}/api/v1/health" | grep -q "ok" && echo "E2E health OK"
 
       - name: Send success notification
         if: success()
@@ -612,15 +591,18 @@ jobs:
           webhook_url: ${{ secrets.SLACK_WEBHOOK }}
           fields: repo,message,commit,author
 
-      - name: Send failure notification and rollback
+      - name: Rollback on failure
         if: failure()
         run: |
-          echo "Deployment failed, initiating rollback..."
-          kubectl rollout undo deployment/user-service -n ${{ env.KUBE_NAMESPACE }}
-          kubectl rollout undo deployment/game-service -n ${{ env.KUBE_NAMESPACE }}
-          kubectl rollout undo deployment/social-service -n ${{ env.KUBE_NAMESPACE }}
-          kubectl rollout undo deployment/feed-service -n ${{ env.KUBE_NAMESPACE }}
-          kubectl rollout undo deployment/ai-engine -n ${{ env.KUBE_NAMESPACE }}
+          echo "Deployment failed — rolling back production alias to stable version ..."
+          SERVICES=("user-service" "game-service" "social-service" "feed-service" "ai-engine")
+          for SVC in "${SERVICES[@]}"; do
+            volc faas update-alias \
+              --region "${{ env.VOLC_REGION }}" \
+              --function-name "gamevallies-${SVC}" \
+              --alias-name "production" \
+              --body '{"RoutingConfig":{"AdditionalVersionWeights":[]},"FunctionVersion":"stable"}' || true
+          done
 
       - name: Send rollback notification
         if: failure()

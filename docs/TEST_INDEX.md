@@ -19,7 +19,7 @@
 | `packages/user-service/test/user.service.spec.ts` | 12+ | 90%+ | Find, profile, update, search |
 | `packages/user-service/test/auth.controller.spec.ts` | 16+ | 80%+ | HTTP endpoints, status codes |
 
-**Path**: `/sessions/magical-gifted-pascal/mnt/willgame/playforge-backend/packages/user-service/test/`
+**Path**: `/sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend/packages/user-service/test/`
 
 ### Game Service Tests
 | File | Tests | Coverage | Details |
@@ -28,7 +28,7 @@
 | `packages/game-service/test/fork.service.spec.ts` | 10+ | 85%+ | Fork, tree, depth tracking |
 | `packages/game-service/test/websocket.gateway.spec.ts` | 12+ | 85%+ | Auth, events, progress |
 
-**Path**: `/sessions/magical-gifted-pascal/mnt/willgame/playforge-backend/packages/game-service/test/`
+**Path**: `/sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend/packages/game-service/test/`
 
 ### Social Service Tests
 | File | Tests | Coverage | Details |
@@ -38,7 +38,7 @@
 | `packages/social-service/test/comment.service.spec.ts` | 10+ | 88%+ | Create, nested, delete |
 | `packages/social-service/test/notification.service.spec.ts` | 15+ | 88%+ | Create, read, unread count |
 
-**Path**: `/sessions/magical-gifted-pascal/mnt/willgame/playforge-backend/packages/social-service/test/`
+**Path**: `/sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend/packages/social-service/test/`
 
 ### Feed Service Tests
 | File | Tests | Coverage | Details |
@@ -46,7 +46,7 @@
 | `packages/feed-service/test/feed.service.spec.ts` | 15+ | 85%+ | Trending (Wilson score), latest, following |
 | `packages/feed-service/test/search.service.spec.ts` | 10+ | 85%+ | Query, type, tags, pagination |
 
-**Path**: `/sessions/magical-gifted-pascal/mnt/willgame/playforge-backend/packages/feed-service/test/`
+**Path**: `/sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend/packages/feed-service/test/`
 
 ### AI Engine Tests (Python)
 | File | Tests | Coverage | Details |
@@ -56,14 +56,14 @@
 | `packages/ai-engine/tests/test_qa_pipeline.py` | 18+ | 90%+ | Validation, security, size |
 | `packages/ai-engine/tests/test_code_generator.py` | 14+ | 90%+ | Generate, feedback, errors |
 
-**Path**: `/sessions/magical-gifted-pascal/mnt/willgame/playforge-backend/packages/ai-engine/tests/`
+**Path**: `/sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend/packages/ai-engine/tests/`
 
 ### Integration Tests
 | File | Tests | Coverage | Details |
 |------|-------|----------|---------|
 | `test/integration/full-flow.spec.ts` | 40+ | E2E | Complete user journey |
 
-**Path**: `/sessions/magical-gifted-pascal/mnt/willgame/playforge-backend/test/integration/`
+**Path**: `/sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend/test/integration/`
 
 ## Documentation
 
@@ -94,7 +94,7 @@
    - File quick reference
    - Test counts and coverage
 
-**Path**: `/sessions/magical-gifted-pascal/mnt/willgame/playforge-backend/`
+**Path**: `/sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend/`
 
 ## Running Tests
 
@@ -321,4 +321,4 @@ pytest tests/ --cov=src --cov-report=html
 
 **Last Updated**: 2024-01-05
 **Status**: Complete - All tests implemented
-**Base Path**: `/sessions/magical-gifted-pascal/mnt/willgame/playforge-backend/`
+**Base Path**: `/sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend/`

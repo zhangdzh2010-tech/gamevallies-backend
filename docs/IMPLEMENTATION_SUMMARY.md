@@ -307,7 +307,7 @@ npm run test:integration
 ## Files Location
 
 ```
-/sessions/magical-gifted-pascal/mnt/willgame/playforge-backend/
+/sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend/
 
 packages/
 ├── user-service/test/

@@ -18,7 +18,7 @@ import * as request from 'supertest';
  *
  * HOW TO RUN:
  * 1. Ensure all services are running:
- *    cd /sessions/magical-gifted-pascal/mnt/willgame/playforge-backend
+ *    cd /sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend
  *    docker-compose up -d
  *
  * 2. Run the integration test:

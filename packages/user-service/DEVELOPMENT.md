@@ -50,7 +50,7 @@ cp .env.example .env.local
 
 3. Configure database:
 ```env
-DATABASE_URL=postgresql://user:password@localhost:5432/playforge_user_db
+DATABASE_URL=postgresql://user:password@localhost:5432/gamevallies_user_db
 JWT_SECRET=your-secret-key
 ```
 
@@ -214,7 +214,7 @@ Create `.vscode/launch.json`:
 ```env
 NODE_ENV=development
 PORT=3001
-DATABASE_URL=postgresql://user:password@localhost:5432/playforge_user_db
+DATABASE_URL=postgresql://user:password@localhost:5432/gamevallies_user_db
 JWT_SECRET=dev-secret-key
 JWT_REFRESH_SECRET=dev-refresh-secret-key
 CORS_ORIGIN=http://localhost:3000
@@ -223,7 +223,7 @@ CORS_ORIGIN=http://localhost:3000
 ### Testing
 ```env
 NODE_ENV=test
-DATABASE_URL=postgresql://user:password@localhost:5432/playforge_user_test_db
+DATABASE_URL=postgresql://user:password@localhost:5432/gamevallies_user_test_db
 JWT_SECRET=test-secret-key
 ```
 
@@ -231,7 +231,7 @@ JWT_SECRET=test-secret-key
 ```env
 NODE_ENV=production
 PORT=3001
-DATABASE_URL=postgresql://prod-user:prod-password@prod-db:5432/playforge_user_db
+DATABASE_URL=postgresql://prod-user:prod-password@prod-db:5432/gamevallies_user_db
 JWT_SECRET=<strong-random-key>
 JWT_REFRESH_SECRET=<strong-random-key>
 CORS_ORIGIN=https://playforge.com

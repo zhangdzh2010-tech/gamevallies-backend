@@ -11,7 +11,7 @@
 
 ### Required
 ```env
-DATABASE_URL=postgresql://user:password@host:5432/playforge_user_db
+DATABASE_URL=postgresql://user:password@host:5432/gamevallies_user_db
 JWT_SECRET=<strong-random-32-char-string>
 JWT_REFRESH_SECRET=<strong-random-32-char-string>
 ```
@@ -33,7 +33,7 @@ CORS_CREDENTIALS=true
 
 ```bash
 # Create database
-createdb playforge_user_db
+createdb gamevallies_user_db
 
 # Run migrations
 npx prisma migrate deploy
@@ -65,20 +65,20 @@ NODE_ENV=production npm start
 ### Build Image
 
 ```bash
-docker build -t playforge-user-service:1.0.0 .
+docker build -t gamevallies-user-service:1.0.0 .
 ```
 
 ### Run Container
 
 ```bash
 docker run -d \
-  --name playforge-user-service \
+  --name gamevallies-user-service \
   -p 3001:3001 \
-  -e DATABASE_URL="postgresql://user:password@db:5432/playforge_user_db" \
+  -e DATABASE_URL="postgresql://user:password@db:5432/gamevallies_user_db" \
   -e JWT_SECRET="your-secret-key" \
   -e JWT_REFRESH_SECRET="your-refresh-secret-key" \
   -e NODE_ENV=production \
-  playforge-user-service:1.0.0
+  gamevallies-user-service:1.0.0
 ```
 
 ### Using Docker Compose
@@ -105,10 +105,10 @@ docker-compose down
 
 ```bash
 # Build image
-docker build -t your-registry/playforge-user-service:1.0.0 .
+docker build -t your-registry/gamevallies-user-service:1.0.0 .
 
 # Push to registry
-docker push your-registry/playforge-user-service:1.0.0
+docker push your-registry/gamevallies-user-service:1.0.0
 ```
 
 ### 2. Create Namespace
@@ -124,7 +124,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: user-service-config
-  namespace: playforge
+  namespace: gamevallies
 data:
   NODE_ENV: production
   PORT: "3001"
@@ -138,7 +138,7 @@ data:
 
 ```bash
 kubectl create secret generic user-service-secrets \
-  --from-literal=DATABASE_URL="postgresql://user:password@postgres:5432/playforge_user_db" \
+  --from-literal=DATABASE_URL="postgresql://user:password@postgres:5432/gamevallies_user_db" \
   --from-literal=JWT_SECRET="your-secret-key" \
   --from-literal=JWT_REFRESH_SECRET="your-refresh-secret-key" \
   -n playforge
@@ -150,21 +150,21 @@ kubectl create secret generic user-service-secrets \
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: playforge-user-service
-  namespace: playforge
+  name: gamevallies-user-service
+  namespace: gamevallies
 spec:
   replicas: 3
   selector:
     matchLabels:
-      app: playforge-user-service
+      app: gamevallies-user-service
   template:
     metadata:
       labels:
-        app: playforge-user-service
+        app: gamevallies-user-service
     spec:
       containers:
       - name: user-service
-        image: your-registry/playforge-user-service:1.0.0
+        image: your-registry/gamevallies-user-service:1.0.0
         imagePullPolicy: Always
         ports:
         - containerPort: 3001
@@ -205,7 +205,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: user-service
-  namespace: playforge
+  namespace: gamevallies
 spec:
   type: ClusterIP
   ports:
@@ -213,7 +213,7 @@ spec:
     targetPort: 3001
     protocol: TCP
   selector:
-    app: playforge-user-service
+    app: gamevallies-user-service
 ```
 
 ### 7. Deploy
@@ -228,10 +228,10 @@ kubectl apply -f service.yaml
 # Check deployment status
 kubectl get deployment -n playforge
 kubectl get pods -n playforge
-kubectl logs -n playforge -l app=playforge-user-service
+kubectl logs -n playforge -l app=gamevallies-user-service
 
 # Scale deployment
-kubectl scale deployment playforge-user-service --replicas=5 -n playforge
+kubectl scale deployment gamevallies-user-service --replicas=5 -n playforge
 ```
 
 ## AWS ECS Deployment
@@ -239,7 +239,7 @@ kubectl scale deployment playforge-user-service --replicas=5 -n playforge
 ### 1. Create ECR Repository
 
 ```bash
-aws ecr create-repository --repository-name playforge-user-service
+aws ecr create-repository --repository-name gamevallies-user-service
 ```
 
 ### 2. Push Image
@@ -249,16 +249,16 @@ aws ecr create-repository --repository-name playforge-user-service
 aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin <account-id>.dkr.ecr.us-east-1.amazonaws.com
 
 # Build and push
-docker build -t playforge-user-service:1.0.0 .
-docker tag playforge-user-service:1.0.0 <account-id>.dkr.ecr.us-east-1.amazonaws.com/playforge-user-service:1.0.0
-docker push <account-id>.dkr.ecr.us-east-1.amazonaws.com/playforge-user-service:1.0.0
+docker build -t gamevallies-user-service:1.0.0 .
+docker tag gamevallies-user-service:1.0.0 <account-id>.dkr.ecr.us-east-1.amazonaws.com/gamevallies-user-service:1.0.0
+docker push <account-id>.dkr.ecr.us-east-1.amazonaws.com/gamevallies-user-service:1.0.0
 ```
 
 ### 3. Create ECS Task Definition
 
 ```json
 {
-  "family": "playforge-user-service",
+  "family": "gamevallies-user-service",
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "256",
@@ -266,7 +266,7 @@ docker push <account-id>.dkr.ecr.us-east-1.amazonaws.com/playforge-user-service:
   "containerDefinitions": [
     {
       "name": "user-service",
-      "image": "<account-id>.dkr.ecr.us-east-1.amazonaws.com/playforge-user-service:1.0.0",
+      "image": "<account-id>.dkr.ecr.us-east-1.amazonaws.com/gamevallies-user-service:1.0.0",
       "portMappings": [
         {
           "containerPort": 3001,
@@ -297,7 +297,7 @@ docker push <account-id>.dkr.ecr.us-east-1.amazonaws.com/playforge-user-service:
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
-          "awslogs-group": "/ecs/playforge-user-service",
+          "awslogs-group": "/ecs/gamevallies-user-service",
           "awslogs-region": "us-east-1",
           "awslogs-stream-prefix": "ecs"
         }
@@ -321,7 +321,7 @@ docker push <account-id>.dkr.ecr.us-east-1.amazonaws.com/playforge-user-service:
 aws ecs create-service \
   --cluster playforge \
   --service-name user-service \
-  --task-definition playforge-user-service:1 \
+  --task-definition gamevallies-user-service:1 \
   --desired-count 3 \
   --launch-type FARGATE \
   --network-configuration "awsvpcConfiguration={subnets=[subnet-xxx],securityGroups=[sg-xxx],assignPublicIp=DISABLED}" \
@@ -340,7 +340,7 @@ npx prisma migrate deploy
 ### Deployment Steps
 ```bash
 # 1. Backup database
-pg_dump playforge_user_db > backup.sql
+pg_dump gamevallies_user_db > backup.sql
 
 # 2. Run migrations
 npx prisma migrate deploy
@@ -359,13 +359,13 @@ npm start
 
 ```bash
 # Docker
-docker logs playforge-user-service
+docker logs gamevallies-user-service
 
 # Kubernetes
-kubectl logs -f deployment/playforge-user-service -n playforge
+kubectl logs -f deployment/gamevallies-user-service -n playforge
 
 # AWS ECS
-aws logs tail /ecs/playforge-user-service --follow
+aws logs tail /ecs/gamevallies-user-service --follow
 ```
 
 ### Health Checks
@@ -395,28 +395,28 @@ Monitor these metrics in production:
 ### Daily Backups
 ```bash
 # Automated backup script
-*/0 2 * * * pg_dump playforge_user_db | gzip > /backups/db_$(date +\%Y\%m\%d).sql.gz
+*/0 2 * * * pg_dump gamevallies_user_db | gzip > /backups/db_$(date +\%Y\%m\%d).sql.gz
 ```
 
 ### Verify Backups
 ```bash
 # Test restore
-createdb playforge_user_db_test
-pg_restore -d playforge_user_db_test backup.sql
-dropdb playforge_user_db_test
+createdb gamevallies_user_db_test
+pg_restore -d gamevallies_user_db_test backup.sql
+dropdb gamevallies_user_db_test
 ```
 
 ## Rollback Procedure
 
 ```bash
 # 1. Identify good version
-docker images playforge-user-service
+docker images gamevallies-user-service
 
 # 2. Rollback deployment
-docker service update --image playforge-user-service:previous playforge-user-service
+docker service update --image gamevallies-user-service:previous gamevallies-user-service
 
 # Or for Kubernetes
-kubectl rollout undo deployment/playforge-user-service -n playforge
+kubectl rollout undo deployment/gamevallies-user-service -n playforge
 
 # 3. Verify
 curl http://localhost:3001/health
@@ -460,7 +460,7 @@ pm2 start dist/main.js -i max --name user-service
 ```bash
 # Check logs
 docker logs user-service
-kubectl logs -f pod/playforge-user-service
+kubectl logs -f pod/gamevallies-user-service
 
 # Check environment variables
 env | grep DATABASE_URL
@@ -478,7 +478,7 @@ curl http://localhost:3001/health/ready
 ### High Memory Usage
 ```bash
 # Monitor memory
-docker stats playforge-user-service
+docker stats gamevallies-user-service
 
 # Check for memory leaks
 node --inspect dist/main.js

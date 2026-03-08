@@ -7,13 +7,13 @@ describe('FeedService', () => {
 
   const mockGame = {
     id: 'game-123',
-    user_id: 'user-456',
+    authorId: 'user-456',
     title: 'Test Game',
     status: 'published',
-    published_at: new Date('2024-01-15'),
-    created_at: new Date('2024-01-15'),
-    play_count: 100,
-    like_count: 25,
+    publishedAt: new Date('2024-01-15'),
+    createdAt: new Date('2024-01-15'),
+    playCount: 100,
+    likeCount: 25,
   };
 
   const mockPrismaService = {
@@ -27,7 +27,7 @@ describe('FeedService', () => {
 
   beforeEach(async () => {
     const FeedService = class {
-      constructor(private prisma: PrismaService) {}
+      constructor(private prisma: any) {}
 
       // Wilson score: p = (phat + z²/(2n)) / (1 + z²/n)
       // where z = 1.96 for 95% confidence, phat = likes / (likes + dislikes)
@@ -63,12 +63,12 @@ describe('FeedService', () => {
         });
 
         // Score and sort
-        const scored = games.map((game) => ({
+        const scored = games.map((game: any) => ({
           ...game,
-          score: this.calculateTrendingScore(game.like_count, game.published_at),
+          score: this.calculateTrendingScore(game.likeCount, game.publishedAt),
         }));
 
-        scored.sort((a, b) => b.score - a.score);
+        scored.sort((a: any, b: any) => b.score - a.score);
 
         // Apply pagination
         return scored.slice(offset, offset + limit);
@@ -90,7 +90,7 @@ describe('FeedService', () => {
           select: { following_id: true },
         });
 
-        const followingIds = following.map((f) => f.following_id);
+        const followingIds = following.map((f: any) => f.following_id);
 
         return this.prisma.game.findMany({
           where: {
@@ -105,18 +105,8 @@ describe('FeedService', () => {
       }
     };
 
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        FeedService,
-        {
-          provide: PrismaService,
-          useValue: mockPrismaService,
-        },
-      ],
-    }).compile();
-
-    service = module.get<any>(FeedService);
-    prismaService = module.get<PrismaService>(PrismaService);
+    service = new FeedService(mockPrismaService as any);
+    prismaService = mockPrismaService as any;
 
     jest.clearAllMocks();
   });
@@ -172,11 +162,9 @@ describe('FeedService', () => {
     });
 
     it('should support pagination', async () => {
-      mockPrismaService.game.findMany.mockResolvedValueOnce([
-        mockGame,
-        { ...mockGame, id: 'game-2' },
-        { ...mockGame, id: 'game-3' },
-      ]);
+      const threeGames = [mockGame, { ...mockGame, id: 'game-2' }, { ...mockGame, id: 'game-3' }];
+      mockPrismaService.game.findMany.mockResolvedValueOnce(threeGames);
+      mockPrismaService.game.findMany.mockResolvedValueOnce(threeGames);
 
       const resultPage1 = await service.getTrending(2, 0);
       const resultPage2 = await service.getTrending(2, 2);

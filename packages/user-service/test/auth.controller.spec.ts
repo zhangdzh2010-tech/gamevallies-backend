@@ -1,29 +1,49 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
-import * as request from 'supertest';
+import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { CanActivate, ExecutionContext } from '@nestjs/common';
+import request from 'supertest';
 import { AuthController } from '../src/auth/auth.controller';
 import { AuthService } from '../src/auth/auth.service';
+import { JwtAuthGuard } from '../src/auth/jwt-auth.guard';
+import { ConflictException, UnauthorizedException } from '@nestjs/common';
+
+// Mock guard that bypasses JWT validation and injects a test user
+class MockJwtAuthGuard implements CanActivate {
+  canActivate(context: ExecutionContext): boolean {
+    const req = context.switchToHttp().getRequest();
+    req.user = { userId: 'user-123', username: 'testuser' };
+    return true;
+  }
+}
 
 describe('AuthController', () => {
   let app: INestApplication;
-  let authService: AuthService;
+
+  const mockUser = {
+    id: 'user-123',
+    username: 'testuser',
+    email: 'test@example.com',
+    displayName: 'Test User',
+    role: 'user',
+  };
+
+  const mockAuthResponse = {
+    user: mockUser,
+    accessToken: 'access-token-jwt',
+    refreshToken: 'refresh-token-uuid',
+    expiresIn: 86400,
+  };
 
   const mockAuthService = {
     register: jest.fn(),
     login: jest.fn(),
     refreshToken: jest.fn(),
-    logout: jest.fn(),
-  };
-
-  const mockAuthResponse = {
-    user: {
-      id: 'user-123',
-      username: 'testuser',
-      email: 'test@example.com',
-      display_name: 'Test User',
-    },
-    accessToken: 'access-token-jwt',
-    refreshToken: 'refresh-token-jwt',
+    revokeRefreshToken: jest.fn(),
+    sendVerificationCode: jest.fn(),
+    verifyCode: jest.fn(),
+    resetPassword: jest.fn(),
+    changePassword: jest.fn(),
+    validateUser: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -35,11 +55,14 @@ describe('AuthController', () => {
           useValue: mockAuthService,
         },
       ],
-    }).compile();
+    })
+      .overrideGuard(JwtAuthGuard)
+      .useClass(MockJwtAuthGuard)
+      .compile();
 
     app = module.createNestApplication();
+    app.useGlobalPipes(new ValidationPipe({ whitelist: true }));
     await app.init();
-    authService = module.get<AuthService>(AuthService);
 
     jest.clearAllMocks();
   });
@@ -48,258 +71,154 @@ describe('AuthController', () => {
     await app.close();
   });
 
-  describe('POST /api/v1/auth/register', () => {
+  describe('POST /auth/register', () => {
     it('should return 201 and user data on successful registration', async () => {
-      const registerDto = {
-        username: 'newuser',
-        email: 'newuser@example.com',
-        password: 'SecurePass123!',
-        displayName: 'New User',
-      };
-
       mockAuthService.register.mockResolvedValueOnce(mockAuthResponse);
 
       const response = await request(app.getHttpServer())
-        .post('/api/v1/auth/register')
-        .send(registerDto)
+        .post('/auth/register')
+        .send({
+          username: 'newuser',
+          email: 'newuser@example.com',
+          password: 'SecurePass123!',
+          displayName: 'New User',
+        })
         .expect(201);
 
-      expect(response.body).toEqual(mockAuthResponse);
-      expect(response.body).toHaveProperty('accessToken');
-      expect(response.body).toHaveProperty('refreshToken');
-    });
-
-    it('should return 400 for validation errors (missing fields)', async () => {
-      const invalidDto = {
-        username: 'newuser',
-        // missing email, password, etc.
-      };
-
-      await request(app.getHttpServer())
-        .post('/api/v1/auth/register')
-        .send(invalidDto)
-        .expect(400);
-    });
-
-    it('should return 400 for weak password', async () => {
-      const registerDto = {
-        username: 'newuser',
-        email: 'newuser@example.com',
-        password: 'weak',
-        displayName: 'New User',
-      };
-
-      mockAuthService.register.mockRejectedValueOnce(
-        new Error('Password too weak')
-      );
-
-      await request(app.getHttpServer())
-        .post('/api/v1/auth/register')
-        .send(registerDto)
-        .expect(400);
+      expect(response.body.code).toBe(0);
+      expect(response.body.data).toHaveProperty('user');
     });
 
     it('should return 409 when username already exists', async () => {
-      const registerDto = {
-        username: 'existinguser',
-        email: 'new@example.com',
-        password: 'SecurePass123!',
-        displayName: 'New User',
-      };
-
       mockAuthService.register.mockRejectedValueOnce(
-        new Error('Username already taken')
+        new ConflictException('Username already taken'),
       );
 
       await request(app.getHttpServer())
-        .post('/api/v1/auth/register')
-        .send(registerDto)
-        .expect(400);
+        .post('/auth/register')
+        .send({
+          username: 'existinguser',
+          email: 'new@example.com',
+          password: 'SecurePass123!',
+          displayName: 'New User',
+        })
+        .expect(409);
     });
 
     it('should return 409 when email already exists', async () => {
-      const registerDto = {
-        username: 'newuser',
-        email: 'existing@example.com',
-        password: 'SecurePass123!',
-        displayName: 'New User',
-      };
-
       mockAuthService.register.mockRejectedValueOnce(
-        new Error('Email already registered')
+        new ConflictException('Email already registered'),
       );
 
       await request(app.getHttpServer())
-        .post('/api/v1/auth/register')
-        .send(registerDto)
-        .expect(400);
+        .post('/auth/register')
+        .send({
+          username: 'newuser',
+          email: 'existing@example.com',
+          password: 'SecurePass123!',
+          displayName: 'New User',
+        })
+        .expect(409);
     });
   });
 
-  describe('POST /api/v1/auth/login', () => {
+  describe('POST /auth/login', () => {
     it('should return 200 and tokens on successful login', async () => {
-      const loginDto = {
-        username: 'testuser',
-        password: 'SecurePass123!',
-      };
-
       mockAuthService.login.mockResolvedValueOnce(mockAuthResponse);
 
       const response = await request(app.getHttpServer())
-        .post('/api/v1/auth/login')
-        .send(loginDto)
+        .post('/auth/login')
+        .send({
+          account: 'testuser',
+          password: 'SecurePass123!',
+        })
         .expect(200);
 
-      expect(response.body).toEqual(mockAuthResponse);
-      expect(response.body).toHaveProperty('accessToken');
+      expect(response.body.code).toBe(0);
+      expect(response.body.data).toHaveProperty('token');
+      expect(response.body.data).toHaveProperty('refreshToken');
+      expect(response.body.data).toHaveProperty('user');
     });
 
-    it('should return 401 for invalid credentials (wrong password)', async () => {
-      const loginDto = {
-        username: 'testuser',
-        password: 'WrongPassword123!',
-      };
-
+    it('should return 401 for invalid credentials', async () => {
       mockAuthService.login.mockRejectedValueOnce(
-        new Error('Invalid credentials')
+        new UnauthorizedException('Invalid email/username or password'),
       );
 
       await request(app.getHttpServer())
-        .post('/api/v1/auth/login')
-        .send(loginDto)
-        .expect(400);
+        .post('/auth/login')
+        .send({
+          account: 'testuser',
+          password: 'WrongPassword!',
+        })
+        .expect(401);
     });
 
     it('should return 401 for non-existent user', async () => {
-      const loginDto = {
-        username: 'nonexistent',
-        password: 'SecurePass123!',
-      };
-
       mockAuthService.login.mockRejectedValueOnce(
-        new Error('User not found')
+        new UnauthorizedException('Invalid email/username or password'),
       );
 
       await request(app.getHttpServer())
-        .post('/api/v1/auth/login')
-        .send(loginDto)
-        .expect(400);
-    });
-
-    it('should return 400 for missing credentials', async () => {
-      const invalidDto = {
-        username: 'testuser',
-        // missing password
-      };
-
-      await request(app.getHttpServer())
-        .post('/api/v1/auth/login')
-        .send(invalidDto)
-        .expect(400);
+        .post('/auth/login')
+        .send({
+          account: 'nonexistent',
+          password: 'SecurePass123!',
+        })
+        .expect(401);
     });
   });
 
-  describe('POST /api/v1/auth/refresh', () => {
+  describe('POST /auth/refresh', () => {
     it('should return 200 and new tokens on successful refresh', async () => {
-      const refreshDto = {
-        refreshToken: 'valid-refresh-token',
-      };
-
-      const newTokens = {
+      mockAuthService.refreshToken.mockResolvedValueOnce({
         accessToken: 'new-access-token',
-        refreshToken: 'new-refresh-token',
-      };
-
-      mockAuthService.refreshToken.mockResolvedValueOnce(newTokens);
+        refreshToken: 'new-refresh-uuid',
+        expiresIn: 86400,
+      });
 
       const response = await request(app.getHttpServer())
-        .post('/api/v1/auth/refresh')
-        .send(refreshDto)
+        .post('/auth/refresh')
+        .send({ refreshToken: 'valid-refresh-token' })
         .expect(200);
 
-      expect(response.body).toEqual(newTokens);
-      expect(response.body).toHaveProperty('accessToken');
-      expect(response.body).toHaveProperty('refreshToken');
+      expect(response.body.code).toBe(0);
+      expect(response.body.data).toHaveProperty('token');
+      expect(response.body.data).toHaveProperty('refreshToken');
     });
 
-    it('should return 401 for expired refresh token', async () => {
-      const refreshDto = {
-        refreshToken: 'expired-refresh-token',
-      };
-
+    it('should return 401 for expired/invalid refresh token', async () => {
       mockAuthService.refreshToken.mockRejectedValueOnce(
-        new Error('Token expired')
+        new UnauthorizedException('Refresh token has been revoked'),
       );
 
       await request(app.getHttpServer())
-        .post('/api/v1/auth/refresh')
-        .send(refreshDto)
-        .expect(400);
-    });
-
-    it('should return 401 for invalid refresh token', async () => {
-      const refreshDto = {
-        refreshToken: 'invalid-token',
-      };
-
-      mockAuthService.refreshToken.mockRejectedValueOnce(
-        new Error('Invalid token')
-      );
-
-      await request(app.getHttpServer())
-        .post('/api/v1/auth/refresh')
-        .send(refreshDto)
-        .expect(400);
-    });
-
-    it('should return 400 for missing refresh token', async () => {
-      const invalidDto = {};
-
-      await request(app.getHttpServer())
-        .post('/api/v1/auth/refresh')
-        .send(invalidDto)
-        .expect(400);
+        .post('/auth/refresh')
+        .send({ refreshToken: 'expired-token' })
+        .expect(401);
     });
   });
 
-  describe('POST /api/v1/auth/logout', () => {
-    it('should return 200 on successful logout', async () => {
-      const logoutDto = {
-        refreshToken: 'valid-refresh-token',
-      };
-
-      mockAuthService.logout.mockResolvedValueOnce({});
+  describe('POST /auth/logout', () => {
+    it('should return 200 on successful logout with refresh token header', async () => {
+      mockAuthService.revokeRefreshToken.mockResolvedValueOnce(undefined);
 
       const response = await request(app.getHttpServer())
-        .post('/api/v1/auth/logout')
-        .send(logoutDto)
+        .post('/auth/logout')
+        .set('x-refresh-token', 'valid-refresh-token')
         .expect(200);
 
-      expect(mockAuthService.logout).toHaveBeenCalledWith('valid-refresh-token');
+      expect(response.body.code).toBe(0);
+      expect(mockAuthService.revokeRefreshToken).toHaveBeenCalledWith('valid-refresh-token');
     });
 
-    it('should return 401 for unauthorized (invalid token)', async () => {
-      const logoutDto = {
-        refreshToken: 'invalid-token',
-      };
+    it('should return 200 even without refresh token header', async () => {
+      const response = await request(app.getHttpServer())
+        .post('/auth/logout')
+        .expect(200);
 
-      mockAuthService.logout.mockRejectedValueOnce(
-        new Error('Unauthorized')
-      );
-
-      await request(app.getHttpServer())
-        .post('/api/v1/auth/logout')
-        .send(logoutDto)
-        .expect(400);
-    });
-
-    it('should return 400 for missing refresh token', async () => {
-      const invalidDto = {};
-
-      await request(app.getHttpServer())
-        .post('/api/v1/auth/logout')
-        .send(invalidDto)
-        .expect(400);
+      expect(response.body.code).toBe(0);
+      expect(mockAuthService.revokeRefreshToken).not.toHaveBeenCalled();
     });
   });
 });

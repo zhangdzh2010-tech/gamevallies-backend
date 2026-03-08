@@ -14,7 +14,7 @@ cp .env.example .env.local
 
 Edit `.env.local`:
 ```env
-DATABASE_URL=postgresql://user:password@localhost:5432/playforge_user_db
+DATABASE_URL=postgresql://user:password@localhost:5432/gamevallies_user_db
 JWT_SECRET=your-secret-key-here
 JWT_REFRESH_SECRET=your-refresh-secret-key
 ```
@@ -27,7 +27,7 @@ docker-compose up postgres redis -d
 Or locally:
 ```bash
 # Create database if using local PostgreSQL
-createdb playforge_user_db
+createdb gamevallies_user_db
 ```
 
 ### 4. Run Migrations
@@ -251,7 +251,7 @@ npm test
    - Write unit tests in `test/`
 
 3. **Deploy**
-   - Build image: `docker build -t playforge-user-service .`
+   - Build image: `docker build -t gamevallies-user-service .`
    - Push to registry
    - Deploy to cloud (AWS, K8s, etc.)
 

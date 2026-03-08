@@ -370,7 +370,7 @@ npm run test:integration
 ## File Locations Summary
 
 ```
-/sessions/magical-gifted-pascal/mnt/willgame/playforge-backend/
+/sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend/
 
 User Service:
   packages/user-service/test/auth.service.spec.ts

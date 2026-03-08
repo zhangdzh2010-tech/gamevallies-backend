@@ -251,6 +251,8 @@ class RunPipelineResponse(BaseModel):
     qa_retries: int
     generation_time_ms: int
     code_size_bytes: int
+    quality_score: float = 0.0
+    quality_breakdown: Optional[Dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------

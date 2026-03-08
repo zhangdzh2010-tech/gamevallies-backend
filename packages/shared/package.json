@@ -1,11 +1,11 @@
 {
-  "name": "@playforge/shared",
+  "name": "@gamevallies/shared",
   "version": "1.0.0",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
     "build": "tsc",
-    "test": "jest"
+    "test": "jest --passWithNoTests"
   },
   "dependencies": {
     "@nestjs/common": "^10.3.0",

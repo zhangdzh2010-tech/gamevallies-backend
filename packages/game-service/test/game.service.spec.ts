@@ -43,8 +43,8 @@ describe('GameService', () => {
   beforeEach(async () => {
     const GameService = class {
       constructor(
-        private prisma: PrismaService,
-        private httpService: HttpService,
+        private prisma: any,
+        private httpService: any,
       ) {}
 
       async create(userId: string, data: any) {
@@ -140,23 +140,9 @@ describe('GameService', () => {
       }
     };
 
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        GameService,
-        {
-          provide: PrismaService,
-          useValue: mockPrismaService,
-        },
-        {
-          provide: HttpService,
-          useValue: mockHttpService,
-        },
-      ],
-    }).compile();
-
-    service = module.get<any>(GameService);
-    prismaService = module.get<PrismaService>(PrismaService);
-    httpService = module.get<HttpService>(HttpService);
+    service = new GameService(mockPrismaService as any, mockHttpService as any);
+    prismaService = mockPrismaService as any;
+    httpService = mockHttpService as any;
 
     jest.clearAllMocks();
   });

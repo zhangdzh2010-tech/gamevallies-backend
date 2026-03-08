@@ -1,6 +1,6 @@
 # API Schema
 
-当前文档描述 `playforge-backend` 已实现的前端契约，以及从整体业务逻辑出发建议继续补齐的 API。
+当前文档描述 `gamevallies-backend` 已实现的前端契约，以及从整体业务逻辑出发建议继续补齐的 API。
 
 更新时间：`2026-03-07`
 

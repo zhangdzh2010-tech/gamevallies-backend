@@ -2,7 +2,7 @@
 
 ## 📍 Project Location
 ```
-/sessions/magical-gifted-pascal/mnt/willgame/playforge-backend/packages/ai-engine
+/sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend/packages/ai-engine
 ```
 
 ## 📊 Project Statistics
@@ -276,8 +276,8 @@ python -m uvicorn src.main:app --reload
 
 ### Option 2: Docker
 ```bash
-docker build -t playforge-ai-engine .
-docker run -p 8000:8000 playforge-ai-engine
+docker build -t gamevallies-ai-engine .
+docker run -p 8000:8000 gamevallies-ai-engine
 ```
 **Time**: < 1 min | **Overhead**: Docker | **Best for**: Production
 
@@ -467,4 +467,4 @@ Ready for immediate deployment and use.
 **Version**: 1.0.0
 **Status**: Production Ready
 **Last Updated**: 2024
-**Location**: `/sessions/magical-gifted-pascal/mnt/willgame/playforge-backend/packages/ai-engine`
+**Location**: `/sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend/packages/ai-engine`

@@ -57,7 +57,7 @@ describe('UserService', () => {
           throw new NotFoundException('User not found');
         }
 
-        const stats = await this.prisma.userStats.findUnique({
+        const stats = await (this.prisma as any).userStats.findUnique({
           where: { user_id: userId },
         });
 
@@ -90,8 +90,8 @@ describe('UserService', () => {
         return this.prisma.user.findMany({
           where: {
             OR: [
-              { username: { contains: query, mode: 'insensitive' } },
-              { display_name: { contains: query, mode: 'insensitive' } },
+              { username: { contains: query } },
+              { displayName: { contains: query } },
             ],
           },
           take: limit,
@@ -100,18 +100,8 @@ describe('UserService', () => {
       }
     };
 
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        UserService,
-        {
-          provide: PrismaService,
-          useValue: mockPrismaService,
-        },
-      ],
-    }).compile();
-
-    service = module.get<any>(UserService);
-    prismaService = module.get<PrismaService>(PrismaService);
+    service = new UserService(mockPrismaService as any);
+    prismaService = mockPrismaService as any;
 
     jest.clearAllMocks();
   });
@@ -207,8 +197,8 @@ describe('UserService', () => {
       expect(mockPrismaService.user.findMany).toHaveBeenCalledWith({
         where: {
           OR: [
-            { username: { contains: 'test', mode: 'insensitive' } },
-            { display_name: { contains: 'test', mode: 'insensitive' } },
+            { username: { contains: 'test' } },
+            { displayName: { contains: 'test' } },
           ],
         },
         take: 10,

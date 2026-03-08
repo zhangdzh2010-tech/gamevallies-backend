@@ -53,7 +53,7 @@ Created comprehensive `.env` files:
 ## File Structure
 
 ```
-playforge-backend/
+gamevallies-backend/
 ├── .env                           # Root environment variables
 ├── start.sh                       # One-click startup script (EXECUTABLE)
 ├── docker-compose.yml             # Docker Compose configuration (unchanged)
@@ -152,8 +152,8 @@ docker compose logs -f
 ### Root `.env`
 ```env
 NODE_ENV=development
-DATABASE_URL=postgresql://playforge:playforge_dev_2026@localhost:5432/playforge
-MONGO_URL=mongodb://playforge:playforge_dev_2026@localhost:27017/playforge?authSource=admin
+DATABASE_URL=postgresql://gamevallies:playforge_dev_2026@localhost:5432/gamevallies
+MONGO_URL=mongodb://gamevallies:playforge_dev_2026@localhost:27017/gamevallies?authSource=admin
 REDIS_URL=redis://:playforge_dev_2026@localhost:6379
 JWT_SECRET=playforge_jwt_secret_dev_2026
 JWT_REFRESH_SECRET=playforge_refresh_secret_dev_2026
@@ -165,7 +165,7 @@ LLM_MODE=mock
 **user-service** (port 3001):
 ```env
 PORT=3001
-DATABASE_URL=postgresql://playforge:playforge_dev_2026@localhost:5432/playforge
+DATABASE_URL=postgresql://gamevallies:playforge_dev_2026@localhost:5432/gamevallies
 REDIS_URL=redis://:playforge_dev_2026@localhost:6379
 JWT_SECRET=playforge_jwt_secret_dev_2026
 JWT_REFRESH_SECRET=playforge_refresh_secret_dev_2026
@@ -174,8 +174,8 @@ JWT_REFRESH_SECRET=playforge_refresh_secret_dev_2026
 **game-service** (port 3002):
 ```env
 PORT=3002
-DATABASE_URL=postgresql://playforge:playforge_dev_2026@localhost:5432/playforge
-MONGO_URL=mongodb://playforge:playforge_dev_2026@localhost:27017/playforge?authSource=admin
+DATABASE_URL=postgresql://gamevallies:playforge_dev_2026@localhost:5432/gamevallies
+MONGO_URL=mongodb://gamevallies:playforge_dev_2026@localhost:27017/gamevallies?authSource=admin
 REDIS_URL=redis://:playforge_dev_2026@localhost:6379
 AI_ENGINE_URL=http://localhost:8000
 JWT_SECRET=playforge_jwt_secret_dev_2026
@@ -184,7 +184,7 @@ JWT_SECRET=playforge_jwt_secret_dev_2026
 **social-service** (port 3003):
 ```env
 PORT=3003
-DATABASE_URL=postgresql://playforge:playforge_dev_2026@localhost:5432/playforge
+DATABASE_URL=postgresql://gamevallies:playforge_dev_2026@localhost:5432/gamevallies
 REDIS_URL=redis://:playforge_dev_2026@localhost:6379
 JWT_SECRET=playforge_jwt_secret_dev_2026
 ```
@@ -192,7 +192,7 @@ JWT_SECRET=playforge_jwt_secret_dev_2026
 **feed-service** (port 3004):
 ```env
 PORT=3004
-DATABASE_URL=postgresql://playforge:playforge_dev_2026@localhost:5432/playforge
+DATABASE_URL=postgresql://gamevallies:playforge_dev_2026@localhost:5432/gamevallies
 REDIS_URL=redis://:playforge_dev_2026@localhost:6379
 JWT_SECRET=playforge_jwt_secret_dev_2026
 ```
@@ -200,7 +200,7 @@ JWT_SECRET=playforge_jwt_secret_dev_2026
 **ai-engine** (port 8000):
 ```env
 ENVIRONMENT=development
-MONGO_URL=mongodb://playforge:playforge_dev_2026@localhost:27017/playforge?authSource=admin
+MONGO_URL=mongodb://gamevallies:playforge_dev_2026@localhost:27017/gamevallies?authSource=admin
 REDIS_URL=redis://:playforge_dev_2026@localhost:6379
 LLM_MODE=mock
 ```

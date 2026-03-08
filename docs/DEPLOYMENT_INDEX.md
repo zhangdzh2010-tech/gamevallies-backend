@@ -17,7 +17,7 @@ This document indexes all deployment and infrastructure files created for PlayFo
 ### 1. Documentation
 
 #### docs/DEPLOYMENT_SOP.md (2114 lines)
-**Location:** `/sessions/magical-gifted-pascal/mnt/willgame/playforge-backend/docs/DEPLOYMENT_SOP.md`
+**Location:** `/sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend/docs/DEPLOYMENT_SOP.md`
 
 Comprehensive deployment guide in Chinese covering:
 
@@ -44,7 +44,7 @@ Comprehensive deployment guide in Chinese covering:
 
 ### 2. Kubernetes Configuration Files
 
-**Location:** `/sessions/magical-gifted-pascal/mnt/willgame/playforge-backend/infrastructure/k8s/`
+**Location:** `/sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend/infrastructure/k8s/`
 
 #### 2.1 Cluster Foundation
 
@@ -521,7 +521,7 @@ kubectl get all -n playforge
 
 **Documentation Issues:**
 Email: devops@playforge.com
-Slack: #playforge-deployments
+Slack: #gamevallies-deployments
 
 **Update Frequency:**
 - Deployment SOP: Quarterly review + as-needed updates

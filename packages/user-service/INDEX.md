@@ -1,6 +1,6 @@
 # PlayForge User Service - Complete File Index
 
-**Project Root:** `/sessions/magical-gifted-pascal/mnt/willgame/playforge-backend/packages/user-service`
+**Project Root:** `/sessions/magical-gifted-pascal/mnt/willgame/gamevallies-backend/packages/user-service`
 
 ## Complete File Listing
 
@@ -206,8 +206,8 @@ npm start
 
 ### Docker
 ```bash
-docker build -t playforge-user-service .
-docker run -p 3001:3001 --env-file .env playforge-user-service
+docker build -t gamevallies-user-service .
+docker run -p 3001:3001 --env-file .env gamevallies-user-service
 ```
 
 ### Docker Compose (All Services)

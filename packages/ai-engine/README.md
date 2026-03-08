@@ -251,7 +251,7 @@ pytest --cov=src tests/
 ## Docker
 
 ```bash
-docker build -t playforge-ai-engine:latest .
+docker build -t gamevallies-ai-engine:latest .
 
 docker run -p 8000:8000 \
   -e ENVIRONMENT=production \
@@ -259,7 +259,7 @@ docker run -p 8000:8000 \
   -e ANTHROPIC_API_KEY=sk-ant-... \
   -e MONGO_URL=mongodb://... \
   -e REDIS_URL=redis://... \
-  playforge-ai-engine:latest
+  gamevallies-ai-engine:latest
 ```
 
 ---

@@ -235,7 +235,7 @@ Integration with:
 - **File Reference:** See `DEPLOYMENT_INDEX.md`
 - **Quick Overview:** See `DEPLOYMENT_SUMMARY.md`
 - **Team Email:** devops@playforge.com
-- **Slack:** #playforge-deployments
+- **Slack:** #gamevallies-deployments
 
 ## 📅 File Manifest
 
