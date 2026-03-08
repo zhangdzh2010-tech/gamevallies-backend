@@ -7,7 +7,9 @@ on:
   workflow_dispatch:  # 支持手动触发
 
 env:
-  VOLCENGINE_REGION: cn-beijing
+  VOLCENGINE_REGION:    cn-shanghai
+  VOLCENGINE_VPC_ID:    vpc-1fui3r5jdt2bk1m79k8anl32c
+  VOLCENGINE_SUBNET_ID: subnet-1kse5at0gc9a859xbtim3pgrs
 
 jobs:
   build-and-deploy:
@@ -45,9 +47,9 @@ jobs:
         env:
           VOLCENGINE_ACCESS_KEY: ${{ secrets.VOLCENGINE_ACCESS_KEY }}
           VOLCENGINE_SECRET_KEY: ${{ secrets.VOLCENGINE_SECRET_KEY }}
-          VOLCENGINE_REGION:     ${{ env.VOLCENGINE_REGION }}
-          VOLCENGINE_VPC_ID:     ${{ secrets.VOLCENGINE_VPC_ID }}
-          VOLCENGINE_SUBNET_ID:  ${{ secrets.VOLCENGINE_SUBNET_ID }}
+          VOLCENGINE_REGION:    ${{ env.VOLCENGINE_REGION }}
+          VOLCENGINE_VPC_ID:    ${{ env.VOLCENGINE_VPC_ID }}
+          VOLCENGINE_SUBNET_ID: ${{ env.VOLCENGINE_SUBNET_ID }}
           DATABASE_URL:          ${{ secrets.DATABASE_URL }}
           REDIS_URL:             ${{ secrets.REDIS_URL }}
           JWT_SECRET:            ${{ secrets.JWT_SECRET }}
