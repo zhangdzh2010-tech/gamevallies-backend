@@ -33,6 +33,11 @@
     "lambda:build:game": "bash scripts/build-lambda.sh game-service",
     "lambda:build:social": "bash scripts/build-lambda.sh social-service",
     "lambda:build:feed": "bash scripts/build-lambda.sh feed-service",
+    "docker:build": "bash scripts/build-docker.sh all",
+    "docker:build:user": "bash scripts/build-docker.sh user-service",
+    "docker:build:game": "bash scripts/build-docker.sh game-service",
+    "docker:build:social": "bash scripts/build-docker.sh social-service",
+    "docker:build:feed": "bash scripts/build-docker.sh feed-service",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f"
