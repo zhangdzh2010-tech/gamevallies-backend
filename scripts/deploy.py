@@ -73,6 +73,7 @@ def build_envs(port: int) -> list:
         volcenginesdkvefaas.EnvForUpdateFunctionInput(key="JWT_SECRET",         value=os.environ.get("JWT_SECRET", "")),
         volcenginesdkvefaas.EnvForUpdateFunctionInput(key="JWT_REFRESH_SECRET", value=os.environ.get("JWT_REFRESH_SECRET", "")),
         volcenginesdkvefaas.EnvForUpdateFunctionInput(key="CORS_ORIGIN",        value=os.environ.get("CORS_ORIGIN", "*")),
+        volcenginesdkvefaas.EnvForUpdateFunctionInput(key="ADMIN_TOKEN",       value=os.environ.get("ADMIN_TOKEN", "admin123")),
     ]
 
 
@@ -125,8 +126,8 @@ def deploy_service(api: volcenginesdkvefaas.VEFAASApi, svc: dict) -> bool:
         source_type="image",
         source=image,
         source_access_config=volcenginesdkvefaas.SourceAccessConfigForUpdateFunctionInput(
-            username=AK,
-            password=SK,
+            username=os.environ.get("VOLCENGINE_REGISTRY_USERNAME", AK),
+            password=os.environ.get("VOLCENGINE_REGISTRY_PASSWORD", SK),
         ),
         envs=build_envs(svc["port"]),
     )

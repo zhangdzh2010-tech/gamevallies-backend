@@ -1,7 +1,7 @@
 /**
  * 种子游戏业务初始化脚本
  *
- * 将 12 款精选 HTML5 游戏（6 款桌面端 + 6 款移动端）写入 MySQL 数据库，
+ * 将 17 款精选 HTML5 游戏（6 款桌面端 + 11 款移动端）写入 MySQL 数据库，
  * 适配当前 Prisma / MySQL 架构（GameBundle 存储在 MySQL，不再依赖 MongoDB）。
  *
  * 特性：
@@ -18,6 +18,13 @@
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { randomUUID } from 'crypto';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+
+const GAMES_DIR = join(process.cwd(), 'scripts', 'games');
+function loadGameFile(filename: string): string {
+  return readFileSync(join(GAMES_DIR, filename), 'utf-8');
+}
 
 const prisma = new PrismaClient({
   datasources: { db: { url: process.env.DATABASE_URL } },
@@ -1291,6 +1298,87 @@ const SEED_GAMES = [
     likeCount: BigInt(563),
     forkCount: BigInt(123),
     htmlCode: CATCH_FRUITS_HTML,
+  },
+  // ── 5 款精品手机游戏（从文件加载）──────────────────────────────
+  {
+    slug: 'premium-pixel-dungeon',
+    title: '像素地牢',
+    description:
+      'Roguelike地牢探险！程序生成地牢地图，回合制策略战斗。5层地牢逐层深入，收集武器装备，' +
+      '使用药水恢复生命，升级角色属性，最终击败第5层的远古巨龙！',
+    gameType: 'puzzle',
+    tags: ['策略', 'RPG', 'Roguelike', '回合制', '地牢'],
+    platform: 'mobile',
+    qualityScore: 9.5,
+    avgPlayTime: 15.0,
+    playCount: BigInt(12800),
+    likeCount: BigInt(2340),
+    forkCount: BigInt(456),
+    htmlCode: loadGameFile('pixel-dungeon.html'),
+  },
+  {
+    slug: 'premium-tower-defense',
+    title: '塔防战线',
+    description:
+      '经典策略塔防！4种防御塔各具特色，3级升级系统深度策略搭配。' +
+      '20波敌人逐渐增强，每5波出现BOSS挑战。合理布局决定胜负！',
+    gameType: 'puzzle',
+    tags: ['策略', '塔防', '回合制', '升级'],
+    platform: 'mobile',
+    qualityScore: 9.4,
+    avgPlayTime: 12.0,
+    playCount: BigInt(10500),
+    likeCount: BigInt(1870),
+    forkCount: BigInt(380),
+    htmlCode: loadGameFile('tower-defense.html'),
+  },
+  {
+    slug: 'premium-gravity-flip',
+    title: '重力翻转',
+    description:
+      '赛博朋克风重力翻转平台跳跃！点击屏幕切换重力方向，躲避障碍物。' +
+      '10个精心设计关卡，3星收集系统，连击加分，挑战最快通关时间！',
+    gameType: 'action',
+    tags: ['动作', '平台跳跃', '物理', '关卡', '挑战'],
+    platform: 'mobile',
+    qualityScore: 9.3,
+    avgPlayTime: 8.0,
+    playCount: BigInt(15200),
+    likeCount: BigInt(2650),
+    forkCount: BigInt(520),
+    htmlCode: loadGameFile('gravity-flip.html'),
+  },
+  {
+    slug: 'premium-space-miner',
+    title: '星际矿工',
+    description:
+      '太空采矿资源管理！采集4种稀有矿石，返回基地升级飞船。' +
+      '4大升级系统，躲避陨石雨、太空海盗和黑洞，日夜交替影响资源分布！',
+    gameType: 'action',
+    tags: ['动作', '资源管理', '太空', '升级', '生存'],
+    platform: 'mobile',
+    qualityScore: 9.2,
+    avgPlayTime: 10.0,
+    playCount: BigInt(8900),
+    likeCount: BigInt(1520),
+    forkCount: BigInt(310),
+    htmlCode: loadGameFile('space-miner.html'),
+  },
+  {
+    slug: 'premium-sudoku-master',
+    title: '数独大师',
+    description:
+      '精品数独解谜！算法生成唯一解谜题，4难度等级。' +
+      '笔记系统、提示、撤销重做、自动检查、冲突高亮、计时统计，挑战逻辑思维！',
+    gameType: 'puzzle',
+    tags: ['益智', '数独', '逻辑', '经典', '解谜'],
+    platform: 'mobile',
+    qualityScore: 9.6,
+    avgPlayTime: 20.0,
+    playCount: BigInt(18500),
+    likeCount: BigInt(3200),
+    forkCount: BigInt(680),
+    htmlCode: loadGameFile('sudoku-master.html'),
   },
 ];
 
