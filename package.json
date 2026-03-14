@@ -28,6 +28,7 @@
     "db:push": "npx prisma db push",
     "db:seed": "npx ts-node prisma/seed.ts",
     "db:init-games": "npx ts-node scripts/init-games.ts",
+    "db:init-premium": "npx ts-node scripts/init-premium-games.ts",
     "lambda:build": "bash scripts/build-lambda.sh all",
     "lambda:build:user": "bash scripts/build-lambda.sh user-service",
     "lambda:build:game": "bash scripts/build-lambda.sh game-service",

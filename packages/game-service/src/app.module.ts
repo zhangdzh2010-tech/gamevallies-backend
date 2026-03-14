@@ -8,6 +8,7 @@ import { StatsModule } from './stats/stats.module';
 import { WebSocketModule } from './websocket/websocket.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { MongoModule } from './mongo/mongo.module';
+import { AdminModule } from './admin/admin.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { MongoModule } from './mongo/mongo.module';
     BundleModule,
     StatsModule,
     WebSocketModule,
+    AdminModule,
   ],
   controllers: [HealthController],
 })

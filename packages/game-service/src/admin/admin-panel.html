@@ -1,0 +1,1179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GameVallies 管理后台</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;background:#f5f7fa;color:#333;font-size:14px}
+a{color:#2563eb;text-decoration:none}
+
+/* Login */
+.login-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:9999}
+.login-box{background:#fff;border-radius:12px;padding:40px;width:380px;box-shadow:0 20px 60px rgba(0,0,0,.15)}
+.login-box h2{font-size:22px;margin-bottom:8px;color:#1e293b}
+.login-box p{color:#64748b;margin-bottom:24px;font-size:13px}
+.login-box input{width:100%;padding:10px 14px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;outline:none;margin-bottom:16px}
+.login-box input:focus{border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.1)}
+.login-box button{width:100%;padding:10px;background:#2563eb;color:#fff;border:none;border-radius:8px;font-size:15px;cursor:pointer;font-weight:500}
+.login-box button:hover{background:#1d4ed8}
+
+/* Layout */
+.app{display:none;min-height:100vh}
+.header{background:#fff;border-bottom:1px solid #e5e7eb;padding:0 24px;height:56px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+.header h1{font-size:18px;color:#1e293b;font-weight:600}
+.header .right{display:flex;align-items:center;gap:12px}
+.header .logout-btn{padding:6px 14px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-size:13px;color:#64748b}
+.header .logout-btn:hover{background:#f9fafb;color:#ef4444}
+
+/* Tabs */
+.tabs{display:flex;background:#fff;border-bottom:1px solid #e5e7eb;padding:0 24px;gap:0}
+.tab{padding:12px 20px;cursor:pointer;border-bottom:2px solid transparent;color:#64748b;font-size:14px;font-weight:500;transition:.2s}
+.tab:hover{color:#2563eb}
+.tab.active{color:#2563eb;border-bottom-color:#2563eb}
+
+/* Content */
+.content{padding:24px;max-width:1400px;margin:0 auto}
+.page{display:none}
+.page.active{display:block}
+
+/* Cards */
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px}
+.stat-card{background:#fff;border-radius:10px;padding:20px;border:1px solid #e5e7eb}
+.stat-card .label{font-size:13px;color:#64748b;margin-bottom:4px}
+.stat-card .value{font-size:28px;font-weight:700;color:#1e293b}
+.stat-card .sub{font-size:12px;color:#94a3b8;margin-top:4px}
+
+/* Toolbar */
+.toolbar{display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
+.toolbar input[type=text],.toolbar select{padding:8px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:13px;outline:none;background:#fff}
+.toolbar input[type=text]:focus,.toolbar select:focus{border-color:#2563eb}
+.toolbar input[type=text]{width:260px}
+
+/* Buttons */
+.btn{padding:8px 16px;border-radius:8px;border:none;cursor:pointer;font-size:13px;font-weight:500;display:inline-flex;align-items:center;gap:6px;transition:.15s}
+.btn-primary{background:#2563eb;color:#fff}
+.btn-primary:hover{background:#1d4ed8}
+.btn-secondary{background:#f1f5f9;color:#475569;border:1px solid #e2e8f0}
+.btn-secondary:hover{background:#e2e8f0}
+.btn-danger{background:#fef2f2;color:#dc2626;border:1px solid #fecaca}
+.btn-danger:hover{background:#fee2e2}
+.btn-success{background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0}
+.btn-warning{background:#fffbeb;color:#d97706;border:1px solid #fde68a}
+.btn-sm{padding:5px 10px;font-size:12px}
+
+/* Table */
+.table-wrap{background:#fff;border-radius:10px;border:1px solid #e5e7eb;overflow:hidden}
+table{width:100%;border-collapse:collapse}
+thead{background:#f8fafc}
+th{padding:10px 14px;text-align:left;font-weight:600;font-size:12px;color:#64748b;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid #e5e7eb}
+td{padding:12px 14px;border-bottom:1px solid #f1f5f9;font-size:13px}
+tr:last-child td{border-bottom:none}
+tbody tr{cursor:pointer;transition:.1s}
+tbody tr:hover{background:#f8fafc}
+
+/* Status badges */
+.badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:500}
+.badge-published{background:#dcfce7;color:#16a34a}
+.badge-draft{background:#f1f5f9;color:#64748b}
+.badge-banned{background:#fef2f2;color:#dc2626}
+.badge-review{background:#fef3c7;color:#d97706}
+.badge-generating{background:#dbeafe;color:#2563eb}
+.badge-failed{background:#fef2f2;color:#dc2626}
+
+/* Pagination */
+.pagination{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#fff;border-top:1px solid #e5e7eb}
+.pagination .info{font-size:13px;color:#64748b}
+.pagination .pages{display:flex;gap:4px}
+.pagination .pages button{padding:6px 12px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-size:13px}
+.pagination .pages button:hover{background:#f1f5f9}
+.pagination .pages button.active{background:#2563eb;color:#fff;border-color:#2563eb}
+.pagination .pages button:disabled{opacity:.4;cursor:not-allowed}
+
+/* Modal */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:40px 20px;overflow-y:auto}
+.modal{background:#fff;border-radius:12px;width:100%;max-width:900px;box-shadow:0 20px 60px rgba(0,0,0,.2);margin-bottom:40px}
+.modal-header{display:flex;align-items:center;justify-content:space-between;padding:16px 24px;border-bottom:1px solid #e5e7eb}
+.modal-header h3{font-size:17px;font-weight:600;color:#1e293b}
+.modal-close{width:32px;height:32px;border:none;background:#f1f5f9;border-radius:8px;cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center;color:#64748b}
+.modal-close:hover{background:#e2e8f0}
+.modal-body{padding:24px;max-height:calc(100vh - 200px);overflow-y:auto}
+.modal-footer{padding:16px 24px;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;gap:10px}
+
+/* Form */
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.form-group{margin-bottom:0}
+.form-group.full{grid-column:1/-1}
+.form-group label{display:block;font-size:13px;font-weight:500;color:#374151;margin-bottom:6px}
+.form-group input,.form-group select,.form-group textarea{width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:13px;outline:none;font-family:inherit}
+.form-group input:focus,.form-group select:focus,.form-group textarea:focus{border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.08)}
+.form-group textarea{resize:vertical}
+.form-group .hint{font-size:11px;color:#94a3b8;margin-top:4px}
+.code-editor{font-family:'SF Mono','Fira Code','Cascadia Code',Consolas,monospace;font-size:12px;line-height:1.6;min-height:300px;tab-size:2;background:#f8fafc}
+
+/* Upload area */
+.upload-area{border:2px dashed #d1d5db;border-radius:10px;padding:24px;text-align:center;cursor:pointer;transition:.2s;margin-bottom:12px}
+.upload-area:hover,.upload-area.dragover{border-color:#2563eb;background:#eff6ff}
+.upload-area input[type=file]{display:none}
+.upload-area .icon{font-size:32px;margin-bottom:8px;color:#94a3b8}
+.upload-area .text{font-size:13px;color:#64748b}
+.upload-area .filename{font-size:13px;color:#2563eb;font-weight:500;margin-top:8px}
+
+/* Preview */
+.preview-frame{width:100%;height:500px;border:1px solid #e5e7eb;border-radius:8px;background:#fff}
+
+/* Play Modal (fullscreen) */
+.play-overlay{position:fixed;inset:0;background:#000;z-index:5000;display:flex;flex-direction:column}
+.play-topbar{display:flex;align-items:center;justify-content:space-between;padding:8px 16px;background:#111;color:#fff;flex-shrink:0;z-index:1}
+.play-topbar .title{font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.play-topbar .actions{display:flex;gap:8px;flex-shrink:0}
+.play-topbar button{padding:6px 14px;border-radius:6px;border:none;cursor:pointer;font-size:12px;font-weight:500}
+.play-topbar .btn-close-play{background:#ef4444;color:#fff}
+.play-topbar .btn-close-play:hover{background:#dc2626}
+.play-topbar .btn-newwin{background:#374151;color:#e5e7eb}
+.play-topbar .btn-newwin:hover{background:#4b5563}
+.play-frame{flex:1;border:none;width:100%;height:100%;background:#fff}
+
+/* Action buttons in table */
+.action-cell{display:flex;gap:4px;flex-wrap:nowrap}
+.action-cell .abtn{padding:4px 8px;border-radius:5px;border:1px solid transparent;cursor:pointer;font-size:11px;font-weight:500;white-space:nowrap;transition:.15s}
+.abtn-preview{background:#eff6ff;color:#2563eb;border-color:#bfdbfe}
+.abtn-preview:hover{background:#dbeafe}
+.abtn-play{background:#f0fdf4;color:#16a34a;border-color:#bbf7d0}
+.abtn-play:hover{background:#dcfce7}
+.abtn-publish{background:#f0fdf4;color:#16a34a;border-color:#bbf7d0}
+.abtn-publish:hover{background:#dcfce7}
+.abtn-unpublish{background:#fffbeb;color:#d97706;border-color:#fde68a}
+.abtn-unpublish:hover{background:#fef3c7}
+.abtn-delete{background:#fef2f2;color:#dc2626;border-color:#fecaca}
+.abtn-delete:hover{background:#fee2e2}
+.abtn-edit{background:#f1f5f9;color:#475569;border-color:#e2e8f0}
+.abtn-edit:hover{background:#e2e8f0}
+
+/* Detail view */
+.detail-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px}
+.detail-header h2{font-size:20px;font-weight:600;color:#1e293b}
+.detail-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:20px}
+.detail-stat{background:#f8fafc;border-radius:8px;padding:12px;text-align:center}
+.detail-stat .v{font-size:20px;font-weight:700;color:#1e293b}
+.detail-stat .l{font-size:11px;color:#94a3b8;margin-top:2px}
+.status-btns{display:flex;gap:8px;flex-wrap:wrap}
+.section-title{font-size:15px;font-weight:600;color:#1e293b;margin:20px 0 12px;padding-bottom:8px;border-bottom:1px solid #f1f5f9}
+.back-btn{cursor:pointer;display:inline-flex;align-items:center;gap:6px;color:#64748b;font-size:13px;margin-bottom:16px}
+.back-btn:hover{color:#2563eb}
+
+/* Toast */
+.toast-container{position:fixed;top:20px;right:20px;z-index:10000;display:flex;flex-direction:column;gap:8px}
+.toast{padding:12px 20px;border-radius:8px;font-size:13px;font-weight:500;box-shadow:0 4px 12px rgba(0,0,0,.15);animation:slideIn .3s;max-width:400px}
+.toast-success{background:#16a34a;color:#fff}
+.toast-error{background:#dc2626;color:#fff}
+.toast-info{background:#2563eb;color:#fff}
+@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
+
+/* Loading */
+.loading{text-align:center;padding:40px;color:#94a3b8}
+.spinner{display:inline-block;width:24px;height:24px;border:3px solid #e5e7eb;border-top-color:#2563eb;border-radius:50%;animation:spin .6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Confirm dialog */
+.confirm-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:2000;display:flex;align-items:center;justify-content:center}
+.confirm-box{background:#fff;border-radius:12px;padding:24px;width:380px;box-shadow:0 20px 60px rgba(0,0,0,.2)}
+.confirm-box h4{font-size:16px;margin-bottom:8px;color:#1e293b}
+.confirm-box p{font-size:13px;color:#64748b;margin-bottom:20px}
+.confirm-box .btns{display:flex;justify-content:flex-end;gap:10px}
+
+/* Tab content transitions */
+.tab-switch{opacity:1;transition:opacity .15s}
+</style>
+</head>
+<body>
+
+<!-- Login -->
+<div id="loginOverlay" class="login-overlay" style="display:none">
+  <div class="login-box">
+    <h2>GameVallies 管理后台</h2>
+    <p>请输入管理员令牌以继续</p>
+    <input type="password" id="tokenInput" placeholder="输入 Admin Token..." autofocus>
+    <button onclick="doLogin()">登 录</button>
+  </div>
+</div>
+
+<!-- App -->
+<div id="app" class="app">
+  <div class="header">
+    <h1>GameVallies 管理后台</h1>
+    <div class="right">
+      <span id="tokenDisplay" style="font-size:12px;color:#94a3b8"></span>
+      <button class="logout-btn" onclick="doLogout()">退出</button>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="dashboard" onclick="switchTab('dashboard')">仪表盘</div>
+    <div class="tab" data-tab="games" onclick="switchTab('games')">游戏管理</div>
+    <div class="tab" data-tab="create" onclick="switchTab('create')">添加游戏</div>
+    <div class="tab" data-tab="users" onclick="switchTab('users')">用户管理</div>
+    <div class="tab" data-tab="settings" onclick="switchTab('settings')">系统设置</div>
+  </div>
+
+  <div class="content">
+    <!-- Dashboard -->
+    <div id="page-dashboard" class="page active">
+      <div class="stats-grid" id="statsGrid">
+        <div class="stat-card"><div class="label">总游戏数</div><div class="value" id="s-games">-</div></div>
+        <div class="stat-card"><div class="label">总播放次数</div><div class="value" id="s-plays">-</div></div>
+        <div class="stat-card"><div class="label">总点赞数</div><div class="value" id="s-likes">-</div></div>
+        <div class="stat-card"><div class="label">总用户数</div><div class="value" id="s-users">-</div></div>
+        <div class="stat-card"><div class="label">总 Fork 数</div><div class="value" id="s-forks">-</div></div>
+      </div>
+      <div style="margin-bottom:16px">
+        <h3 style="font-size:16px;font-weight:600;color:#1e293b;margin-bottom:12px">状态分布</h3>
+        <div id="statusBars" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+      </div>
+      <div style="display:flex;gap:10px">
+        <button class="btn btn-primary" onclick="switchTab('create')">+ 添加游戏</button>
+        <button class="btn btn-secondary" onclick="loadStats()">刷新数据</button>
+      </div>
+    </div>
+
+    <!-- Game List -->
+    <div id="page-games" class="page">
+      <div id="gameListView">
+        <div class="toolbar">
+          <input type="text" id="searchInput" placeholder="搜索游戏名称..." oninput="debouncedSearch()">
+          <select id="statusFilter" onchange="loadGames()">
+            <option value="all">全部状态</option>
+            <option value="published">已发布</option>
+            <option value="draft">草稿</option>
+            <option value="banned">已封禁</option>
+            <option value="review">审核中</option>
+            <option value="generating">生成中</option>
+            <option value="failed">失败</option>
+          </select>
+          <button class="btn btn-secondary" onclick="loadGames()">刷新</button>
+          <button class="btn btn-primary" onclick="switchTab('create')">+ 添加游戏</button>
+        </div>
+        <div id="gameTableWrap"></div>
+      </div>
+      <div id="gameDetailView" style="display:none"></div>
+    </div>
+
+    <!-- User Management -->
+    <div id="page-users" class="page">
+      <div id="userListView">
+        <div class="toolbar">
+          <input type="text" id="userSearchInput" placeholder="搜索用户名/邮箱..." oninput="debouncedUserSearch()">
+          <select id="roleFilter" onchange="loadUsers()">
+            <option value="all">全部角色</option>
+            <option value="admin">管理员</option>
+            <option value="creator">创作者</option>
+            <option value="user">普通用户</option>
+            <option value="moderator">版主</option>
+          </select>
+          <button class="btn btn-secondary" onclick="loadUsers()">刷新</button>
+          <button class="btn btn-primary" onclick="showCreateUser()">+ 新建用户</button>
+        </div>
+        <div id="userTableWrap"></div>
+      </div>
+      <div id="userDetailView" style="display:none"></div>
+    </div>
+
+    <!-- Settings -->
+    <div id="page-settings" class="page">
+      <h2 style="font-size:18px;font-weight:600;color:#1e293b;margin-bottom:20px">系统设置</h2>
+      <div style="background:#fff;border-radius:10px;border:1px solid #e5e7eb;padding:24px;max-width:500px">
+        <h3 style="font-size:15px;font-weight:600;margin-bottom:16px;color:#1e293b">修改管理员令牌</h3>
+        <div class="form-group" style="margin-bottom:12px">
+          <label>当前令牌</label>
+          <input type="password" id="set-current-token" placeholder="输入当前令牌">
+        </div>
+        <div class="form-group" style="margin-bottom:12px">
+          <label>新令牌</label>
+          <input type="password" id="set-new-token" placeholder="至少6个字符">
+        </div>
+        <div class="form-group" style="margin-bottom:16px">
+          <label>确认新令牌</label>
+          <input type="password" id="set-confirm-token" placeholder="再次输入新令牌">
+        </div>
+        <button class="btn btn-primary" onclick="changeToken()">更新令牌</button>
+        <div class="hint" style="margin-top:12px">注意：修改后当前会话会自动使用新令牌。重启服务后需在 .env.deploy 中同步更新 ADMIN_TOKEN。</div>
+      </div>
+    </div>
+
+    <!-- Create Game -->
+    <div id="page-create" class="page">
+      <h2 style="font-size:18px;font-weight:600;color:#1e293b;margin-bottom:20px">添加新游戏</h2>
+      <div style="background:#fff;border-radius:10px;border:1px solid #e5e7eb;padding:24px">
+        <div class="form-grid" id="createForm">
+          <div class="form-group">
+            <label>游戏标题 *</label>
+            <input type="text" id="c-title" placeholder="输入游戏标题" oninput="autoSlug()">
+          </div>
+          <div class="form-group">
+            <label>Slug</label>
+            <input type="text" id="c-slug" placeholder="自动生成">
+            <div class="hint">URL 友好标识符，自动从标题生成</div>
+          </div>
+          <div class="form-group">
+            <label>游戏类型</label>
+            <select id="c-gameType">
+              <option value="">选择类型</option>
+              <option value="puzzle">益智 (Puzzle)</option>
+              <option value="action">动作 (Action)</option>
+              <option value="arcade">街机 (Arcade)</option>
+              <option value="strategy">策略 (Strategy)</option>
+              <option value="casual">休闲 (Casual)</option>
+              <option value="racing">竞速 (Racing)</option>
+              <option value="sports">体育 (Sports)</option>
+              <option value="simulation">模拟 (Simulation)</option>
+              <option value="adventure">冒险 (Adventure)</option>
+              <option value="educational">教育 (Educational)</option>
+              <option value="other">其他 (Other)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>标签</label>
+            <input type="text" id="c-tags" placeholder="标签1, 标签2, 标签3">
+            <div class="hint">用逗号分隔多个标签</div>
+          </div>
+          <div class="form-group full">
+            <label>描述</label>
+            <textarea id="c-desc" rows="3" placeholder="游戏描述"></textarea>
+          </div>
+          <div class="form-group full">
+            <label>HTML 源码</label>
+            <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()" ondrop="handleDrop(event)" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)">
+              <input type="file" id="fileInput" accept=".html,.htm" onchange="handleFileSelect(event)">
+              <div class="icon">&#128194;</div>
+              <div class="text">点击上传 .html 文件 或拖拽至此处</div>
+              <div class="filename" id="fileName" style="display:none"></div>
+            </div>
+            <div style="text-align:center;color:#94a3b8;font-size:12px;margin:8px 0">或直接在下方粘贴 HTML 代码</div>
+            <textarea id="c-htmlCode" class="code-editor" rows="12" placeholder="<!DOCTYPE html>&#10;<html>&#10;<head>...</head>&#10;<body>...</body>&#10;</html>"></textarea>
+          </div>
+          <div class="form-group full" id="createPreviewWrap" style="display:none">
+            <label>预览</label>
+            <iframe id="createPreviewFrame" class="preview-frame" sandbox="allow-scripts allow-same-origin"></iframe>
+          </div>
+        </div>
+        <div style="margin-top:20px;display:flex;gap:10px;justify-content:flex-end">
+          <button class="btn btn-secondary" onclick="previewCreate()">预览</button>
+          <button class="btn btn-primary" onclick="submitCreate()" id="createBtn">保存游戏</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Play Modal (fullscreen) -->
+<div id="playOverlay" class="play-overlay" style="display:none">
+  <div class="play-topbar">
+    <div class="title" id="playTitle">游戏试玩</div>
+    <div class="actions">
+      <button class="btn-newwin" onclick="openPlayNewWindow()">新窗口打开</button>
+      <button class="btn-close-play" onclick="closePlay()">关闭试玩</button>
+    </div>
+  </div>
+  <iframe id="playFrame" class="play-frame" sandbox="allow-scripts allow-same-origin allow-popups"></iframe>
+</div>
+
+<!-- Preview Modal -->
+<div id="previewOverlay" class="play-overlay" style="display:none">
+  <div class="play-topbar">
+    <div class="title" id="previewTitle">游戏预览</div>
+    <div class="actions">
+      <button class="btn-newwin" onclick="openPreviewNewWindow()">新窗口打开</button>
+      <button class="btn-close-play" onclick="closePreview()">关闭预览</button>
+    </div>
+  </div>
+  <iframe id="previewFrame2" class="play-frame" sandbox="allow-scripts allow-same-origin allow-popups"></iframe>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toastContainer"></div>
+
+<script>
+const API_BASE = window.location.origin + '/api/v1/admin';
+let token = localStorage.getItem('gv_admin_token') || '';
+let currentPage = 1;
+let totalPages = 1;
+let searchTimeout = null;
+
+// ===================== Auth =====================
+function checkAuth() {
+  if (!token) {
+    document.getElementById('loginOverlay').style.display = 'flex';
+    document.getElementById('app').style.display = 'none';
+  } else {
+    document.getElementById('loginOverlay').style.display = 'none';
+    document.getElementById('app').style.display = 'block';
+    document.getElementById('tokenDisplay').textContent = 'Token: ' + token.substring(0, 4) + '***';
+    init();
+  }
+}
+
+function doLogin() {
+  const val = document.getElementById('tokenInput').value.trim();
+  if (!val) { toast('请输入令牌', 'error'); return; }
+  token = val;
+  localStorage.setItem('gv_admin_token', token);
+  checkAuth();
+}
+
+function doLogout() {
+  token = '';
+  localStorage.removeItem('gv_admin_token');
+  checkAuth();
+}
+
+document.getElementById('tokenInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doLogin();
+});
+
+// ===================== API =====================
+async function api(path, options = {}) {
+  const url = API_BASE + path;
+  const opts = {
+    headers: { 'x-admin-token': token, 'Content-Type': 'application/json', ...options.headers },
+    ...options,
+  };
+  if (opts.body && typeof opts.body === 'object') {
+    opts.body = JSON.stringify(opts.body);
+  }
+  try {
+    const res = await fetch(url, opts);
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.message || `HTTP ${res.status}`);
+    }
+    if (data.code !== 0) {
+      throw new Error(data.message || 'Request failed');
+    }
+    return data.data;
+  } catch (err) {
+    if (err.message && err.message.includes('Unauthorized')) {
+      doLogout();
+    }
+    throw err;
+  }
+}
+
+// ===================== Toast =====================
+function toast(msg, type = 'success') {
+  const el = document.createElement('div');
+  el.className = 'toast toast-' + type;
+  el.textContent = msg;
+  document.getElementById('toastContainer').appendChild(el);
+  setTimeout(() => el.remove(), 3500);
+}
+
+// ===================== Confirm =====================
+function confirmDialog(title, msg) {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.className = 'confirm-overlay';
+    overlay.innerHTML = `<div class="confirm-box"><h4>${title}</h4><p>${msg}</p><div class="btns"><button class="btn btn-secondary" id="cfmNo">取消</button><button class="btn btn-danger" id="cfmYes">确认</button></div></div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector('#cfmNo').onclick = () => { overlay.remove(); resolve(false); };
+    overlay.querySelector('#cfmYes').onclick = () => { overlay.remove(); resolve(true); };
+  });
+}
+
+// ===================== Tabs =====================
+function switchTab(tab) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === 'page-' + tab));
+  if (tab === 'dashboard') loadStats();
+  if (tab === 'games') { showGameList(); loadGames(); }
+  if (tab === 'users') { showUserList(); loadUsers(); }
+}
+
+// ===================== Dashboard =====================
+async function loadStats() {
+  try {
+    const d = await api('/stats');
+    document.getElementById('s-games').textContent = fmtNum(d.totalGames);
+    document.getElementById('s-plays').textContent = fmtNum(d.totalPlays);
+    document.getElementById('s-likes').textContent = fmtNum(d.totalLikes);
+    document.getElementById('s-users').textContent = fmtNum(d.totalUsers);
+    document.getElementById('s-forks').textContent = fmtNum(d.totalForks);
+
+    const bars = document.getElementById('statusBars');
+    bars.innerHTML = '';
+    const statusLabels = { published: '已发布', draft: '草稿', banned: '已封禁', review: '审核中', generating: '生成中', failed: '失败' };
+    for (const [k, v] of Object.entries(d.byStatus || {})) {
+      bars.innerHTML += `<div class="badge badge-${k}" style="font-size:13px;padding:6px 14px">${statusLabels[k] || k}: ${v}</div>`;
+    }
+  } catch (e) {
+    toast('加载统计失败: ' + e.message, 'error');
+  }
+}
+
+// ===================== Game List =====================
+function debouncedSearch() {
+  clearTimeout(searchTimeout);
+  searchTimeout = setTimeout(() => { currentPage = 1; loadGames(); }, 300);
+}
+
+async function loadGames() {
+  const search = document.getElementById('searchInput').value.trim();
+  const status = document.getElementById('statusFilter').value;
+  const wrap = document.getElementById('gameTableWrap');
+  wrap.innerHTML = '<div class="loading"><div class="spinner"></div><div style="margin-top:8px">加载中...</div></div>';
+
+  try {
+    const d = await api(`/games?page=${currentPage}&limit=20&search=${encodeURIComponent(search)}&status=${status}`);
+    totalPages = d.totalPages || 1;
+    renderGameTable(d);
+  } catch (e) {
+    wrap.innerHTML = `<div class="loading" style="color:#dc2626">加载失败: ${escHtml(e.message)}</div>`;
+  }
+}
+
+function renderGameTable(d) {
+  const wrap = document.getElementById('gameTableWrap');
+  if (!d.items || d.items.length === 0) {
+    wrap.innerHTML = '<div class="loading">暂无游戏数据</div>';
+    return;
+  }
+  let html = '<div class="table-wrap"><table><thead><tr><th>标题</th><th>类型</th><th>状态</th><th>播放</th><th>点赞</th><th>质量分</th><th>大小</th><th style="min-width:240px">操作</th></tr></thead><tbody>';
+  for (const g of d.items) {
+    const bundle = g.bundles && g.bundles[0];
+    const size = bundle && bundle.codeSizeBytes ? fmtSize(bundle.codeSizeBytes) : '-';
+    const isPub = g.status === 'published';
+    html += `<tr>
+      <td><strong style="cursor:pointer" onclick="showGameDetail('${g.id}')">${escHtml(g.title)}</strong><div style="font-size:11px;color:#94a3b8;margin-top:2px">${escHtml(g.author?.displayName || g.author?.username || '')}</div></td>
+      <td>${escHtml(g.gameType || '-')}</td>
+      <td><span class="badge badge-${g.status}">${statusLabel(g.status)}</span></td>
+      <td>${fmtNum(g.playCount)}</td>
+      <td>${fmtNum(g.likeCount)}</td>
+      <td>${Number(g.qualityScore || 0).toFixed(1)}</td>
+      <td>${size}</td>
+      <td><div class="action-cell">
+        <button class="abtn abtn-preview" onclick="event.stopPropagation();previewGame('${g.id}','${escAttr(g.title)}')">预览</button>
+        <button class="abtn abtn-play" onclick="event.stopPropagation();playGame('${g.id}','${escAttr(g.title)}')">试玩</button>
+        ${isPub
+          ? `<button class="abtn abtn-unpublish" onclick="event.stopPropagation();quickToggle('${g.id}','draft')">下架</button>`
+          : `<button class="abtn abtn-publish" onclick="event.stopPropagation();quickToggle('${g.id}','published')">上架</button>`
+        }
+        <button class="abtn abtn-edit" onclick="event.stopPropagation();showGameDetail('${g.id}')">编辑</button>
+        <button class="abtn abtn-delete" onclick="event.stopPropagation();quickDelete('${g.id}','${escAttr(g.title)}')">删除</button>
+      </div></td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  // Pagination
+  html += '<div class="pagination"><div class="info">';
+  html += `共 ${d.total} 条，第 ${d.page}/${d.totalPages} 页`;
+  html += '</div><div class="pages">';
+  html += `<button ${d.page <= 1 ? 'disabled' : ''} onclick="currentPage=${d.page - 1};loadGames()">上一页</button>`;
+  for (let i = Math.max(1, d.page - 2); i <= Math.min(d.totalPages, d.page + 2); i++) {
+    html += `<button class="${i === d.page ? 'active' : ''}" onclick="currentPage=${i};loadGames()">${i}</button>`;
+  }
+  html += `<button ${d.page >= d.totalPages ? 'disabled' : ''} onclick="currentPage=${d.page + 1};loadGames()">下一页</button>`;
+  html += '</div></div></div>';
+  wrap.innerHTML = html;
+}
+
+// ===================== Quick Actions (from table) =====================
+async function quickToggle(id, status) {
+  const label = status === 'published' ? '上架' : '下架';
+  try {
+    await api(`/game-status/${id}`, { method: 'POST', body: { status } });
+    toast(`${label}成功`);
+    loadGames();
+  } catch (e) {
+    toast(`${label}失败: ` + e.message, 'error');
+  }
+}
+
+async function quickDelete(id, title) {
+  const yes = await confirmDialog('确认删除', `确定要删除游戏「${title}」吗？此操作无法撤销。`);
+  if (!yes) return;
+  try {
+    await api('/games/' + id, { method: 'DELETE' });
+    toast('游戏已删除');
+    loadGames();
+  } catch (e) {
+    toast('删除失败: ' + e.message, 'error');
+  }
+}
+
+// ===================== Preview & Play =====================
+let currentPlayGameId = null;
+
+function previewGame(id, title) {
+  currentPlayGameId = id;
+  const url = window.location.origin + '/games/' + id + '/preview';
+  document.getElementById('previewTitle').textContent = '预览: ' + title;
+  document.getElementById('previewFrame2').src = url;
+  document.getElementById('previewOverlay').style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+}
+
+function closePreview() {
+  document.getElementById('previewOverlay').style.display = 'none';
+  document.getElementById('previewFrame2').src = 'about:blank';
+  document.body.style.overflow = '';
+}
+
+function openPreviewNewWindow() {
+  if (currentPlayGameId) {
+    window.open(window.location.origin + '/games/' + currentPlayGameId + '/preview', '_blank');
+  }
+}
+
+function playGame(id, title) {
+  currentPlayGameId = id;
+  const url = window.location.origin + '/games/' + id + '/preview';
+  document.getElementById('playTitle').textContent = '试玩: ' + title;
+  document.getElementById('playFrame').src = url;
+  document.getElementById('playOverlay').style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+}
+
+function closePlay() {
+  document.getElementById('playOverlay').style.display = 'none';
+  document.getElementById('playFrame').src = 'about:blank';
+  document.body.style.overflow = '';
+}
+
+function openPlayNewWindow() {
+  if (currentPlayGameId) {
+    window.open(window.location.origin + '/games/' + currentPlayGameId + '/preview', '_blank');
+  }
+}
+
+// ===================== Game Detail =====================
+function showGameList() {
+  document.getElementById('gameListView').style.display = 'block';
+  document.getElementById('gameDetailView').style.display = 'none';
+}
+
+async function showGameDetail(id) {
+  document.getElementById('gameListView').style.display = 'none';
+  const dv = document.getElementById('gameDetailView');
+  dv.style.display = 'block';
+  dv.innerHTML = '<div class="loading"><div class="spinner"></div><div style="margin-top:8px">加载中...</div></div>';
+
+  try {
+    const g = await api('/games/' + id);
+    renderGameDetail(g);
+  } catch (e) {
+    dv.innerHTML = `<div class="loading" style="color:#dc2626">加载失败: ${escHtml(e.message)}</div>`;
+  }
+}
+
+function renderGameDetail(g) {
+  const bundle = g.bundles && g.bundles[0];
+  const dv = document.getElementById('gameDetailView');
+
+  let html = `<div class="back-btn" onclick="showGameList()">&#8592; 返回列表</div>`;
+  html += `<div class="detail-header"><h2>${escHtml(g.title)}</h2><div style="display:flex;gap:8px;flex-wrap:wrap">`;
+  html += `<button class="btn btn-secondary btn-sm" onclick="previewGame('${g.id}','${escAttr(g.title)}')">预览</button>`;
+  html += `<button class="btn btn-success btn-sm" onclick="playGame('${g.id}','${escAttr(g.title)}')">试玩</button>`;
+  if (g.status === 'published') {
+    html += `<button class="btn btn-warning btn-sm" onclick="changeStatus('${g.id}','draft')">下架</button>`;
+  } else {
+    html += `<button class="btn btn-success btn-sm" onclick="changeStatus('${g.id}','published')">上架</button>`;
+  }
+  html += `<button class="btn btn-danger btn-sm" onclick="deleteGame('${g.id}')">删除</button>`;
+  html += `</div></div>`;
+
+  // Stats
+  html += '<div class="detail-stats">';
+  html += `<div class="detail-stat"><div class="v">${fmtNum(g.playCount)}</div><div class="l">播放</div></div>`;
+  html += `<div class="detail-stat"><div class="v">${fmtNum(g.likeCount)}</div><div class="l">点赞</div></div>`;
+  html += `<div class="detail-stat"><div class="v">${fmtNum(g.forkCount)}</div><div class="l">Fork</div></div>`;
+  html += `<div class="detail-stat"><div class="v">${Number(g.qualityScore || 0).toFixed(1)}</div><div class="l">质量分</div></div>`;
+  html += `<div class="detail-stat"><div class="v">${Number(g.avgPlayTime || 0).toFixed(0)}s</div><div class="l">平均时长</div></div>`;
+  html += `<div class="detail-stat"><div class="v">v${g.version}</div><div class="l">版本</div></div>`;
+  html += '</div>';
+
+  // Status controls
+  html += '<div class="section-title">状态管理</div>';
+  html += '<div class="status-btns">';
+  const statuses = ['draft', 'published', 'banned'];
+  for (const s of statuses) {
+    const cls = g.status === s ? 'btn-primary' : 'btn-secondary';
+    html += `<button class="btn ${cls}" onclick="changeStatus('${g.id}','${s}')">${statusLabel(s)}</button>`;
+  }
+  html += `<span style="margin-left:8px;font-size:13px;color:#94a3b8">当前: <span class="badge badge-${g.status}">${statusLabel(g.status)}</span></span>`;
+  html += '</div>';
+
+  // Edit form
+  html += '<div class="section-title">编辑信息</div>';
+  html += '<div class="form-grid">';
+  html += `<div class="form-group"><label>标题</label><input type="text" id="e-title" value="${escAttr(g.title)}"></div>`;
+  html += `<div class="form-group"><label>Slug</label><input type="text" id="e-slug" value="${escAttr(g.slug || '')}"></div>`;
+  html += `<div class="form-group"><label>类型</label><select id="e-gameType">
+    <option value="">选择</option>
+    <option value="puzzle" ${g.gameType==='puzzle'?'selected':''}>益智</option>
+    <option value="action" ${g.gameType==='action'?'selected':''}>动作</option>
+    <option value="arcade" ${g.gameType==='arcade'?'selected':''}>街机</option>
+    <option value="strategy" ${g.gameType==='strategy'?'selected':''}>策略</option>
+    <option value="casual" ${g.gameType==='casual'?'selected':''}>休闲</option>
+    <option value="racing" ${g.gameType==='racing'?'selected':''}>竞速</option>
+    <option value="sports" ${g.gameType==='sports'?'selected':''}>体育</option>
+    <option value="simulation" ${g.gameType==='simulation'?'selected':''}>模拟</option>
+    <option value="adventure" ${g.gameType==='adventure'?'selected':''}>冒险</option>
+    <option value="educational" ${g.gameType==='educational'?'selected':''}>教育</option>
+    <option value="other" ${g.gameType==='other'?'selected':''}>其他</option>
+  </select></div>`;
+  const tagsStr = Array.isArray(g.tags) ? g.tags.join(', ') : '';
+  html += `<div class="form-group"><label>标签</label><input type="text" id="e-tags" value="${escAttr(tagsStr)}"></div>`;
+  html += `<div class="form-group full"><label>描述</label><textarea id="e-desc" rows="3">${escHtml(g.description || '')}</textarea></div>`;
+  html += '</div>';
+
+  // Code editor
+  html += '<div class="section-title">HTML 源码</div>';
+  html += '<div class="form-group full" style="margin-bottom:12px">';
+  html += '<div class="upload-area" onclick="document.getElementById(\'editFileInput\').click()">';
+  html += '<input type="file" id="editFileInput" accept=".html,.htm" onchange="handleEditFileSelect(event)">';
+  html += '<div class="text">点击上传新的 .html 文件替换</div>';
+  html += '</div>';
+  html += `<textarea id="e-htmlCode" class="code-editor" rows="16">${escHtml(bundle?.htmlCode || '')}</textarea>`;
+  html += '</div>';
+
+  html += '<div style="display:flex;gap:10px;margin-top:16px">';
+  html += `<button class="btn btn-secondary" onclick="previewEdit()">预览</button>`;
+  html += `<button class="btn btn-primary" onclick="saveEdit('${g.id}')">保存修改</button>`;
+  html += '</div>';
+
+  // Preview
+  html += '<div id="editPreviewWrap" style="display:none;margin-top:16px"><div class="section-title">预览</div><iframe id="editPreviewFrame" class="preview-frame" sandbox="allow-scripts allow-same-origin"></iframe></div>';
+
+  dv.innerHTML = html;
+}
+
+function handleEditFileSelect(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    document.getElementById('e-htmlCode').value = ev.target.result;
+    toast('文件已加载: ' + file.name, 'info');
+  };
+  reader.readAsText(file);
+}
+
+function previewEdit() {
+  const code = document.getElementById('e-htmlCode').value;
+  if (!code.trim()) { toast('没有代码可预览', 'error'); return; }
+  const wrap = document.getElementById('editPreviewWrap');
+  wrap.style.display = 'block';
+  const frame = document.getElementById('editPreviewFrame');
+  frame.srcdoc = code;
+}
+
+async function saveEdit(id) {
+  const data = {
+    title: document.getElementById('e-title').value.trim(),
+    slug: document.getElementById('e-slug').value.trim() || undefined,
+    gameType: document.getElementById('e-gameType').value || undefined,
+    tags: document.getElementById('e-tags').value.split(',').map(t => t.trim()).filter(Boolean),
+    description: document.getElementById('e-desc').value.trim(),
+    htmlCode: document.getElementById('e-htmlCode').value,
+  };
+  if (!data.title) { toast('标题不能为空', 'error'); return; }
+  try {
+    await api('/games/' + id, { method: 'PUT', body: data });
+    toast('保存成功');
+    showGameDetail(id);
+  } catch (e) {
+    toast('保存失败: ' + e.message, 'error');
+  }
+}
+
+async function changeStatus(id, status) {
+  try {
+    await api(`/game-status/${id}`, { method: 'POST', body: { status } });
+    toast('状态已更新');
+    showGameDetail(id);
+  } catch (e) {
+    toast('更新失败: ' + e.message, 'error');
+  }
+}
+
+async function deleteGame(id) {
+  const yes = await confirmDialog('确认删除', '删除后将无法恢复，确定要删除这个游戏吗？');
+  if (!yes) return;
+  try {
+    await api('/games/' + id, { method: 'DELETE' });
+    toast('游戏已删除');
+    showGameList();
+    loadGames();
+  } catch (e) {
+    toast('删除失败: ' + e.message, 'error');
+  }
+}
+
+// ===================== Create Game =====================
+function autoSlug() {
+  const title = document.getElementById('c-title').value.trim();
+  const slug = title
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '-')
+    .replace(/^-|-$/g, '');
+  document.getElementById('c-slug').value = slug;
+}
+
+function handleFileSelect(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    document.getElementById('c-htmlCode').value = ev.target.result;
+    document.getElementById('fileName').textContent = file.name;
+    document.getElementById('fileName').style.display = 'block';
+    toast('文件已加载: ' + file.name, 'info');
+  };
+  reader.readAsText(file);
+}
+
+function handleDragOver(e) {
+  e.preventDefault();
+  e.currentTarget.classList.add('dragover');
+}
+function handleDragLeave(e) {
+  e.currentTarget.classList.remove('dragover');
+}
+function handleDrop(e) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('dragover');
+  const file = e.dataTransfer.files[0];
+  if (file && (file.name.endsWith('.html') || file.name.endsWith('.htm'))) {
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      document.getElementById('c-htmlCode').value = ev.target.result;
+      document.getElementById('fileName').textContent = file.name;
+      document.getElementById('fileName').style.display = 'block';
+      toast('文件已加载: ' + file.name, 'info');
+    };
+    reader.readAsText(file);
+  } else {
+    toast('请上传 .html 文件', 'error');
+  }
+}
+
+function previewCreate() {
+  const code = document.getElementById('c-htmlCode').value;
+  if (!code.trim()) { toast('没有代码可预览', 'error'); return; }
+  document.getElementById('createPreviewWrap').style.display = 'block';
+  document.getElementById('createPreviewFrame').srcdoc = code;
+}
+
+async function submitCreate() {
+  const title = document.getElementById('c-title').value.trim();
+  const htmlCode = document.getElementById('c-htmlCode').value;
+  if (!title) { toast('请输入游戏标题', 'error'); return; }
+  if (!htmlCode.trim()) { toast('请上传或粘贴 HTML 代码', 'error'); return; }
+
+  const data = {
+    title,
+    slug: document.getElementById('c-slug').value.trim() || undefined,
+    gameType: document.getElementById('c-gameType').value || undefined,
+    tags: document.getElementById('c-tags').value.split(',').map(t => t.trim()).filter(Boolean),
+    description: document.getElementById('c-desc').value.trim(),
+    htmlCode,
+  };
+
+  const btn = document.getElementById('createBtn');
+  btn.disabled = true;
+  btn.textContent = '保存中...';
+
+  try {
+    await api('/games', { method: 'POST', body: data });
+    toast('游戏创建成功');
+    // Reset form
+    document.getElementById('c-title').value = '';
+    document.getElementById('c-slug').value = '';
+    document.getElementById('c-gameType').value = '';
+    document.getElementById('c-tags').value = '';
+    document.getElementById('c-desc').value = '';
+    document.getElementById('c-htmlCode').value = '';
+    document.getElementById('fileName').style.display = 'none';
+    document.getElementById('createPreviewWrap').style.display = 'none';
+    switchTab('games');
+  } catch (e) {
+    toast('创建失败: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '保存游戏';
+  }
+}
+
+// ===================== User Management =====================
+let userPage = 1;
+let userSearchTimeout = null;
+
+function debouncedUserSearch() {
+  clearTimeout(userSearchTimeout);
+  userSearchTimeout = setTimeout(() => { userPage = 1; loadUsers(); }, 300);
+}
+
+async function loadUsers() {
+  const search = document.getElementById('userSearchInput').value.trim();
+  const role = document.getElementById('roleFilter').value;
+  const wrap = document.getElementById('userTableWrap');
+  wrap.innerHTML = '<div class="loading"><div class="spinner"></div><div style="margin-top:8px">加载中...</div></div>';
+  try {
+    const d = await api(`/users?page=${userPage}&limit=20&search=${encodeURIComponent(search)}&role=${role}`);
+    renderUserTable(d);
+  } catch (e) {
+    wrap.innerHTML = `<div class="loading" style="color:#dc2626">加载失败: ${escHtml(e.message)}</div>`;
+  }
+}
+
+function renderUserTable(d) {
+  const wrap = document.getElementById('userTableWrap');
+  if (!d.items || d.items.length === 0) {
+    wrap.innerHTML = '<div class="loading">暂无用户</div>';
+    return;
+  }
+  const roleLabels = { admin: '管理员', creator: '创作者', user: '用户', moderator: '版主' };
+  const roleBadge = (r) => `<span class="badge badge-${r === 'admin' ? 'published' : r === 'creator' ? 'review' : 'draft'}">${roleLabels[r] || r}</span>`;
+  let html = '<div class="table-wrap"><table><thead><tr><th>用户名</th><th>昵称</th><th>邮箱</th><th>角色</th><th>游戏数</th><th>注册时间</th><th style="min-width:200px">操作</th></tr></thead><tbody>';
+  for (const u of d.items) {
+    html += `<tr>
+      <td><strong>${escHtml(u.username)}</strong></td>
+      <td>${escHtml(u.displayName || '-')}</td>
+      <td>${escHtml(u.email || '-')}</td>
+      <td>${roleBadge(u.role)}</td>
+      <td>${u.gameCount || 0}</td>
+      <td>${fmtDate(u.createdAt)}</td>
+      <td><div class="action-cell">
+        <button class="abtn abtn-edit" onclick="showUserDetail('${u.id}')">编辑</button>
+        <button class="abtn abtn-preview" onclick="resetPasswordDialog('${u.id}','${escAttr(u.username)}')">重置密码</button>
+        <button class="abtn abtn-delete" onclick="deleteUserConfirm('${u.id}','${escAttr(u.username)}')">删除</button>
+      </div></td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  html += '<div class="pagination"><div class="info">';
+  html += `共 ${d.total} 条，第 ${d.page}/${d.totalPages} 页`;
+  html += '</div><div class="pages">';
+  html += `<button ${d.page <= 1 ? 'disabled' : ''} onclick="userPage=${d.page-1};loadUsers()">上一页</button>`;
+  for (let i = Math.max(1, d.page-2); i <= Math.min(d.totalPages, d.page+2); i++) {
+    html += `<button class="${i===d.page?'active':''}" onclick="userPage=${i};loadUsers()">${i}</button>`;
+  }
+  html += `<button ${d.page >= d.totalPages ? 'disabled' : ''} onclick="userPage=${d.page+1};loadUsers()">下一页</button>`;
+  html += '</div></div></div>';
+  wrap.innerHTML = html;
+}
+
+async function showUserDetail(id) {
+  document.getElementById('userListView').style.display = 'none';
+  const dv = document.getElementById('userDetailView');
+  dv.style.display = 'block';
+  dv.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+  try {
+    const u = await api('/users/' + id);
+    renderUserDetail(u);
+  } catch (e) {
+    dv.innerHTML = `<div class="loading" style="color:#dc2626">${escHtml(e.message)}</div>`;
+  }
+}
+
+function renderUserDetail(u) {
+  const dv = document.getElementById('userDetailView');
+  let html = `<div class="back-btn" onclick="showUserList()">← 返回列表</div>`;
+  html += `<div class="detail-header"><h2>${escHtml(u.displayName || u.username)}</h2></div>`;
+  html += '<div class="detail-stats">';
+  html += `<div class="detail-stat"><div class="v">${u.gameCount||0}</div><div class="l">游戏</div></div>`;
+  html += `<div class="detail-stat"><div class="v">${fmtNum(u.totalPlays)}</div><div class="l">总播放</div></div>`;
+  html += `<div class="detail-stat"><div class="v">${u.followerCount||0}</div><div class="l">粉丝</div></div>`;
+  html += `<div class="detail-stat"><div class="v">${u.followingCount||0}</div><div class="l">关注</div></div>`;
+  html += '</div>';
+  html += '<div class="section-title">编辑用户信息</div>';
+  html += '<div class="form-grid">';
+  html += `<div class="form-group"><label>用户名</label><input type="text" id="u-username" value="${escAttr(u.username)}"></div>`;
+  html += `<div class="form-group"><label>昵称</label><input type="text" id="u-displayName" value="${escAttr(u.displayName||'')}"></div>`;
+  html += `<div class="form-group"><label>邮箱</label><input type="text" id="u-email" value="${escAttr(u.email||'')}"></div>`;
+  html += `<div class="form-group"><label>手机</label><input type="text" id="u-phone" value="${escAttr(u.phone||'')}"></div>`;
+  html += `<div class="form-group"><label>角色</label><select id="u-role">
+    <option value="user" ${u.role==='user'?'selected':''}>用户</option>
+    <option value="creator" ${u.role==='creator'?'selected':''}>创作者</option>
+    <option value="moderator" ${u.role==='moderator'?'selected':''}>版主</option>
+    <option value="admin" ${u.role==='admin'?'selected':''}>管理员</option>
+  </select></div>`;
+  html += `<div class="form-group"><label>Pro 会员</label><select id="u-isPro">
+    <option value="false" ${!u.isPro?'selected':''}>否</option>
+    <option value="true" ${u.isPro?'selected':''}>是</option>
+  </select></div>`;
+  html += `<div class="form-group full"><label>简介</label><textarea id="u-bio" rows="2">${escHtml(u.bio||'')}</textarea></div>`;
+  html += '</div>';
+  html += `<div style="margin-top:16px;display:flex;gap:10px">
+    <button class="btn btn-primary" onclick="saveUser('${u.id}')">保存修改</button>
+    <button class="btn btn-secondary" onclick="resetPasswordDialog('${u.id}','${escAttr(u.username)}')">重置密码</button>
+    <button class="btn btn-danger" onclick="deleteUserConfirm('${u.id}','${escAttr(u.username)}')">删除用户</button>
+  </div>`;
+  dv.innerHTML = html;
+}
+
+function showUserList() {
+  document.getElementById('userListView').style.display = 'block';
+  document.getElementById('userDetailView').style.display = 'none';
+}
+
+async function saveUser(id) {
+  const data = {
+    username: document.getElementById('u-username').value.trim(),
+    displayName: document.getElementById('u-displayName').value.trim(),
+    email: document.getElementById('u-email').value.trim(),
+    phone: document.getElementById('u-phone').value.trim(),
+    role: document.getElementById('u-role').value,
+    isPro: document.getElementById('u-isPro').value === 'true',
+    bio: document.getElementById('u-bio').value.trim(),
+  };
+  if (!data.username) { toast('用户名不能为空', 'error'); return; }
+  try {
+    await api('/users/' + id, { method: 'PUT', body: data });
+    toast('用户信息已更新');
+    showUserDetail(id);
+  } catch (e) { toast('更新失败: ' + e.message, 'error'); }
+}
+
+async function deleteUserConfirm(id, name) {
+  const yes = await confirmDialog('确认删除用户', `删除用户「${name}」将同时删除其所有游戏，此操作不可撤销。`);
+  if (!yes) return;
+  try {
+    await api('/users/' + id, { method: 'DELETE' });
+    toast('用户已删除');
+    showUserList();
+    loadUsers();
+  } catch (e) { toast('删除失败: ' + e.message, 'error'); }
+}
+
+async function resetPasswordDialog(id, name) {
+  const overlay = document.createElement('div');
+  overlay.className = 'confirm-overlay';
+  overlay.innerHTML = `<div class="confirm-box" style="width:400px">
+    <h4>重置密码 - ${escHtml(name)}</h4>
+    <div class="form-group" style="margin:12px 0"><label>新密码</label><input type="password" id="rp-password" placeholder="至少6个字符"></div>
+    <div class="form-group" style="margin:12px 0"><label>确认密码</label><input type="password" id="rp-confirm" placeholder="再次输入"></div>
+    <div class="btns"><button class="btn btn-secondary" id="rpCancel">取消</button><button class="btn btn-primary" id="rpOk">确认重置</button></div>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#rpCancel').onclick = () => overlay.remove();
+  overlay.querySelector('#rpOk').onclick = async () => {
+    const pw = document.getElementById('rp-password').value;
+    const cf = document.getElementById('rp-confirm').value;
+    if (pw.length < 6) { toast('密码至少6个字符', 'error'); return; }
+    if (pw !== cf) { toast('两次密码不一致', 'error'); return; }
+    try {
+      await api('/user-password/' + id, { method: 'POST', body: { password: pw } });
+      toast('密码已重置');
+      overlay.remove();
+    } catch (e) { toast('重置失败: ' + e.message, 'error'); }
+  };
+}
+
+function showCreateUser() {
+  const overlay = document.createElement('div');
+  overlay.className = 'confirm-overlay';
+  overlay.innerHTML = `<div class="confirm-box" style="width:450px">
+    <h4>新建用户</h4>
+    <div class="form-group" style="margin:8px 0"><label>用户名 *</label><input type="text" id="nu-username" placeholder="必填"></div>
+    <div class="form-group" style="margin:8px 0"><label>昵称</label><input type="text" id="nu-displayName"></div>
+    <div class="form-group" style="margin:8px 0"><label>邮箱</label><input type="text" id="nu-email"></div>
+    <div class="form-group" style="margin:8px 0"><label>密码</label><input type="password" id="nu-password" placeholder="至少6个字符"></div>
+    <div class="form-group" style="margin:8px 0"><label>角色</label><select id="nu-role">
+      <option value="user">用户</option><option value="creator">创作者</option>
+      <option value="moderator">版主</option><option value="admin">管理员</option>
+    </select></div>
+    <div class="btns" style="margin-top:16px"><button class="btn btn-secondary" id="nuCancel">取消</button><button class="btn btn-primary" id="nuOk">创建</button></div>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#nuCancel').onclick = () => overlay.remove();
+  overlay.querySelector('#nuOk').onclick = async () => {
+    const data = {
+      username: document.getElementById('nu-username').value.trim(),
+      displayName: document.getElementById('nu-displayName').value.trim(),
+      email: document.getElementById('nu-email').value.trim(),
+      password: document.getElementById('nu-password').value,
+      role: document.getElementById('nu-role').value,
+    };
+    if (!data.username) { toast('用户名必填', 'error'); return; }
+    try {
+      await api('/users', { method: 'POST', body: data });
+      toast('用户已创建');
+      overlay.remove();
+      loadUsers();
+    } catch (e) { toast('创建失败: ' + e.message, 'error'); }
+  };
+}
+
+// ===================== Admin Token =====================
+async function changeToken() {
+  const current = document.getElementById('set-current-token').value;
+  const newTk = document.getElementById('set-new-token').value;
+  const confirm = document.getElementById('set-confirm-token').value;
+  if (!current) { toast('请输入当前令牌', 'error'); return; }
+  if (newTk.length < 6) { toast('新令牌至少6个字符', 'error'); return; }
+  if (newTk !== confirm) { toast('两次输入不一致', 'error'); return; }
+  try {
+    await api('/change-token', { method: 'POST', body: { newToken: newTk } });
+    token = newTk;
+    localStorage.setItem('gv_admin_token', token);
+    document.getElementById('set-current-token').value = '';
+    document.getElementById('set-new-token').value = '';
+    document.getElementById('set-confirm-token').value = '';
+    toast('管理员令牌已更新');
+  } catch (e) { toast('更新失败: ' + e.message, 'error'); }
+}
+
+// ===================== Helpers =====================
+function fmtNum(n) {
+  n = Number(n || 0);
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e4) return (n / 1e4).toFixed(1) + 'W';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return n.toString();
+}
+
+function fmtSize(bytes) {
+  if (bytes > 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+  if (bytes > 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return bytes + ' B';
+}
+
+function fmtDate(s) {
+  if (!s) return '-';
+  const d = new Date(s);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+function statusLabel(s) {
+  const m = { published: '已发布', draft: '草稿', banned: '已封禁', review: '审核中', generating: '生成中', failed: '失败' };
+  return m[s] || s;
+}
+
+function escHtml(s) {
+  const div = document.createElement('div');
+  div.textContent = s || '';
+  return div.innerHTML;
+}
+
+function escAttr(s) {
+  return (s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// ===================== Init =====================
+function init() {
+  loadStats();
+}
+
+// ESC key closes play/preview overlays
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    if (document.getElementById('playOverlay').style.display !== 'none') closePlay();
+    else if (document.getElementById('previewOverlay').style.display !== 'none') closePreview();
+  }
+});
+
+checkAuth();
+</script>
+</body>
+</html>
