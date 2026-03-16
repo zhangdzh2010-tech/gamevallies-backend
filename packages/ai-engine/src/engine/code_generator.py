@@ -20,6 +20,7 @@ from typing import List, Optional, Tuple
 from ..api.models import GDD, GameSpec, GenerateCodeResult, IterationType
 from ..config.settings import settings
 from ..services.llm_client import LLMClient
+from .prompt_store import get_prompt
 from .template_engine import TemplateEngine
 
 logger = logging.getLogger(__name__)
@@ -205,7 +206,7 @@ class CodeGenerator:
             text = await self._client.complete(
                 model=self._client.model_for(),
                 max_tokens=4096,
-                system=SYSTEM_PROMPT_LAYER1,
+                system=get_prompt("prompt.code_gen_system", SYSTEM_PROMPT_LAYER1),
                 messages=[{"role": "user", "content": prompt}],
             )
             return _extract_html(text)
@@ -222,7 +223,7 @@ class CodeGenerator:
         if description:
             full_prompt = (
                 f"用户需求：{description}\n\n"
-                f"{PLATFORM_PROMPT_STANDARD}\n\n"
+                f"{get_prompt('prompt.platform_standard', PLATFORM_PROMPT_STANDARD)}\n\n"
                 f"请根据用户需求生成完整的 HTML5 游戏。游戏必须完整可玩、触屏操作、有计分系统。"
             )
         else:
@@ -234,7 +235,7 @@ class CodeGenerator:
             input_map_str = "\n".join(
                 f"  {k} → {v}" for k, v in gdd.input_map.items()
             )
-            full_prompt = GAME_DESIGN_PROMPT_TEMPLATE.format(
+            full_prompt = get_prompt("prompt.game_design_template", GAME_DESIGN_PROMPT_TEMPLATE).format(
                 game_type=spec.game_type,
                 theme=spec.visual_style.theme,
                 art_style=spec.visual_style.art_style,
@@ -253,13 +254,13 @@ class CodeGenerator:
                 lose_condition=spec.rules.lose_condition,
                 entities_desc=entities_desc,
                 input_map=input_map_str,
-            ) + f"\n\n{PLATFORM_PROMPT_STANDARD}"
+            ) + f"\n\n{get_prompt('prompt.platform_standard', PLATFORM_PROMPT_STANDARD)}"
 
         try:
             text = await self._client.complete(
                 model=self._client.model_for(),
                 max_tokens=8192,
-                system=SYSTEM_PROMPT_LAYER1,
+                system=get_prompt("prompt.code_gen_system", SYSTEM_PROMPT_LAYER1),
                 messages=[{"role": "user", "content": full_prompt}],
             )
             return _extract_html(text)
@@ -300,7 +301,7 @@ class CodeGenerator:
                 max_tokens=20,
                 messages=[{
                     "role": "user",
-                    "content": ITERATE_CLASSIFY_PROMPT.format(feedback=feedback),
+                    "content": get_prompt("prompt.iterate_classify", ITERATE_CLASSIFY_PROMPT).format(feedback=feedback),
                 }],
             )
             label = text.strip().lower()
@@ -349,9 +350,9 @@ class CodeGenerator:
         )
 
         if iter_type == IterationType.element_change:
-            prompt = ELEMENT_CHANGE_PROMPT.format(feedback=feedback, code=code)
+            prompt = get_prompt("prompt.element_change", ELEMENT_CHANGE_PROMPT).format(feedback=feedback, code=code)
         else:
-            prompt = MECHANIC_CHANGE_PROMPT.format(
+            prompt = get_prompt("prompt.mechanic_change", MECHANIC_CHANGE_PROMPT).format(
                 feedback=feedback, history=history_text, code=code
             )
 
@@ -359,7 +360,7 @@ class CodeGenerator:
             text = await self._client.complete(
                 model=self._client.model_for(),
                 max_tokens=8192,
-                system=SYSTEM_PROMPT_LAYER1,
+                system=get_prompt("prompt.code_gen_system", SYSTEM_PROMPT_LAYER1),
                 messages=[{"role": "user", "content": prompt}],
             )
             return _extract_html(text)

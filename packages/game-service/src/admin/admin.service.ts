@@ -451,4 +451,262 @@ export class AdminService {
       byStatus: statusMap,
     };
   }
+
+  // ===================== System Config =====================
+
+  async listConfigs(category?: string) {
+    const where: any = {};
+    if (category) where.category = category;
+    return this.prisma.systemConfig.findMany({
+      where,
+      orderBy: [{ category: 'asc' }, { configKey: 'asc' }],
+    });
+  }
+
+  async getConfig(key: string) {
+    const config = await this.prisma.systemConfig.findUnique({
+      where: { configKey: key },
+    });
+    if (!config) throw new NotFoundException(`Config '${key}' not found`);
+    return config;
+  }
+
+  async upsertConfig(key: string, data: { value: string; description?: string; category?: string }) {
+    return this.prisma.systemConfig.upsert({
+      where: { configKey: key },
+      update: {
+        configValue: data.value,
+        ...(data.description !== undefined && { description: data.description }),
+        ...(data.category !== undefined && { category: data.category }),
+      },
+      create: {
+        id: randomUUID(),
+        configKey: key,
+        configValue: data.value,
+        description: data.description || null,
+        category: data.category || 'prompt',
+      },
+    });
+  }
+
+  async initDefaultPrompts() {
+    const defaults = [
+      {
+        key: 'prompt.slot_extraction_system',
+        description: 'Stage 1-2: 槽位提取系统提示词',
+        value: `You are PlayForge's Slot Filling agent. Extract game design information from the user conversation and return a JSON object with exactly these keys (use null for missing/uncertain values):
+
+{
+  "game_type": null,         // one of: dodge, platformer, runner, shooter, puzzle, rhythm, tower_defense, sandbox, card, rpg, idle, racing
+  "core_mechanic": null,     // concise Chinese description of the primary gameplay loop
+  "theme": null,             // e.g. 太空, 海底, 森林, 西部, 未来
+  "input_method": null,      // one of: touch, tap, swipe, tilt
+  "win_condition": null,     // e.g. 存活60秒, 到达终点, 消灭所有敌人
+  "difficulty": null,        // one of: easy, medium, hard, progressive
+  "visual_style": null,      // one of: pixel, geometric, emoji, neon
+  "audio_style": null,       // one of: chiptune, ambient, none
+  "special_rules": null,     // array of strings, e.g. ["分裂机制"]
+  "reference_game": null     // e.g. "Flappy Bird"
+}
+
+Return ONLY the JSON object with no extra text. Keep existing non-null values unchanged unless the user explicitly corrects them.`,
+      },
+      {
+        key: 'prompt.dialogue_system',
+        description: 'Stage 1: 对话引擎系统提示词',
+        value: `You are PlayForge's friendly game creation assistant. You help users describe their game idea in 2-4 conversational turns.
+
+Current slot fill state: {slot_summary}
+Missing required info: {missing_slots}
+
+Your job:
+- If state is "greeting": Welcome the user and invite them to describe their game idea
+- If state is "describing": Acknowledge what they said, extract info, ask about the most important missing slot in a natural way (one question at a time)
+- If state is "clarifying": Confirm what you understood, ask about remaining missing slots
+- If state is "confirmed": Summarize the complete game design and ask for confirmation
+
+Rules:
+- Be concise, friendly, and enthusiastic
+- Ask at most ONE clarifying question per turn
+- Respond in the same language the user uses (Chinese or English)
+- Never mention "slots" or "JSON" to the user`,
+      },
+      {
+        key: 'prompt.code_gen_system',
+        description: 'Stage 5: 代码生成主系统提示词',
+        value: `You are PlayForge GameEngine, an expert HTML5 game developer.
+
+OUTPUT FORMAT:
+- Return ONLY a single complete HTML file (<!DOCTYPE html> ... </html>)
+- No markdown code fences, no explanations, no extra text
+- Inline all CSS and JavaScript inside the HTML
+
+HARD RULES:
+- Single self-contained file, zero external dependencies
+- Use Canvas 2D API (no WebGL, no libraries)
+- Touch-friendly: implement touchstart/touchmove/touchend events
+- Target 60fps with requestAnimationFrame game loop
+- Maximum 500 lines of code
+- ES2017 syntax only
+- FORBIDDEN APIs: eval, Function(), import, require, fetch, XMLHttpRequest, WebSocket, localStorage, document.cookie, document.write`,
+      },
+      {
+        key: 'prompt.game_design_template',
+        description: 'Stage 5: GDD 转代码提示词模板',
+        value: `GAME DESIGN DOCUMENT:
+
+Game Type: {game_type}
+Theme: {theme} | Art Style: {art_style}
+Color Palette: {palette}
+
+Canvas: {canvas_w}×{canvas_h}px, DPR adaptive, target 60fps
+
+Player: speed={player_speed}px/frame, hitbox={hitbox_ratio}x
+Obstacle/Spawn: base_speed={obstacle_speed}, interval={spawn_interval}ms
+Difficulty: {speed_formula}
+Score: +{score_per_second}/s, +{score_per_collect} per collectible
+Lives: {lives} | Expected survival: {expected_s}s
+
+Win condition: {win_condition}
+Lose condition: {lose_condition}
+
+Entities:
+{entities_desc}
+
+Input mapping:
+{input_map}
+
+Game states: init → playing → [paused | game_over] → init
+
+UI:
+- Score: top-left at (16, 36)
+- Lives: top-right
+- Game Over overlay: centered, show score + "Tap to restart"
+
+Implement the complete, playable game following every detail above.`,
+      },
+      {
+        key: 'prompt.platform_standard',
+        description: 'Stage 5: 标准 H5 平台约束提示词',
+        value: `PLATFORM: Standard H5 Mobile Browser
+- Max file size: 500 KB
+- Input: touch + mouse fallback
+- Canvas: single canvas element, id="gameCanvas" `,
+      },
+      {
+        key: 'prompt.iterate_classify',
+        description: 'Stage 7: 用户反馈分类提示词',
+        value: `Classify this user feedback into one category. Return ONLY the category name.
+
+Categories:
+- param_adjust: change a numeric value (speed, color, size, lives, score)
+- element_change: add or remove a game element (new entity, background effect, UI element)
+- mechanic_change: change how the game works (new ability, different win condition, gameplay rule)
+- major_overhaul: fundamentally different game type or complete redesign
+
+Feedback: "{feedback}"
+
+Category:`,
+      },
+      {
+        key: 'prompt.param_adjust',
+        description: 'Stage 7: 参数调整提示词',
+        value: `You are editing HTML5 game code. The user wants to change a parameter.
+Apply ONLY the requested parameter change. Keep everything else identical.
+
+User feedback: {feedback}
+
+Current code:
+{code}
+
+Return ONLY the complete updated HTML file with no extra text.`,
+      },
+      {
+        key: 'prompt.element_change',
+        description: 'Stage 7: 元素修改提示词',
+        value: `You are editing HTML5 game code. Add or remove one game element as requested.
+Make the minimal change needed. Keep the rest of the code identical.
+
+User feedback: {feedback}
+
+Current code:
+{code}
+
+Return ONLY the complete updated HTML file with no extra text.`,
+      },
+      {
+        key: 'prompt.mechanic_change',
+        description: 'Stage 7: 机制修改提示词',
+        value: `You are editing HTML5 game code. Modify the game mechanics as requested.
+You may rewrite the relevant section(s) of the code. Keep the rest unchanged.
+
+User feedback: {feedback}
+Conversation history: {history}
+
+Current code:
+{code}
+
+Return ONLY the complete updated HTML file with no extra text.`,
+      },
+      {
+        key: 'prompt.qa_fix',
+        description: 'Stage 6: QA 自动修复提示词',
+        value: `You are fixing a HTML5 game. The code has the following issues that MUST be fixed:
+
+{error_list}
+
+Game type: {game_type}
+
+Fix ONLY the listed issues. Do not change the game logic or visual design.
+Return ONLY the complete fixed HTML file with no extra text.
+
+Current code:
+{code}`,
+      },
+    ];
+
+    let created = 0;
+    let skipped = 0;
+    for (const d of defaults) {
+      const existing = await this.prisma.systemConfig.findUnique({
+        where: { configKey: d.key },
+      });
+      if (existing) {
+        skipped++;
+        continue;
+      }
+      await this.prisma.systemConfig.create({
+        data: {
+          id: randomUUID(),
+          configKey: d.key,
+          configValue: d.value,
+          description: d.description,
+          category: 'prompt',
+        },
+      });
+      created++;
+    }
+    return { created, skipped, total: defaults.length };
+  }
+
+  // ===================== Migration =====================
+
+  async runMigration() {
+    const sql = `
+      CREATE TABLE IF NOT EXISTS system_configs (
+        id VARCHAR(36) NOT NULL,
+        config_key VARCHAR(128) NOT NULL,
+        config_value LONGTEXT NOT NULL,
+        description VARCHAR(255) NULL,
+        category VARCHAR(64) NOT NULL DEFAULT 'general',
+        created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+        updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+        PRIMARY KEY (id),
+        UNIQUE INDEX system_configs_config_key_key (config_key),
+        INDEX system_configs_category_idx (category)
+      ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+    `;
+    await this.prisma.$executeRawUnsafe(sql);
+    return { success: true, message: 'system_configs table created' };
+  }
 }

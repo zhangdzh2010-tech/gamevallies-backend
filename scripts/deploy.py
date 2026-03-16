@@ -20,6 +20,7 @@
 import os
 import sys
 import subprocess
+import time
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -32,8 +33,8 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SERVICES = [
     {"svc": "user-service",   "name": "gv-user-service",   "port": 3001},
     {"svc": "game-service",   "name": "gv-game-service",   "port": 3002},
-    {"svc": "social-service", "name": "gv-social-service", "port": 3003},
     {"svc": "feed-service",   "name": "gv-feed-service",   "port": 3004},
+    {"svc": "ai-engine",      "name": "gv-ai-engine",      "port": 8000},
 ]
 
 AK                = os.environ.get("VOLCENGINE_ACCESS_KEY",         "")
@@ -77,6 +78,16 @@ def build_envs(port: int) -> list:
     ]
 
 
+def build_ai_envs() -> list:
+    return [
+        volcenginesdkvefaas.EnvForUpdateFunctionInput(key="LLM_API_KEY",    value=os.environ.get("LLM_API_KEY", "")),
+        volcenginesdkvefaas.EnvForUpdateFunctionInput(key="LLM_BASE_URL",   value=os.environ.get("LLM_BASE_URL", "https://api.deepseek.com")),
+        volcenginesdkvefaas.EnvForUpdateFunctionInput(key="LLM_MODEL",      value=os.environ.get("LLM_MODEL", "deepseek-chat")),
+        volcenginesdkvefaas.EnvForUpdateFunctionInput(key="CORS_ORIGINS",   value='["*"]'),
+        volcenginesdkvefaas.EnvForUpdateFunctionInput(key="PORT",           value="8000"),
+    ]
+
+
 def image_uri(svc_name: str) -> str:
     return f"{REGISTRY}/{NAMESPACE}/{svc_name}:{IMAGE_TAG}"
 
@@ -87,20 +98,52 @@ def shell(cmd: list) -> bool:
     return result.returncode == 0
 
 
+def wait_image_sync(api: volcenginesdkvefaas.VEFAASApi, func_id: str, image: str, timeout: int = 300) -> bool:
+    """等待 VeFaaS 镜像缓存就绪，最多 timeout 秒。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            sync = api.get_image_sync_status(
+                volcenginesdkvefaas.GetImageSyncStatusRequest(function_id=func_id, source=image))
+            status = getattr(sync, "status", "") or ""
+            cache_status = getattr(sync, "image_cache_status", "") or ""
+            if cache_status.lower() == "ready" or status.lower() == "succeeded":
+                print(f"  ✅ 镜像缓存就绪 (status={status})")
+                return True
+            if status.lower() == "failed":
+                print(f"  ❌ 镜像同步失败，请检查 VCR 凭证")
+                return False
+            print(f"  ⏳ 等待镜像同步... status={status} cache={cache_status}")
+        except Exception as e:
+            print(f"  ⏳ 查询同步状态异常: {e}")
+        time.sleep(10)
+    print(f"  ❌ 等待镜像同步超时 ({timeout}秒)")
+    return False
+
+
 def deploy_service(api: volcenginesdkvefaas.VEFAASApi, svc: dict) -> bool:
     name  = svc["name"]
     image = image_uri(name)
 
     # 1. docker build
     print(f"  🔨 构建镜像: {image}")
-    if not shell([
-        "docker", "build",
-        "--platform", "linux/amd64",
-        "--build-arg", f"SERVICE={svc['svc']}",
-        "--build-arg", f"PORT={svc['port']}",
-        "-t", image,
-        ROOT_DIR,
-    ]):
+    if svc["svc"] == "ai-engine":
+        build_cmd = [
+            "docker", "build",
+            "--platform", "linux/amd64",
+            "-t", image,
+            os.path.join(ROOT_DIR, "packages", "ai-engine"),
+        ]
+    else:
+        build_cmd = [
+            "docker", "build",
+            "--platform", "linux/amd64",
+            "--build-arg", f"SERVICE={svc['svc']}",
+            "--build-arg", f"PORT={svc['port']}",
+            "-t", image,
+            ROOT_DIR,
+        ]
+    if not shell(build_cmd):
         print(f"  ❌ docker build 失败")
         return False
 
@@ -121,6 +164,7 @@ def deploy_service(api: volcenginesdkvefaas.VEFAASApi, svc: dict) -> bool:
 
     # 4. 更新函数（切换到镜像源 + 更新配置）
     print(f"  ⚙️  更新函数配置...")
+    envs = build_envs(svc["port"]) if svc["svc"] != "ai-engine" else build_ai_envs()
     update_req = volcenginesdkvefaas.UpdateFunctionRequest(
         id=func_id,
         source_type="image",
@@ -129,7 +173,7 @@ def deploy_service(api: volcenginesdkvefaas.VEFAASApi, svc: dict) -> bool:
             username=os.environ.get("VOLCENGINE_REGISTRY_USERNAME", AK),
             password=os.environ.get("VOLCENGINE_REGISTRY_PASSWORD", SK),
         ),
-        envs=build_envs(svc["port"]),
+        envs=envs,
     )
     if VPC_ID and SUBNET_ID and SECURITY_GROUP_ID:
         update_req.vpc_config = volcenginesdkvefaas.VpcConfigForUpdateFunctionInput(
@@ -145,7 +189,12 @@ def deploy_service(api: volcenginesdkvefaas.VEFAASApi, svc: dict) -> bool:
         return False
     print(f"  ✅ 配置更新成功")
 
-    # 5. 发布新版本（revision_number=0 = 当前最新草稿）
+    # 5. 等待镜像缓存就绪
+    print(f"  ⏳ 等待镜像缓存就绪...")
+    if not wait_image_sync(api, func_id, image):
+        return False
+
+    # 6. 发布新版本（revision_number=0 = 当前最新草稿）
     print(f"  🚀 发布新版本...")
     try:
         rel = api.release(volcenginesdkvefaas.ReleaseRequest(function_id=func_id, revision_number=0))
