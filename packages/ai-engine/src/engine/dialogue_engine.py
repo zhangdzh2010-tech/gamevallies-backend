@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from typing import Dict, List, Optional, Tuple
 
@@ -168,6 +169,33 @@ SLOT_LABELS = {
 }
 
 
+def _safe_parse_json(text: str) -> Optional[dict]:
+    """Try to parse JSON from LLM output, handling common issues."""
+    if not text:
+        return None
+    # Strip <think> tags if present
+    text = re.sub(r'<think>[\s\S]*?</think>', '', text).strip()
+    # Try direct parse
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    # Try to extract JSON object from markdown or surrounding text
+    m = re.search(r'\{[\s\S]*\}', text)
+    if m:
+        try:
+            return json.loads(m.group())
+        except json.JSONDecodeError:
+            # Try to fix truncated JSON by closing brackets
+            fragment = m.group()
+            for suffix in ['}', '"}', '"}}']:
+                try:
+                    return json.loads(fragment + suffix)
+                except json.JSONDecodeError:
+                    continue
+    return None
+
+
 class DialogueEngine:
     """Stage 01: Multi-turn dialogue engine with Slot Filling.
 
@@ -238,14 +266,18 @@ class DialogueEngine:
         try:
             text = await self._client.complete(
                 model=self._client.model_for(fast=True),
-                max_tokens=512,
+                max_tokens=1024,
                 system=SLOT_EXTRACTION_SYSTEM,
                 messages=[{"role": "user", "content": description}],
             )
             raw = text.strip()
-            slot_data = json.loads(raw)
-            slots = SlotState(**{k: v for k, v in slot_data.items() if v is not None})
-            return _build_game_spec(slots)
+            # Try to extract JSON object from response
+            slot_data = _safe_parse_json(raw)
+            if slot_data:
+                slots = SlotState(**{k: v for k, v in slot_data.items() if v is not None})
+                return _build_game_spec(slots)
+            logger.warning("LLM slot extraction returned no valid JSON, using mock")
+            return _mock_parse(description)
         except Exception as e:
             logger.warning(f"LLM slot extraction failed, using mock: {e}")
             return _mock_parse(description)
@@ -260,11 +292,13 @@ class DialogueEngine:
         try:
             slot_text = await self._client.complete(
                 model=self._client.model_for(fast=True),
-                max_tokens=256,
+                max_tokens=1024,
                 system=SLOT_EXTRACTION_SYSTEM,
                 messages=_history_to_anthropic(session.history),
             )
-            slot_data = json.loads(slot_text.strip())
+            slot_data = _safe_parse_json(slot_text.strip())
+            if not slot_data:
+                raise ValueError("No valid JSON in slot extraction response")
             for key, val in slot_data.items():
                 if val is not None and hasattr(session.slots, key):
                     setattr(session.slots, key, val)

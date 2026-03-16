@@ -146,4 +146,11 @@ class LLMClient:
             ]
             return "".join(text_parts).strip()
 
-        return str(content).strip()
+        text = str(content).strip()
+        # Strip MiniMax <think>...</think> reasoning tags
+        import re
+        text = re.sub(r'<think>[\s\S]*?</think>', '', text).strip()
+        # Strip markdown code fences
+        text = re.sub(r'```(?:json|html|javascript|js)?\s*', '', text)
+        text = re.sub(r'```\s*$', '', text, flags=re.MULTILINE)
+        return text.strip()

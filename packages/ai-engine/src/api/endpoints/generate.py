@@ -83,6 +83,49 @@ async def get_dialogue_session(session_id: str):
 
 
 # ===========================================================================
+# ===========================================================================
+# Prompt expansion – user idea → detailed game design prompt
+# ===========================================================================
+
+@router.post("/expand-prompt")
+async def expand_prompt(request: dict):
+    """Expand a short user description into a detailed game design prompt."""
+    from ...services.llm_client import LLMClient
+    client = LLMClient()
+    description = request.get("description", "")
+    if not description:
+        raise HTTPException(status_code=400, detail="description is required")
+
+    if not client.is_enabled():
+        # Mock mode fallback
+        return {"expanded_prompt": description}
+
+    system = """你是一个资深游戏策划专家。用户会给你一个简短的游戏想法，你需要将它扩展为一个详细的HTML5手机游戏设计方案。
+
+要求：
+1. 保留用户的核心创意和主题
+2. 补充完整的游戏机制（玩法规则、操作方式、胜负条件、计分系统）
+3. 设计视觉风格（配色、美术风格、特效）
+4. 规划游戏节奏（难度曲线、关卡/波次设计）
+5. 适配手机触屏操作（点击、滑动、长按等）
+6. 控制在200字以内，用中文描述
+
+直接输出游戏设计方案，不要有任何前缀说明。"""
+
+    try:
+        text = await client.complete(
+            model=client.model_for(fast=True),
+            max_tokens=1024,
+            system=system,
+            messages=[{"role": "user", "content": f"游戏想法：{description}"}],
+        )
+        return {"expanded_prompt": text.strip()}
+    except Exception as e:
+        logger.error(f"Prompt expansion failed: {e}")
+        return {"expanded_prompt": description}
+
+
+# ===========================================================================
 # Stages 02-06 – Full pipeline run
 # ===========================================================================
 

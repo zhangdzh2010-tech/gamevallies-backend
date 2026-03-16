@@ -149,6 +149,7 @@ class CodeGenerator:
         gdd: GDD,
         template_id: Optional[str] = None,
         confidence: float = 0.0,
+        description: str = "",
     ) -> GenerateCodeResult:
         start = time.time()
 
@@ -162,7 +163,7 @@ class CodeGenerator:
             html = await self._hybrid_generate(spec, gdd, template_id)
             strategy = "hybrid"
         else:
-            html = await self._llm_generate(spec, gdd)
+            html = await self._llm_generate(spec, gdd, description=description)
             strategy = "llm"
 
         elapsed = int((time.time() - start) * 1000)
@@ -216,45 +217,43 @@ class CodeGenerator:
     # Path C: Full LLM generation
     # ------------------------------------------------------------------
 
-    async def _llm_generate(self, spec: GameSpec, gdd: GDD) -> str:
-        # Layer 2: game design prompt
-        entities_desc = "\n".join(
-            f"  - {e.name} ({e.role}): shape={e.shape or 'auto'}, color={e.color or 'auto'}"
-            for e in spec.entities
-        )
-        input_map_str = "\n".join(
-            f"  {k} → {v}" for k, v in gdd.input_map.items()
-        )
-        game_design = GAME_DESIGN_PROMPT_TEMPLATE.format(
-            game_type=spec.game_type,
-            theme=spec.visual_style.theme,
-            art_style=spec.visual_style.art_style,
-            palette=", ".join(spec.visual_style.palette),
-            canvas_w=gdd.canvas.width,
-            canvas_h=gdd.canvas.height,
-            player_speed=gdd.numerics.player_speed,
-            hitbox_ratio=gdd.collision.hitbox_ratio,
-            obstacle_speed=gdd.numerics.base_obstacle_speed,
-            spawn_interval=gdd.numerics.spawn_interval_ms,
-            speed_formula=gdd.numerics.speed_formula,
-            score_per_second=gdd.numerics.score_per_second,
-            score_per_collect=gdd.numerics.score_per_collect,
-            lives=spec.rules.lives,
-            expected_s=gdd.numerics.expected_survival_s,
-            win_condition=spec.rules.win_condition,
-            lose_condition=spec.rules.lose_condition,
-            entities_desc=entities_desc,
-            input_map=input_map_str,
-        )
-
-        # Layer 3: platform constraints
-        platform = spec.platform_constraints.platform
-        platform_prompt = (
-            PLATFORM_PROMPT_WECHAT if platform == "wechat_webview"
-            else PLATFORM_PROMPT_STANDARD
-        )
-
-        full_prompt = f"{game_design}\n\n{platform_prompt}"
+    async def _llm_generate(self, spec: GameSpec, gdd: GDD, description: str = "") -> str:
+        # Use user's original description directly for better results
+        if description:
+            full_prompt = (
+                f"用户需求：{description}\n\n"
+                f"{PLATFORM_PROMPT_STANDARD}\n\n"
+                f"请根据用户需求生成完整的 HTML5 游戏。游戏必须完整可玩、触屏操作、有计分系统。"
+            )
+        else:
+            # Fallback to spec-based prompt
+            entities_desc = "\n".join(
+                f"  - {e.name} ({e.role}): shape={e.shape or 'auto'}, color={e.color or 'auto'}"
+                for e in spec.entities
+            )
+            input_map_str = "\n".join(
+                f"  {k} → {v}" for k, v in gdd.input_map.items()
+            )
+            full_prompt = GAME_DESIGN_PROMPT_TEMPLATE.format(
+                game_type=spec.game_type,
+                theme=spec.visual_style.theme,
+                art_style=spec.visual_style.art_style,
+                palette=", ".join(spec.visual_style.palette),
+                canvas_w=gdd.canvas.width, canvas_h=gdd.canvas.height,
+                player_speed=gdd.numerics.player_speed,
+                hitbox_ratio=gdd.collision.hitbox_ratio,
+                obstacle_speed=gdd.numerics.base_obstacle_speed,
+                spawn_interval=gdd.numerics.spawn_interval_ms,
+                speed_formula=gdd.numerics.speed_formula,
+                score_per_second=gdd.numerics.score_per_second,
+                score_per_collect=gdd.numerics.score_per_collect,
+                lives=spec.rules.lives,
+                expected_s=gdd.numerics.expected_survival_s,
+                win_condition=spec.rules.win_condition,
+                lose_condition=spec.rules.lose_condition,
+                entities_desc=entities_desc,
+                input_map=input_map_str,
+            ) + f"\n\n{PLATFORM_PROMPT_STANDARD}"
 
         try:
             text = await self._client.complete(

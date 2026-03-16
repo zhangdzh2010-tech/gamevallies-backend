@@ -29,6 +29,25 @@ export class GameController {
     private reputationService: CreatorReputationService,
   ) {}
 
+  @Post('/expand-prompt')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async expandPrompt(@Body() body: any) {
+    try {
+      const description = body.description || body.prompt || '';
+      const aiEngineUrl = this.gameService['aiEngineUrl'];
+      const response = await require('axios').post(
+        `${aiEngineUrl}/api/v1/ai/expand-prompt`,
+        { description },
+        { timeout: 30000 },
+      );
+      return ok(response.data);
+    } catch (error) {
+      this.logger.error(`Expand prompt failed: ${error.message}`);
+      return ok({ expanded_prompt: body.description || body.prompt || '' });
+    }
+  }
+
   @Post('/generate')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
