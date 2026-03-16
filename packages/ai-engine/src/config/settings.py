@@ -16,12 +16,12 @@ class Settings(BaseSettings):
     # Cache
     REDIS_URL: str = "redis://localhost:6379"
 
-    # Legacy LLM Configuration (kept for backward compat)
+    # LLM Configuration (MiniMax)
     LLM_MODE: Literal["mock", "real"] = "mock"
     LLM_API_KEY: str = ""
-    LLM_MODEL: str = "deepseek-chat"
-    LLM_FAST_MODEL: str = ""
-    LLM_BASE_URL: str = "https://api.deepseek.com"
+    LLM_MODEL: str = "MiniMax-M2.5"
+    LLM_FAST_MODEL: str = "MiniMax-M2.5"
+    LLM_BASE_URL: str = "https://api.minimax.chat/v1"
 
     # Anthropic / Claude Configuration
     ANTHROPIC_API_KEY: str = ""

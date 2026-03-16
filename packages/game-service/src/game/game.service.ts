@@ -130,7 +130,7 @@ export class GameService {
           platform: 'wechat_webview',
         },
         {
-          timeout: 90000,
+          timeout: 170000,
           onUploadProgress: () => {
             // HTTP doesn't give us intermediate progress, but we can
             // emit code_generating once the request is sent
