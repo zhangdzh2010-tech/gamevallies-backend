@@ -168,4 +168,46 @@ export class AdminController {
     checkAdminToken(token);
     return ok(await this.adminService.changeAdminToken(token, body.newToken), 'Token changed');
   }
+
+  // ===================== System Config =====================
+
+  @Get('admin/configs')
+  async listConfigs(
+    @Headers('x-admin-token') token: string,
+    @Query('category') category?: string,
+  ) {
+    checkAdminToken(token);
+    return ok(await this.adminService.listConfigs(category));
+  }
+
+  @Get('admin/configs/:key')
+  async getConfig(
+    @Headers('x-admin-token') token: string,
+    @Param('key') key: string,
+  ) {
+    checkAdminToken(token);
+    return ok(await this.adminService.getConfig(key));
+  }
+
+  @Put('admin/configs/:key')
+  async upsertConfig(
+    @Headers('x-admin-token') token: string,
+    @Param('key') key: string,
+    @Body() body: any,
+  ) {
+    checkAdminToken(token);
+    return ok(await this.adminService.upsertConfig(key, body), 'Config saved');
+  }
+
+  @Post('admin/configs/init-prompts')
+  async initPrompts(@Headers('x-admin-token') token: string) {
+    checkAdminToken(token);
+    return ok(await this.adminService.initDefaultPrompts(), 'Prompts initialized');
+  }
+
+  @Post('admin/migrate')
+  async runMigration(@Headers('x-admin-token') token: string) {
+    checkAdminToken(token);
+    return ok(await this.adminService.runMigration(), 'Migration completed');
+  }
 }

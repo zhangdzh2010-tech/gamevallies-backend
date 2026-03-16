@@ -214,7 +214,7 @@ tbody tr:hover{background:#f8fafc}
     <div class="tab" data-tab="games" onclick="switchTab('games')">游戏管理</div>
     <div class="tab" data-tab="create" onclick="switchTab('create')">添加游戏</div>
     <div class="tab" data-tab="users" onclick="switchTab('users')">用户管理</div>
-    <div class="tab" data-tab="settings" onclick="switchTab('settings')">系统设置</div>
+    <div class="tab" data-tab="settings" onclick="switchTab('settings')">系统配置</div>
   </div>
 
   <div class="content">
@@ -281,9 +281,11 @@ tbody tr:hover{background:#f8fafc}
 
     <!-- Settings -->
     <div id="page-settings" class="page">
-      <h2 style="font-size:18px;font-weight:600;color:#1e293b;margin-bottom:20px">系统设置</h2>
-      <div style="background:#fff;border-radius:10px;border:1px solid #e5e7eb;padding:24px;max-width:500px">
-        <h3 style="font-size:15px;font-weight:600;margin-bottom:16px;color:#1e293b">修改管理员令牌</h3>
+      <h2 style="font-size:18px;font-weight:600;color:#1e293b;margin-bottom:20px">系统配置</h2>
+
+      <!-- Token Management -->
+      <div style="background:#fff;border-radius:10px;border:1px solid #e5e7eb;padding:24px;max-width:500px;margin-bottom:24px">
+        <h3 style="font-size:15px;font-weight:600;margin-bottom:16px;color:#1e293b">管理员令牌</h3>
         <div class="form-group" style="margin-bottom:12px">
           <label>当前令牌</label>
           <input type="password" id="set-current-token" placeholder="输入当前令牌">
@@ -298,6 +300,18 @@ tbody tr:hover{background:#f8fafc}
         </div>
         <button class="btn btn-primary" onclick="changeToken()">更新令牌</button>
         <div class="hint" style="margin-top:12px">注意：修改后当前会话会自动使用新令牌。重启服务后需在 .env.deploy 中同步更新 ADMIN_TOKEN。</div>
+      </div>
+
+      <!-- Prompt Management -->
+      <div style="margin-top:24px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+          <h3 style="font-size:15px;font-weight:600;color:#1e293b">AI Prompt 配置</h3>
+          <button class="btn btn-secondary" onclick="initPrompts()">初始化默认 Prompt</button>
+        </div>
+        <div class="hint" style="margin-bottom:16px">管理游戏生成流水线中各阶段使用的 LLM 提示词。修改后 AI 引擎会自动读取最新配置。</div>
+        <div id="promptList">
+          <div style="color:#94a3b8;text-align:center;padding:40px">加载中...</div>
+        </div>
       </div>
     </div>
 
@@ -487,6 +501,7 @@ function switchTab(tab) {
   if (tab === 'dashboard') loadStats();
   if (tab === 'games') { showGameList(); loadGames(); }
   if (tab === 'users') { showUserList(); loadUsers(); }
+  if (tab === 'settings') loadConfigs();
 }
 
 // ===================== Dashboard =====================
@@ -1103,6 +1118,61 @@ function showCreateUser() {
       loadUsers();
     } catch (e) { toast('创建失败: ' + e.message, 'error'); }
   };
+}
+
+// ===================== System Config (Prompts) =====================
+let configList = [];
+
+async function loadConfigs() {
+  try {
+    const data = await api('/configs?category=prompt');
+    configList = data;
+    renderConfigs();
+  } catch(e) {
+    console.error('Load configs error:', e);
+  }
+}
+
+function renderConfigs() {
+  const el = document.getElementById('promptList');
+  if (!configList.length) {
+    el.innerHTML = '<div style="color:#94a3b8;padding:20px;text-align:center">暂无配置，请点击"初始化默认 Prompt"</div>';
+    return;
+  }
+  el.innerHTML = configList.map(c => `
+    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:20px;margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div>
+          <span style="font-weight:600;color:#1e293b;font-size:14px">${escHtml(c.configKey)}</span>
+          <span style="color:#94a3b8;font-size:12px;margin-left:8px">${escHtml(c.description || '')}</span>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="saveConfig('${escAttr(c.configKey)}')">保存</button>
+      </div>
+      <textarea id="cfg-${escAttr(c.configKey)}" style="width:100%;min-height:120px;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-family:monospace;font-size:13px;line-height:1.5;resize:vertical">${escHtml(c.configValue)}</textarea>
+    </div>
+  `).join('');
+}
+
+async function saveConfig(key) {
+  const textarea = document.getElementById('cfg-' + key);
+  if (!textarea) return;
+  try {
+    await api('/configs/' + encodeURIComponent(key), { method: 'PUT', body: { value: textarea.value } });
+    toast('Prompt 已保存');
+  } catch(e) {
+    toast('保存失败: ' + e.message, 'error');
+  }
+}
+
+async function initPrompts() {
+  if (!confirm('将初始化默认 Prompt 配置（已存在的不会覆盖），确认？')) return;
+  try {
+    const r = await api('/configs/init-prompts', { method: 'POST' });
+    toast(`初始化完成: 新增 ${r.created}，跳过 ${r.skipped}`);
+    loadConfigs();
+  } catch(e) {
+    toast('初始化失败: ' + e.message, 'error');
+  }
 }
 
 // ===================== Admin Token =====================

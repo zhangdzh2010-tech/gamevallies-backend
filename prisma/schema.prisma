@@ -314,3 +314,18 @@ model Notification {
   @@index([userId, isRead, createdAt])
   @@map("notifications")
 }
+
+// ==================== 系统配置 ====================
+
+model SystemConfig {
+  id          String   @id @default(uuid()) @db.VarChar(36)
+  configKey   String   @unique @map("config_key") @db.VarChar(128)
+  configValue String   @map("config_value") @db.LongText
+  description String?  @db.VarChar(255)
+  category    String   @default("general") @db.VarChar(64)
+  createdAt   DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  @@index([category])
+  @@map("system_configs")
+}

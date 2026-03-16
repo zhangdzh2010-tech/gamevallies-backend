@@ -22,6 +22,7 @@ from typing import List, Optional, Tuple
 from ..api.models import GameSpec, QACheckError, QACheckResponse, QAResult
 from ..config.settings import settings
 from ..services.llm_client import LLMClient
+from .prompt_store import get_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -434,7 +435,8 @@ class QAPipeline:
         error_list = "\n".join(f"  - [{e.type}] {e.message}" for e in errors)
         game_type = game_spec.game_type if game_spec else "unknown"
 
-        prompt = FIX_PROMPT.format(
+        prompt_template = get_prompt("prompt.qa_fix", FIX_PROMPT)
+        prompt = prompt_template.format(
             error_list=error_list,
             game_type=game_type,
             code=code,

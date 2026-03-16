@@ -30,6 +30,7 @@ from ..api.models import (
 )
 from ..config.settings import settings
 from ..services.llm_client import LLMClient
+from .prompt_store import get_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -267,7 +268,7 @@ class DialogueEngine:
             text = await self._client.complete(
                 model=self._client.model_for(fast=True),
                 max_tokens=1024,
-                system=SLOT_EXTRACTION_SYSTEM,
+                system=get_prompt("prompt.slot_extraction_system", SLOT_EXTRACTION_SYSTEM),
                 messages=[{"role": "user", "content": description}],
             )
             raw = text.strip()
@@ -293,7 +294,7 @@ class DialogueEngine:
             slot_text = await self._client.complete(
                 model=self._client.model_for(fast=True),
                 max_tokens=1024,
-                system=SLOT_EXTRACTION_SYSTEM,
+                system=get_prompt("prompt.slot_extraction_system", SLOT_EXTRACTION_SYSTEM),
                 messages=_history_to_anthropic(session.history),
             )
             slot_data = _safe_parse_json(slot_text.strip())
@@ -312,7 +313,7 @@ class DialogueEngine:
         fill_pct = session.slots.fill_pct()
         missing = session.slots.missing_required()
         slot_summary = _format_slot_summary(session.slots)
-        system = DIALOGUE_SYSTEM.format(
+        system = get_prompt("prompt.dialogue_system", DIALOGUE_SYSTEM).format(
             slot_summary=slot_summary,
             missing_slots=", ".join(SLOT_LABELS.get(s, s) for s in missing) or "无",
         )
