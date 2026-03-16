@@ -117,6 +117,20 @@ export class AdminController {
     return ok(stats);
   }
 
+  @Get('admin/genlog')
+  async listGenerationLogs(
+    @Headers('x-admin-token') token: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('status') status?: string,
+    @Query('search') search?: string,
+  ) {
+    checkAdminToken(token);
+    const p = Math.max(parseInt(page || '1', 10), 1);
+    const l = Math.min(Math.max(parseInt(limit || '20', 10), 1), 100);
+    return ok(await this.adminService.listGenerationLogs(p, l, status, search));
+  }
+
   // ===================== User Management =====================
 
   @Get('admin/users')

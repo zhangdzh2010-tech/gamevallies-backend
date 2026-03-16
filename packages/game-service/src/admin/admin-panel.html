@@ -213,6 +213,7 @@ tbody tr:hover{background:#f8fafc}
     <div class="tab active" data-tab="dashboard" onclick="switchTab('dashboard')">仪表盘</div>
     <div class="tab" data-tab="games" onclick="switchTab('games')">游戏管理</div>
     <div class="tab" data-tab="create" onclick="switchTab('create')">添加游戏</div>
+    <div class="tab" data-tab="logs" onclick="switchTab('logs')">生成记录</div>
     <div class="tab" data-tab="users" onclick="switchTab('users')">用户管理</div>
     <div class="tab" data-tab="settings" onclick="switchTab('settings')">系统配置</div>
   </div>
@@ -257,6 +258,24 @@ tbody tr:hover{background:#f8fafc}
         <div id="gameTableWrap"></div>
       </div>
       <div id="gameDetailView" style="display:none"></div>
+    </div>
+
+    <!-- Generation Logs -->
+    <div id="page-logs" class="page">
+      <h2 style="font-size:18px;font-weight:600;color:#1e293b;margin-bottom:16px">游戏生成记录</h2>
+      <div class="toolbar">
+        <input type="text" id="log-search" placeholder="搜索用户名/标题/描述..." onkeyup="if(event.key==='Enter'){logPage=1;loadLogs()}">
+        <select id="log-status" onchange="logPage=1;loadLogs()">
+          <option value="all">全部状态</option>
+          <option value="generating">生成中</option>
+          <option value="draft">草稿</option>
+          <option value="published">已发布</option>
+          <option value="failed">失败</option>
+          <option value="banned">已封禁</option>
+        </select>
+        <button class="btn btn-secondary" onclick="logPage=1;loadLogs()">搜索</button>
+      </div>
+      <div id="logTableWrap"></div>
     </div>
 
     <!-- User Management -->
@@ -500,6 +519,7 @@ function switchTab(tab) {
   document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === 'page-' + tab));
   if (tab === 'dashboard') loadStats();
   if (tab === 'games') { showGameList(); loadGames(); }
+  if (tab === 'logs') loadLogs();
   if (tab === 'users') { showUserList(); loadUsers(); }
   if (tab === 'settings') loadConfigs();
 }
@@ -1118,6 +1138,129 @@ function showCreateUser() {
       loadUsers();
     } catch (e) { toast('创建失败: ' + e.message, 'error'); }
   };
+}
+
+// ===================== Generation Logs =====================
+let logPage = 1;
+
+async function loadLogs() {
+  const search = document.getElementById('log-search').value;
+  const status = document.getElementById('log-status').value;
+  const params = new URLSearchParams({ page: logPage, limit: 20, status });
+  if (search) params.set('search', search);
+  try {
+    const d = await api('/genlog?' + params);
+    renderLogs(d);
+  } catch(e) {
+    document.getElementById('logTableWrap').innerHTML = '<div style="color:#dc2626;padding:20px">加载失败: ' + e.message + '</div>';
+  }
+}
+
+function renderLogs(d) {
+  const statusLabels = { generating: '生成中', draft: '草稿', published: '已发布', failed: '失败', banned: '已封禁', review: '审核中' };
+  const statusColors = { generating: 'generating', draft: 'draft', published: 'published', failed: 'failed', banned: 'banned', review: 'review' };
+  const gameBaseUrl = 'https://sd6n8j9fmqc3q4mg90pr0.apigateway-cn-shanghai.volceapi.com';
+
+  let html = '<div class="table-wrap"><table><thead><tr>' +
+    '<th>用户</th><th>提示词</th><th>游戏标题</th><th>状态</th>' +
+    '<th>策略</th><th>耗时</th><th>大小</th><th>QA</th><th>创建时间</th><th>操作</th>' +
+    '</tr></thead><tbody>';
+
+  if (!d.items.length) {
+    html += '<tr><td colspan="10" style="text-align:center;color:#94a3b8;padding:40px">暂无记录</td></tr>';
+  }
+
+  for (const g of d.items) {
+    const desc = g.description ? (g.description.length > 50 ? g.description.slice(0, 50) + '...' : g.description) : '-';
+    const author = g.author ? (g.author.displayName || g.author.username) : '-';
+    const st = statusLabels[g.status] || g.status;
+    const stCls = statusColors[g.status] || 'draft';
+    const strategy = g.strategy || '-';
+    const timeMs = g.genTimeMs ? (g.genTimeMs / 1000).toFixed(1) + 's' : '-';
+    const size = g.codeSizeBytes ? (g.codeSizeBytes / 1024).toFixed(1) + 'KB' : '-';
+    const qa = g.qaPassed === true ? '<span style="color:#16a34a">通过</span>' : g.qaPassed === false ? '<span style="color:#dc2626">失败</span>' : '-';
+    const time = new Date(g.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const previewUrl = gameBaseUrl + '/games/' + g.gameId + '/preview';
+
+    html += '<tr>' +
+      '<td><strong>' + escHtml(author) + '</strong></td>' +
+      '<td title="' + escAttr(g.description || '') + '">' + escHtml(desc) + '</td>' +
+      '<td>' + escHtml(g.title) + '</td>' +
+      '<td><span class="badge badge-' + stCls + '">' + st + '</span></td>' +
+      '<td>' + strategy + '</td>' +
+      '<td>' + timeMs + '</td>' +
+      '<td>' + size + '</td>' +
+      '<td>' + qa + '</td>' +
+      '<td>' + time + '</td>' +
+      '<td>' +
+        '<a href="' + previewUrl + '" target="_blank" class="btn btn-sm btn-secondary" style="margin-right:4px">预览</a>' +
+        '<button class="btn btn-sm btn-secondary" onclick="showLogDetail(\'' + g.gameId + '\')">详情</button>' +
+      '</td>' +
+      '</tr>';
+  }
+  html += '</tbody></table></div>';
+
+  // Pagination
+  html += '<div class="pagination"><div class="info">共 ' + d.total + ' 条，第 ' + d.page + '/' + d.totalPages + ' 页</div><div class="pages">';
+  html += '<button ' + (d.page <= 1 ? 'disabled' : '') + ' onclick="logPage=' + (d.page-1) + ';loadLogs()">上一页</button>';
+  for (let i = Math.max(1, d.page-2); i <= Math.min(d.totalPages, d.page+2); i++) {
+    html += '<button class="' + (i===d.page?'active':'') + '" onclick="logPage=' + i + ';loadLogs()">' + i + '</button>';
+  }
+  html += '<button ' + (d.page >= d.totalPages ? 'disabled' : '') + ' onclick="logPage=' + (d.page+1) + ';loadLogs()">下一页</button>';
+  html += '</div></div>';
+
+  document.getElementById('logTableWrap').innerHTML = html;
+}
+
+async function showLogDetail(gameId) {
+  try {
+    const g = await api('/games/' + gameId);
+    const bundle = g.bundles && g.bundles[0];
+    const meta = (bundle && bundle.metadata) || {};
+    const gameBaseUrl = 'https://sd6n8j9fmqc3q4mg90pr0.apigateway-cn-shanghai.volceapi.com';
+    const previewUrl = gameBaseUrl + '/games/' + gameId + '/preview';
+
+    let detail = '<div style="max-width:800px">';
+    detail += '<div class="form-grid">';
+    detail += '<div class="form-group"><label>游戏 ID</label><div style="font-family:monospace;font-size:13px">' + gameId + '</div></div>';
+    detail += '<div class="form-group"><label>标题</label><div>' + escHtml(g.title) + '</div></div>';
+    detail += '<div class="form-group"><label>作者</label><div>' + escHtml(g.author?.displayName || g.author?.username || '-') + '</div></div>';
+    detail += '<div class="form-group"><label>状态</label><div><span class="badge badge-' + g.status + '">' + g.status + '</span></div></div>';
+    detail += '<div class="form-group"><label>创建时间</label><div>' + new Date(g.createdAt).toLocaleString('zh-CN') + '</div></div>';
+    detail += '<div class="form-group"><label>游戏链接</label><div><a href="' + previewUrl + '" target="_blank">' + previewUrl + '</a></div></div>';
+    detail += '</div>';
+
+    detail += '<div class="form-group" style="margin-top:16px"><label>用户提示词</label>';
+    detail += '<div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:12px;font-size:13px;white-space:pre-wrap;max-height:200px;overflow-y:auto">' + escHtml(g.description || '(无)') + '</div></div>';
+
+    if (meta.strategy || meta.genTimeMs || meta.qaPassed !== undefined) {
+      detail += '<h4 style="margin-top:20px;margin-bottom:12px;font-size:14px;color:#1e293b">生成详情</h4>';
+      detail += '<div class="form-grid">';
+      detail += '<div class="form-group"><label>生成策略</label><div>' + (meta.strategy || '-') + '</div></div>';
+      detail += '<div class="form-group"><label>耗时</label><div>' + (meta.genTimeMs ? (meta.genTimeMs/1000).toFixed(1) + 's' : '-') + '</div></div>';
+      detail += '<div class="form-group"><label>QA 通过</label><div>' + (meta.qaPassed === true ? '是' : meta.qaPassed === false ? '否' : '-') + '</div></div>';
+      detail += '<div class="form-group"><label>QA 重试</label><div>' + (meta.qaRetries ?? '-') + '</div></div>';
+      detail += '<div class="form-group"><label>代码大小</label><div>' + (bundle?.codeSizeBytes ? (bundle.codeSizeBytes/1024).toFixed(1) + 'KB' : '-') + '</div></div>';
+      detail += '<div class="form-group"><label>质量分</label><div>' + (meta.qualityScore ?? '-') + '</div></div>';
+      detail += '<div class="form-group"><label>版本</label><div>v' + (bundle?.version || 0) + '</div></div>';
+      detail += '</div>';
+    }
+
+    if (meta.gameSpec) {
+      detail += '<div class="form-group" style="margin-top:16px"><label>Game Spec</label>';
+      detail += '<pre style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:12px;font-size:12px;max-height:200px;overflow:auto">' + escHtml(JSON.stringify(meta.gameSpec, null, 2)) + '</pre></div>';
+    }
+
+    detail += '</div>';
+
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = '<div class="modal"><div class="modal-header"><h3>生成记录详情</h3><button class="modal-close" onclick="this.closest(\'.modal-overlay\').remove()">&times;</button></div><div class="modal-body" style="padding:24px">' + detail + '</div></div>';
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  } catch(e) {
+    alert('加载详情失败: ' + e.message);
+  }
 }
 
 // ===================== System Config (Prompts) =====================
