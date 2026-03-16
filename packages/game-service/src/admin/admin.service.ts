@@ -417,6 +417,73 @@ export class AdminService {
     return { success: true, message: 'Admin token updated (runtime only, update .env.deploy for persistence)' };
   }
 
+  // ===================== Generation Logs =====================
+
+  async listGenerationLogs(page: number, limit: number, status?: string, search?: string) {
+    const where: Prisma.GameWhereInput = {};
+
+    if (status && status !== 'all') {
+      where.status = status as any;
+    }
+    if (search) {
+      where.OR = [
+        { title: { contains: search } },
+        { description: { contains: search } },
+        { author: { username: { contains: search } } },
+      ];
+    }
+
+    const [games, total] = await Promise.all([
+      this.prisma.game.findMany({
+        where,
+        include: {
+          author: {
+            select: { id: true, username: true, displayName: true },
+          },
+          bundles: {
+            select: {
+              id: true,
+              version: true,
+              metadata: true,
+              generationMeta: true,
+              codeSizeBytes: true,
+              createdAt: true,
+            },
+            orderBy: { version: 'desc' },
+            take: 1,
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.game.count({ where }),
+    ]);
+
+    const items = games.map(g => {
+      const bundle = g.bundles[0];
+      const meta = (bundle?.metadata as any) || {};
+      return {
+        gameId: g.id,
+        title: g.title,
+        description: g.description,
+        status: g.status,
+        gameType: g.gameType,
+        createdAt: g.createdAt,
+        updatedAt: g.updatedAt,
+        author: g.author,
+        strategy: meta.strategy || null,
+        qaPassed: meta.qaPassed ?? null,
+        genTimeMs: meta.genTimeMs || null,
+        codeSizeBytes: bundle?.codeSizeBytes || null,
+        qualityScore: meta.qualityScore || null,
+        version: bundle?.version || 0,
+      };
+    });
+
+    return { items, total, page, limit, totalPages: Math.ceil(total / limit) };
+  }
+
   // ===================== Stats =====================
 
   async getStats() {
