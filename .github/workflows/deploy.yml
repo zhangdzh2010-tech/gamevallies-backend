@@ -8,10 +8,10 @@ on:
 
 env:
   VOLCENGINE_REGION:             cn-shanghai
-  VOLCENGINE_VPC_ID:             vpc-1fui3r5jdt2bk1m79k8anl32c
-  VOLCENGINE_SUBNET_ID:          subnet-1kse5at0gc9a859xbtim3pgrs
-  VOLCENGINE_REGISTRY:           cr.volces.com
-  VOLCENGINE_REGISTRY_NAMESPACE: gamevallies   # 改为你在 VCR 控制台创建的命名空间
+  VOLCENGINE_VPC_ID:             vpc-7uh247krgohs72200skd7y04
+  VOLCENGINE_SUBNET_ID:          subnet-33guvcwoe43y86k70bqnvis8n
+  VOLCENGINE_REGISTRY:           gamevallies-repo-cn-shanghai.cr.volces.com
+  VOLCENGINE_REGISTRY_NAMESPACE: gamevallies
   # VOLCENGINE_SECURITY_GROUP_ID: sg-xxxxxxxxxx  # 填写后自动绑定 VPC
 
 jobs:
@@ -29,9 +29,9 @@ jobs:
 
       - name: 登录火山引擎容器镜像服务 (VCR)
         run: |
-          echo "${{ secrets.VOLCENGINE_SECRET_KEY }}" | \
+          echo "${{ secrets.VOLCENGINE_REGISTRY_PASSWORD }}" | \
             docker login ${{ env.VOLCENGINE_REGISTRY }} \
-              -u "${{ secrets.VOLCENGINE_ACCESS_KEY }}" \
+              -u "${{ secrets.VOLCENGINE_REGISTRY_USERNAME }}" \
               --password-stdin
 
       # ── 构建并推送各服务镜像 ─────────────────────────────────────────────
@@ -73,9 +73,11 @@ jobs:
           VOLCENGINE_ACCESS_KEY:         ${{ secrets.VOLCENGINE_ACCESS_KEY }}
           VOLCENGINE_SECRET_KEY:         ${{ secrets.VOLCENGINE_SECRET_KEY }}
           VOLCENGINE_REGION:             ${{ env.VOLCENGINE_REGION }}
-          VOLCENGINE_REGISTRY:           ${{ env.VOLCENGINE_REGISTRY }}
-          VOLCENGINE_REGISTRY_NAMESPACE: ${{ env.VOLCENGINE_REGISTRY_NAMESPACE }}
-          IMAGE_TAG:                     ${{ github.sha }}
+          VOLCENGINE_REGISTRY:            ${{ env.VOLCENGINE_REGISTRY }}
+          VOLCENGINE_REGISTRY_NAMESPACE:  ${{ env.VOLCENGINE_REGISTRY_NAMESPACE }}
+          VOLCENGINE_REGISTRY_USERNAME:   ${{ secrets.VOLCENGINE_REGISTRY_USERNAME }}
+          VOLCENGINE_REGISTRY_PASSWORD:   ${{ secrets.VOLCENGINE_REGISTRY_PASSWORD }}
+          IMAGE_TAG:                      ${{ github.sha }}
           VOLCENGINE_VPC_ID:             ${{ env.VOLCENGINE_VPC_ID }}
           VOLCENGINE_SUBNET_ID:          ${{ env.VOLCENGINE_SUBNET_ID }}
           VOLCENGINE_SECURITY_GROUP_ID:  ${{ secrets.VOLCENGINE_SECURITY_GROUP_ID }}

@@ -42,7 +42,17 @@ HARD RULES:
 - Target 60fps with requestAnimationFrame game loop
 - Maximum 500 lines of code
 - ES2017 syntax only
-- FORBIDDEN APIs: eval, Function(), import, require, fetch, XMLHttpRequest, WebSocket, localStorage, document.cookie, document.write"""
+- FORBIDDEN APIs: eval, Function(), import, require, fetch, XMLHttpRequest, WebSocket, localStorage, document.cookie, document.write
+
+MANDATORY UX RULES (MUST follow for every game):
+1. INSTRUCTIONS SCREEN: Before gameplay starts, show a brief instructions overlay explaining controls and objectives (e.g. "Tap to jump", "Swipe to move", "Collect stars, avoid obstacles"). Player taps to dismiss and start playing.
+2. NO PHYSICAL KEYBOARD: This runs on mobile phones with NO physical keyboard. ALL directional controls (up/down/left/right, WASD, arrow keys) MUST be replaced with on-screen virtual buttons or touch gestures:
+   - For directional movement: render semi-transparent on-screen D-pad (arrow buttons) at bottom of canvas
+   - For jump-only: use tap-anywhere or a visible jump button
+   - For swipe games: show swipe hint arrows on instructions screen
+   - Virtual buttons must be large enough for thumb tapping (min 48x48px touch target)
+   - Virtual controls should have 50% opacity so they don't block the game view
+3. The game must be fully playable using ONLY touch input on a mobile screen."""
 
 PLATFORM_PROMPT_WECHAT = """PLATFORM: WeChat WebView
 - Max file size: 300 KB

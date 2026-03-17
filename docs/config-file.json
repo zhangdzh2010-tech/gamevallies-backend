@@ -1,0 +1,20 @@
+
+user_services:
+{
+  "CORS_ORIGIN": "*",
+  "NODE_ENV": "production",
+  "PORT": "3001",
+  "DATABASE_URL": "mysql://gamevallies:gamevallies@2026@mysql5f64263dff43.rds.ivolces.com:3306/gamevallies",
+  "REDIS_URL": "redis://:gamevallies2026@redis-shzlsq69qwdo5877a.redis.ivolces.com:6379",
+  "JWT_SECRET": "02e9621b10d223a2aa1bd18b25bb1023802238dcf3de0f55ce3059c4e34290d0",
+  "JWT_REFRESH_SECRET": "56154800a4084f1b89ba9459923bdd6bc2ae57f11bb4a0b5c7b6c58a20982f0a"
+}
+
+
+
+{
+  "gv-user-service":"sd6n8k2up8bgiaakgor40.apigateway-cn-shanghai.volceapi.com",
+  "gv-game-service":"sd6n8j9fmqc3q4mg90pr0.apigateway-cn-shanghai.volceapi.com",
+  "gv-feed-service":"sd6n8kcmp8bgiaakgorig.apigateway-cn-shanghai.volceapi.com",
+  "gv-social-service":"sd6n8k7ng00oknv60n2dg.apigateway-cn-shanghai.volceapi.com"
+}
