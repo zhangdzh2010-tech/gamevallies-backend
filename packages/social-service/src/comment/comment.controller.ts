@@ -53,7 +53,7 @@ export class CommentController {
     @Body() dto: CreateCommentDto,
     @Request() req: any,
   ) {
-    const userId = req.user?.sub || req.user?.id || 'anonymous';
+    const userId = req.user?.sub || req.user?.id;
     const comment = await this.commentService.createComment(userId, dto);
     return ok(presentComment(comment));
   }
@@ -103,7 +103,7 @@ export class CommentController {
     @Param('id') commentId: string,
     @Request() req: any,
   ) {
-    const userId = req.user?.sub || req.user?.id || 'anonymous';
+    const userId = req.user?.sub || req.user?.id;
     await this.commentService.deleteComment(commentId, userId);
     return ok(null);
   }
@@ -115,7 +115,7 @@ export class CommentController {
     @Param('id') commentId: string,
     @Request() req: any,
   ) {
-    const userId = req.user?.sub || req.user?.id || 'anonymous';
+    const userId = req.user?.sub || req.user?.id;
     const result = await this.commentService.likeComment(commentId, userId);
     return ok({
       liked: result.liked,

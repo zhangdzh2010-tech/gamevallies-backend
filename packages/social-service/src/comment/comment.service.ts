@@ -80,28 +80,19 @@ export class CommentService {
               avatarUrl: true,
             },
           },
+          _count: {
+            select: { replies: { where: { status: 'visible' } } },
+          },
           replies: {
             take: 3,
             where: { status: 'visible' },
+            orderBy: { createdAt: 'asc' },
             include: {
               user: {
                 select: {
                   id: true,
                   username: true,
                   avatarUrl: true,
-                },
-              },
-              replies: {
-                take: 2,
-                where: { status: 'visible' },
-                include: {
-                  user: {
-                    select: {
-                      id: true,
-                      username: true,
-                      avatarUrl: true,
-                    },
-                  },
                 },
               },
             },

@@ -108,10 +108,13 @@ model Game {
   forkCount    BigInt     @default(0) @map("fork_count")
   commentCount Int        @default(0) @map("comment_count")
   avgPlayTime  Float      @default(0) @map("avg_play_time")
-  qualityScore Float      @default(0) @map("quality_score")
-  createdAt    DateTime   @default(now()) @map("created_at") @db.DateTime(3)
-  updatedAt    DateTime   @updatedAt @map("updated_at") @db.DateTime(3)
-  publishedAt  DateTime?  @map("published_at") @db.DateTime(3)
+  qualityScore   Float      @default(0) @map("quality_score")
+  visibility     String     @default("public") @db.VarChar(16)
+  allowComments  Boolean    @default(true) @map("allow_comments")
+  allowFork      Boolean    @default(true) @map("allow_fork")
+  createdAt      DateTime   @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt      DateTime   @updatedAt @map("updated_at") @db.DateTime(3)
+  publishedAt    DateTime?  @map("published_at") @db.DateTime(3)
 
   // Relations
   author             User                @relation("GameAuthor", fields: [authorId], references: [id])

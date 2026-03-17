@@ -43,20 +43,15 @@ export class LikeService {
         },
       });
 
-      const game = await this.prisma.game.findUnique({
+      const updated = await this.prisma.game.update({
         where: { id: gameId },
+        data: { likeCount: { decrement: 1 } },
         select: { likeCount: true },
-      });
-
-      const newCount = Math.max(0, Number(game?.likeCount || 0) - 1);
-      await this.prisma.game.update({
-        where: { id: gameId },
-        data: { likeCount: newCount },
       });
 
       return {
         liked: false,
-        likeCount: newCount,
+        likeCount: Math.max(0, Number(updated.likeCount)),
       };
     } else {
       await this.prisma.socialInteraction.create({
@@ -68,20 +63,15 @@ export class LikeService {
         },
       });
 
-      const game = await this.prisma.game.findUnique({
+      const updated = await this.prisma.game.update({
         where: { id: gameId },
+        data: { likeCount: { increment: 1 } },
         select: { likeCount: true },
-      });
-
-      const newCount = Number(game?.likeCount || 0) + 1;
-      await this.prisma.game.update({
-        where: { id: gameId },
-        data: { likeCount: newCount },
       });
 
       return {
         liked: true,
-        likeCount: newCount,
+        likeCount: Number(updated.likeCount),
       };
     }
   }
@@ -110,20 +100,15 @@ export class LikeService {
         },
       });
 
-      const comment = await this.prisma.comment.findUnique({
+      const updated = await this.prisma.comment.update({
         where: { id: commentId },
+        data: { likeCount: { decrement: 1 } },
         select: { likeCount: true },
-      });
-
-      const newCount = Math.max(0, (comment?.likeCount || 0) - 1);
-      await this.prisma.comment.update({
-        where: { id: commentId },
-        data: { likeCount: newCount },
       });
 
       return {
         liked: false,
-        likeCount: newCount,
+        likeCount: Math.max(0, updated.likeCount),
       };
     } else {
       await this.prisma.socialInteraction.create({
@@ -135,20 +120,15 @@ export class LikeService {
         },
       });
 
-      const comment = await this.prisma.comment.findUnique({
+      const updated = await this.prisma.comment.update({
         where: { id: commentId },
+        data: { likeCount: { increment: 1 } },
         select: { likeCount: true },
-      });
-
-      const newCount = (comment?.likeCount || 0) + 1;
-      await this.prisma.comment.update({
-        where: { id: commentId },
-        data: { likeCount: newCount },
       });
 
       return {
         liked: true,
-        likeCount: newCount,
+        likeCount: updated.likeCount,
       };
     }
   }

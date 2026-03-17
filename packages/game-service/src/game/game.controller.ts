@@ -3,6 +3,7 @@ import {
   Post,
   Get,
   Delete,
+  Patch,
   Param,
   Body,
   Query,
@@ -223,6 +224,20 @@ export class GameController {
       return ok(reputation);
     } catch (error) {
       this.logger.error(`Error getting creator reputation: ${error.message}`);
+      throw error;
+    }
+  }
+
+  @Patch(':id/settings')
+  @UseGuards(JwtAuthGuard)
+  async updateGameSettings(@Param('id') id: string, @Req() req: any, @Body() body: any) {
+    try {
+      const userId = req.user?.sub || req.user?.id;
+      if (!userId) throw new BadRequestException('Invalid token');
+      const result = await this.gameService.updateSettings(id, userId, body);
+      return ok(result);
+    } catch (error) {
+      this.logger.error(`Error updating game settings: ${error.message}`);
       throw error;
     }
   }

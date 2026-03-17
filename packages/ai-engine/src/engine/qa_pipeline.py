@@ -386,7 +386,7 @@ class QAPipeline:
                 ))
 
             # Detect synchronous sleep-like patterns (busy wait)
-            if re.search(r"while\s*\(.*Date\.now\(\)|while\s*\(.*performance\.now\(\)", script):
+            if re.search(r"while\s*\([^)]*(?:Date\.now|performance\.now)\s*\(\)", script):
                 errors.append(QACheckError(
                     type="L5_performance",
                     message="Busy-wait loop detected – blocks main thread",

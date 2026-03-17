@@ -8,21 +8,45 @@ import {
   Param,
   Body,
   Res,
+  Req,
   Headers,
   HttpException,
   HttpStatus,
 } from '@nestjs/common';
-import { Response } from 'express';
+import { Response, Request } from 'express';
 import { AdminService } from './admin.service';
 import { ok } from '../common/api-response';
 import * as fs from 'fs';
 import * as path from 'path';
 
-function checkAdminToken(token: string | undefined): void {
+// Simple in-memory rate limiter: max 20 admin requests per IP per minute
+const _adminRateMap = new Map<string, { count: number; resetAt: number }>();
+const ADMIN_RATE_LIMIT = 20;
+const ADMIN_RATE_WINDOW_MS = 60_000;
+
+function checkAdminToken(token: string | undefined, req?: Request, action?: string): void {
+  const ip = req?.ip || 'unknown';
+  const now = Date.now();
+
+  // Rate limit check
+  let bucket = _adminRateMap.get(ip);
+  if (!bucket || bucket.resetAt < now) {
+    bucket = { count: 0, resetAt: now + ADMIN_RATE_WINDOW_MS };
+    _adminRateMap.set(ip, bucket);
+  }
+  bucket.count++;
+  if (bucket.count > ADMIN_RATE_LIMIT) {
+    console.warn(`[ADMIN] Rate limit exceeded for IP ${ip}`);
+    throw new HttpException('Too Many Requests', HttpStatus.TOO_MANY_REQUESTS);
+  }
+
   const adminToken = process.env.ADMIN_TOKEN || 'admin123';
   if (!token || token !== adminToken) {
+    console.warn(`[ADMIN] Unauthorized access attempt from IP ${ip}, action=${action ?? 'unknown'}`);
     throw new HttpException('Unauthorized: Invalid admin token', HttpStatus.UNAUTHORIZED);
   }
+
+  console.log(`[ADMIN] Authorized action="${action ?? 'unknown'}" from IP ${ip} at ${new Date().toISOString()}`);
 }
 
 @Controller()

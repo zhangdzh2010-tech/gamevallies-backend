@@ -298,7 +298,7 @@ class CodeGenerator:
         try:
             text = await self._client.complete(
                 model=self._client.model_for(fast=True),
-                max_tokens=20,
+                max_tokens=512,
                 messages=[{
                     "role": "user",
                     "content": get_prompt("prompt.iterate_classify", ITERATE_CLASSIFY_PROMPT).format(feedback=feedback),
@@ -316,25 +316,35 @@ class CodeGenerator:
         """Zero-token regex parameter replacement."""
         fb = feedback.lower()
 
-        # Speed
-        if "快" in fb or "faster" in fb or "速度" in fb:
-            code = re.sub(r"(player\.speed\s*=\s*)(\d+\.?\d*)", lambda m: m.group(1) + str(round(float(m.group(2)) * 1.5, 1)), code, count=1)
-        if "慢" in fb or "slower" in fb:
-            code = re.sub(r"(player\.speed\s*=\s*)(\d+\.?\d*)", lambda m: m.group(1) + str(round(float(m.group(2)) * 0.7, 1)), code, count=1)
+        # Speed — match player.speed / player_speed / playerSpeed / SPEED constant
+        speed_pattern = r"(player[._]?speed\s*[:=]\s*|const\s+SPEED\s*=\s*)(\d+\.?\d*)"
+        if "快" in fb or "faster" in fb or "速度快" in fb or "加速" in fb:
+            code = re.sub(speed_pattern,
+                          lambda m: m.group(1) + str(round(float(m.group(2)) * 1.5, 1)),
+                          code, flags=re.IGNORECASE)
+        if "慢" in fb or "slower" in fb or "速度慢" in fb or "减速" in fb:
+            code = re.sub(speed_pattern,
+                          lambda m: m.group(1) + str(round(float(m.group(2)) * 0.7, 1)),
+                          code, flags=re.IGNORECASE)
 
-        # Lives
-        m = re.search(r"(\d+)\s*(命|lives|生命)", fb)
-        if m:
-            lives = m.group(1)
-            code = re.sub(r"(lives\s*[:=]\s*)\d+", lambda _: _.group(1) + lives, code, count=2)
+        # Lives — match lives: 3 / lives = 3 / {lives: 3}
+        lm = re.search(r"(\d+)\s*(命|lives|生命)", fb)
+        if lm:
+            lives = lm.group(1)
+            code = re.sub(r"(lives\s*[:=]\s*)\d+",
+                          lambda _: _.group(1) + lives,
+                          code, flags=re.IGNORECASE)
 
-        # Color: simple primary color swap
+        # Color: swap any primary accent color (not just #6366f1)
+        primary_colors = r"#(?:6366f1|6e56ff|4f46e5|7c3aed)"
         if "红色" in fb or "red" in fb:
-            code = re.sub(r"#6366f1", "#ef4444", code)
+            code = re.sub(primary_colors, "#ef4444", code, flags=re.IGNORECASE)
         if "绿色" in fb or "green" in fb:
-            code = re.sub(r"#6366f1", "#22c55e", code)
+            code = re.sub(primary_colors, "#22c55e", code, flags=re.IGNORECASE)
         if "蓝色" in fb or "blue" in fb:
-            code = re.sub(r"#6366f1", "#3b82f6", code)
+            code = re.sub(primary_colors, "#3b82f6", code, flags=re.IGNORECASE)
+        if "黄色" in fb or "yellow" in fb:
+            code = re.sub(primary_colors, "#eab308", code, flags=re.IGNORECASE)
 
         return code
 
@@ -396,12 +406,17 @@ class CodeGenerator:
 # ---------------------------------------------------------------------------
 
 def _extract_html(text: str) -> str:
-    """Extract clean HTML from LLM output (strip markdown fences if present)."""
-    # Remove ``` fences
-    text = re.sub(r"```(?:html)?\s*", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"```\s*$", "", text, flags=re.MULTILINE)
-    # Find first <!DOCTYPE or <html
-    m = re.search(r"(<!DOCTYPE|<html)", text, re.IGNORECASE)
+    """Extract clean HTML from LLM output (strip markdown fences and leading prose)."""
+    # Remove BOM
+    text = text.lstrip('\ufeff')
+    # Iteratively remove all ``` fences (handles nested/multiple blocks)
+    prev = None
+    while prev != text:
+        prev = text
+        text = re.sub(r"```(?:html)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"```\s*(?:$|\n)", "", text, flags=re.MULTILINE)
+    # Find first <!DOCTYPE or <html — skip any leading prose
+    m = re.search(r"(<!DOCTYPE\s+html|<html)", text, re.IGNORECASE)
     if m:
         text = text[m.start():]
     return text.strip()
