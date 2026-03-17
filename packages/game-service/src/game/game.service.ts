@@ -173,11 +173,15 @@ export class GameService {
         previewUrl: bundlePreviewUrl,
       });
 
+      // Derive a human-readable title from the game spec or description
+      const gameTitle = this.deriveTitle(gameSpec, description);
+
       await this.prisma.game.update({
         where: { id: gameId },
         data: {
           status: 'draft',
           version: 1,
+          title: gameTitle,
           gameType: gameSpec?.game_type || null,
           qualityScore,
         },
@@ -199,6 +203,25 @@ export class GameService {
         gameId,
       });
     }
+  }
+
+  private deriveTitle(gameSpec: any, description: string): string {
+    // Try to extract a meaningful name from the game type
+    const typeMap: Record<string, string> = {
+      snake: '贪吃蛇', platformer: '跑酷冒险', shooter: '太空射击',
+      puzzle: '益智谜题', rhythm: '音乐节奏', breakout: '打砖块',
+      whack_a_mole: '打地鼠', racing: '极速竞赛', defense: '防御塔',
+      card: '卡牌对决', rpg: '角色扮险', arcade: '街机游戏',
+      '2048': '2048', runner: '无尽跑酷', space: '太空飞船',
+    };
+    const gameType = gameSpec?.game_type || '';
+    if (typeMap[gameType]) return typeMap[gameType];
+    if (gameType) return gameType.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
+
+    // Fallback: extract from first ~15 chars of description
+    const desc = (description || '').replace(/^(做|创建|生成|制作|来)(一个|个)/, '').trim();
+    if (desc.length > 2) return desc.substring(0, 15).replace(/[，。,.]$/, '');
+    return '新游戏';
   }
 
   private emitStage(userId: string, gameId: string, stage: string): void {

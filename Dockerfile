@@ -71,4 +71,10 @@ ENV PORT=${PORT}
 
 EXPOSE ${PORT}
 
+# VeFaaS (native/v1) 默认执行 /opt/application/run.sh 启动容器
+RUN mkdir -p /opt/application && \
+    echo '#!/bin/sh' > /opt/application/run.sh && \
+    echo "exec node /app/packages/${SERVICE}/dist/main.js" >> /opt/application/run.sh && \
+    chmod +x /opt/application/run.sh
+
 CMD ["node", "dist/main.js"]

@@ -165,6 +165,18 @@ services:
     networks:
       - gamevallies-network
 
+  # ============== 前端 ==============
+  frontend:
+    build:
+      context: ../gamevallies-front
+      dockerfile: Dockerfile
+    container_name: gamevallies-frontend
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    networks:
+      - gamevallies-network
+
   # ============== API网关 ==============
   nginx:
     image: nginx:alpine

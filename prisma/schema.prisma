@@ -117,7 +117,6 @@ model Game {
   author             User                @relation("GameAuthor", fields: [authorId], references: [id])
   parentGame         Game?               @relation("GameForks", fields: [forkedFrom], references: [id])
   forks              Game[]              @relation("GameForks")
-  socialInteractions SocialInteraction[] @relation("GameInteractions")
   comments           Comment[]           @relation("GameComments")
   earnings           CreatorEarning[]    @relation("GameEarnings")
   bundles            GameBundle[]        @relation("GameBundles")
@@ -197,7 +196,6 @@ model SocialInteraction {
   createdAt  DateTime              @default(now()) @map("created_at") @db.DateTime(3)
 
   user User  @relation("UserInteractions", fields: [userId], references: [id])
-  game Game? @relation("GameInteractions", fields: [targetId], references: [id])
 
   @@unique([userId, targetType, targetId, action], name: "unique_interaction")
   @@index([targetType, targetId])
