@@ -63,7 +63,7 @@ class CodeReviewer:
         try:
             raw = await self._client.complete(
                 model=self._client.model_for(fast=True),   # use fast model for review
-                max_tokens=512,
+                max_tokens=4096,
                 system=REVIEW_SYSTEM,
                 messages=[{"role": "user", "content": prompt}],
             )
@@ -78,16 +78,23 @@ class CodeReviewer:
         cleaned = re.sub(r"```(?:json)?\s*", "", raw, flags=re.IGNORECASE).strip()
         cleaned = re.sub(r"```\s*$", "", cleaned, flags=re.MULTILINE).strip()
 
-        # Find first JSON object
-        m = re.search(r"\{.*\}", cleaned, re.DOTALL)
-        if not m:
-            logger.warning(f"No JSON found in review response: {raw[:200]}")
-            return LLMReviewResult(ran=False)
+        # Use raw_decode from first { to safely handle surrounding text
+        start = cleaned.find("{")
+        data = None
+        if start != -1:
+            try:
+                data, _ = json.JSONDecoder().raw_decode(cleaned, start)
+            except json.JSONDecodeError:
+                # Last resort: first { to last }
+                end = cleaned.rfind("}")
+                if end > start:
+                    try:
+                        data = json.loads(cleaned[start:end + 1])
+                    except json.JSONDecodeError as exc:
+                        logger.warning(f"JSON parse error in review: {exc} | raw: {raw[:200]}")
 
-        try:
-            data = json.loads(m.group(0))
-        except json.JSONDecodeError as exc:
-            logger.warning(f"JSON parse error in review: {exc} | raw: {raw[:200]}")
+        if data is None:
+            logger.warning(f"No JSON found in review response: {raw[:200]}")
             return LLMReviewResult(ran=False)
 
         fun_score = float(data.get("fun_score", 5.0))
@@ -99,9 +106,9 @@ class CodeReviewer:
 
         result = LLMReviewResult(
             ran=True,
-            is_complete_game=bool(data.get("is_complete_game", True)),
-            has_real_gameplay=bool(data.get("has_real_gameplay", True)),
-            difficulty_balanced=bool(data.get("difficulty_balanced", True)),
+            is_complete_game=bool(data.get("is_complete_game", False)),
+            has_real_gameplay=bool(data.get("has_real_gameplay", False)),
+            difficulty_balanced=bool(data.get("difficulty_balanced", False)),
             fun_score=fun_score,
             issues=issues[:10],
         )

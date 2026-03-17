@@ -45,7 +45,7 @@ export class NotificationController {
     @Query() pagination: PaginationDto,
     @Request() req: any,
   ) {
-    const userId = req.user?.sub || req.user?.id || 'anonymous';
+    const userId = req.user?.sub || req.user?.id;
     const result = await this.notificationService.getNotifications(userId, pagination.page, pagination.limit);
     return ok(
       toPage(
@@ -64,7 +64,7 @@ export class NotificationController {
     @Body() dto: MarkAsReadDto,
     @Request() req: any,
   ) {
-    const userId = req.user?.sub || req.user?.id || 'anonymous';
+    const userId = req.user?.sub || req.user?.id;
     await this.notificationService.markAsRead(userId, dto.ids);
     return ok(null);
   }
@@ -83,7 +83,7 @@ export class NotificationController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async markAllAsRead(@Request() req: any) {
-    const userId = req.user?.sub || req.user?.id || 'anonymous';
+    const userId = req.user?.sub || req.user?.id;
     await this.notificationService.markAllAsRead(userId);
     return ok(null);
   }
@@ -98,7 +98,7 @@ export class NotificationController {
   @Get('unread-count')
   @UseGuards(JwtAuthGuard)
   async getUnreadCount(@Request() req: any) {
-    const userId = req.user?.sub || req.user?.id || 'anonymous';
+    const userId = req.user?.sub || req.user?.id;
     return ok(await this.notificationService.getUnreadCount(userId));
   }
 }

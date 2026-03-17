@@ -1,82 +1,84 @@
 import { Controller, Post, Body, UseGuards, Get, Req, HttpCode, HttpStatus } from '@nestjs/common';
 import { Request } from 'express';
-import { IsIn, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsIn, IsString, MaxLength, MinLength, Matches, IsOptional } from 'class-validator';
 import { AuthService } from './auth.service';
-import { RegisterDto, LoginDto, RefreshDto, AuthResponse, AuthRefreshResponse } from './dto';
+import { RefreshDto } from './dto';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { ok, presentUser } from '../common/api-response';
 
-class SendCodeDto {
-  @IsString()
-  target: string;
+// ── DTO ────────────────────────────────────────────────────────
 
-  @IsIn(['register', 'reset_password', 'verify'])
-  type: 'register' | 'reset_password' | 'verify';
-}
-
-class VerifyCodeDto {
+class PasswordLoginDto {
   @IsString()
-  target: string;
+  account: string; // 手机号或用户名
 
   @IsString()
-  code: string;
-}
-
-class ResetPasswordDto {
-  @IsString()
-  target: string;
-
-  @IsString()
-  code: string;
-
-  @IsString()
-  @MinLength(8)
+  @MinLength(6)
   @MaxLength(128)
-  newPassword: string;
+  password: string;
 }
 
-class ChangePasswordDto {
+class SendSmsCodeDto {
   @IsString()
-  currentPassword: string;
+  @Matches(/^1[3-9]\d{9}$/, { message: '请输入正确的手机号码' })
+  phone: string;
+
+  @IsIn(['register', 'login', 'reset_password'])
+  type: 'register' | 'login' | 'reset_password';
+}
+
+class PhoneRegisterDto {
+  @IsString()
+  @Matches(/^1[3-9]\d{9}$/, { message: '请输入正确的手机号码' })
+  phone: string;
 
   @IsString()
-  @MinLength(8)
+  @MinLength(6)
+  @MaxLength(6)
+  smsCode: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(20)
+  nickname?: string;
+
+  @IsString()
+  @IsOptional()
+  @MinLength(6)
   @MaxLength(128)
-  newPassword: string;
+  password?: string;
 }
+
+class PhoneLoginDto {
+  @IsString()
+  @Matches(/^1[3-9]\d{9}$/, { message: '请输入正确的手机号码' })
+  phone: string;
+
+  @IsString()
+  @MinLength(6)
+  @MaxLength(6)
+  smsCode: string;
+}
+
+// ── Controller ─────────────────────────────────────────────────
 
 @Controller('auth')
 export class AuthController {
   constructor(private authService: AuthService) {}
 
-  @Post('register')
-  @HttpCode(HttpStatus.CREATED)
-  async register(@Body() dto: RegisterDto) {
-    const result = await this.authService.register(dto);
-    return ok({
-      user: presentUser(result.user),
-    });
-  }
-
+  // 密码登录
   @Post('login')
   @HttpCode(HttpStatus.OK)
-  async login(@Body() dto: LoginDto) {
-    const result = await this.authService.login(dto);
-    return ok({
-      token: result.accessToken,
-      refreshToken: result.refreshToken,
-      user: presentUser(result.user),
-    });
+  async login(@Body() dto: PasswordLoginDto) {
+    const result = await this.authService.loginByPassword(dto.account, dto.password);
+    return ok({ token: result.accessToken, refreshToken: result.refreshToken, user: presentUser(result.user) });
   }
 
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   async refresh(@Body() dto: RefreshDto) {
     const result = await this.authService.refreshToken(dto.refreshToken);
-    return ok({
-      token: result.accessToken,
-      refreshToken: result.refreshToken,
-    });
+    return ok({ token: result.accessToken, refreshToken: result.refreshToken });
   }
 
   @Post('logout')
@@ -84,40 +86,32 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async logout(@Req() req: Request) {
     const refreshToken = req.headers['x-refresh-token'] as string;
-    
     if (refreshToken) {
       await this.authService.revokeRefreshToken(refreshToken);
     }
-
     return ok(null);
   }
 
-  @Post('send-code')
+  // 短信接口
+  @Post('sms/send-code')
   @HttpCode(HttpStatus.OK)
-  async sendCode(@Body() dto: SendCodeDto) {
-    await this.authService.sendVerificationCode(dto.target, dto.type);
+  async sendSmsCode(@Body() dto: SendSmsCodeDto) {
+    await this.authService.sendSmsCode(dto.phone, dto.type);
     return ok(null);
   }
 
-  @Post('verify-code')
-  @HttpCode(HttpStatus.OK)
-  async verifyCode(@Body() dto: VerifyCodeDto) {
-    return ok(await this.authService.verifyCode(dto.target, dto.code));
+  @Post('sms/register')
+  @HttpCode(HttpStatus.CREATED)
+  async registerByPhone(@Body() dto: PhoneRegisterDto) {
+    const result = await this.authService.registerByPhone(dto.phone, dto.smsCode, dto.nickname || '', dto.password);
+    return ok({ token: result.accessToken, refreshToken: result.refreshToken, user: presentUser(result.user) });
   }
 
-  @Post('reset-password')
+  @Post('sms/login')
   @HttpCode(HttpStatus.OK)
-  async resetPassword(@Body() dto: ResetPasswordDto) {
-    await this.authService.resetPassword(dto.target, dto.code, dto.newPassword);
-    return ok(null);
-  }
-
-  @Post('change-password')
-  @UseGuards(JwtAuthGuard)
-  @HttpCode(HttpStatus.OK)
-  async changePassword(@Req() req: any, @Body() dto: ChangePasswordDto) {
-    await this.authService.changePassword(req.user.userId, dto.currentPassword, dto.newPassword);
-    return ok(null);
+  async loginByPhone(@Body() dto: PhoneLoginDto) {
+    const result = await this.authService.loginByPhone(dto.phone, dto.smsCode);
+    return ok({ token: result.accessToken, refreshToken: result.refreshToken, user: presentUser(result.user) });
   }
 
   @Get('profile')

@@ -82,6 +82,7 @@ def _env_vars(port: int) -> dict:
         "JWT_SECRET":         os.environ.get("JWT_SECRET", ""),
         "JWT_REFRESH_SECRET": os.environ.get("JWT_REFRESH_SECRET", ""),
         "CORS_ORIGIN":        os.environ.get("CORS_ORIGIN", "*"),
+        "ADMIN_TOKEN":        os.environ.get("ADMIN_TOKEN", "admin123"),
     }
     if AI_ENGINE_URL:
         env["AI_ENGINE_URL"] = AI_ENGINE_URL
@@ -199,6 +200,29 @@ def create_function(api: volcenginesdkvefaas.VEFAASApi, svc: dict, image: str) -
         return ""
 
 
+def wait_image_sync(api: volcenginesdkvefaas.VEFAASApi, func_id: str, image: str, timeout: int = 300) -> bool:
+    """等待 VeFaaS 镜像缓存就绪，最多 timeout 秒。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            sync = api.get_image_sync_status(
+                volcenginesdkvefaas.GetImageSyncStatusRequest(function_id=func_id, source=image))
+            status = getattr(sync, "status", "") or ""
+            cache_status = getattr(sync, "image_cache_status", "") or ""
+            if cache_status.lower() == "ready" or status.lower() == "succeeded":
+                print(f"  ✅ 镜像缓存就绪 (status={status})")
+                return True
+            if status.lower() == "failed":
+                print(f"  ❌ 镜像同步失败，请检查 VCR 凭证")
+                return False
+            print(f"  ⏳ 等待镜像同步... status={status} cache={cache_status}")
+        except Exception as e:
+            print(f"  ⏳ 查询同步状态异常: {e}")
+        time.sleep(10)
+    print(f"  ❌ 等待镜像同步超时 ({timeout}秒)")
+    return False
+
+
 def deploy_service(api: volcenginesdkvefaas.VEFAASApi, svc: dict) -> bool:
     name   = svc["name"]
     image  = image_uri(name)
@@ -208,12 +232,11 @@ def deploy_service(api: volcenginesdkvefaas.VEFAASApi, svc: dict) -> bool:
     print(f"  🔨 构建镜像: {image}")
     if is_ai:
         # AI 引擎使用自己的 Dockerfile，构建上下文是 packages/ai-engine/
-        build_ctx = os.path.join(ROOT_DIR, "packages", "ai-engine")
         build_cmd = [
             "docker", "build",
             "--platform", "linux/amd64",
             "-t", image,
-            build_ctx,
+            os.path.join(ROOT_DIR, "packages", "ai-engine"),
         ]
     else:
         build_cmd = [
@@ -269,26 +292,7 @@ def deploy_service(api: volcenginesdkvefaas.VEFAASApi, svc: dict) -> bool:
 
     # 5. 等待镜像缓存就绪
     print(f"  ⏳ 等待镜像缓存就绪...")
-    deadline = time.time() + 300  # 最多等 5 分钟
-    while time.time() < deadline:
-        try:
-            sync = api.get_image_sync_status(
-                volcenginesdkvefaas.GetImageSyncStatusRequest(function_id=func_id, source=image)
-            )
-            cache_status = getattr(sync, "image_cache_status", "") or ""
-            status = getattr(sync, "status", "") or ""
-            if cache_status.lower() == "ready" or status.lower() == "succeeded":
-                print(f"  ✅ 镜像缓存就绪（status={status}）")
-                break
-            if status.lower() == "failed":
-                print(f"  ❌ 镜像同步失败（status={status}）")
-                return False
-        except Exception:
-            pass
-        print(f"  ⏳ 镜像缓存状态: {cache_status}，等待 10 秒...")
-        time.sleep(10)
-    else:
-        print(f"  ❌ 等待镜像缓存超时（5 分钟）")
+    if not wait_image_sync(api, func_id, image):
         return False
 
     # 6. 发布新版本（revision_number=0 = 当前最新草稿）
