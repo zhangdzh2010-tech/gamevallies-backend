@@ -1,144 +1,66 @@
-import { Injectable, BadRequestException, UnauthorizedException, ConflictException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, ConflictException, BadRequestException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
 import { randomUUID } from 'crypto';
-import { RegisterDto, LoginDto, AuthResponse, AuthRefreshResponse } from './dto';
+import Redis from 'ioredis';
+import { AuthResponse, AuthRefreshResponse } from './dto';
 import { PrismaService } from '../prisma/prisma.service';
+import { SmsService } from './sms.service';
 
-type VerificationPurpose = 'register' | 'reset_password' | 'verify';
-
-const verificationCodeStore = new Map<
-  string,
-  {
-    code: string;
-    target: string;
-    type: VerificationPurpose;
-    expiresAt: Date;
-  }
->();
+type VerificationPurpose = 'register' | 'login' | 'reset_password';
+const VERIFICATION_TTL_SECONDS = 10 * 60;
+const SEND_INTERVAL_SECONDS = parseInt(process.env.VERIFY_CODE_SEND_INTERVAL_SECONDS || '60', 10);
 
 @Injectable()
 export class AuthService {
+  private redis: Redis;
+
   constructor(
     private jwtService: JwtService,
     private configService: ConfigService,
     private prisma: PrismaService,
-  ) {}
-
-  async register(dto: RegisterDto): Promise<AuthResponse> {
-    // Validate unique username
-    const existingUsername = await this.prisma.user.findUnique({
-      where: { username: dto.username.toLowerCase() },
-    });
-
-    if (existingUsername) {
-      throw new ConflictException('Username already taken');
+    private smsService: SmsService,
+  ) {
+    const redisUrl = process.env.REDIS_URL;
+    if (redisUrl) {
+      this.redis = new Redis(redisUrl);
+    } else {
+      this.redis = new Redis({ host: 'localhost', port: 6379 });
     }
-
-    // Validate unique email if provided
-    if (dto.email) {
-      const existingEmail = await this.prisma.user.findUnique({
-        where: { email: dto.email.toLowerCase() },
-      });
-
-      if (existingEmail) {
-        throw new ConflictException('Email already registered');
-      }
-    }
-
-    // Hash password
-    const hashedPassword = await bcrypt.hash(dto.password, 10);
-
-    // Create user
-    const user = await this.prisma.user.create({
-      data: {
-        id: randomUUID(),
-        username: dto.username.toLowerCase(),
-        email: dto.email ? dto.email.toLowerCase() : undefined,
-        phone: dto.phone || undefined,
-        passwordHash: hashedPassword,
-        displayName: dto.displayName || dto.username,
-        role: 'user',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-      select: {
-        id: true,
-        username: true,
-        email: true,
-        displayName: true,
-        role: true,
-      },
-    });
-
-    // Generate tokens
-    const tokens = await this.generateTokens({
-      id: user.id,
-      username: user.username,
-      email: user.email ?? undefined,
-      displayName: user.displayName ?? user.username,
-      role: user.role,
-    });
-
-    return {
-      ...tokens,
-      user: {
-        id: user.id,
-        username: user.username,
-        email: user.email ?? undefined,
-        displayName: user.displayName ?? undefined,
-        role: user.role,
-      },
-    };
   }
 
-  async login(dto: LoginDto): Promise<AuthResponse> {
-    // Find user by email or username
+  // ── 密码登录 ───────────────────────────────────────────────────
+
+  /** 账号（手机号或用户名）+ 密码登录 */
+  async loginByPassword(account: string, password: string): Promise<AuthResponse> {
     const user = await this.prisma.user.findFirst({
       where: {
         OR: [
-          { email: dto.account.toLowerCase() },
-          { username: dto.account.toLowerCase() },
+          { phone: account },
+          { username: account.toLowerCase() },
         ],
       },
     });
 
-    if (!user) {
-      throw new UnauthorizedException('Invalid email/username or password');
+    if (!user || !user.passwordHash) {
+      throw new UnauthorizedException('账号或密码错误');
     }
 
-    if (!user.passwordHash) {
-      throw new UnauthorizedException('Invalid email/username or password');
+    const valid = await bcrypt.compare(password, user.passwordHash);
+    if (!valid) {
+      throw new UnauthorizedException('账号或密码错误');
     }
 
-    // Verify password
-    const isPasswordValid = await bcrypt.compare(dto.password, user.passwordHash);
-
-    if (!isPasswordValid) {
-      throw new UnauthorizedException('Invalid email/username or password');
-    }
-
-    // Generate tokens
     const tokens = await this.generateTokens({
-      id: user.id,
-      username: user.username,
-      email: user.email ?? undefined,
-      displayName: user.displayName ?? user.username,
-      role: user.role,
+      id: user.id, username: user.username,
+      displayName: user.displayName ?? user.username, role: user.role,
     });
 
-    return {
-      ...tokens,
-      user: {
-        id: user.id,
-        username: user.username,
-        email: user.email ?? undefined,
-        displayName: user.displayName ?? undefined,
-        role: user.role,
-      },
-    };
+    return { ...tokens, user: { id: user.id, username: user.username, displayName: user.displayName ?? undefined, role: user.role } };
   }
+
+  // ── Token 管理 ─────────────────────────────────────────────────
 
   async refreshToken(token: string): Promise<AuthRefreshResponse> {
     const refreshTokenRecord = await this.prisma.refreshToken.findUnique({
@@ -178,11 +100,7 @@ export class AuthService {
 
   async generateTokens(user: { id: string; username: string; email?: string; displayName: string; role: string }): Promise<{ accessToken: string; refreshToken: string; expiresIn: number }> {
     const accessToken = this.jwtService.sign(
-      {
-        sub: user.id,
-        username: user.username,
-        role: user.role,
-      } as any,
+      { sub: user.id, username: user.username, role: user.role } as any,
       {
         secret: this.configService.get<string>('JWT_SECRET'),
         expiresIn: this.configService.get<string>('JWT_EXPIRES_IN', '24h') as any,
@@ -196,26 +114,14 @@ export class AuthService {
         ? parseInt(expiresInStr) * 60
         : parseInt(expiresInStr);
 
-    // Generate refresh token (7 days)
     const refreshToken = randomUUID();
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
-    // Store refresh token in database
     await this.prisma.refreshToken.create({
-      data: {
-        id: randomUUID(),
-        token: refreshToken,
-        userId: user.id,
-        expiresAt: expiresAt,
-        createdAt: new Date(),
-      },
+      data: { id: randomUUID(), token: refreshToken, userId: user.id, expiresAt, createdAt: new Date() },
     });
 
-    return {
-      accessToken,
-      refreshToken,
-      expiresIn: expiresInSeconds,
-    };
+    return { accessToken, refreshToken, expiresIn: expiresInSeconds };
   }
 
   async revokeRefreshToken(token: string): Promise<void> {
@@ -228,107 +134,91 @@ export class AuthService {
   async validateUser(userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: {
-        id: true,
-        username: true,
-        email: true,
-        displayName: true,
-        role: true,
-      },
+      select: { id: true, username: true, email: true, displayName: true, role: true },
     });
 
-    if (!user) {
-      throw new UnauthorizedException('User not found');
-    }
-
+    if (!user) throw new UnauthorizedException('User not found');
     return user;
   }
 
-  async sendVerificationCode(target: string, type: VerificationPurpose) {
-    const normalizedTarget = target.trim().toLowerCase();
+  // ── 手机号注册/登录 ────────────────────────────────────────────
+
+  async sendSmsCode(phone: string, type: VerificationPurpose): Promise<void> {
+    const cooldownKey = `sms:cd:${phone}`;
+    const isCooldown = await this.redis.exists(cooldownKey);
+    if (isCooldown) {
+      const ttl = await this.redis.ttl(cooldownKey);
+      throw new BadRequestException(`请等待 ${ttl} 秒后再重新获取验证码`);
+    }
+
     const code = `${Math.floor(100000 + Math.random() * 900000)}`;
-
-    verificationCodeStore.set(normalizedTarget, {
-      code,
-      target: normalizedTarget,
-      type,
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000),
-    });
-
-    console.log(
-      `[${new Date().toISOString()}] Verification code generated for ${normalizedTarget} (${type}): ${code}`,
-    );
+    const key = `sms:vcode:${phone}`;
+    await this.redis.setex(key, VERIFICATION_TTL_SECONDS, JSON.stringify({ code, type }));
+    await this.smsService.sendCode(phone, code);
+    await this.redis.setex(cooldownKey, SEND_INTERVAL_SECONDS, '1');
   }
 
-  async verifyCode(target: string, code: string) {
-    const normalizedTarget = target.trim().toLowerCase();
-    const record = verificationCodeStore.get(normalizedTarget);
-
-    return {
-      valid:
-        Boolean(record) &&
-        record?.code === code &&
-        record.expiresAt.getTime() > Date.now(),
-    };
+  private async verifySmsCode(phone: string, code: string): Promise<void> {
+    const key = `sms:vcode:${phone}`;
+    const raw = await this.redis.get(key);
+    if (!raw) throw new UnauthorizedException('验证码已过期，请重新获取');
+    const record = JSON.parse(raw) as { code: string; type: string };
+    if (record.code !== code) throw new UnauthorizedException('验证码错误');
+    await this.redis.del(key);
   }
 
-  async resetPassword(target: string, code: string, newPassword: string) {
-    const validation = await this.verifyCode(target, code);
-    if (!validation.valid) {
-      throw new UnauthorizedException('Verification code is invalid or expired');
+  /** 手机号注册：phone + smsCode + nickname + password */
+  async registerByPhone(phone: string, smsCode: string, nickname: string, password?: string): Promise<AuthResponse> {
+    await this.verifySmsCode(phone, smsCode);
+
+    const existing = await this.prisma.user.findFirst({ where: { phone } });
+    if (existing) throw new ConflictException('该手机号已注册，请直接登录');
+
+    const base = `u${phone.slice(-4)}`;
+    let username = base;
+    let suffix = 0;
+    while (await this.prisma.user.findFirst({ where: { username } })) {
+      suffix++;
+      username = `${base}${suffix}`;
     }
 
-    const normalizedTarget = target.trim().toLowerCase();
-    const user = await this.prisma.user.findFirst({
-      where: {
-        OR: [
-          { email: normalizedTarget },
-          { phone: normalizedTarget },
-        ],
-      },
-    });
+    const passwordHash = password ? await bcrypt.hash(password, 10) : undefined;
 
-    if (!user) {
-      throw new UnauthorizedException('Account not found');
-    }
-
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
-    await this.prisma.user.update({
-      where: { id: user.id },
+    const user = await this.prisma.user.create({
       data: {
-        passwordHash: hashedPassword,
+        id: randomUUID(),
+        username,
+        phone,
+        displayName: nickname || username,
+        authProvider: 'phone',
+        passwordHash,
+        role: 'user',
+        createdAt: new Date(),
         updatedAt: new Date(),
       },
+      select: { id: true, username: true, phone: true, displayName: true, role: true },
     });
 
-    verificationCodeStore.delete(normalizedTarget);
-    await this.prisma.refreshToken.updateMany({
-      where: { userId: user.id, revokedAt: null },
-      data: { revokedAt: new Date() },
+    const tokens = await this.generateTokens({
+      id: user.id, username: user.username,
+      displayName: user.displayName ?? user.username, role: user.role,
     });
+
+    return { ...tokens, user: { id: user.id, username: user.username, displayName: user.displayName ?? undefined, role: user.role } };
   }
 
-  async changePassword(userId: string, currentPassword: string, newPassword: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
+  /** 手机号短信登录：phone + smsCode */
+  async loginByPhone(phone: string, smsCode: string): Promise<AuthResponse> {
+    await this.verifySmsCode(phone, smsCode);
+
+    const user = await this.prisma.user.findFirst({ where: { phone } });
+    if (!user) throw new UnauthorizedException('该手机号尚未注册');
+
+    const tokens = await this.generateTokens({
+      id: user.id, username: user.username,
+      displayName: user.displayName ?? user.username, role: user.role,
     });
 
-    if (!user?.passwordHash) {
-      throw new UnauthorizedException('Current password is incorrect');
-    }
-
-    const isPasswordValid = await bcrypt.compare(currentPassword, user.passwordHash);
-    if (!isPasswordValid) {
-      throw new UnauthorizedException('Current password is incorrect');
-    }
-
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: {
-        passwordHash: hashedPassword,
-        updatedAt: new Date(),
-      },
-    });
+    return { ...tokens, user: { id: user.id, username: user.username, displayName: user.displayName ?? undefined, role: user.role } };
   }
 }

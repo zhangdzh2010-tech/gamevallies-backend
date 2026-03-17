@@ -47,7 +47,7 @@ export class FollowController {
     @Body() dto: FollowDto,
     @Request() req: any,
   ) {
-    const userId = req.user?.sub || req.user?.id || 'anonymous';
+    const userId = req.user?.sub || req.user?.id;
     await this.followService.followUser(userId, dto.targetId);
     return ok(null);
   }
@@ -59,7 +59,7 @@ export class FollowController {
     @Param('userId') targetId: string,
     @Request() req: any,
   ) {
-    const userId = req.user?.sub || req.user?.id || 'anonymous';
+    const userId = req.user?.sub || req.user?.id;
     await this.followService.unfollowUser(userId, targetId);
     return ok(null);
   }
@@ -102,7 +102,7 @@ export class FollowController {
     @Param('userId') targetId: string,
     @Request() req: any,
   ) {
-    const userId = req.user?.sub || req.user?.id || 'anonymous';
+    const userId = req.user?.sub || req.user?.id;
     return ok(await this.followService.getFollowStatus(userId, targetId));
   }
 }

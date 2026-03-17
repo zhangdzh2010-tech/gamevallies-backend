@@ -3,6 +3,7 @@ import {
   Post,
   Get,
   Delete,
+  Patch,
   Param,
   Body,
   Query,
@@ -28,6 +29,25 @@ export class GameController {
     private gameService: GameService,
     private reputationService: CreatorReputationService,
   ) {}
+
+  @Post('/expand-prompt')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async expandPrompt(@Body() body: any) {
+    try {
+      const description = body.description || body.prompt || '';
+      const aiEngineUrl = this.gameService['aiEngineUrl'];
+      const response = await require('axios').post(
+        `${aiEngineUrl}/api/v1/ai/expand-prompt`,
+        { description },
+        { timeout: 30000 },
+      );
+      return ok(response.data);
+    } catch (error) {
+      this.logger.error(`Expand prompt failed: ${error.message}`);
+      return ok({ expanded_prompt: body.description || body.prompt || '' });
+    }
+  }
 
   @Post('/generate')
   @UseGuards(JwtAuthGuard)
@@ -204,6 +224,20 @@ export class GameController {
       return ok(reputation);
     } catch (error) {
       this.logger.error(`Error getting creator reputation: ${error.message}`);
+      throw error;
+    }
+  }
+
+  @Patch(':id/settings')
+  @UseGuards(JwtAuthGuard)
+  async updateGameSettings(@Param('id') id: string, @Req() req: any, @Body() body: any) {
+    try {
+      const userId = req.user?.sub || req.user?.id;
+      if (!userId) throw new BadRequestException('Invalid token');
+      const result = await this.gameService.updateSettings(id, userId, body);
+      return ok(result);
+    } catch (error) {
+      this.logger.error(`Error updating game settings: ${error.message}`);
       throw error;
     }
   }

@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..api.models import (
     ChatRequest,
@@ -29,6 +30,7 @@ from ..api.models import (
 )
 from ..config.settings import settings
 from ..services.llm_client import LLMClient
+from .prompt_store import get_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -118,25 +120,80 @@ ENTITY_DEFAULTS: Dict[str, List[Dict]] = {
 
 
 # ---------------------------------------------------------------------------
+# JSON safe parser — handles markdown fences and surrounding text
+# ---------------------------------------------------------------------------
+
+def _parse_json_safe(text: str) -> Optional[Any]:
+    """Extract and parse the first JSON object from LLM output.
+
+    Handles:
+    - Markdown code fences (```json ... ```)
+    - Surrounding prose ("Here's the JSON: {...}")
+    - Nested braces by using json.JSONDecoder.raw_decode
+    """
+    # Strip markdown fences
+    text = re.sub(r"```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"```", "", text).strip()
+
+    # Try raw_decode from the first { — handles surrounding text cleanly
+    start = text.find("{")
+    if start == -1:
+        return None
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(text, start)
+        return obj
+    except json.JSONDecodeError:
+        pass
+
+    # Last resort: grab everything between first { and last }
+    end = text.rfind("}")
+    if end != -1 and end > start:
+        try:
+            return json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Slot Filling extraction prompt
 # ---------------------------------------------------------------------------
 
-SLOT_EXTRACTION_SYSTEM = """You are PlayForge's Slot Filling agent. Extract game design information from the user conversation and return a JSON object with exactly these keys (use null for missing/uncertain values):
+SLOT_EXTRACTION_SYSTEM = """You are PlayForge's Slot Filling agent. Extract game design information from the user conversation.
 
+CRITICAL OUTPUT RULES:
+- Return ONLY a valid JSON object. Nothing else.
+- Do NOT include markdown code fences (```), comments, explanations, or any text before/after the JSON.
+- Start your response with { and end with }.
+- Use null for missing or uncertain values.
+
+Required JSON format:
 {
-  "game_type": null,         // one of: dodge, platformer, runner, shooter, puzzle, rhythm, tower_defense, sandbox, card, rpg, idle, racing
-  "core_mechanic": null,     // concise Chinese description of the primary gameplay loop
-  "theme": null,             // e.g. 太空, 海底, 森林, 西部, 未来
-  "input_method": null,      // one of: touch, tap, swipe, tilt
-  "win_condition": null,     // e.g. 存活60秒, 到达终点, 消灭所有敌人
-  "difficulty": null,        // one of: easy, medium, hard, progressive
-  "visual_style": null,      // one of: pixel, geometric, emoji, neon
-  "audio_style": null,       // one of: chiptune, ambient, none
-  "special_rules": null,     // array of strings, e.g. ["分裂机制"]
-  "reference_game": null     // e.g. "Flappy Bird"
+  "game_type": null,
+  "core_mechanic": null,
+  "theme": null,
+  "input_method": null,
+  "win_condition": null,
+  "difficulty": null,
+  "visual_style": null,
+  "audio_style": null,
+  "special_rules": null,
+  "reference_game": null
 }
 
-Return ONLY the JSON object with no extra text. Keep existing non-null values unchanged unless the user explicitly corrects them."""
+Field rules:
+- game_type: one of: dodge, platformer, runner, shooter, puzzle, rhythm, tower_defense, sandbox, card, rpg, idle, racing
+- core_mechanic: concise Chinese description of the primary gameplay loop
+- theme: e.g. 太空, 海底, 森林, 西部, 未来
+- input_method: one of: touch, tap, swipe, tilt
+- win_condition: e.g. 存活60秒, 到达终点, 消灭所有敌人
+- difficulty: one of: easy, medium, hard, progressive
+- visual_style: one of: pixel, geometric, emoji, neon
+- audio_style: one of: chiptune, ambient, none
+- special_rules: array of strings, e.g. ["分裂机制"]
+- reference_game: e.g. "Flappy Bird"
+
+Keep existing non-null values unchanged unless the user explicitly corrects them."""
 
 DIALOGUE_SYSTEM = """You are PlayForge's friendly game creation assistant. You help users describe their game idea in 2-4 conversational turns.
 
@@ -166,6 +223,33 @@ SLOT_LABELS = {
     "visual_style": "视觉风格",
     "audio_style": "音效风格",
 }
+
+
+def _safe_parse_json(text: str) -> Optional[dict]:
+    """Try to parse JSON from LLM output, handling common issues."""
+    if not text:
+        return None
+    # Strip <think> tags if present
+    text = re.sub(r'<think>[\s\S]*?</think>', '', text).strip()
+    # Try direct parse
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    # Try to extract JSON object from markdown or surrounding text
+    m = re.search(r'\{[\s\S]*\}', text)
+    if m:
+        try:
+            return json.loads(m.group())
+        except json.JSONDecodeError:
+            # Try to fix truncated JSON by closing brackets
+            fragment = m.group()
+            for suffix in ['}', '"}', '"}}']:
+                try:
+                    return json.loads(fragment + suffix)
+                except json.JSONDecodeError:
+                    continue
+    return None
 
 
 class DialogueEngine:
@@ -238,14 +322,18 @@ class DialogueEngine:
         try:
             text = await self._client.complete(
                 model=self._client.model_for(fast=True),
-                max_tokens=512,
-                system=SLOT_EXTRACTION_SYSTEM,
+                max_tokens=1024,
+                system=get_prompt("prompt.slot_extraction_system", SLOT_EXTRACTION_SYSTEM),
                 messages=[{"role": "user", "content": description}],
             )
             raw = text.strip()
-            slot_data = json.loads(raw)
-            slots = SlotState(**{k: v for k, v in slot_data.items() if v is not None})
-            return _build_game_spec(slots)
+            # Try to extract JSON object from response
+            slot_data = _safe_parse_json(raw)
+            if slot_data:
+                slots = SlotState(**{k: v for k, v in slot_data.items() if v is not None})
+                return _build_game_spec(slots)
+            logger.warning("LLM slot extraction returned no valid JSON, using mock")
+            return _mock_parse(description)
         except Exception as e:
             logger.warning(f"LLM slot extraction failed, using mock: {e}")
             return _mock_parse(description)
@@ -260,11 +348,13 @@ class DialogueEngine:
         try:
             slot_text = await self._client.complete(
                 model=self._client.model_for(fast=True),
-                max_tokens=256,
-                system=SLOT_EXTRACTION_SYSTEM,
+                max_tokens=1024,
+                system=get_prompt("prompt.slot_extraction_system", SLOT_EXTRACTION_SYSTEM),
                 messages=_history_to_anthropic(session.history),
             )
-            slot_data = json.loads(slot_text.strip())
+            slot_data = _safe_parse_json(slot_text.strip())
+            if not slot_data:
+                raise ValueError("No valid JSON in slot extraction response")
             for key, val in slot_data.items():
                 if val is not None and hasattr(session.slots, key):
                     setattr(session.slots, key, val)
@@ -278,14 +368,14 @@ class DialogueEngine:
         fill_pct = session.slots.fill_pct()
         missing = session.slots.missing_required()
         slot_summary = _format_slot_summary(session.slots)
-        system = DIALOGUE_SYSTEM.format(
+        system = get_prompt("prompt.dialogue_system", DIALOGUE_SYSTEM).format(
             slot_summary=slot_summary,
             missing_slots=", ".join(SLOT_LABELS.get(s, s) for s in missing) or "无",
         )
         try:
             reply = await self._client.complete(
                 model=self._client.model_for(fast=True),
-                max_tokens=256,
+                max_tokens=2048,
                 system=system,
                 messages=_history_to_anthropic(session.history),
             )

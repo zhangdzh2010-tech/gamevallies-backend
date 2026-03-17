@@ -30,8 +30,8 @@ export function presentComment(comment: any) {
     likes: Number(comment.likeCount || comment.likes || 0),
     parentId: comment.parentId || null,
     replyCount:
-      comment.replyCount ??
       comment._count?.replies ??
+      comment.replyCount ??
       (Array.isArray(comment.replies) ? comment.replies.length : 0),
     createdAt: comment.createdAt,
     replies: Array.isArray(comment.replies)

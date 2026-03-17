@@ -5,7 +5,7 @@ services:
     container_name: gamevallies-mysql
     restart: unless-stopped
     ports:
-      - "3306:3306"
+      - "3307:3306"
     environment:
       MYSQL_ROOT_PASSWORD: playforge_dev_2026
       MYSQL_DATABASE: gamevallies
@@ -56,6 +56,22 @@ services:
       REDIS_URL: redis://:playforge_dev_2026@redis:6379
       JWT_SECRET: playforge_jwt_secret_dev_2026
       JWT_REFRESH_SECRET: playforge_refresh_secret_dev_2026
+      # 阿里云短信
+      ALIYUN_ACCESS_KEY_ID: LTAI5tFkYReK6cMtwcioNfGw
+      ALIYUN_ACCESS_KEY_SECRET: 9SGZeB5N2SmEpzBVvQKUc1yvDA2Iwx
+      ALIYUN_REGION_ID: cn-hangzhou
+      ALIYUN_ENDPOINT: dypnsapi.aliyuncs.com
+      ALIYUN_SMS_SIGN_NAME: 速通互联验证码
+      ALIYUN_SMS_TEMPLATE_CODE: "100001"
+      ALIYUN_SMS_TEMPLATE_PARAM_CODE: code
+      ALIYUN_SMS_TEMPLATE_PARAM_MIN: min
+      VERIFY_CODE_SEND_INTERVAL_SECONDS: "60"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/api/v1/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
     depends_on:
       mysql:
         condition: service_healthy
@@ -81,6 +97,13 @@ services:
       APP_URL: ${GAME_SERVICE_URL:-http://localhost:3002}
       JWT_SECRET: playforge_jwt_secret_dev_2026
       CORS_ORIGIN: "*"
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-admin123}
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3002/api/v1/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
     depends_on:
       mysql:
         condition: service_healthy
@@ -103,6 +126,12 @@ services:
       DATABASE_URL: mysql://gamevallies:playforge_dev_2026@mysql:3306/gamevallies?connection_limit=2
       REDIS_URL: redis://:playforge_dev_2026@redis:6379
       JWT_SECRET: playforge_jwt_secret_dev_2026
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3003/api/v1/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
     depends_on:
       mysql:
         condition: service_healthy
@@ -125,6 +154,12 @@ services:
       DATABASE_URL: mysql://gamevallies:playforge_dev_2026@mysql:3306/gamevallies?connection_limit=2
       REDIS_URL: redis://:playforge_dev_2026@redis:6379
       JWT_SECRET: playforge_jwt_secret_dev_2026
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3004/api/v1/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
     depends_on:
       mysql:
         condition: service_healthy
@@ -145,18 +180,20 @@ services:
       ENVIRONMENT: development
       DATABASE_URL: mysql://gamevallies:playforge_dev_2026@mysql:3306/gamevallies
       REDIS_URL: redis://:playforge_dev_2026@redis:6379
-      LLM_MODE: ${LLM_MODE:-mock}
-      LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com}
-      LLM_MODEL: ${LLM_MODEL:-deepseek-chat}
-      LLM_FAST_MODEL: ${LLM_FAST_MODEL:-deepseek-chat}
+      LLM_MODE: real
+      LLM_API_KEY: sk-cp-AyyibOC2T1XsLOKNFog1M1bN9eJcrTONnGZuySyKjxJWKdQ5G33yTyGPjicyBTd4VvLiqShREf5BqLebG1CQkG2NZFFQ75NOzP4eaQzWFVrGriknQqazFKY
+      LLM_BASE_URL: https://api.minimaxi.com/v1
+      LLM_MODEL: MiniMax-M2.5
+      LLM_FAST_MODEL: MiniMax-M2.5
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-sonnet-4-5}
       CLAUDE_FAST_MODEL: ${CLAUDE_FAST_MODEL:-claude-haiku-4-5-20251001}
       TEMPLATE_CONFIDENCE_THRESHOLD: "0.8"
       HYBRID_CONFIDENCE_THRESHOLD: "0.5"
       QA_MAX_RETRIES: "3"
-      PIPELINE_TIMEOUT_S: "60"
+      PIPELINE_TIMEOUT_S: "600"
+    volumes:
+      - ./packages/ai-engine/src:/app/src
     depends_on:
       mysql:
         condition: service_healthy

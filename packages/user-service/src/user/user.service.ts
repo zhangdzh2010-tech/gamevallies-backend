@@ -343,21 +343,19 @@ export class UserService {
     });
 
     if (!existing) {
-      await this.prisma.userFollow.create({
-        data: {
-          followerId: userId,
-          followingId: targetId,
-        },
-      });
-
-      await this.prisma.user.update({
-        where: { id: targetId },
-        data: { followerCount: { increment: 1 } },
-      });
-      await this.prisma.user.update({
-        where: { id: userId },
-        data: { followingCount: { increment: 1 } },
-      });
+      await this.prisma.$transaction([
+        this.prisma.userFollow.create({
+          data: { followerId: userId, followingId: targetId },
+        }),
+        this.prisma.user.update({
+          where: { id: targetId },
+          data: { followerCount: { increment: 1 } },
+        }),
+        this.prisma.user.update({
+          where: { id: userId },
+          data: { followingCount: { increment: 1 } },
+        }),
+      ]);
     }
   }
 
@@ -372,23 +370,21 @@ export class UserService {
     });
 
     if (existing) {
-      await this.prisma.userFollow.delete({
-        where: {
-          unique_follow: {
-            followerId: userId,
-            followingId: targetId,
+      await this.prisma.$transaction([
+        this.prisma.userFollow.delete({
+          where: {
+            unique_follow: { followerId: userId, followingId: targetId },
           },
-        },
-      });
-
-      await this.prisma.user.update({
-        where: { id: targetId },
-        data: { followerCount: { decrement: 1 } },
-      });
-      await this.prisma.user.update({
-        where: { id: userId },
-        data: { followingCount: { decrement: 1 } },
-      });
+        }),
+        this.prisma.user.update({
+          where: { id: targetId },
+          data: { followerCount: { decrement: 1 } },
+        }),
+        this.prisma.user.update({
+          where: { id: userId },
+          data: { followingCount: { decrement: 1 } },
+        }),
+      ]);
     }
   }
 

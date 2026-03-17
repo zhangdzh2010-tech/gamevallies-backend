@@ -20,6 +20,7 @@ from typing import List, Optional, Tuple
 from ..api.models import GDD, GameSpec, GenerateCodeResult, IterationType
 from ..config.settings import settings
 from ..services.llm_client import LLMClient
+from .prompt_store import get_prompt
 from .template_engine import TemplateEngine
 
 logger = logging.getLogger(__name__)
@@ -159,6 +160,7 @@ class CodeGenerator:
         gdd: GDD,
         template_id: Optional[str] = None,
         confidence: float = 0.0,
+        description: str = "",
     ) -> GenerateCodeResult:
         start = time.time()
 
@@ -172,7 +174,7 @@ class CodeGenerator:
             html = await self._hybrid_generate(spec, gdd, template_id)
             strategy = "hybrid"
         else:
-            html = await self._llm_generate(spec, gdd)
+            html = await self._llm_generate(spec, gdd, description=description)
             strategy = "llm"
 
         elapsed = int((time.time() - start) * 1000)
@@ -214,7 +216,7 @@ class CodeGenerator:
             text = await self._client.complete(
                 model=self._client.model_for(),
                 max_tokens=4096,
-                system=SYSTEM_PROMPT_LAYER1,
+                system=get_prompt("prompt.code_gen_system", SYSTEM_PROMPT_LAYER1),
                 messages=[{"role": "user", "content": prompt}],
             )
             return _extract_html(text)
@@ -226,51 +228,49 @@ class CodeGenerator:
     # Path C: Full LLM generation
     # ------------------------------------------------------------------
 
-    async def _llm_generate(self, spec: GameSpec, gdd: GDD) -> str:
-        # Layer 2: game design prompt
-        entities_desc = "\n".join(
-            f"  - {e.name} ({e.role}): shape={e.shape or 'auto'}, color={e.color or 'auto'}"
-            for e in spec.entities
-        )
-        input_map_str = "\n".join(
-            f"  {k} → {v}" for k, v in gdd.input_map.items()
-        )
-        game_design = GAME_DESIGN_PROMPT_TEMPLATE.format(
-            game_type=spec.game_type,
-            theme=spec.visual_style.theme,
-            art_style=spec.visual_style.art_style,
-            palette=", ".join(spec.visual_style.palette),
-            canvas_w=gdd.canvas.width,
-            canvas_h=gdd.canvas.height,
-            player_speed=gdd.numerics.player_speed,
-            hitbox_ratio=gdd.collision.hitbox_ratio,
-            obstacle_speed=gdd.numerics.base_obstacle_speed,
-            spawn_interval=gdd.numerics.spawn_interval_ms,
-            speed_formula=gdd.numerics.speed_formula,
-            score_per_second=gdd.numerics.score_per_second,
-            score_per_collect=gdd.numerics.score_per_collect,
-            lives=spec.rules.lives,
-            expected_s=gdd.numerics.expected_survival_s,
-            win_condition=spec.rules.win_condition,
-            lose_condition=spec.rules.lose_condition,
-            entities_desc=entities_desc,
-            input_map=input_map_str,
-        )
-
-        # Layer 3: platform constraints
-        platform = spec.platform_constraints.platform
-        platform_prompt = (
-            PLATFORM_PROMPT_WECHAT if platform == "wechat_webview"
-            else PLATFORM_PROMPT_STANDARD
-        )
-
-        full_prompt = f"{game_design}\n\n{platform_prompt}"
+    async def _llm_generate(self, spec: GameSpec, gdd: GDD, description: str = "") -> str:
+        # Use user's original description directly for better results
+        if description:
+            full_prompt = (
+                f"用户需求：{description}\n\n"
+                f"{get_prompt('prompt.platform_standard', PLATFORM_PROMPT_STANDARD)}\n\n"
+                f"请根据用户需求生成完整的 HTML5 游戏。游戏必须完整可玩、触屏操作、有计分系统。"
+            )
+        else:
+            # Fallback to spec-based prompt
+            entities_desc = "\n".join(
+                f"  - {e.name} ({e.role}): shape={e.shape or 'auto'}, color={e.color or 'auto'}"
+                for e in spec.entities
+            )
+            input_map_str = "\n".join(
+                f"  {k} → {v}" for k, v in gdd.input_map.items()
+            )
+            full_prompt = get_prompt("prompt.game_design_template", GAME_DESIGN_PROMPT_TEMPLATE).format(
+                game_type=spec.game_type,
+                theme=spec.visual_style.theme,
+                art_style=spec.visual_style.art_style,
+                palette=", ".join(spec.visual_style.palette),
+                canvas_w=gdd.canvas.width, canvas_h=gdd.canvas.height,
+                player_speed=gdd.numerics.player_speed,
+                hitbox_ratio=gdd.collision.hitbox_ratio,
+                obstacle_speed=gdd.numerics.base_obstacle_speed,
+                spawn_interval=gdd.numerics.spawn_interval_ms,
+                speed_formula=gdd.numerics.speed_formula,
+                score_per_second=gdd.numerics.score_per_second,
+                score_per_collect=gdd.numerics.score_per_collect,
+                lives=spec.rules.lives,
+                expected_s=gdd.numerics.expected_survival_s,
+                win_condition=spec.rules.win_condition,
+                lose_condition=spec.rules.lose_condition,
+                entities_desc=entities_desc,
+                input_map=input_map_str,
+            ) + f"\n\n{get_prompt('prompt.platform_standard', PLATFORM_PROMPT_STANDARD)}"
 
         try:
             text = await self._client.complete(
                 model=self._client.model_for(),
                 max_tokens=8192,
-                system=SYSTEM_PROMPT_LAYER1,
+                system=get_prompt("prompt.code_gen_system", SYSTEM_PROMPT_LAYER1),
                 messages=[{"role": "user", "content": full_prompt}],
             )
             return _extract_html(text)
@@ -308,10 +308,10 @@ class CodeGenerator:
         try:
             text = await self._client.complete(
                 model=self._client.model_for(fast=True),
-                max_tokens=20,
+                max_tokens=512,
                 messages=[{
                     "role": "user",
-                    "content": ITERATE_CLASSIFY_PROMPT.format(feedback=feedback),
+                    "content": get_prompt("prompt.iterate_classify", ITERATE_CLASSIFY_PROMPT).format(feedback=feedback),
                 }],
             )
             label = text.strip().lower()
@@ -326,25 +326,35 @@ class CodeGenerator:
         """Zero-token regex parameter replacement."""
         fb = feedback.lower()
 
-        # Speed
-        if "快" in fb or "faster" in fb or "速度" in fb:
-            code = re.sub(r"(player\.speed\s*=\s*)(\d+\.?\d*)", lambda m: m.group(1) + str(round(float(m.group(2)) * 1.5, 1)), code, count=1)
-        if "慢" in fb or "slower" in fb:
-            code = re.sub(r"(player\.speed\s*=\s*)(\d+\.?\d*)", lambda m: m.group(1) + str(round(float(m.group(2)) * 0.7, 1)), code, count=1)
+        # Speed — match player.speed / player_speed / playerSpeed / SPEED constant
+        speed_pattern = r"(player[._]?speed\s*[:=]\s*|const\s+SPEED\s*=\s*)(\d+\.?\d*)"
+        if "快" in fb or "faster" in fb or "速度快" in fb or "加速" in fb:
+            code = re.sub(speed_pattern,
+                          lambda m: m.group(1) + str(round(float(m.group(2)) * 1.5, 1)),
+                          code, flags=re.IGNORECASE)
+        if "慢" in fb or "slower" in fb or "速度慢" in fb or "减速" in fb:
+            code = re.sub(speed_pattern,
+                          lambda m: m.group(1) + str(round(float(m.group(2)) * 0.7, 1)),
+                          code, flags=re.IGNORECASE)
 
-        # Lives
-        m = re.search(r"(\d+)\s*(命|lives|生命)", fb)
-        if m:
-            lives = m.group(1)
-            code = re.sub(r"(lives\s*[:=]\s*)\d+", lambda _: _.group(1) + lives, code, count=2)
+        # Lives — match lives: 3 / lives = 3 / {lives: 3}
+        lm = re.search(r"(\d+)\s*(命|lives|生命)", fb)
+        if lm:
+            lives = lm.group(1)
+            code = re.sub(r"(lives\s*[:=]\s*)\d+",
+                          lambda _: _.group(1) + lives,
+                          code, flags=re.IGNORECASE)
 
-        # Color: simple primary color swap
+        # Color: swap any primary accent color (not just #6366f1)
+        primary_colors = r"#(?:6366f1|6e56ff|4f46e5|7c3aed)"
         if "红色" in fb or "red" in fb:
-            code = re.sub(r"#6366f1", "#ef4444", code)
+            code = re.sub(primary_colors, "#ef4444", code, flags=re.IGNORECASE)
         if "绿色" in fb or "green" in fb:
-            code = re.sub(r"#6366f1", "#22c55e", code)
+            code = re.sub(primary_colors, "#22c55e", code, flags=re.IGNORECASE)
         if "蓝色" in fb or "blue" in fb:
-            code = re.sub(r"#6366f1", "#3b82f6", code)
+            code = re.sub(primary_colors, "#3b82f6", code, flags=re.IGNORECASE)
+        if "黄色" in fb or "yellow" in fb:
+            code = re.sub(primary_colors, "#eab308", code, flags=re.IGNORECASE)
 
         return code
 
@@ -360,9 +370,9 @@ class CodeGenerator:
         )
 
         if iter_type == IterationType.element_change:
-            prompt = ELEMENT_CHANGE_PROMPT.format(feedback=feedback, code=code)
+            prompt = get_prompt("prompt.element_change", ELEMENT_CHANGE_PROMPT).format(feedback=feedback, code=code)
         else:
-            prompt = MECHANIC_CHANGE_PROMPT.format(
+            prompt = get_prompt("prompt.mechanic_change", MECHANIC_CHANGE_PROMPT).format(
                 feedback=feedback, history=history_text, code=code
             )
 
@@ -370,7 +380,7 @@ class CodeGenerator:
             text = await self._client.complete(
                 model=self._client.model_for(),
                 max_tokens=8192,
-                system=SYSTEM_PROMPT_LAYER1,
+                system=get_prompt("prompt.code_gen_system", SYSTEM_PROMPT_LAYER1),
                 messages=[{"role": "user", "content": prompt}],
             )
             return _extract_html(text)
@@ -406,12 +416,17 @@ class CodeGenerator:
 # ---------------------------------------------------------------------------
 
 def _extract_html(text: str) -> str:
-    """Extract clean HTML from LLM output (strip markdown fences if present)."""
-    # Remove ``` fences
-    text = re.sub(r"```(?:html)?\s*", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"```\s*$", "", text, flags=re.MULTILINE)
-    # Find first <!DOCTYPE or <html
-    m = re.search(r"(<!DOCTYPE|<html)", text, re.IGNORECASE)
+    """Extract clean HTML from LLM output (strip markdown fences and leading prose)."""
+    # Remove BOM
+    text = text.lstrip('\ufeff')
+    # Iteratively remove all ``` fences (handles nested/multiple blocks)
+    prev = None
+    while prev != text:
+        prev = text
+        text = re.sub(r"```(?:html)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"```\s*(?:$|\n)", "", text, flags=re.MULTILINE)
+    # Find first <!DOCTYPE or <html — skip any leading prose
+    m = re.search(r"(<!DOCTYPE\s+html|<html)", text, re.IGNORECASE)
     if m:
         text = text[m.start():]
     return text.strip()

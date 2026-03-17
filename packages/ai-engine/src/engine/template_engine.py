@@ -8,15 +8,23 @@ from ..api.models import GameSpec
 class TemplateEngine:
     """Engine for loading and rendering game templates"""
 
+    # Templates that are a genuine match for the game type
     TEMPLATES = {
         "dodge": "space_dodge.html",
         "catcher": "fruit_catcher.html",
         "runner": "maze_runner.html",
         "rhythm": "rhythm_tap.html",
         "platformer": "platform_jump.html",
-        "puzzle": "space_dodge.html",  # Fallback
-        "shooter": "space_dodge.html",  # Fallback
-        "snake": "fruit_catcher.html",  # Fallback
+    }
+
+    # Confidence for each matched type — kept below TEMPLATE_CONFIDENCE_THRESHOLD (0.8)
+    # so the pipeline always uses hybrid (LLM-customised) path, never bare template fill
+    CONFIDENCE = {
+        "dodge": 0.65,
+        "catcher": 0.65,
+        "runner": 0.65,
+        "rhythm": 0.65,
+        "platformer": 0.65,
     }
 
     def __init__(self):
@@ -33,8 +41,14 @@ class TemplateEngine:
         Returns:
             Tuple of (template_id, confidence score)
         """
-        template_id = self.TEMPLATES.get(spec.game_type, "space_dodge.html")
-        confidence = 0.9
+        template_id = self.TEMPLATES.get(spec.game_type)
+        if template_id:
+            # Known template → hybrid path (LLM customises the skeleton)
+            confidence = self.CONFIDENCE.get(spec.game_type, 0.65)
+        else:
+            # No matching template → full LLM generation
+            template_id = None
+            confidence = 0.0
         return (template_id, confidence)
 
     def generate(self, spec: GameSpec, template_id: str) -> str:
