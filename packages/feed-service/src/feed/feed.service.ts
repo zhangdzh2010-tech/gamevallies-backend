@@ -29,12 +29,20 @@ export class FeedService {
     };
   }
 
+  private async cacheGet(key: string): Promise<string | null> {
+    try { return await this.redis.get(key); } catch { return null; }
+  }
+
+  private async cacheSet(key: string, ttl: number, value: string): Promise<void> {
+    try { await this.redis.setex(key, ttl, value); } catch { /* cache miss is acceptable */ }
+  }
+
   async getTrendingFeed(page: number = 1, limit: number = 20) {
     const cacheKey = `feed:trending:${page}:${limit}`;
-    const cached = await this.redis.get(cacheKey);
+    const cached = await this.cacheGet(cacheKey);
 
     if (cached) {
-      return JSON.parse(cached);
+      try { return JSON.parse(cached); } catch { /* corrupt cache, fall through */ }
     }
 
     const games = await this.prisma.game.findMany({
@@ -77,7 +85,7 @@ export class FeedService {
       },
     };
 
-    await this.redis.setex(cacheKey, 1800, JSON.stringify(result));
+    await this.cacheSet(cacheKey, 1800, JSON.stringify(result));
     return result;
   }
 

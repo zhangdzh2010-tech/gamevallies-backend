@@ -36,6 +36,29 @@ const STAGE_PCT: Record<string, number> = {
   failed: -1,
 };
 
+/** Retry an async operation up to `maxAttempts` times on network/5xx errors */
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  maxAttempts: number = 2,
+  delayMs: number = 3000,
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastError = err;
+      // Do NOT retry on timeout (ECONNABORTED) — AI engine already started processing,
+      // a retry would launch a duplicate pipeline job
+      const isRetryable =
+        err.response && err.response.status >= 500;
+      if (!isRetryable || attempt === maxAttempts) break;
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  throw lastError;
+}
+
 @Injectable()
 export class GameService {
   private readonly logger = new Logger(GameService.name);
@@ -84,7 +107,7 @@ export class GameService {
           authorId: userId,
           description,
           status: 'generating',
-          title: `Game ${gameId.substring(0, 8)}`,
+          title: dto.title?.trim() || `Game ${gameId.substring(0, 8)}`,
           commentCount: 0,
           forkDepth: 0,
         },
@@ -121,21 +144,17 @@ export class GameService {
       // Emit initial stage
       this.emitStage(userId, gameId, 'intent_parsing');
 
-      const response = await axios.post(
-        `${this.aiEngineUrl}/api/v1/ai/pipeline/run`,
-        {
-          game_id: gameId,
-          description,
-          user_id: userId,
-          platform: 'wechat_webview',
-        },
-        {
-          timeout: 170000,
-          onUploadProgress: () => {
-            // HTTP doesn't give us intermediate progress, but we can
-            // emit code_generating once the request is sent
+      const response = await withRetry(() =>
+        axios.post(
+          `${this.aiEngineUrl}/api/v1/ai/pipeline/run`,
+          {
+            game_id: gameId,
+            description,
+            user_id: userId,
+            platform: 'wechat_webview',
           },
-        },
+          { timeout: 660000 },
+        )
       );
 
       const {
@@ -173,6 +192,14 @@ export class GameService {
         previewUrl: bundlePreviewUrl,
       });
 
+      // Extract <title> from generated HTML to use as game title if not user-set
+      const htmlTitleMatch = htmlCode.match(/<title>([^<]{1,60})<\/title>/i);
+      const aiTitle = htmlTitleMatch ? htmlTitleMatch[1].trim() : null;
+
+      // Only overwrite title if it's still the auto-generated placeholder (Game [id])
+      const currentGame = await this.prisma.game.findUnique({ where: { id: gameId }, select: { title: true } });
+      const isPlaceholderTitle = /^Game\s+[0-9a-f]{8}$/i.test(currentGame?.title || '');
+
       await this.prisma.game.update({
         where: { id: gameId },
         data: {
@@ -180,6 +207,7 @@ export class GameService {
           version: 1,
           gameType: gameSpec?.game_type || null,
           qualityScore,
+          ...(aiTitle && isPlaceholderTitle ? { title: aiTitle } : {}),
         },
       });
 
@@ -334,6 +362,27 @@ export class GameService {
     }
   }
 
+  async updateSettings(id: string, userId: string, settings: { visibility?: string; allowComments?: boolean; allowFork?: boolean }): Promise<any> {
+    try {
+      const game = await this.prisma.game.findUnique({ where: { id } });
+      if (!game) throw new NotFoundException('Game not found');
+      if (game.authorId !== userId) {
+        throw new ForbiddenException('You do not have permission to update this game');
+      }
+
+      const data: any = {};
+      if (settings.visibility !== undefined) data.visibility = settings.visibility;
+      if (settings.allowComments !== undefined) data.allowComments = settings.allowComments;
+      if (settings.allowFork !== undefined) data.allowFork = settings.allowFork;
+
+      const updated = await this.prisma.game.update({ where: { id }, data });
+      return { id: updated.id, visibility: updated.visibility, allowComments: updated.allowComments, allowFork: updated.allowFork };
+    } catch (error) {
+      this.logger.error(`Failed to update game settings: ${error.message}`);
+      throw error;
+    }
+  }
+
   async delete(id: string, userId: string): Promise<void> {
     try {
       const game = await this.prisma.game.findUnique({ where: { id } });
@@ -395,15 +444,17 @@ export class GameService {
     try {
       this.wsGateway.emitGenerationProgress(userId, gameId, '生成代码修改', 40);
 
-      const response = await axios.post(
-        `${this.aiEngineUrl}/api/v1/ai/pipeline/iterate`,
-        {
-          game_id: gameId,
-          feedback,
-          conversation: conversationHistory,
-          current_code: currentCode,
-        },
-        { timeout: 60000 },
+      const response = await withRetry(() =>
+        axios.post(
+          `${this.aiEngineUrl}/api/v1/ai/pipeline/iterate`,
+          {
+            game_id: gameId,
+            feedback,
+            conversation: conversationHistory,
+            current_code: currentCode,
+          },
+          { timeout: 660000 },
+        )
       );
 
       const {

@@ -5,7 +5,6 @@ import {
   Query,
   Request,
   UseGuards,
-  BadRequestException,
 } from '@nestjs/common';
 import { IsNumber, Min, Max, IsOptional, IsString } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -74,10 +73,7 @@ export class FeedController {
     @Query() pagination: FeedPaginationDto,
     @Request() req: any,
   ) {
-    const userId = req.user?.sub || req.user?.id || 'anonymous';
-    if (!userId || userId === 'anonymous') {
-      throw new BadRequestException('Authentication required');
-    }
+    const userId = req.user?.sub || req.user?.id;
     const result = await this.feedService.getFollowingFeed(userId, pagination.page, pagination.limit);
     return ok(toPage({
       data: result.data.map((game: any) => presentGame(game)),

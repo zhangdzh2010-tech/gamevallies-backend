@@ -12,7 +12,7 @@ import json
 import logging
 import re
 import uuid
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..api.models import (
     ChatRequest,
@@ -120,25 +120,80 @@ ENTITY_DEFAULTS: Dict[str, List[Dict]] = {
 
 
 # ---------------------------------------------------------------------------
+# JSON safe parser — handles markdown fences and surrounding text
+# ---------------------------------------------------------------------------
+
+def _parse_json_safe(text: str) -> Optional[Any]:
+    """Extract and parse the first JSON object from LLM output.
+
+    Handles:
+    - Markdown code fences (```json ... ```)
+    - Surrounding prose ("Here's the JSON: {...}")
+    - Nested braces by using json.JSONDecoder.raw_decode
+    """
+    # Strip markdown fences
+    text = re.sub(r"```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"```", "", text).strip()
+
+    # Try raw_decode from the first { — handles surrounding text cleanly
+    start = text.find("{")
+    if start == -1:
+        return None
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(text, start)
+        return obj
+    except json.JSONDecodeError:
+        pass
+
+    # Last resort: grab everything between first { and last }
+    end = text.rfind("}")
+    if end != -1 and end > start:
+        try:
+            return json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Slot Filling extraction prompt
 # ---------------------------------------------------------------------------
 
-SLOT_EXTRACTION_SYSTEM = """You are PlayForge's Slot Filling agent. Extract game design information from the user conversation and return a JSON object with exactly these keys (use null for missing/uncertain values):
+SLOT_EXTRACTION_SYSTEM = """You are PlayForge's Slot Filling agent. Extract game design information from the user conversation.
 
+CRITICAL OUTPUT RULES:
+- Return ONLY a valid JSON object. Nothing else.
+- Do NOT include markdown code fences (```), comments, explanations, or any text before/after the JSON.
+- Start your response with { and end with }.
+- Use null for missing or uncertain values.
+
+Required JSON format:
 {
-  "game_type": null,         // one of: dodge, platformer, runner, shooter, puzzle, rhythm, tower_defense, sandbox, card, rpg, idle, racing
-  "core_mechanic": null,     // concise Chinese description of the primary gameplay loop
-  "theme": null,             // e.g. 太空, 海底, 森林, 西部, 未来
-  "input_method": null,      // one of: touch, tap, swipe, tilt
-  "win_condition": null,     // e.g. 存活60秒, 到达终点, 消灭所有敌人
-  "difficulty": null,        // one of: easy, medium, hard, progressive
-  "visual_style": null,      // one of: pixel, geometric, emoji, neon
-  "audio_style": null,       // one of: chiptune, ambient, none
-  "special_rules": null,     // array of strings, e.g. ["分裂机制"]
-  "reference_game": null     // e.g. "Flappy Bird"
+  "game_type": null,
+  "core_mechanic": null,
+  "theme": null,
+  "input_method": null,
+  "win_condition": null,
+  "difficulty": null,
+  "visual_style": null,
+  "audio_style": null,
+  "special_rules": null,
+  "reference_game": null
 }
 
-Return ONLY the JSON object with no extra text. Keep existing non-null values unchanged unless the user explicitly corrects them."""
+Field rules:
+- game_type: one of: dodge, platformer, runner, shooter, puzzle, rhythm, tower_defense, sandbox, card, rpg, idle, racing
+- core_mechanic: concise Chinese description of the primary gameplay loop
+- theme: e.g. 太空, 海底, 森林, 西部, 未来
+- input_method: one of: touch, tap, swipe, tilt
+- win_condition: e.g. 存活60秒, 到达终点, 消灭所有敌人
+- difficulty: one of: easy, medium, hard, progressive
+- visual_style: one of: pixel, geometric, emoji, neon
+- audio_style: one of: chiptune, ambient, none
+- special_rules: array of strings, e.g. ["分裂机制"]
+- reference_game: e.g. "Flappy Bird"
+
+Keep existing non-null values unchanged unless the user explicitly corrects them."""
 
 DIALOGUE_SYSTEM = """You are PlayForge's friendly game creation assistant. You help users describe their game idea in 2-4 conversational turns.
 
@@ -320,7 +375,7 @@ class DialogueEngine:
         try:
             reply = await self._client.complete(
                 model=self._client.model_for(fast=True),
-                max_tokens=256,
+                max_tokens=2048,
                 system=system,
                 messages=_history_to_anthropic(session.history),
             )

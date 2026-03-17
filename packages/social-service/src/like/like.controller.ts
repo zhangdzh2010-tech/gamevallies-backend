@@ -33,7 +33,7 @@ export class LikeController {
     @Body() dto: LikeDto,
     @Request() req: any,
   ) {
-    const userId = req.user?.sub || req.user?.id || 'anonymous';
+    const userId = req.user?.sub || req.user?.id;
     const result = await this.likeService.toggleLike(userId, dto.targetType, dto.targetId);
     return ok({
       liked: result.liked,
@@ -48,7 +48,7 @@ export class LikeController {
     @Param('id') id: string,
     @Request() req: any,
   ) {
-    const userId = req.user?.sub || req.user?.id || 'anonymous';
+    const userId = req.user?.sub || req.user?.id;
     return ok(await this.likeService.getLikeStatus(userId, type, id));
   }
 }

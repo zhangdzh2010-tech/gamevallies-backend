@@ -31,7 +31,7 @@ export class ShareController {
     @Body() dto: ShareDto,
     @Request() req: any,
   ) {
-    const userId = req.user?.sub || req.user?.id || 'anonymous';
+    const userId = req.user?.sub || req.user?.id;
     await this.shareService.recordShare(userId, dto.gameId, dto.platform);
     return ok(null);
   }

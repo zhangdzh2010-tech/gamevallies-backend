@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import re
 from typing import Dict, List, Optional
 
 import httpx
@@ -12,6 +14,17 @@ from ..config.settings import settings
 logger = logging.getLogger(__name__)
 
 Message = Dict[str, str]
+
+
+def _strip_think_tags(text: str) -> str:
+    """Remove reasoning blocks produced by thinking models (MiniMax, DeepSeek-R1, etc.)."""
+    # <think>...</think> and <thinking>...</thinking>
+    text = re.sub(r"<think(?:ing)?[^>]*>.*?</think(?:ing)?>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    # HTML comments <!-- ... -->
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+    # [thinking]...[/thinking]
+    text = re.sub(r"\[thinking\].*?\[/thinking\]", "", text, flags=re.DOTALL | re.IGNORECASE)
+    return text.strip()
 
 
 class LLMClient:
@@ -54,11 +67,14 @@ class LLMClient:
         resolved_model = model or self.model_for()
 
         if provider == "anthropic":
-            return self._complete_anthropic(
-                messages=messages,
-                max_tokens=max_tokens,
-                system=system,
-                model=resolved_model,
+            return await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self._complete_anthropic(
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    system=system,
+                    model=resolved_model,
+                ),
             )
 
         if provider == "openai_compatible":
@@ -101,7 +117,7 @@ class LLMClient:
             text = getattr(block, "text", "")
             if text:
                 parts.append(text)
-        return "\n".join(parts).strip()
+        return _strip_think_tags("\n".join(parts).strip())
 
     async def _complete_openai_compatible(
         self,
@@ -127,7 +143,7 @@ class LLMClient:
         }
         url = f"{settings.LLM_BASE_URL.rstrip('/')}/chat/completions"
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=15.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=15.0)) as client:
             response = await client.post(url, headers=headers, json=payload)
             response.raise_for_status()
             data = response.json()
@@ -144,13 +160,6 @@ class LLMClient:
                 for part in content
                 if isinstance(part, dict)
             ]
-            return "".join(text_parts).strip()
+            return _strip_think_tags("".join(text_parts).strip())
 
-        text = str(content).strip()
-        # Strip MiniMax <think>...</think> reasoning tags
-        import re
-        text = re.sub(r'<think>[\s\S]*?</think>', '', text).strip()
-        # Strip markdown code fences
-        text = re.sub(r'```(?:json|html|javascript|js)?\s*', '', text)
-        text = re.sub(r'```\s*$', '', text, flags=re.MULTILINE)
-        return text.strip()
+        return _strip_think_tags(str(content).strip())
