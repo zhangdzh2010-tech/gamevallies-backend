@@ -10,18 +10,9 @@ async function bootstrap() {
   // Set global prefix for API routes
   app.setGlobalPrefix('api/v1', {
     exclude: [
-      {
-        path: 'games/:id/preview',
-        method: RequestMethod.GET,
-      },
-      {
-        path: 'games/:id/index.html',
-        method: RequestMethod.GET,
-      },
-      {
-        path: 'admin',
-        method: RequestMethod.GET,
-      },
+      { path: 'admin', method: RequestMethod.GET },
+      { path: 'games/:id/preview', method: RequestMethod.GET },
+      { path: 'games/:id/index.html', method: RequestMethod.GET },
     ],
   });
 

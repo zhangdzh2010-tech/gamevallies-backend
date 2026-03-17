@@ -14,6 +14,7 @@ async function bootstrap() {
 
   app.setGlobalPrefix('api/v1', {
     exclude: [
+      { path: 'admin', method: RequestMethod.GET },
       { path: 'games/:id/preview', method: RequestMethod.GET },
       { path: 'games/:id/index.html', method: RequestMethod.GET },
     ],
@@ -23,7 +24,7 @@ async function bootstrap() {
     origin: process.env.CORS_ORIGIN || '*',
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-token'],
   });
 
   app.useGlobalPipes(

@@ -93,21 +93,21 @@ spec:
             secretKeyRef:
               name: gamevallies-secret
               key: JWT_REFRESH_SECRET
-        - name: POSTGRES_HOST
+        - name: MYSQL_HOST
           valueFrom:
             configMapKeyRef:
               name: gamevallies-config
-              key: POSTGRES_HOST
-        - name: POSTGRES_PORT
+              key: MYSQL_HOST
+        - name: MYSQL_PORT
           valueFrom:
             configMapKeyRef:
               name: gamevallies-config
-              key: POSTGRES_PORT
-        - name: POSTGRES_DB
+              key: MYSQL_PORT
+        - name: MYSQL_DB
           valueFrom:
             configMapKeyRef:
               name: gamevallies-config
-              key: POSTGRES_DB
+              key: MYSQL_DB
         - name: REDIS_HOST
           valueFrom:
             configMapKeyRef:

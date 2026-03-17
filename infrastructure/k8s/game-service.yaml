@@ -78,11 +78,6 @@ spec:
             secretKeyRef:
               name: gamevallies-secret
               key: DATABASE_URL
-        - name: MONGO_URL
-          valueFrom:
-            secretKeyRef:
-              name: gamevallies-secret
-              key: MONGO_URL
         - name: REDIS_URL
           valueFrom:
             secretKeyRef:
