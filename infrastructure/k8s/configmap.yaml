@@ -16,12 +16,9 @@ data:
   AI_ENGINE_URL: "http://ai-engine:3005"
   
   # Database hosts (internal to cluster)
-  POSTGRES_HOST: "postgres"
-  POSTGRES_PORT: "5432"
-  POSTGRES_DB: "gamevallies"
-  MONGO_HOST: "mongo"
-  MONGO_PORT: "27017"
-  MONGO_DB: "gamevallies"
+  MYSQL_HOST: "mysql"
+  MYSQL_PORT: "3306"
+  MYSQL_DB: "gamevallies"
   REDIS_HOST: "redis"
   REDIS_PORT: "6379"
   
@@ -44,7 +41,7 @@ data:
   
   # AI Engine configuration
   AI_ENGINE_TIMEOUT: "30000"
-  AI_MODEL_TYPE: "gpt-4"
+  AI_MODEL_TYPE: "deepseek-chat"
   AI_MAX_TOKENS: "2048"
   
   # Logging

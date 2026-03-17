@@ -1,23 +1,23 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: postgres
+  name: mysql
   namespace: gamevallies
   labels:
-    app: postgres
+    app: mysql
 spec:
   ports:
-  - port: 5432
-    targetPort: 5432
-    name: postgres
+  - port: 3306
+    targetPort: 3306
+    name: mysql
   selector:
-    app: postgres
+    app: mysql
   clusterIP: None  # Headless service for StatefulSet
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: postgres-data
+  name: mysql-data
   namespace: gamevallies
 spec:
   accessModes:
@@ -30,39 +30,39 @@ spec:
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: postgres
+  name: mysql
   namespace: gamevallies
   labels:
-    app: postgres
+    app: mysql
 spec:
-  serviceName: postgres
+  serviceName: mysql
   replicas: 1
   selector:
     matchLabels:
-      app: postgres
+      app: mysql
   template:
     metadata:
       labels:
-        app: postgres
+        app: mysql
     spec:
       containers:
-      - name: postgres
-        image: postgres:16-alpine
+      - name: mysql
+        image: mysql:8.0
         ports:
-        - containerPort: 5432
-          name: postgres
+        - containerPort: 3306
+          name: mysql
         env:
-        - name: POSTGRES_DB
-          value: gamevallies
-        - name: POSTGRES_USER
-          value: gamevallies_user
-        - name: POSTGRES_PASSWORD
+        - name: MYSQL_ROOT_PASSWORD
           valueFrom:
             secretKeyRef:
               name: gamevallies-secret
-              key: POSTGRES_PASSWORD
-        - name: PGDATA
-          value: /var/lib/postgresql/data/pgdata
+              key: MYSQL_ROOT_PASSWORD
+        - name: MYSQL_DATABASE
+          value: gamevallies
+        args:
+        - --default-authentication-plugin=mysql_native_password
+        - --character-set-server=utf8mb4
+        - --collation-server=utf8mb4_unicode_ci
         resources:
           requests:
             memory: "256Mi"
@@ -71,14 +71,14 @@ spec:
             memory: "512Mi"
             cpu: "1000m"
         volumeMounts:
-        - name: postgres-data
-          mountPath: /var/lib/postgresql/data
+        - name: mysql-data
+          mountPath: /var/lib/mysql
         livenessProbe:
           exec:
             command:
             - /bin/sh
             - -c
-            - pg_isready -U gamevallies_user
+            - mysqladmin ping -h localhost
           initialDelaySeconds: 30
           periodSeconds: 10
           timeoutSeconds: 5
@@ -88,21 +88,21 @@ spec:
             command:
             - /bin/sh
             - -c
-            - pg_isready -U gamevallies_user
+            - mysqladmin ping -h localhost
           initialDelaySeconds: 10
           periodSeconds: 5
           timeoutSeconds: 3
           failureThreshold: 2
       volumes:
-      - name: postgres-data
+      - name: mysql-data
         persistentVolumeClaim:
-          claimName: postgres-data
+          claimName: mysql-data
 ---
 # Backup CronJob (optional)
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: postgres-backup
+  name: mysql-backup
   namespace: gamevallies
 spec:
   schedule: "0 2 * * *"  # Daily at 2 AM
@@ -111,19 +111,19 @@ spec:
       template:
         spec:
           containers:
-          - name: postgres-backup
-            image: postgres:16-alpine
+          - name: mysql-backup
+            image: mysql:8.0
             env:
-            - name: PGPASSWORD
+            - name: MYSQL_PWD
               valueFrom:
                 secretKeyRef:
                   name: gamevallies-secret
-                  key: POSTGRES_PASSWORD
+                  key: MYSQL_ROOT_PASSWORD
             command:
             - /bin/sh
             - -c
             - |
-              pg_dump -h postgres -U gamevallies_user gamevallies | \
+              mysqldump -h mysql -u root gamevallies | \
                 gzip > /backups/gamevallies_$(date +%Y%m%d_%H%M%S).sql.gz
             volumeMounts:
             - name: backup-storage
