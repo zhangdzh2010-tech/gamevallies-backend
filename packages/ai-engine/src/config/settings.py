@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     LLM_API_KEY: str = ""
     LLM_MODEL: str = "MiniMax-M2.5"
     LLM_FAST_MODEL: str = "MiniMax-M2.5"
-    LLM_BASE_URL: str = "https://api.minimax.chat/v1"
+    LLM_BASE_URL: str = "https://api.minimaxi.com/v1"
 
     # Anthropic / Claude Configuration
     ANTHROPIC_API_KEY: str = ""

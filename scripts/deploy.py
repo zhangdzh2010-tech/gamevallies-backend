@@ -72,7 +72,7 @@ def get_function_id(api: volcenginesdkvefaas.VEFAASApi, name: str) -> str:
     return ""
 
 
-def _env_vars(port: int) -> dict:
+def _env_vars(port: int, svc: str = "") -> dict:
     """NestJS 服务公共环境变量"""
     env = {
         "NODE_ENV":           "production",
@@ -88,6 +88,20 @@ def _env_vars(port: int) -> dict:
         env["AI_ENGINE_URL"] = AI_ENGINE_URL
     if GAME_SERVICE_URL:
         env["APP_URL"] = GAME_SERVICE_URL
+
+    # 阿里云短信（仅 user-service 需要）
+    if svc == "user-service":
+        for key in [
+            "ALIYUN_ACCESS_KEY_ID", "ALIYUN_ACCESS_KEY_SECRET",
+            "ALIYUN_REGION_ID", "ALIYUN_ENDPOINT",
+            "ALIYUN_SMS_SIGN_NAME", "ALIYUN_SMS_TEMPLATE_CODE",
+            "ALIYUN_SMS_TEMPLATE_PARAM_CODE", "ALIYUN_SMS_TEMPLATE_PARAM_MIN",
+            "VERIFY_CODE_SEND_INTERVAL_SECONDS",
+        ]:
+            val = os.environ.get(key, "")
+            if val:
+                env[key] = val
+
     return env
 
 
@@ -100,27 +114,27 @@ def _ai_env_vars(port: int) -> dict:
         "REDIS_URL":                     os.environ.get("REDIS_URL", ""),
         "LLM_MODE":                      os.environ.get("LLM_MODE", "real"),
         "LLM_API_KEY":                   os.environ.get("LLM_API_KEY", ""),
-        "LLM_BASE_URL":                  os.environ.get("LLM_BASE_URL", "https://api.deepseek.com"),
-        "LLM_MODEL":                     os.environ.get("LLM_MODEL", "deepseek-chat"),
-        "LLM_FAST_MODEL":                os.environ.get("LLM_FAST_MODEL", "deepseek-chat"),
+        "LLM_BASE_URL":                  os.environ.get("LLM_BASE_URL", "https://api.minimaxi.com/v1"),
+        "LLM_MODEL":                     os.environ.get("LLM_MODEL", "MiniMax-M2.5"),
+        "LLM_FAST_MODEL":                os.environ.get("LLM_FAST_MODEL", "MiniMax-M2.5"),
         "CORS_ORIGINS":                  '["*"]',
         "TEMPLATE_CONFIDENCE_THRESHOLD": os.environ.get("TEMPLATE_CONFIDENCE_THRESHOLD", "0.8"),
         "HYBRID_CONFIDENCE_THRESHOLD":   os.environ.get("HYBRID_CONFIDENCE_THRESHOLD", "0.5"),
         "QA_MAX_RETRIES":                os.environ.get("QA_MAX_RETRIES", "3"),
-        "PIPELINE_TIMEOUT_S":            os.environ.get("PIPELINE_TIMEOUT_S", "60"),
+        "PIPELINE_TIMEOUT_S":            os.environ.get("PIPELINE_TIMEOUT_S", "600"),
     }
 
 
-def build_envs_update(port: int, ai: bool = False) -> list:
-    src = _ai_env_vars(port) if ai else _env_vars(port)
+def build_envs_update(port: int, ai: bool = False, svc: str = "") -> list:
+    src = _ai_env_vars(port) if ai else _env_vars(port, svc=svc)
     return [
         volcenginesdkvefaas.EnvForUpdateFunctionInput(key=k, value=v)
         for k, v in src.items()
     ]
 
 
-def build_envs_create(port: int, ai: bool = False) -> list:
-    src = _ai_env_vars(port) if ai else _env_vars(port)
+def build_envs_create(port: int, ai: bool = False, svc: str = "") -> list:
+    src = _ai_env_vars(port) if ai else _env_vars(port, svc=svc)
     return [
         volcenginesdkvefaas.EnvForCreateFunctionInput(key=k, value=v)
         for k, v in src.items()
@@ -186,7 +200,7 @@ def create_function(api: volcenginesdkvefaas.VEFAASApi, svc: dict, image: str) -
         ),
         port=svc["port"],
         command=_svc_command(svc),
-        envs=build_envs_create(svc["port"], ai=is_ai),
+        envs=build_envs_create(svc["port"], ai=is_ai, svc=svc["svc"]),
     )
     vpc = _vpc_config_create(svc)
     if vpc:
@@ -273,7 +287,7 @@ def deploy_service(api: volcenginesdkvefaas.VEFAASApi, svc: dict) -> bool:
                 password=VCR_PASSWORD or SK,
             ),
             command=_svc_command(svc),
-            envs=build_envs_update(svc["port"], ai=is_ai),
+            envs=build_envs_update(svc["port"], ai=is_ai, svc=svc["svc"]),
         )
         vpc = _vpc_config_update(svc)
         if vpc:

@@ -46,17 +46,42 @@ PROMPT_KEYS = [
 # ---------------------------------------------------------------------------
 
 def _parse_database_url(url: str) -> dict:
-    """Parse a MySQL URL like mysql://user:password@host:port/database."""
-    pattern = r"mysql://(?P<user>[^:]+):(?P<password>[^@]*)@(?P<host>[^:]+):(?P<port>\d+)/(?P<database>.+)"
-    m = re.match(pattern, url)
-    if not m:
+    """Parse a MySQL URL like mysql://user:password@host:port/database.
+
+    Handles passwords that contain '@' by matching host:port/db from the right.
+    """
+    # Strip optional query string (?connection_limit=2 etc.)
+    base = url.split("?")[0]
+
+    prefix = "mysql://"
+    if not base.startswith(prefix):
+        raise ValueError(f"Cannot parse DATABASE_URL (expected mysql:// prefix): {url!r}")
+    rest = base[len(prefix):]  # user:password@host:port/database
+
+    # Match host:port/database from the RIGHT (avoids ambiguity when password contains '@')
+    m_tail = re.search(r"@([^@]+):(\d+)/(.+)$", rest)
+    if not m_tail:
         raise ValueError(f"Cannot parse DATABASE_URL: {url!r}")
+
+    host = m_tail.group(1)
+    port = int(m_tail.group(2))
+    database = m_tail.group(3)
+
+    # Everything before the last @host:port/ is user:password
+    creds = rest[: m_tail.start()]
+    colon_idx = creds.find(":")
+    if colon_idx == -1:
+        raise ValueError(f"Cannot parse DATABASE_URL (missing user:password): {url!r}")
+
+    user = unquote(creds[:colon_idx])
+    password = unquote(creds[colon_idx + 1 :])
+
     return {
-        "user": unquote(m.group("user")),
-        "password": unquote(m.group("password")),
-        "host": m.group("host"),
-        "port": int(m.group("port")),
-        "database": m.group("database"),
+        "user": user,
+        "password": password,
+        "host": host,
+        "port": port,
+        "database": database,
     }
 
 
