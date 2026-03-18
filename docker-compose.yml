@@ -56,15 +56,13 @@ services:
       REDIS_URL: redis://:playforge_dev_2026@redis:6379
       JWT_SECRET: playforge_jwt_secret_dev_2026
       JWT_REFRESH_SECRET: playforge_refresh_secret_dev_2026
-      # 阿里云短信
+      # 阿里云短信 Dysmsapi
       ALIYUN_ACCESS_KEY_ID: LTAI5tFkYReK6cMtwcioNfGw
       ALIYUN_ACCESS_KEY_SECRET: 9SGZeB5N2SmEpzBVvQKUc1yvDA2Iwx
-      ALIYUN_REGION_ID: cn-hangzhou
-      ALIYUN_ENDPOINT: dypnsapi.aliyuncs.com
-      ALIYUN_SMS_SIGN_NAME: 速通互联验证码
-      ALIYUN_SMS_TEMPLATE_CODE: "100001"
-      ALIYUN_SMS_TEMPLATE_PARAM_CODE: code
-      ALIYUN_SMS_TEMPLATE_PARAM_MIN: min
+      ALIYUN_SMS_REGION_ID: cn-hangzhou
+      ALIYUN_SMS_SIGN_NAME: 智了科技
+      ALIYUN_SMS_TPL_REGISTER: SMS_503430059
+      ALIYUN_SMS_TPL_LOGIN: SMS_503470064
       VERIFY_CODE_SEND_INTERVAL_SECONDS: "60"
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/api/v1/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"]
