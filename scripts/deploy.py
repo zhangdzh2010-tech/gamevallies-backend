@@ -32,7 +32,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # svc key → function name in VeFaaS console (须与控制台函数名一致)
 # type="python" 表示 AI 引擎（独立 Dockerfile，不同构建参数）
 SERVICES = [
-    {"svc": "user-service",   "name": "gv-user-service",   "port": 3001},
+    {"svc": "user-service",   "name": "gv-user-service",   "port": 3001, "internet": True},
     {"svc": "game-service",   "name": "gv-game-service",   "port": 3002},
     # social-service 已合入 feed-service（节省函数配额）
     {"svc": "feed-service",   "name": "gv-feed-service",   "port": 3004},
