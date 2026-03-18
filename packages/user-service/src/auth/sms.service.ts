@@ -1,152 +1,115 @@
 /**
- * 阿里云短信服务
- * 文档: https://help.aliyun.com/document_detail/101414.html
- * 签名算法: HMAC-SHA1 RPC 风格
+ * 阿里云短信服务（Dysmsapi）
+ *
+ * 使用官方 SDK @alicloud/dysmsapi20170525
+ *
+ * 环境变量:
+ *   ALIYUN_ACCESS_KEY_ID       - AccessKey ID
+ *   ALIYUN_ACCESS_KEY_SECRET   - AccessKey Secret
+ *   ALIYUN_SMS_SIGN_NAME       - 短信签名（如"智了科技"）
+ *   ALIYUN_SMS_REGION_ID       - 区域（默认 cn-hangzhou）
+ *   ALIYUN_SMS_TPL_REGISTER    - 注册模板 Code
+ *   ALIYUN_SMS_TPL_LOGIN       - 登录模板 Code
  */
 import { Injectable, Logger } from '@nestjs/common';
-import * as crypto from 'crypto';
-import * as https from 'https';
-import { URL } from 'url';
 
-function percentEncode(str: string): string {
-  return encodeURIComponent(str)
-    .replace(/!/g, '%21')
-    .replace(/'/g, '%27')
-    .replace(/\(/g, '%28')
-    .replace(/\)/g, '%29')
-    .replace(/\*/g, '%2A');
-}
+import Dysmsapi20170525, {
+  SendSmsRequest,
+} from '@alicloud/dysmsapi20170525';
+import * as OpenApi from '@alicloud/openapi-client';
 
-function buildSignature(
-  method: string,
-  params: Record<string, string>,
-  accessKeySecret: string,
-): string {
-  const sortedKeys = Object.keys(params).sort();
-  const canonicalQueryString = sortedKeys
-    .map((k) => `${percentEncode(k)}=${percentEncode(params[k])}`)
-    .join('&');
-  const stringToSign = `${method}&${percentEncode('/')}&${percentEncode(canonicalQueryString)}`;
-  return crypto
-    .createHmac('sha1', accessKeySecret + '&')
-    .update(stringToSign)
-    .digest('base64');
-}
+type SmsPurpose = 'register' | 'login' | 'reset_password';
 
 @Injectable()
 export class SmsService {
   private readonly logger = new Logger(SmsService.name);
-  private readonly ak: string;
-  private readonly sk: string;
-  private readonly regionId: string;
-  private readonly endpoint: string;
+  private client: Dysmsapi20170525 | null = null;
   private readonly signName: string;
-  private readonly templateCode: string;
-  private readonly templateParamCode: string;
-  private readonly templateParamMin: string;
+  private readonly tplRegister: string;
+  private readonly tplLogin: string;
   private readonly mockMode: boolean;
 
   constructor() {
-    this.ak             = process.env.ALIYUN_ACCESS_KEY_ID || '';
-    this.sk             = process.env.ALIYUN_ACCESS_KEY_SECRET || '';
-    this.regionId       = process.env.ALIYUN_REGION_ID || 'cn-hangzhou';
-    this.endpoint       = process.env.ALIYUN_ENDPOINT || 'dypnsapi.aliyuncs.com';
-    this.signName       = process.env.ALIYUN_SMS_SIGN_NAME || '';
-    this.templateCode   = process.env.ALIYUN_SMS_TEMPLATE_CODE || '';
-    this.templateParamCode = process.env.ALIYUN_SMS_TEMPLATE_PARAM_CODE || 'code';
-    this.templateParamMin  = process.env.ALIYUN_SMS_TEMPLATE_PARAM_MIN || 'min';
+    const ak = process.env.ALIYUN_ACCESS_KEY_ID || '';
+    const sk = process.env.ALIYUN_ACCESS_KEY_SECRET || '';
+    this.signName = process.env.ALIYUN_SMS_SIGN_NAME || '智了科技';
+    this.tplRegister = process.env.ALIYUN_SMS_TPL_REGISTER || 'SMS_503430059';
+    this.tplLogin = process.env.ALIYUN_SMS_TPL_LOGIN || 'SMS_503470064';
 
-    this.mockMode = !this.ak || !this.sk || !this.signName || !this.templateCode;
+    this.mockMode = !ak || !sk;
     if (this.mockMode) {
       this.logger.warn('SMS_MOCK_MODE: 阿里云短信未配置 — 验证码仅打印到日志');
+    } else {
+      this.client = new Dysmsapi20170525(
+        new OpenApi.Config({
+          accessKeyId: ak,
+          accessKeySecret: sk,
+          endpoint: 'dysmsapi.aliyuncs.com',
+          regionId: process.env.ALIYUN_SMS_REGION_ID || 'cn-hangzhou',
+        }),
+      );
     }
   }
 
-  async sendCode(phone: string, code: string): Promise<void> {
+  /**
+   * 根据用途选择模板 Code
+   *   register      → 注册模板
+   *   login / 其他  → 登录模板（复用）
+   */
+  private templateFor(purpose: SmsPurpose): string {
+    return purpose === 'register' ? this.tplRegister : this.tplLogin;
+  }
+
+  async sendCode(phone: string, code: string, purpose: SmsPurpose = 'login'): Promise<void> {
     if (this.mockMode) {
-      this.logger.log(`[SMS MOCK] phone=${phone} code=${code}`);
+      this.logger.log(`[SMS MOCK] phone=${phone} code=${code} purpose=${purpose}`);
       return;
     }
 
-    const templateParam = JSON.stringify({
-      [this.templateParamCode]: code,
-      [this.templateParamMin]: '10',
+    const templateCode = this.templateFor(purpose);
+    this.logger.log(`SMS send → phone=${phone} tpl=${templateCode} purpose=${purpose}`);
+
+    const request = new SendSmsRequest({
+      phoneNumbers: phone,
+      signName: this.signName,
+      templateCode,
+      templateParam: JSON.stringify({ code }),
     });
 
-    const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
-    const nonce = crypto.randomUUID().replace(/-/g, '');
+    try {
+      const response = await this.client!.sendSms(request);
+      const body = response.body;
 
-    const params: Record<string, string> = {
-      AccessKeyId:       this.ak,
-      Action:            'SendSmsVerifyCode',
-      Format:            'JSON',
-      PhoneNumber:       phone,
-      RegionId:          this.regionId,
-      SignName:          this.signName,
-      SignatureMethod:   'HMAC-SHA1',
-      SignatureNonce:    nonce,
-      SignatureVersion:  '1.0',
-      TemplateCode:      this.templateCode,
-      TemplateParam:     templateParam,
-      Timestamp:         timestamp,
-      Version:           '2017-05-25',
-    };
+      if (body?.code !== 'OK') {
+        const msg = this.mapError(body?.code, body?.message);
+        this.logger.error(`SMS failed: code=${body?.code} message=${body?.message}`);
+        throw new Error(msg);
+      }
 
-    const signature = buildSignature('POST', params, this.sk);
-    params['Signature'] = signature;
-
-    const body = Object.keys(params)
-      .map((k) => `${percentEncode(k)}=${percentEncode(params[k])}`)
-      .join('&');
-
-    await this.httpPost(`https://${this.endpoint}/`, body);
+      this.logger.log(`SMS sent OK → bizId=${body.bizId} requestId=${body.requestId}`);
+    } catch (err: any) {
+      if (err.message && !err.message.startsWith('短信')) {
+        this.logger.error(`SMS SDK error: ${err.message}`);
+        throw new Error('短信发送失败，请稍后重试');
+      }
+      throw err;
+    }
   }
 
-  private httpPost(url: string, body: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const urlObj = new URL(url);
-      const options = {
-        hostname: urlObj.hostname,
-        path: urlObj.pathname,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Content-Length': Buffer.byteLength(body),
-        },
-      };
-
-      const req = https.request(options, (res) => {
-        let data = '';
-        res.on('data', (chunk) => (data += chunk));
-        res.on('end', () => {
-          this.logger.debug(`SMS response ${res.statusCode}: ${data}`);
-          try {
-            const parsed = JSON.parse(data);
-            const code = parsed?.Code;
-            if (code && code !== 'OK') {
-              let msg = '短信发送失败，请稍后重试';
-              if (code === 'isv.BUSINESS_LIMIT_CONTROL') msg = '发送过于频繁，请稍后再试';
-              else if (code === 'isv.INVALID_PARAMETERS') msg = '短信参数错误';
-              else if (code === 'isv.SMS_SIGNATURE_ILLEGAL') msg = '短信签名不合法';
-              else if (code === 'isv.SMS_TEMPLATE_ILLEGAL') msg = '短信模板不合法';
-              else if (parsed?.Message) msg = parsed.Message;
-              reject(new Error(msg));
-            } else {
-              resolve();
-            }
-          } catch {
-            if (res.statusCode && res.statusCode >= 400) {
-              reject(new Error(`SMS HTTP ${res.statusCode}`));
-            } else {
-              resolve();
-            }
-          }
-        });
-      });
-
-      req.on('error', reject);
-      req.write(body);
-      req.end();
-    });
+  private mapError(code?: string, message?: string): string {
+    switch (code) {
+      case 'isv.BUSINESS_LIMIT_CONTROL':
+        return '发送过于频繁，请稍后再试';
+      case 'isv.MOBILE_NUMBER_ILLEGAL':
+        return '手机号格式不正确';
+      case 'isv.SMS_SIGNATURE_ILLEGAL':
+        return '短信签名不合法';
+      case 'isv.SMS_TEMPLATE_ILLEGAL':
+        return '短信模板不合法';
+      case 'isv.INVALID_PARAMETERS':
+        return '短信参数错误';
+      default:
+        return message || '短信发送失败，请稍后重试';
+    }
   }
 }

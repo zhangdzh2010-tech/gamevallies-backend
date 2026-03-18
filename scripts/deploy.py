@@ -89,13 +89,12 @@ def _env_vars(port: int, svc: str = "") -> dict:
     if GAME_SERVICE_URL:
         env["APP_URL"] = GAME_SERVICE_URL
 
-    # 阿里云短信（仅 user-service 需要）
+    # 阿里云短信 Dysmsapi（仅 user-service 需要）
     if svc == "user-service":
         for key in [
             "ALIYUN_ACCESS_KEY_ID", "ALIYUN_ACCESS_KEY_SECRET",
-            "ALIYUN_REGION_ID", "ALIYUN_ENDPOINT",
-            "ALIYUN_SMS_SIGN_NAME", "ALIYUN_SMS_TEMPLATE_CODE",
-            "ALIYUN_SMS_TEMPLATE_PARAM_CODE", "ALIYUN_SMS_TEMPLATE_PARAM_MIN",
+            "ALIYUN_SMS_REGION_ID", "ALIYUN_SMS_SIGN_NAME",
+            "ALIYUN_SMS_TPL_REGISTER", "ALIYUN_SMS_TPL_LOGIN",
             "VERIFY_CODE_SEND_INTERVAL_SECONDS",
         ]:
             val = os.environ.get(key, "")

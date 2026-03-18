@@ -154,7 +154,7 @@ export class AuthService {
     const code = `${Math.floor(100000 + Math.random() * 900000)}`;
     const key = `sms:vcode:${phone}`;
     await this.redis.setex(key, VERIFICATION_TTL_SECONDS, JSON.stringify({ code, type }));
-    await this.smsService.sendCode(phone, code);
+    await this.smsService.sendCode(phone, code, type);
     await this.redis.setex(cooldownKey, SEND_INTERVAL_SECONDS, '1');
   }
 
