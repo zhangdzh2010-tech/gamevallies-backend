@@ -1,9 +1,10 @@
-import { Controller, Post, Body, UseGuards, Get, Req, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Post, Body, UseGuards, Get, Query, Req, HttpCode, HttpStatus } from '@nestjs/common';
 import { Request } from 'express';
 import { IsIn, IsString, MaxLength, MinLength, Matches, IsOptional } from 'class-validator';
 import { AuthService } from './auth.service';
 import { RefreshDto } from './dto';
 import { JwtAuthGuard } from './jwt-auth.guard';
+import { SmsService } from './sms.service';
 import { ok, presentUser } from '../common/api-response';
 
 // ── DTO ────────────────────────────────────────────────────────
@@ -64,7 +65,10 @@ class PhoneLoginDto {
 
 @Controller('auth')
 export class AuthController {
-  constructor(private authService: AuthService) {}
+  constructor(
+    private authService: AuthService,
+    private smsService: SmsService,
+  ) {}
 
   // 密码登录
   @Post('login')
@@ -119,5 +123,16 @@ export class AuthController {
   async getProfile(@Req() req: any) {
     const user = await this.authService.validateUser(req.user.userId);
     return ok(presentUser(user));
+  }
+
+  /** SMS 发送记录查询（诊断用） */
+  @Get('sms/query')
+  async querySmsDetails(
+    @Query('phone') phone: string,
+    @Query('date') date: string, // YYYYMMDD
+  ) {
+    if (!phone || !date) return ok({ error: 'phone and date (YYYYMMDD) required' });
+    const details = await this.smsService.queryDetails(phone, date);
+    return ok(details);
   }
 }
