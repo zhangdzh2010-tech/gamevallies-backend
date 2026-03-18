@@ -152,10 +152,14 @@ def shell(cmd: list) -> bool:
 
 
 def _svc_command(svc: dict) -> str:
-    """返回函数的启动命令（覆盖 /opt/application/run.sh）"""
+    """返回函数的启动命令（覆盖 /opt/application/run.sh）
+
+    VeFaaS 用 sh -c 执行命令，PATH 可能不含 /usr/local/bin，
+    因此 node 和 python 必须使用绝对路径。
+    """
     if svc.get("type") == "python":
-        return f"uvicorn src.main:app --host 0.0.0.0 --port {svc['port']}"
-    return f"node /app/packages/{svc['svc']}/dist/main.js"
+        return f"/usr/local/bin/python -m uvicorn src.main:app --host 0.0.0.0 --port {svc['port']}"
+    return f"/usr/local/bin/node /app/packages/{svc['svc']}/dist/main.js"
 
 
 def _vpc_config_create(svc: dict):
