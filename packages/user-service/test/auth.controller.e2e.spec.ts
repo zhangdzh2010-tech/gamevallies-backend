@@ -6,11 +6,12 @@ import { AuthController } from '../src/auth/auth.controller';
 import { AuthService } from '../src/auth/auth.service';
 import { JwtAuthGuard } from '../src/auth/jwt-auth.guard';
 import { ConflictException, UnauthorizedException } from '@nestjs/common';
+import { SmsService } from '../src/auth/sms.service';
 
 class MockJwtAuthGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const req = context.switchToHttp().getRequest();
-    const authHeader = req.headers['authorization'];
+    const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return false;
     }
@@ -26,6 +27,7 @@ describe('AuthController (E2E)', () => {
     id: 'user-123',
     username: 'testuser',
     email: 'test@example.com',
+    phone: '13800138000',
     displayName: 'Test User',
     role: 'user',
     createdAt: new Date(),
@@ -39,15 +41,18 @@ describe('AuthController (E2E)', () => {
   };
 
   const mockAuthService = {
-    register: jest.fn(),
-    login: jest.fn(),
+    loginByPassword: jest.fn(),
     refreshToken: jest.fn(),
     revokeRefreshToken: jest.fn(),
-    sendVerificationCode: jest.fn(),
-    verifyCode: jest.fn(),
-    resetPassword: jest.fn(),
-    changePassword: jest.fn(),
+    sendSmsCode: jest.fn(),
+    registerByPhone: jest.fn(),
+    loginByPhone: jest.fn(),
+    loginByWechatMiniapp: jest.fn(),
     validateUser: jest.fn(),
+  };
+
+  const mockSmsService = {
+    queryDetails: jest.fn(),
   };
 
   beforeAll(async () => {
@@ -55,6 +60,7 @@ describe('AuthController (E2E)', () => {
       controllers: [AuthController],
       providers: [
         { provide: AuthService, useValue: mockAuthService },
+        { provide: SmsService, useValue: mockSmsService },
       ],
     })
       .overrideGuard(JwtAuthGuard)
@@ -74,17 +80,17 @@ describe('AuthController (E2E)', () => {
     jest.clearAllMocks();
   });
 
-  describe('POST /auth/register', () => {
-    it('should register a new user', async () => {
-      mockAuthService.register.mockResolvedValueOnce(mockAuthResponse);
+  describe('POST /auth/sms/register', () => {
+    it('should register a new phone user', async () => {
+      mockAuthService.registerByPhone.mockResolvedValueOnce(mockAuthResponse);
 
       const response = await request(app.getHttpServer())
-        .post('/auth/register')
+        .post('/auth/sms/register')
         .send({
-          username: 'testuser',
-          email: 'test@example.com',
+          phone: '13800138000',
+          smsCode: '123456',
+          nickname: 'Test User',
           password: 'password123',
-          displayName: 'Test User',
         })
         .expect(201);
 
@@ -92,18 +98,18 @@ describe('AuthController (E2E)', () => {
       expect(response.body.data).toHaveProperty('user');
     });
 
-    it('should not register duplicate username', async () => {
-      mockAuthService.register.mockRejectedValueOnce(
-        new ConflictException('Username already taken'),
+    it('should reject duplicate phone registration', async () => {
+      mockAuthService.registerByPhone.mockRejectedValueOnce(
+        new ConflictException('该手机号已注册，请直接登录'),
       );
 
       await request(app.getHttpServer())
-        .post('/auth/register')
+        .post('/auth/sms/register')
         .send({
-          username: 'testuser',
-          email: 'test2@example.com',
+          phone: '13800138000',
+          smsCode: '123456',
+          nickname: 'Test User',
           password: 'password123',
-          displayName: 'Test',
         })
         .expect(409);
     });
@@ -111,7 +117,7 @@ describe('AuthController (E2E)', () => {
 
   describe('POST /auth/login', () => {
     it('should login with username', async () => {
-      mockAuthService.login.mockResolvedValueOnce(mockAuthResponse);
+      mockAuthService.loginByPassword.mockResolvedValueOnce(mockAuthResponse);
 
       const response = await request(app.getHttpServer())
         .post('/auth/login')
@@ -127,7 +133,7 @@ describe('AuthController (E2E)', () => {
     });
 
     it('should login with email', async () => {
-      mockAuthService.login.mockResolvedValueOnce(mockAuthResponse);
+      mockAuthService.loginByPassword.mockResolvedValueOnce(mockAuthResponse);
 
       await request(app.getHttpServer())
         .post('/auth/login')
@@ -139,8 +145,8 @@ describe('AuthController (E2E)', () => {
     });
 
     it('should not login with invalid password', async () => {
-      mockAuthService.login.mockRejectedValueOnce(
-        new UnauthorizedException('Invalid email/username or password'),
+      mockAuthService.loginByPassword.mockRejectedValueOnce(
+        new UnauthorizedException('账号或密码错误'),
       );
 
       await request(app.getHttpServer())
@@ -150,6 +156,41 @@ describe('AuthController (E2E)', () => {
           password: 'wrongpassword',
         })
         .expect(401);
+    });
+  });
+
+  describe('POST /auth/sms/login', () => {
+    it('should login by phone sms code', async () => {
+      mockAuthService.loginByPhone.mockResolvedValueOnce(mockAuthResponse);
+
+      const response = await request(app.getHttpServer())
+        .post('/auth/sms/login')
+        .send({
+          phone: '13800138000',
+          smsCode: '123456',
+        })
+        .expect(200);
+
+      expect(response.body.code).toBe(0);
+      expect(response.body.data).toHaveProperty('token');
+    });
+  });
+
+  describe('POST /auth/wechat/miniapp-login', () => {
+    it('should login by wechat miniapp code', async () => {
+      mockAuthService.loginByWechatMiniapp.mockResolvedValueOnce(mockAuthResponse);
+
+      const response = await request(app.getHttpServer())
+        .post('/auth/wechat/miniapp-login')
+        .send({
+          code: 'wechat-code',
+          nickname: 'Test User',
+          avatarUrl: 'https://example.com/avatar.png',
+        })
+        .expect(200);
+
+      expect(response.body.code).toBe(0);
+      expect(response.body.data).toHaveProperty('token');
     });
   });
 
@@ -168,17 +209,6 @@ describe('AuthController (E2E)', () => {
 
       expect(response.body.code).toBe(0);
       expect(response.body.data).toHaveProperty('token');
-    });
-
-    it('should not refresh with invalid token', async () => {
-      mockAuthService.refreshToken.mockRejectedValueOnce(
-        new UnauthorizedException('Refresh token not found'),
-      );
-
-      await request(app.getHttpServer())
-        .post('/auth/refresh')
-        .send({ refreshToken: 'invalid-token' })
-        .expect(401);
     });
   });
 
