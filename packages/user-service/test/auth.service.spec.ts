@@ -4,33 +4,25 @@ import { ConfigService } from '@nestjs/config';
 import { ConflictException, UnauthorizedException } from '@nestjs/common';
 import { AuthService } from '../src/auth/auth.service';
 import { PrismaService } from '../src/prisma/prisma.service';
-import { SmsService } from '../src/auth/sms.service';
+import { RegisterDto, LoginDto } from '../src/auth/dto';
 
+// Mock bcrypt so password operations don't require real computation
 jest.mock('bcryptjs', () => ({
   hash: jest.fn().mockResolvedValue('$hashed_password'),
   compare: jest.fn(),
 }));
 
-jest.mock('ioredis', () => {
-  return jest.fn().mockImplementation(() => ({
-    exists: jest.fn(),
-    ttl: jest.fn(),
-    setex: jest.fn(),
-    get: jest.fn(),
-    del: jest.fn(),
-  }));
-});
-
 import * as bcrypt from 'bcryptjs';
 
 describe('AuthService', () => {
   let service: AuthService;
+  let prismaService: PrismaService;
+  let jwtService: JwtService;
 
   const mockUser = {
     id: 'user-123',
     username: 'testuser',
     email: 'test@example.com',
-    phone: '13800138000',
     passwordHash: '$hashed_password',
     displayName: 'Test User',
     role: 'user',
@@ -44,16 +36,20 @@ describe('AuthService', () => {
       findFirst: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
     },
     refreshToken: {
       findUnique: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
+      delete: jest.fn(),
     },
   };
 
   const mockJwtService = {
     sign: jest.fn().mockReturnValue('mock-token'),
+    verify: jest.fn(),
   };
 
   const mockConfigService = {
@@ -63,16 +59,9 @@ describe('AuthService', () => {
         JWT_EXPIRES_IN: '24h',
         JWT_REFRESH_SECRET: 'test-refresh-secret',
         JWT_REFRESH_EXPIRES_IN: '7d',
-        'wechat.miniappAppId': 'wx-test-app-id',
-        'wechat.miniappAppSecret': 'wx-test-app-secret',
       };
       return config[key] ?? defaultVal;
     }),
-  };
-
-  const mockSmsService = {
-    sendCode: jest.fn(),
-    queryDetails: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -82,129 +71,120 @@ describe('AuthService', () => {
         { provide: PrismaService, useValue: mockPrismaService },
         { provide: JwtService, useValue: mockJwtService },
         { provide: ConfigService, useValue: mockConfigService },
-        { provide: SmsService, useValue: mockSmsService },
       ],
     }).compile();
 
     service = module.get<AuthService>(AuthService);
+    prismaService = module.get<PrismaService>(PrismaService);
+    jwtService = module.get<JwtService>(JwtService);
 
     jest.clearAllMocks();
 
+    // Restore default implementations after clearAllMocks
     (mockJwtService.sign as jest.Mock).mockReturnValue('mock-token');
     (mockConfigService.get as jest.Mock).mockImplementation((key: string, defaultVal?: any) => {
       const config: Record<string, any> = {
         JWT_SECRET: 'test-secret',
         JWT_EXPIRES_IN: '24h',
-        JWT_REFRESH_SECRET: 'test-refresh-secret',
-        JWT_REFRESH_EXPIRES_IN: '7d',
-        'wechat.miniappAppId': 'wx-test-app-id',
-        'wechat.miniappAppSecret': 'wx-test-app-secret',
       };
       return config[key] ?? defaultVal;
     });
     (bcrypt.hash as jest.Mock).mockResolvedValue('$hashed_password');
   });
 
-  describe('loginByPassword', () => {
-    it('should successfully login user with correct credentials', async () => {
-      mockPrismaService.user.findFirst.mockResolvedValueOnce(mockUser);
-      (bcrypt.compare as jest.Mock).mockResolvedValueOnce(true);
-      mockPrismaService.refreshToken.create.mockResolvedValueOnce({});
-
-      const result = await service.loginByPassword('test@example.com', 'SecurePass123!');
-
-      expect(result).toHaveProperty('user');
-      expect(result).toHaveProperty('accessToken');
-      expect(result).toHaveProperty('refreshToken');
-      expect(mockPrismaService.user.findFirst).toHaveBeenCalledWith({
-        where: {
-          OR: [
-            { phone: 'test@example.com' },
-            { username: 'test@example.com' },
-            { email: 'test@example.com' },
-          ],
-        },
-      });
-    });
-
-    it('should throw UnauthorizedException for wrong password', async () => {
-      mockPrismaService.user.findFirst.mockResolvedValueOnce(mockUser);
-      (bcrypt.compare as jest.Mock).mockResolvedValueOnce(false);
-
-      await expect(service.loginByPassword('testuser', 'WrongPassword123!')).rejects.toThrow(
-        UnauthorizedException,
-      );
-    });
-
-    it('should throw UnauthorizedException when user not found', async () => {
-      mockPrismaService.user.findFirst.mockResolvedValueOnce(null);
-
-      await expect(service.loginByPassword('nonexistent', 'SecurePass123!')).rejects.toThrow(
-        UnauthorizedException,
-      );
-    });
-  });
-
-  describe('registerByPhone', () => {
-    it('should successfully register a new phone user', async () => {
-      jest.spyOn(service as any, 'verifySmsCode').mockResolvedValueOnce(undefined);
-      mockPrismaService.user.findFirst
-        .mockResolvedValueOnce(null)
-        .mockResolvedValueOnce(null);
-      mockPrismaService.user.create.mockResolvedValueOnce({
-        id: 'user-234',
-        username: 'u8000',
-        phone: '13800138000',
+  describe('register', () => {
+    it('should successfully register a new user', async () => {
+      const registerDto: RegisterDto = {
+        username: 'newuser',
+        email: 'newuser@example.com',
+        password: 'SecurePass123!',
         displayName: 'New User',
-        role: 'user',
-      });
+        phone: '+1234567890',
+      };
+
+      mockPrismaService.user.findUnique.mockResolvedValueOnce(null); // username check
+      mockPrismaService.user.findUnique.mockResolvedValueOnce(null); // email check
+      mockPrismaService.user.create.mockResolvedValueOnce(mockUser);
       mockPrismaService.refreshToken.create.mockResolvedValueOnce({});
 
-      const result = await service.registerByPhone(
-        '13800138000',
-        '123456',
-        'New User',
-        'SecurePass123!',
-      );
+      const result = await service.register(registerDto);
 
       expect(result).toHaveProperty('user');
       expect(result).toHaveProperty('accessToken');
       expect(result).toHaveProperty('refreshToken');
+      expect(mockPrismaService.user.findUnique).toHaveBeenCalledTimes(2);
       expect(mockPrismaService.user.create).toHaveBeenCalled();
-      expect(bcrypt.hash).toHaveBeenCalledWith('SecurePass123!', 10);
     });
 
-    it('should throw ConflictException when phone already exists', async () => {
-      jest.spyOn(service as any, 'verifySmsCode').mockResolvedValueOnce(undefined);
-      mockPrismaService.user.findFirst.mockResolvedValueOnce(mockUser);
+    it('should throw ConflictException when username already exists', async () => {
+      const registerDto: RegisterDto = {
+        username: 'existinguser',
+        email: 'new@example.com',
+        password: 'SecurePass123!',
+        displayName: 'New User',
+      };
 
-      await expect(
-        service.registerByPhone('13800138000', '123456', 'New User', 'SecurePass123!'),
-      ).rejects.toThrow(ConflictException);
+      mockPrismaService.user.findUnique.mockResolvedValueOnce(mockUser);
+
+      await expect(service.register(registerDto)).rejects.toThrow(ConflictException);
+      expect(mockPrismaService.user.create).not.toHaveBeenCalled();
+    });
+
+    it('should throw ConflictException when email already exists', async () => {
+      const registerDto: RegisterDto = {
+        username: 'newuser',
+        email: 'test@example.com',
+        password: 'SecurePass123!',
+        displayName: 'New User',
+      };
+
+      mockPrismaService.user.findUnique.mockResolvedValueOnce(null); // username check
+      mockPrismaService.user.findUnique.mockResolvedValueOnce(mockUser); // email check
+
+      await expect(service.register(registerDto)).rejects.toThrow(ConflictException);
       expect(mockPrismaService.user.create).not.toHaveBeenCalled();
     });
   });
 
-  describe('loginByPhone', () => {
-    it('should successfully login with phone and sms code', async () => {
-      jest.spyOn(service as any, 'verifySmsCode').mockResolvedValueOnce(undefined);
+  describe('login', () => {
+    it('should successfully login user with correct credentials', async () => {
+      const loginDto: LoginDto = {
+        account: 'testuser',
+        password: 'SecurePass123!',
+      };
+
       mockPrismaService.user.findFirst.mockResolvedValueOnce(mockUser);
+      (bcrypt.compare as jest.Mock).mockResolvedValueOnce(true);
       mockPrismaService.refreshToken.create.mockResolvedValueOnce({});
 
-      const result = await service.loginByPhone('13800138000', '123456');
+      const result = await service.login(loginDto);
 
       expect(result).toHaveProperty('user');
       expect(result).toHaveProperty('accessToken');
       expect(result).toHaveProperty('refreshToken');
     });
 
-    it('should throw UnauthorizedException when phone user not found', async () => {
-      jest.spyOn(service as any, 'verifySmsCode').mockResolvedValueOnce(undefined);
+    it('should throw UnauthorizedException for wrong password', async () => {
+      const loginDto: LoginDto = {
+        account: 'testuser',
+        password: 'WrongPassword123!',
+      };
+
+      mockPrismaService.user.findFirst.mockResolvedValueOnce(mockUser);
+      (bcrypt.compare as jest.Mock).mockResolvedValueOnce(false);
+
+      await expect(service.login(loginDto)).rejects.toThrow(UnauthorizedException);
+    });
+
+    it('should throw UnauthorizedException when user not found', async () => {
+      const loginDto: LoginDto = {
+        account: 'nonexistent',
+        password: 'SecurePass123!',
+      };
+
       mockPrismaService.user.findFirst.mockResolvedValueOnce(null);
 
-      await expect(service.loginByPhone('13800138000', '123456')).rejects.toThrow(
-        UnauthorizedException,
-      );
+      await expect(service.login(loginDto)).rejects.toThrow(UnauthorizedException);
     });
   });
 
@@ -259,7 +239,15 @@ describe('AuthService', () => {
       expect(result).toHaveProperty('accessToken');
       expect(result).toHaveProperty('refreshToken');
       expect(result).toHaveProperty('expiresIn');
-      expect(mockJwtService.sign).toHaveBeenCalledTimes(1);
+      // Service only calls jwtService.sign once (access token); refresh token is a UUID
+      expect(jwtService.sign).toHaveBeenCalledTimes(1);
+      const firstCall = (mockJwtService.sign as jest.Mock).mock.calls[0];
+      expect(firstCall[0]).toEqual(
+        expect.objectContaining({
+          sub: mockUser.id,
+          username: mockUser.username,
+        }),
+      );
     });
   });
 
