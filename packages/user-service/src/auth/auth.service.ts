@@ -12,6 +12,14 @@ type VerificationPurpose = 'register' | 'login' | 'reset_password';
 const VERIFICATION_TTL_SECONDS = 10 * 60;
 const SEND_INTERVAL_SECONDS = parseInt(process.env.VERIFY_CODE_SEND_INTERVAL_SECONDS || '60', 10);
 
+type WechatMiniappSession = {
+  openid?: string;
+  session_key?: string;
+  unionid?: string;
+  errcode?: number;
+  errmsg?: string;
+};
+
 @Injectable()
 export class AuthService {
   private redis: Redis;
@@ -30,15 +38,61 @@ export class AuthService {
     }
   }
 
-  // ── 密码登录 ───────────────────────────────────────────────────
+  private async fetchWechatMiniappSession(
+    code: string,
+  ): Promise<Required<Pick<WechatMiniappSession, 'openid' | 'session_key'>> & WechatMiniappSession> {
+    const appId = this.configService.get<string>('wechat.miniappAppId');
+    const appSecret = this.configService.get<string>('wechat.miniappAppSecret');
 
-  /** 账号（手机号或用户名）+ 密码登录 */
+    if (!appId) {
+      throw new BadRequestException('微信小程序 AppID 未配置');
+    }
+
+    if (!appSecret) {
+      throw new BadRequestException('微信小程序 AppSecret 未配置');
+    }
+
+    const params = new URLSearchParams({
+      appid: appId,
+      secret: appSecret,
+      js_code: code,
+      grant_type: 'authorization_code',
+    });
+
+    const response = await fetch(`https://api.weixin.qq.com/sns/jscode2session?${params.toString()}`);
+    if (!response.ok) {
+      throw new BadRequestException(`微信登录请求失败: HTTP ${response.status}`);
+    }
+
+    const data = (await response.json()) as WechatMiniappSession;
+    if (data.errcode || !data.openid || !data.session_key) {
+      throw new BadRequestException(data.errmsg || '微信登录失败');
+    }
+
+    return data as Required<Pick<WechatMiniappSession, 'openid' | 'session_key'>> & WechatMiniappSession;
+  }
+
+  private async generateWechatUsername(openId: string): Promise<string> {
+    const base = `wx_${openId.slice(-10).toLowerCase()}`;
+    let username = base;
+    let suffix = 0;
+
+    while (await this.prisma.user.findFirst({ where: { username } })) {
+      suffix += 1;
+      username = `${base}${suffix}`;
+    }
+
+    return username;
+  }
+
   async loginByPassword(account: string, password: string): Promise<AuthResponse> {
+    const normalizedAccount = account.trim().toLowerCase();
     const user = await this.prisma.user.findFirst({
       where: {
         OR: [
           { phone: account },
-          { username: account.toLowerCase() },
+          { username: normalizedAccount },
+          { email: normalizedAccount },
         ],
       },
     });
@@ -53,14 +107,22 @@ export class AuthService {
     }
 
     const tokens = await this.generateTokens({
-      id: user.id, username: user.username,
-      displayName: user.displayName ?? user.username, role: user.role,
+      id: user.id,
+      username: user.username,
+      displayName: user.displayName ?? user.username,
+      role: user.role,
     });
 
-    return { ...tokens, user: { id: user.id, username: user.username, displayName: user.displayName ?? undefined, role: user.role } };
+    return {
+      ...tokens,
+      user: {
+        id: user.id,
+        username: user.username,
+        displayName: user.displayName ?? undefined,
+        role: user.role,
+      },
+    };
   }
-
-  // ── Token 管理 ─────────────────────────────────────────────────
 
   async refreshToken(token: string): Promise<AuthRefreshResponse> {
     const refreshTokenRecord = await this.prisma.refreshToken.findUnique({
@@ -98,7 +160,9 @@ export class AuthService {
     };
   }
 
-  async generateTokens(user: { id: string; username: string; email?: string; displayName: string; role: string }): Promise<{ accessToken: string; refreshToken: string; expiresIn: number }> {
+  async generateTokens(
+    user: { id: string; username: string; email?: string; displayName: string; role: string },
+  ): Promise<{ accessToken: string; refreshToken: string; expiresIn: number }> {
     const accessToken = this.jwtService.sign(
       { sub: user.id, username: user.username, role: user.role } as any,
       {
@@ -141,8 +205,6 @@ export class AuthService {
     return user;
   }
 
-  // ── 手机号注册/登录 ────────────────────────────────────────────
-
   async sendSmsCode(phone: string, type: VerificationPurpose): Promise<void> {
     const cooldownKey = `sms:cd:${phone}`;
     const isCooldown = await this.redis.exists(cooldownKey);
@@ -167,7 +229,6 @@ export class AuthService {
     await this.redis.del(key);
   }
 
-  /** 手机号注册：phone + smsCode + nickname + password */
   async registerByPhone(phone: string, smsCode: string, nickname: string, password?: string): Promise<AuthResponse> {
     await this.verifySmsCode(phone, smsCode);
 
@@ -200,14 +261,23 @@ export class AuthService {
     });
 
     const tokens = await this.generateTokens({
-      id: user.id, username: user.username,
-      displayName: user.displayName ?? user.username, role: user.role,
+      id: user.id,
+      username: user.username,
+      displayName: user.displayName ?? user.username,
+      role: user.role,
     });
 
-    return { ...tokens, user: { id: user.id, username: user.username, displayName: user.displayName ?? undefined, role: user.role } };
+    return {
+      ...tokens,
+      user: {
+        id: user.id,
+        username: user.username,
+        displayName: user.displayName ?? undefined,
+        role: user.role,
+      },
+    };
   }
 
-  /** 手机号短信登录：phone + smsCode */
   async loginByPhone(phone: string, smsCode: string): Promise<AuthResponse> {
     await this.verifySmsCode(phone, smsCode);
 
@@ -215,10 +285,80 @@ export class AuthService {
     if (!user) throw new UnauthorizedException('该手机号尚未注册');
 
     const tokens = await this.generateTokens({
-      id: user.id, username: user.username,
-      displayName: user.displayName ?? user.username, role: user.role,
+      id: user.id,
+      username: user.username,
+      displayName: user.displayName ?? user.username,
+      role: user.role,
     });
 
-    return { ...tokens, user: { id: user.id, username: user.username, displayName: user.displayName ?? undefined, role: user.role } };
+    return {
+      ...tokens,
+      user: {
+        id: user.id,
+        username: user.username,
+        displayName: user.displayName ?? undefined,
+        role: user.role,
+      },
+    };
+  }
+
+  async loginByWechatMiniapp(code: string, nickname?: string, avatarUrl?: string): Promise<AuthResponse> {
+    const session = await this.fetchWechatMiniappSession(code);
+
+    let user = await this.prisma.user.findFirst({
+      where: { wxOpenId: session.openid },
+    });
+
+    if (!user && session.unionid) {
+      user = await this.prisma.user.findFirst({
+        where: { wxUnionId: session.unionid },
+      });
+    }
+
+    if (!user) {
+      const username = await this.generateWechatUsername(session.openid);
+      user = await this.prisma.user.create({
+        data: {
+          id: randomUUID(),
+          username,
+          displayName: nickname || username,
+          avatarUrl: avatarUrl || null,
+          authProvider: 'wechat',
+          wxOpenId: session.openid,
+          wxUnionId: session.unionid || null,
+          role: 'user',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      });
+    } else {
+      user = await this.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          authProvider: 'wechat',
+          wxOpenId: session.openid,
+          wxUnionId: session.unionid || user.wxUnionId || null,
+          displayName: nickname || user.displayName,
+          avatarUrl: avatarUrl || user.avatarUrl || null,
+        },
+      });
+    }
+
+    const tokens = await this.generateTokens({
+      id: user.id,
+      username: user.username,
+      displayName: user.displayName ?? user.username,
+      role: user.role,
+    });
+
+    return {
+      ...tokens,
+      user: {
+        id: user.id,
+        username: user.username,
+        displayName: user.displayName ?? undefined,
+        role: user.role,
+      },
+    };
   }
 }

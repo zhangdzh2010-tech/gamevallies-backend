@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     TEMPLATE_CONFIDENCE_THRESHOLD: float = 0.8   # >= 0.8 → template path
     HYBRID_CONFIDENCE_THRESHOLD: float = 0.5     # 0.5-0.8 → hybrid path
     QA_MAX_RETRIES: int = 3
+    REVIEW_REPAIR_MAX_RETRIES: int = 0
+    REVIEW_REPAIR_MAX_TOKENS: int = 3072
     PIPELINE_TIMEOUT_S: int = 60
     MAX_ITERATIONS: int = 20
 

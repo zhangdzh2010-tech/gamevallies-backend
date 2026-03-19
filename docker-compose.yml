@@ -57,13 +57,15 @@ services:
       JWT_SECRET: playforge_jwt_secret_dev_2026
       JWT_REFRESH_SECRET: playforge_refresh_secret_dev_2026
       # 阿里云短信 Dysmsapi
-      ALIYUN_ACCESS_KEY_ID: LTAI5tFkYReK6cMtwcioNfGw
-      ALIYUN_ACCESS_KEY_SECRET: 9SGZeB5N2SmEpzBVvQKUc1yvDA2Iwx
-      ALIYUN_SMS_REGION_ID: cn-hangzhou
+      ALIYUN_ACCESS_KEY_ID: ${ALIYUN_ACCESS_KEY_ID:-}
+      ALIYUN_ACCESS_KEY_SECRET: ${ALIYUN_ACCESS_KEY_SECRET:-}
+      ALIYUN_SMS_REGION_ID: ${ALIYUN_SMS_REGION_ID:-cn-hangzhou}
       ALIYUN_SMS_SIGN_NAME: 智了科技
-      ALIYUN_SMS_TPL_REGISTER: SMS_503430059
-      ALIYUN_SMS_TPL_LOGIN: SMS_503470064
+      ALIYUN_SMS_TPL_REGISTER: ${ALIYUN_SMS_TPL_REGISTER:-SMS_503430059}
+      ALIYUN_SMS_TPL_LOGIN: ${ALIYUN_SMS_TPL_LOGIN:-SMS_503470064}
       VERIFY_CODE_SEND_INTERVAL_SECONDS: "60"
+      WECHAT_MINIAPP_APP_ID: ${WECHAT_MINIAPP_APP_ID:-}
+      WECHAT_MINIAPP_APP_SECRET: ${WECHAT_MINIAPP_APP_SECRET:-}
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/api/v1/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"]
       interval: 30s
@@ -179,17 +181,17 @@ services:
       DATABASE_URL: mysql://gamevallies:playforge_dev_2026@mysql:3306/gamevallies
       REDIS_URL: redis://:playforge_dev_2026@redis:6379
       LLM_MODE: real
-      LLM_API_KEY: sk-cp-AyyibOC2T1XsLOKNFog1M1bN9eJcrTONnGZuySyKjxJWKdQ5G33yTyGPjicyBTd4VvLiqShREf5BqLebG1CQkG2NZFFQ75NOzP4eaQzWFVrGriknQqazFKY
-      LLM_BASE_URL: https://api.minimaxi.com/v1
-      LLM_MODEL: MiniMax-M2.5
-      LLM_FAST_MODEL: MiniMax-M2.5
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.minimaxi.com/v1}
+      LLM_MODEL: ${LLM_MODEL:-MiniMax-M2.5}
+      LLM_FAST_MODEL: ${LLM_FAST_MODEL:-MiniMax-M2.5}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-sonnet-4-5}
       CLAUDE_FAST_MODEL: ${CLAUDE_FAST_MODEL:-claude-haiku-4-5-20251001}
       TEMPLATE_CONFIDENCE_THRESHOLD: "0.8"
       HYBRID_CONFIDENCE_THRESHOLD: "0.5"
-      QA_MAX_RETRIES: "3"
-      PIPELINE_TIMEOUT_S: "600"
+      QA_MAX_RETRIES: "2"
+      PIPELINE_TIMEOUT_S: "300"
     volumes:
       - ./packages/ai-engine/src:/app/src
     depends_on:
