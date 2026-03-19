@@ -3,7 +3,11 @@ function buildGameUrl(gameId: string, previewUrl?: string) {
     return previewUrl.replace(/\/preview$/, '/index.html');
   }
 
-  const baseUrl = (process.env.GAME_SERVICE_URL || 'http://localhost:3002').replace(/\/$/, '');
+  const baseUrl = (
+    process.env.PUBLIC_API_BASE_URL ||
+    process.env.GAME_SERVICE_URL ||
+    'http://localhost:3002'
+  ).replace(/\/$/, '');
   return `${baseUrl}/games/${gameId}/index.html`;
 }
 

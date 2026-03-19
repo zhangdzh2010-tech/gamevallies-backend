@@ -4,7 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 @Injectable()
 export class SearchService {
   private readonly gameContentBaseUrl =
-    (process.env.GAME_SERVICE_URL || 'http://localhost:3002').replace(/\/$/, '');
+    (process.env.PUBLIC_API_BASE_URL || process.env.GAME_SERVICE_URL || 'http://localhost:3002').replace(/\/$/, '');
 
   constructor(private prisma: PrismaService) {}
 

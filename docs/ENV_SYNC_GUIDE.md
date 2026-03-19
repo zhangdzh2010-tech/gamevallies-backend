@@ -24,6 +24,23 @@
 
 ### 2.1 Production build example
 
+Recommended unified-domain setup:
+
+```bash
+TARO_APP_API_BASE=https://<unified-api-domain>
+TARO_APP_AUTH_SERVICE_URL=https://<unified-api-domain>
+TARO_APP_GAME_SERVICE_URL=https://<unified-api-domain>
+TARO_APP_SOCIAL_SERVICE_URL=https://<unified-api-domain>
+TARO_APP_FEED_SERVICE_URL=https://<unified-api-domain>
+TARO_APP_AI_SERVICE_URL=https://<unified-api-domain>
+TARO_APP_GAME_CONTENT_URL=https://<unified-api-domain>
+TARO_APP_WS_URL=
+SENTRY_DSN=
+SEGMENT_WRITE_KEY=
+```
+
+Legacy multi-domain setup:
+
 ```bash
 TARO_APP_AUTH_SERVICE_URL=https://<auth-gateway-domain>
 TARO_APP_GAME_SERVICE_URL=https://<game-gateway-domain>
@@ -83,6 +100,9 @@ USER_SERVICE_URL=http://localhost:3001
 GAME_SERVICE_URL=http://localhost:3002
 FEED_SERVICE_URL=http://localhost:3004
 AI_ENGINE_URL=http://localhost:8000
+GAME_SERVICE_UPSTREAM_URL=http://localhost:3002
+FEED_SERVICE_UPSTREAM_URL=http://localhost:3004
+PUBLIC_API_BASE_URL=http://localhost:3001
 APP_URL=http://localhost:3002
 
 LLM_MODE=real
@@ -116,6 +136,9 @@ USER_SERVICE_URL=https://<user-service-domain>
 GAME_SERVICE_URL=https://<game-service-domain>
 FEED_SERVICE_URL=https://<feed-service-domain>
 AI_ENGINE_URL=https://<ai-engine-inner-domain>
+GAME_SERVICE_UPSTREAM_URL=https://<game-service-domain>
+FEED_SERVICE_UPSTREAM_URL=https://<feed-service-domain>
+PUBLIC_API_BASE_URL=https://<unified-api-domain>
 
 DATABASE_URL=mysql://<user>:<password>@<mysql-host>:3306/gamevallies
 REDIS_URL=redis://:<password>@<redis-host>:6379
@@ -165,6 +188,8 @@ ALIYUN_SMS_TPL_REGISTER=SMS_503430059
 ALIYUN_SMS_TPL_LOGIN=SMS_503470064
 WECHAT_MINIAPP_APP_ID=<wechat_miniapp_app_id>
 WECHAT_MINIAPP_APP_SECRET=<wechat_miniapp_app_secret>
+GAME_SERVICE_UPSTREAM_URL=https://<game-service-domain>
+FEED_SERVICE_UPSTREAM_URL=https://<feed-service-domain>
 ```
 
 ### 4.2 Game service
@@ -178,6 +203,7 @@ DATABASE_URL=mysql://<user>:<password>@<mysql-host>:3306/gamevallies
 REDIS_URL=redis://:<password>@<redis-host>:6379
 JWT_SECRET=<jwt_secret>
 APP_URL=https://<game-service-domain>
+PUBLIC_API_BASE_URL=https://<unified-api-domain>
 GAME_SERVICE_URL=https://<game-service-domain>
 AI_ENGINE_URL=https://<ai-engine-inner-domain>
 ```
@@ -194,6 +220,7 @@ REDIS_URL=redis://:<password>@<redis-host>:6379
 JWT_SECRET=<jwt_secret>
 APP_URL=https://<frontend-domain>
 GAME_SERVICE_URL=https://<game-service-domain>
+PUBLIC_API_BASE_URL=https://<unified-api-domain>
 ```
 
 ### 4.4 AI engine
@@ -222,7 +249,8 @@ Public:  xxx.apigateway-cn-shanghai.volceapi.com
 Internal: xxx.apigateway-cn-shanghai-inner.volceapi.com
 ```
 
-Use public URLs for browser-facing frontend config.
+Use `PUBLIC_API_BASE_URL` for the browser-facing unified API domain.
+Use public service URLs as upstreams unless you have matching internal gateway domains.
 Use internal URLs only for service-to-service traffic inside the private network.
 
 ### 5.2 Frontend production build

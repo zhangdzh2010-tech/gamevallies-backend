@@ -44,7 +44,7 @@ export class ShareService {
       throw new NotFoundException('Game not found');
     }
 
-    const appUrl = process.env.APP_URL || 'https://playforge.app';
+    const appUrl = process.env.PUBLIC_API_BASE_URL || process.env.APP_URL || 'https://playforge.app';
     const gameUrl = `${appUrl}/games/${gameId}`;
 
     return {
