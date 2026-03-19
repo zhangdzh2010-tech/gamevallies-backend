@@ -19,6 +19,11 @@ import re
 import time
 from typing import List, Optional, Tuple
 
+try:
+    import esprima
+except ImportError:  # pragma: no cover - optional dependency during local editing
+    esprima = None
+
 from ..api.models import GameSpec, QACheckError, QACheckResponse, QAResult
 from ..config.settings import settings
 from ..services.llm_client import LLMClient
@@ -78,6 +83,12 @@ FIX_PROMPT = """You are fixing a HTML5 game. The code has the following issues t
 Game type: {game_type}
 
 Fix ONLY the listed issues. Do not change the game logic or visual design.
+Before returning the final answer, do a strict code review and a precompile check:
+- verify the HTML document is complete and not truncated
+- verify required tags and closing tags are present
+- verify every <script> block is syntactically valid JavaScript
+- verify the final output ends with </html>
+If you notice any additional syntax or structure issue while fixing the listed problems, fix it too.
 Return ONLY the complete fixed HTML file with no extra text.
 
 Current code:
@@ -144,6 +155,7 @@ class QAPipeline:
         max_retries: int = None,
     ) -> QAResult:
         max_retries = max_retries if max_retries is not None else settings.QA_MAX_RETRIES
+        code = self._apply_deterministic_repairs(code)
 
         for attempt in range(max_retries + 1):
             result = self.check(code)
@@ -159,7 +171,7 @@ class QAPipeline:
                 break
 
             logger.info(f"QA attempt {attempt} failed ({len(result.errors)} errors), triggering LLM auto-fix")
-            code = await self._fix_with_llm(code, result.errors, game_spec)
+            code = await self.repair_code(code, result.errors, game_spec)
 
         final = self.check(code)
         return QAResult(
@@ -169,13 +181,43 @@ class QAPipeline:
             last_errors=final.errors,
         )
 
+    async def repair_code(
+        self,
+        code: str,
+        errors: List[QACheckError],
+        game_spec: Optional[GameSpec] = None,
+        max_tokens: int = 8192,
+    ) -> str:
+        repaired = self._apply_deterministic_repairs(code)
+        if settings.LLM_MODE == "mock" or not self._client.is_enabled() or not errors:
+            return repaired
+
+        llm_fixed = await self._fix_with_llm(repaired, errors, game_spec, max_tokens=max_tokens)
+        return self._apply_deterministic_repairs(llm_fixed)
+
     # ------------------------------------------------------------------
     # L1: Syntax – structural HTML completeness
     # ------------------------------------------------------------------
 
     def _check_l1_syntax(self, code: str) -> List[QACheckError]:
         errors = []
-        lower = code.lower()
+        trimmed = (code or "").strip()
+        lower = trimmed.lower()
+
+        if not trimmed:
+            return [QACheckError(
+                type="L1_syntax",
+                message="Generated output is empty",
+                severity="error",
+            )]
+
+        if re.search(r"^<{7}|^={7}$|^>{7}", trimmed, re.MULTILINE):
+            errors.append(QACheckError(
+                type="L1_syntax",
+                message="Conflict markers detected in generated output",
+                severity="error",
+            ))
+
         for tag in ("<html", "<head", "<body", "</body>", "</html>"):
             if tag not in lower:
                 errors.append(QACheckError(
@@ -197,7 +239,139 @@ class QAPipeline:
                 message="Missing charset meta tag",
                 severity="error",
             ))
+
+        for tag_name in ("html", "head", "body", "script"):
+            open_count = len(re.findall(rf"<{tag_name}\b", lower))
+            close_count = len(re.findall(rf"</{tag_name}>", lower))
+            if open_count != close_count:
+                errors.append(QACheckError(
+                    type="L1_syntax",
+                    message=f"Unbalanced <{tag_name}> tags: {open_count} open vs {close_count} close",
+                    severity="error",
+                ))
+
+        if not re.search(r"</html>\s*$", lower):
+            errors.append(QACheckError(
+                type="L1_syntax",
+                message="HTML appears truncated or missing the final </html> closing tag",
+                severity="error",
+            ))
+
+        if esprima is not None:
+            for match in re.finditer(r"<script\b[^>]*>([\s\S]*?)</script>", trimmed, re.IGNORECASE):
+                script_content = match.group(1).strip()
+                if not script_content:
+                    continue
+                try:
+                    esprima.parseScript(script_content, tolerant=False)
+                except Exception as exc:
+                    errors.append(QACheckError(
+                        type="L1_syntax",
+                        message=f"JavaScript syntax error in <script>: {exc}",
+                        severity="error",
+                    ))
         return errors
+
+    def _apply_deterministic_repairs(self, code: str) -> str:
+        repaired = (code or "").strip()
+        if not repaired:
+            return repaired
+
+        repaired = re.sub(r"^\s*```(?:html)?\s*", "", repaired, flags=re.IGNORECASE)
+        repaired = re.sub(r"\s*```\s*$", "", repaired)
+        repaired = repaired.replace("\r\n", "\n")
+
+        html_start = re.search(r"<!doctype\s+html|<html\b", repaired, re.IGNORECASE)
+        if html_start:
+            repaired = repaired[html_start.start():]
+
+        html_end = list(re.finditer(r"</html>", repaired, re.IGNORECASE))
+        if html_end:
+            repaired = repaired[:html_end[-1].end()]
+
+        lower = repaired.lower()
+
+        if "<!doctype html" not in lower and "<html" in lower:
+            repaired = "<!DOCTYPE html>\n" + repaired
+            lower = repaired.lower()
+
+        if "<html" not in lower:
+            body_content = repaired
+            repaired = (
+                "<!DOCTYPE html>\n"
+                "<html lang=\"zh-CN\">\n"
+                "<head>\n"
+                "<meta charset=\"UTF-8\">\n"
+                "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
+                "<title>Generated Game</title>\n"
+                "</head>\n"
+                "<body>\n"
+                f"{body_content}\n"
+                "</body>\n"
+                "</html>"
+            )
+            lower = repaired.lower()
+
+        if "<head" not in lower:
+            repaired = re.sub(
+                r"(<html\b[^>]*>)",
+                (
+                    "\\1\n<head>\n"
+                    "<meta charset=\"UTF-8\">\n"
+                    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
+                    "<title>Generated Game</title>\n"
+                    "</head>"
+                ),
+                repaired,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+            lower = repaired.lower()
+
+        if "charset" not in lower:
+            repaired = re.sub(
+                r"(<head\b[^>]*>)",
+                "\\1\n<meta charset=\"UTF-8\">",
+                repaired,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+            lower = repaired.lower()
+
+        if "viewport" not in lower:
+            repaired = re.sub(
+                r"(<head\b[^>]*>)",
+                "\\1\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">",
+                repaired,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+            lower = repaired.lower()
+
+        if "<body" not in lower:
+            if "</head>" in lower:
+                repaired = re.sub(r"</head>", "</head>\n<body>", repaired, count=1, flags=re.IGNORECASE)
+            else:
+                repaired += "\n<body>"
+            lower = repaired.lower()
+
+        open_script_count = len(re.findall(r"<script\b", lower))
+        close_script_count = len(re.findall(r"</script>", lower))
+        if open_script_count > close_script_count:
+            repaired += "\n" + ("</script>\n" * (open_script_count - close_script_count))
+            lower = repaired.lower()
+
+        if "</body>" not in lower:
+            if "</html>" in lower:
+                repaired = re.sub(r"</html>", "</body>\n</html>", repaired, count=1, flags=re.IGNORECASE)
+            else:
+                repaired += "\n</body>"
+            lower = repaired.lower()
+
+        if "</html>" not in lower:
+            repaired += "\n</html>"
+
+        return repaired.strip()
 
     # ------------------------------------------------------------------
     # L2: Security – forbidden API usage
@@ -431,6 +605,7 @@ class QAPipeline:
         code: str,
         errors: List[QACheckError],
         game_spec: Optional[GameSpec],
+        max_tokens: int,
     ) -> str:
         error_list = "\n".join(f"  - [{e.type}] {e.message}" for e in errors)
         game_type = game_spec.game_type if game_spec else "unknown"
@@ -445,7 +620,7 @@ class QAPipeline:
             from .code_generator import _extract_html
             text = await self._client.complete(
                 model=self._client.model_for(),
-                max_tokens=8192,
+                max_tokens=max_tokens,
                 messages=[{"role": "user", "content": prompt}],
             )
             return _extract_html(text)

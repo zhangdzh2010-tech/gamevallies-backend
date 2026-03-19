@@ -1,7 +1,5 @@
 /**
- * 阿里云短信服务（Dysmsapi）
- *
- * 使用官方 SDK @alicloud/dysmsapi20170525
+ * Aliyun SMS service.
  */
 import { Injectable, Logger } from '@nestjs/common';
 
@@ -30,7 +28,7 @@ export class SmsService {
 
     if (!ak || !sk) {
       this.logger.error(
-        'SMS DISABLED: ALIYUN_ACCESS_KEY_ID / ALIYUN_ACCESS_KEY_SECRET 未配置！短信无法发送。',
+        'SMS DISABLED: ALIYUN_ACCESS_KEY_ID / ALIYUN_ACCESS_KEY_SECRET not configured.',
       );
     } else {
       this.client = new Dysmsapi20170525(
@@ -53,13 +51,13 @@ export class SmsService {
 
   async sendCode(phone: string, code: string, purpose: SmsPurpose = 'login'): Promise<void> {
     if (!this.client) {
-      this.logger.error(`SMS NOT CONFIGURED — cannot send to ${phone}`);
+      this.logger.error(`SMS NOT CONFIGURED - cannot send to ${phone}`);
       throw new Error('短信服务未配置，请联系管理员');
     }
 
     const templateCode = this.templateFor(purpose);
     this.logger.log(
-      `SMS sending → phone=${phone} sign="${this.signName}" tpl=${templateCode} purpose=${purpose}`,
+      `SMS sending -> phone=${phone} sign="${this.signName}" tpl=${templateCode} purpose=${purpose}`,
     );
 
     const request = new SendSmsRequest({
@@ -74,7 +72,7 @@ export class SmsService {
       const body = response.body;
 
       this.logger.log(
-        `SMS response → Code=${body?.code} Message=${body?.message} BizId=${body?.bizId} RequestId=${body?.requestId}`,
+        `SMS response -> Code=${body?.code} Message=${body?.message} BizId=${body?.bizId} RequestId=${body?.requestId}`,
       );
 
       if (body?.code !== 'OK') {
@@ -83,23 +81,22 @@ export class SmsService {
         throw new Error(msg);
       }
 
-      this.logger.log(`SMS sent OK → bizId=${body.bizId}`);
+      this.logger.log(`SMS sent OK -> bizId=${body?.bizId}`);
     } catch (err: any) {
-      // Re-throw our own errors (from mapError)
       if (err.message?.startsWith('短信') || err.message?.startsWith('发送')) {
         throw err;
       }
-      // SDK/network errors
+
       this.logger.error(`SMS SDK error: ${err.message}`, err.stack);
       throw new Error('短信发送失败，请稍后重试');
     }
   }
 
-  /** 查询短信发送记录（用于诊断） */
   async queryDetails(phone: string, sendDate: string) {
     if (!this.client) return [];
+
     try {
-      const r = await this.client.querySendDetails(
+      const response = await this.client.querySendDetails(
         new QuerySendDetailsRequest({
           phoneNumber: phone,
           sendDate,
@@ -107,7 +104,7 @@ export class SmsService {
           currentPage: 1,
         }),
       );
-      return r.body?.smsSendDetailDTOs?.smsSendDetailDTO || [];
+      return response.body?.smsSendDetailDTOs?.smsSendDetailDTO || [];
     } catch (err: any) {
       this.logger.error(`QuerySendDetails error: ${err.message}`);
       return [];

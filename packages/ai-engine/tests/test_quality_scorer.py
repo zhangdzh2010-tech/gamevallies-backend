@@ -132,3 +132,56 @@ class TestCodeReviewerParsing:
         raw = '{"is_complete_game": true, "has_real_gameplay": true, "difficulty_balanced": true, "fun_score": -5, "issues": []}'
         result = self.reviewer._parse_review(raw)
         assert result.fun_score == 1.0
+
+
+class TestPipelineOrchestratorReviewRepairGate:
+    def test_incomplete_game_triggers_repair(self):
+        from src.engine.pipeline_orchestrator import PipelineOrchestrator
+
+        review = LLMReviewResult(
+            ran=True,
+            is_complete_game=False,
+            has_real_gameplay=False,
+            issues=["This output is a stub and not playable"],
+        )
+
+        errors = PipelineOrchestrator._review_repair_errors(review)
+        assert len(errors) == 1
+        assert "not a complete playable game" in errors[0].message
+
+    def test_soft_review_feedback_does_not_trigger_repair(self):
+        from src.engine.pipeline_orchestrator import PipelineOrchestrator
+
+        review = LLMReviewResult(
+            ran=True,
+            is_complete_game=True,
+            has_real_gameplay=True,
+            difficulty_balanced=False,
+            fun_score=4.0,
+            issues=["Difficulty curve feels flat", "Moment-to-moment play could be more exciting"],
+        )
+
+        errors = PipelineOrchestrator._review_repair_errors(review)
+        assert errors == []
+
+    def test_missing_gameplay_only_repairs_when_issue_looks_incomplete(self):
+        from src.engine.pipeline_orchestrator import PipelineOrchestrator
+
+        review = LLMReviewResult(
+            ran=True,
+            is_complete_game=True,
+            has_real_gameplay=False,
+            issues=["This feels more like a placeholder demo with no gameplay loop"],
+        )
+
+        errors = PipelineOrchestrator._review_repair_errors(review)
+        assert len(errors) == 1
+        assert "lacks real gameplay" in errors[0].message
+
+
+class TestReviewRepairBudgetSettings:
+    def test_review_repair_budget_defaults_are_compressed(self):
+        from src.config.settings import settings
+
+        assert settings.REVIEW_REPAIR_MAX_RETRIES == 0
+        assert settings.REVIEW_REPAIR_MAX_TOKENS < 8192

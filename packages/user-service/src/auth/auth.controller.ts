@@ -7,11 +7,9 @@ import { JwtAuthGuard } from './jwt-auth.guard';
 import { SmsService } from './sms.service';
 import { ok, presentUser } from '../common/api-response';
 
-// ── DTO ────────────────────────────────────────────────────────
-
 class PasswordLoginDto {
   @IsString()
-  account: string; // 手机号或用户名
+  account: string;
 
   @IsString()
   @MinLength(6)
@@ -21,7 +19,7 @@ class PasswordLoginDto {
 
 class SendSmsCodeDto {
   @IsString()
-  @Matches(/^1[3-9]\d{9}$/, { message: '请输入正确的手机号码' })
+  @Matches(/^1[3-9]\d{9}$/, { message: '请输入正确的手机号' })
   phone: string;
 
   @IsIn(['register', 'login', 'reset_password'])
@@ -30,7 +28,7 @@ class SendSmsCodeDto {
 
 class PhoneRegisterDto {
   @IsString()
-  @Matches(/^1[3-9]\d{9}$/, { message: '请输入正确的手机号码' })
+  @Matches(/^1[3-9]\d{9}$/, { message: '请输入正确的手机号' })
   phone: string;
 
   @IsString()
@@ -52,7 +50,7 @@ class PhoneRegisterDto {
 
 class PhoneLoginDto {
   @IsString()
-  @Matches(/^1[3-9]\d{9}$/, { message: '请输入正确的手机号码' })
+  @Matches(/^1[3-9]\d{9}$/, { message: '请输入正确的手机号' })
   phone: string;
 
   @IsString()
@@ -61,7 +59,21 @@ class PhoneLoginDto {
   smsCode: string;
 }
 
-// ── Controller ─────────────────────────────────────────────────
+class WechatMiniappLoginDto {
+  @IsString()
+  @MinLength(1)
+  code: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  nickname?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  avatarUrl?: string;
+}
 
 @Controller('auth')
 export class AuthController {
@@ -70,7 +82,6 @@ export class AuthController {
     private smsService: SmsService,
   ) {}
 
-  // 密码登录
   @Post('login')
   @HttpCode(HttpStatus.OK)
   async login(@Body() dto: PasswordLoginDto) {
@@ -96,7 +107,6 @@ export class AuthController {
     return ok(null);
   }
 
-  // 短信接口
   @Post('sms/send-code')
   @HttpCode(HttpStatus.OK)
   async sendSmsCode(@Body() dto: SendSmsCodeDto) {
@@ -118,6 +128,17 @@ export class AuthController {
     return ok({ token: result.accessToken, refreshToken: result.refreshToken, user: presentUser(result.user) });
   }
 
+  @Post('wechat/miniapp-login')
+  @HttpCode(HttpStatus.OK)
+  async loginByWechatMiniapp(@Body() dto: WechatMiniappLoginDto) {
+    const result = await this.authService.loginByWechatMiniapp(dto.code, dto.nickname, dto.avatarUrl);
+    return ok({
+      token: result.accessToken,
+      refreshToken: result.refreshToken,
+      user: presentUser(result.user),
+    });
+  }
+
   @Get('profile')
   @UseGuards(JwtAuthGuard)
   async getProfile(@Req() req: any) {
@@ -125,11 +146,10 @@ export class AuthController {
     return ok(presentUser(user));
   }
 
-  /** SMS 发送记录查询（诊断用） */
   @Get('sms/query')
   async querySmsDetails(
     @Query('phone') phone: string,
-    @Query('date') date: string, // YYYYMMDD
+    @Query('date') date: string,
   ) {
     if (!phone || !date) return ok({ error: 'phone and date (YYYYMMDD) required' });
     const details = await this.smsService.queryDetails(phone, date);
