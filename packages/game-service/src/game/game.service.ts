@@ -77,16 +77,20 @@ export class GameService {
     );
   }
 
-  private buildPreviewUrl(gameId: string): string {
+  private getPublicBaseUrl(): string {
+    const publicApiBaseUrl = this.configService.get<string>('PUBLIC_API_BASE_URL');
     const appUrl = this.configService.get<string>('APP_URL', 'http://localhost:3002');
-    return `${appUrl.replace(/\/$/, '')}/games/${gameId}/preview`;
+    return (publicApiBaseUrl || appUrl).replace(/\/$/, '');
+  }
+
+  private buildPreviewUrl(gameId: string): string {
+    return `${this.getPublicBaseUrl()}/games/${gameId}/preview`;
   }
 
   private async attachPreviewUrl<T extends { id: string }>(game: T): Promise<T & { previewUrl: string }> {
-    const bundle = await this.bundleService.getLatestBundle(game.id);
     return {
       ...game,
-      previewUrl: bundle?.previewUrl || this.buildPreviewUrl(game.id),
+      previewUrl: this.buildPreviewUrl(game.id),
     };
   }
 
@@ -526,8 +530,7 @@ export class GameService {
 
     if (!game) throw new NotFoundException('Game not found');
 
-    const appUrl = this.configService.get<string>('APP_URL', 'http://localhost:3002');
-    const gameUrl = `${appUrl.replace(/\/$/, '')}/games/${id}`;
+    const gameUrl = `${this.getPublicBaseUrl()}/games/${id}`;
 
     return {
       title: game.title,

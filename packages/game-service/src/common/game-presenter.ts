@@ -1,10 +1,27 @@
-function buildIndexUrl(gameId: string, previewUrl?: string) {
-  if (previewUrl) {
-    return previewUrl.replace(/\/preview$/, '/index.html');
+function getPublicBaseUrl() {
+  return (process.env.PUBLIC_API_BASE_URL || process.env.APP_URL || 'http://localhost:3002').replace(/\/$/, '');
+}
+
+function normalizePreviewUrl(gameId: string, previewUrl?: string) {
+  const baseUrl = getPublicBaseUrl();
+  if (!previewUrl) {
+    return `${baseUrl}/games/${gameId}/preview`;
   }
 
-  const baseUrl = (process.env.APP_URL || 'http://localhost:3002').replace(/\/$/, '');
-  return `${baseUrl}/games/${gameId}/index.html`;
+  try {
+    const parsed = new URL(previewUrl);
+    return `${baseUrl}${parsed.pathname}`;
+  } catch {
+    if (previewUrl.startsWith('/')) {
+      return `${baseUrl}${previewUrl}`;
+    }
+
+    return `${baseUrl}/games/${gameId}/preview`;
+  }
+}
+
+function buildIndexUrl(gameId: string, previewUrl?: string) {
+  return normalizePreviewUrl(gameId, previewUrl).replace(/\/preview$/, '/index.html');
 }
 
 function normalizeStatus(status?: string) {
@@ -33,7 +50,7 @@ function presentAuthor(author?: {
 }
 
 export function presentGame(game: any) {
-  const previewUrl = game.previewUrl || buildIndexUrl(game.id);
+  const previewUrl = normalizePreviewUrl(game.id, game.previewUrl);
   const gameUrl = buildIndexUrl(game.id, previewUrl);
 
   return {

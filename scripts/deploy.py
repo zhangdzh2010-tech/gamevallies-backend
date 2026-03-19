@@ -52,7 +52,12 @@ VPC_ID            = os.environ.get("VOLCENGINE_VPC_ID",             "")
 SUBNET_ID         = os.environ.get("VOLCENGINE_SUBNET_ID",          "")
 SECURITY_GROUP_ID = os.environ.get("VOLCENGINE_SECURITY_GROUP_ID",  "")
 AI_ENGINE_URL     = os.environ.get("AI_ENGINE_URL",                 "")
+USER_SERVICE_URL  = os.environ.get("USER_SERVICE_URL",              "")
 GAME_SERVICE_URL  = os.environ.get("GAME_SERVICE_URL",              "")
+FEED_SERVICE_URL  = os.environ.get("FEED_SERVICE_URL",              "")
+PUBLIC_API_BASE_URL = os.environ.get("PUBLIC_API_BASE_URL",         "")
+GAME_SERVICE_UPSTREAM_URL = os.environ.get("GAME_SERVICE_UPSTREAM_URL", GAME_SERVICE_URL)
+FEED_SERVICE_UPSTREAM_URL = os.environ.get("FEED_SERVICE_UPSTREAM_URL", FEED_SERVICE_URL)
 
 
 def get_api() -> volcenginesdkvefaas.VEFAASApi:
@@ -84,10 +89,29 @@ def _env_vars(port: int, svc: str = "") -> dict:
         "CORS_ORIGIN":        os.environ.get("CORS_ORIGIN", "*"),
         "ADMIN_TOKEN":        os.environ.get("ADMIN_TOKEN", "admin123"),
     }
-    if AI_ENGINE_URL:
-        env["AI_ENGINE_URL"] = AI_ENGINE_URL
+    if USER_SERVICE_URL:
+        env["USER_SERVICE_URL"] = USER_SERVICE_URL
     if GAME_SERVICE_URL:
-        env["APP_URL"] = GAME_SERVICE_URL
+        env["GAME_SERVICE_URL"] = GAME_SERVICE_URL
+    if FEED_SERVICE_URL:
+        env["FEED_SERVICE_URL"] = FEED_SERVICE_URL
+    if PUBLIC_API_BASE_URL:
+        env["PUBLIC_API_BASE_URL"] = PUBLIC_API_BASE_URL
+
+    public_api_base = PUBLIC_API_BASE_URL or ""
+    if svc == "game-service":
+        env["APP_URL"] = public_api_base or GAME_SERVICE_URL or "http://localhost:3002"
+        if AI_ENGINE_URL:
+            env["AI_ENGINE_URL"] = AI_ENGINE_URL
+    elif svc == "feed-service":
+        env["APP_URL"] = public_api_base or USER_SERVICE_URL or GAME_SERVICE_URL or "https://playforge.app"
+    elif svc == "user-service":
+        if AI_ENGINE_URL:
+            env["AI_ENGINE_URL"] = AI_ENGINE_URL
+        if GAME_SERVICE_UPSTREAM_URL:
+            env["GAME_SERVICE_UPSTREAM_URL"] = GAME_SERVICE_UPSTREAM_URL
+        if FEED_SERVICE_UPSTREAM_URL:
+            env["FEED_SERVICE_UPSTREAM_URL"] = FEED_SERVICE_UPSTREAM_URL
 
     # 阿里云短信 Dysmsapi（仅 user-service 需要）
     if svc == "user-service":
@@ -96,6 +120,7 @@ def _env_vars(port: int, svc: str = "") -> dict:
             "ALIYUN_SMS_REGION_ID", "ALIYUN_SMS_SIGN_NAME",
             "ALIYUN_SMS_TPL_REGISTER", "ALIYUN_SMS_TPL_LOGIN",
             "VERIFY_CODE_SEND_INTERVAL_SECONDS",
+            "WECHAT_MINIAPP_APP_ID", "WECHAT_MINIAPP_APP_SECRET",
         ]:
             val = os.environ.get(key, "")
             if val:
@@ -340,6 +365,7 @@ def main():
     print(f"   VPC ID:           {VPC_ID or '未设置'}")
     print(f"   Subnet ID:        {SUBNET_ID or '未设置'}")
     print(f"   Security Group:   {SECURITY_GROUP_ID or '未设置（跳过 VPC 配置）'}")
+    print(f"   统一公网域名:     {PUBLIC_API_BASE_URL or '未设置（使用各服务默认域名）'}")
 
     target   = sys.argv[1] if len(sys.argv) > 1 else "all"
     services = SERVICES if target == "all" else [s for s in SERVICES if s["svc"] == target]

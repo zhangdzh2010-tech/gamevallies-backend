@@ -17,6 +17,10 @@ export default () => ({
   redis: {
     url: process.env.REDIS_URL,
   },
+  wechat: {
+    miniappAppId: process.env.WECHAT_MINIAPP_APP_ID,
+    miniappAppSecret: process.env.WECHAT_MINIAPP_APP_SECRET,
+  },
   app: {
     name: 'PlayForge User Service',
     version: '1.0.0',

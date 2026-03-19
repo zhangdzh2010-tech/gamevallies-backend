@@ -86,4 +86,13 @@ jobs:
           JWT_SECRET:                    ${{ secrets.JWT_SECRET }}
           JWT_REFRESH_SECRET:            ${{ secrets.JWT_REFRESH_SECRET }}
           CORS_ORIGIN:                   ${{ secrets.CORS_ORIGIN }}
+          USER_SERVICE_URL:              ${{ secrets.USER_SERVICE_URL }}
+          GAME_SERVICE_URL:              ${{ secrets.GAME_SERVICE_URL }}
+          FEED_SERVICE_URL:              ${{ secrets.FEED_SERVICE_URL }}
+          PUBLIC_API_BASE_URL:           ${{ secrets.PUBLIC_API_BASE_URL }}
+          GAME_SERVICE_UPSTREAM_URL:     ${{ secrets.GAME_SERVICE_UPSTREAM_URL }}
+          FEED_SERVICE_UPSTREAM_URL:     ${{ secrets.FEED_SERVICE_UPSTREAM_URL }}
+          AI_ENGINE_URL:                 ${{ secrets.AI_ENGINE_URL }}
+          WECHAT_MINIAPP_APP_ID:         ${{ secrets.WECHAT_MINIAPP_APP_ID }}
+          WECHAT_MINIAPP_APP_SECRET:     ${{ secrets.WECHAT_MINIAPP_APP_SECRET }}
         run: python scripts/deploy.py
