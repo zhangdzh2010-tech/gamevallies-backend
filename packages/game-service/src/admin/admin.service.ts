@@ -420,18 +420,33 @@ export class AdminService {
   // ===================== Generation Logs =====================
 
   async listGenerationLogs(page: number, limit: number, status?: string, search?: string) {
-    const where: Prisma.GameWhereInput = {};
+    const filters: Prisma.GameWhereInput[] = [];
 
     if (status && status !== 'all') {
-      where.status = status as any;
+      if (status === 'failed') {
+        filters.push({
+          OR: [
+            { status: 'failed' as any },
+            { failedStage: { not: null } },
+            { failedReason: { not: null } },
+          ],
+        });
+      } else {
+        filters.push({ status: status as any });
+      }
     }
     if (search) {
-      where.OR = [
-        { title: { contains: search } },
-        { description: { contains: search } },
-        { author: { username: { contains: search } } },
-      ];
+      filters.push({
+        OR: [
+          { title: { contains: search } },
+          { description: { contains: search } },
+          { author: { username: { contains: search } } },
+        ],
+      });
     }
+
+    const where: Prisma.GameWhereInput =
+      filters.length > 0 ? { AND: filters } : {};
 
     const [games, total] = await Promise.all([
       this.prisma.game.findMany({
@@ -468,12 +483,18 @@ export class AdminService {
         title: g.title,
         description: g.description,
         status: g.status,
+        failedStage: g.failedStage,
+        failedReason: g.failedReason,
+        retryCount: g.retryCount,
+        lastErrorAt: g.lastErrorAt,
         gameType: g.gameType,
         createdAt: g.createdAt,
         updatedAt: g.updatedAt,
         author: g.author,
         strategy: meta.strategy || null,
         qaPassed: meta.qaPassed ?? null,
+        qaRetries: meta.qaRetries ?? null,
+        iterationRetries: meta.iterationRetries ?? null,
         genTimeMs: meta.genTimeMs || null,
         codeSizeBytes: bundle?.codeSizeBytes || null,
         qualityScore: meta.qualityScore || null,
@@ -487,7 +508,7 @@ export class AdminService {
   // ===================== Stats =====================
 
   async getStats() {
-    const [totalGames, totalUsers, gamesAgg] = await Promise.all([
+    const [totalGames, totalUsers, gamesAgg, averages, gameMetrics] = await Promise.all([
       this.prisma.game.count(),
       this.prisma.user.count(),
       this.prisma.game.aggregate({
@@ -495,6 +516,21 @@ export class AdminService {
           playCount: true,
           likeCount: true,
           forkCount: true,
+        },
+      }),
+      this.prisma.game.aggregate({
+        _avg: {
+          qualityScore: true,
+          retryCount: true,
+        },
+      }),
+      this.prisma.game.findMany({
+        select: {
+          status: true,
+          qualityScore: true,
+          failedStage: true,
+          failedReason: true,
+          retryCount: true,
         },
       }),
     ]);
@@ -509,13 +545,76 @@ export class AdminService {
       statusMap[s.status] = s._count.id;
     }
 
+    const failedStageMap: Record<string, number> = {};
+    const retryBuckets: Record<string, number> = {
+      '0次': 0,
+      '1次': 0,
+      '2次': 0,
+      '3次及以上': 0,
+    };
+    const qualityBuckets: Record<string, number> = {
+      '90分以上': 0,
+      '80-89分': 0,
+      '70-79分': 0,
+      '70分以下': 0,
+    };
+    const failureReasonMap = new Map<string, { stage: string; reason: string; count: number }>();
+
+    for (const game of gameMetrics) {
+      const retries = Number(game.retryCount || 0);
+      if (retries <= 0) retryBuckets['0次'] += 1;
+      else if (retries === 1) retryBuckets['1次'] += 1;
+      else if (retries === 2) retryBuckets['2次'] += 1;
+      else retryBuckets['3次及以上'] += 1;
+
+      if (game.qualityScore !== null && game.qualityScore !== undefined) {
+        const score = Number(game.qualityScore);
+        if (score >= 90) qualityBuckets['90分以上'] += 1;
+        else if (score >= 80) qualityBuckets['80-89分'] += 1;
+        else if (score >= 70) qualityBuckets['70-79分'] += 1;
+        else qualityBuckets['70分以下'] += 1;
+      }
+
+      if (!game.failedStage && !game.failedReason) {
+        continue;
+      }
+
+      const stage = game.failedStage || 'unknown';
+      failedStageMap[stage] = (failedStageMap[stage] || 0) + 1;
+
+      const normalizedReason = (game.failedReason || 'unknown error')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 80);
+      const key = `${stage}::${normalizedReason}`;
+      const current = failureReasonMap.get(key);
+      if (current) current.count += 1;
+      else {
+        failureReasonMap.set(key, {
+          stage,
+          reason: normalizedReason,
+          count: 1,
+        });
+      }
+    }
+
+    const topFailureReasons = Array.from(failureReasonMap.values())
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+
     return {
       totalGames,
       totalUsers,
       totalPlays: gamesAgg._sum.playCount || 0,
       totalLikes: gamesAgg._sum.likeCount || 0,
       totalForks: gamesAgg._sum.forkCount || 0,
+      avgQualityScore: Number(averages._avg.qualityScore || 0),
+      avgRetryCount: Number(averages._avg.retryCount || 0),
       byStatus: statusMap,
+      failedByStage: failedStageMap,
+      retryBuckets,
+      qualityBuckets,
+      topFailureReasons,
     };
   }
 

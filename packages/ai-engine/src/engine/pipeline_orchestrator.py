@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
+
+import httpx
 
 from ..api.models import (
     GDD,
@@ -29,7 +32,26 @@ from .template_engine import TemplateEngine
 
 logger = logging.getLogger(__name__)
 
-ProgressCallback = Optional[Callable[[str, int, str], None]]
+DEFAULT_STAGE_TOTAL_ATTEMPTS = 3
+
+ProgressCallback = Optional[Callable[[str, int, str, Optional[dict[str, Any]]], None]]
+
+
+class PipelineExecutionError(RuntimeError):
+    """Runtime error carrying stage and retry metadata."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage: str,
+        retry_count: int = 0,
+        fallback: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.retry_count = retry_count
+        self.fallback = fallback
 
 
 class PipelineOrchestrator:
@@ -56,7 +78,19 @@ class PipelineOrchestrator:
             )
         except asyncio.TimeoutError:
             logger.error(f"Pipeline timed out after {settings.PIPELINE_TIMEOUT_S}s")
-            self._notify(progress_cb, PipelineStage.failed, -1, "Pipeline timeout")
+            self._log_stage_failure(
+                game_id=request.game_id,
+                user_id=request.user_id,
+                stage=PipelineStage.failed.value,
+                error=f"Pipeline timed out after {settings.PIPELINE_TIMEOUT_S}s",
+            )
+            self._notify(
+                progress_cb,
+                PipelineStage.failed,
+                -1,
+                "生成超时",
+                {"gameId": request.game_id, "userId": request.user_id},
+            )
             raise RuntimeError(f"Pipeline timed out after {settings.PIPELINE_TIMEOUT_S}s")
 
     async def _run_stages(
@@ -65,33 +99,112 @@ class PipelineOrchestrator:
         progress_cb: ProgressCallback,
     ) -> RunPipelineResponse:
         start_ms = int(time.time() * 1000)
+        self._notify(
+            progress_cb,
+            PipelineStage.intent_parsing,
+            15,
+            "解析游戏意图",
+            {"gameId": request.game_id, "userId": request.user_id, "attempt": 1, "maxAttempts": DEFAULT_STAGE_TOTAL_ATTEMPTS},
+        )
+        game_spec = await self._stage_intent_parse(
+            request.description,
+            request.game_id,
+            request.user_id,
+            progress_cb,
+        )
 
-        from .dialogue_engine import _mock_parse
+        self._notify(
+            progress_cb,
+            PipelineStage.designing,
+            30,
+            "设计游戏参数",
+            {"gameId": request.game_id, "userId": request.user_id},
+        )
+        gdd = await self._stage_design(
+            game_spec,
+            request.game_id,
+            request.user_id,
+            progress_cb,
+        )
 
-        game_spec = _mock_parse(request.description)
-        gdd = await self._stage_design(game_spec)
+        self._notify(
+            progress_cb,
+            PipelineStage.template_matching,
+            45,
+            "匹配游戏模板",
+            {"gameId": request.game_id, "userId": request.user_id, "attempt": 1, "maxAttempts": DEFAULT_STAGE_TOTAL_ATTEMPTS},
+        )
+        match = self._stage_match_template(
+            game_spec,
+            request.game_id,
+            request.user_id,
+            progress_cb,
+        )
 
-        self._notify(progress_cb, PipelineStage.code_generating, 20, "Generating game code")
-        match = TemplateMatchResult(path="llm")
+        self._notify(
+            progress_cb,
+            PipelineStage.code_generating,
+            60,
+            "生成游戏代码",
+            {"gameId": request.game_id, "userId": request.user_id, "attempt": 1, "maxAttempts": DEFAULT_STAGE_TOTAL_ATTEMPTS},
+        )
         code_result = await self._stage_generate_code(
             game_spec,
             gdd,
             match,
+            request.game_id,
+            request.user_id,
+            progress_cb,
             description=request.description,
         )
 
-        self._notify(progress_cb, PipelineStage.qa_checking, 75, "Validating and repairing generated code")
-        qa_result = await self._stage_qa(code_result.html_code, game_spec)
+        self._notify(
+            progress_cb,
+            PipelineStage.qa_checking,
+            75,
+            "质量检查与自动修复",
+            {"gameId": request.game_id, "userId": request.user_id, "attempt": 1, "maxAttempts": settings.QA_MAX_RETRIES + 1},
+        )
+        qa_result = await self._stage_qa(
+            code_result.html_code,
+            game_spec,
+            request.game_id,
+            request.user_id,
+            progress_cb,
+        )
         if not qa_result.success:
             error_messages = self._format_errors(qa_result.last_errors)
             logger.error(f"Pipeline QA failed: {error_messages}")
-            self._notify(progress_cb, PipelineStage.failed, 90, "AI did not produce a usable game version")
-            raise RuntimeError(f"Generated code failed QA: {error_messages}")
+            self._log_stage_failure(
+                game_id=request.game_id,
+                user_id=request.user_id,
+                stage=PipelineStage.qa_checking.value,
+                error=error_messages,
+                retry_count=qa_result.retries,
+            )
+            self._notify(
+                progress_cb,
+                PipelineStage.failed,
+                90,
+                "生成失败，未得到可用版本",
+                {"gameId": request.game_id, "userId": request.user_id, "failedStage": PipelineStage.qa_checking.value, "retryCount": qa_result.retries},
+            )
+            raise PipelineExecutionError(
+                f"Generated code failed QA: {error_messages}",
+                stage=PipelineStage.qa_checking.value,
+                retry_count=qa_result.retries,
+            )
 
         qa_result, runtime_qa = await self._repair_runtime_failures(qa_result, game_spec, progress_cb)
         qa_result, review_result = await self._run_code_review(qa_result, game_spec, progress_cb)
 
-        self._notify(progress_cb, PipelineStage.completed, 100, "Generation completed")
+        self._notify(
+            progress_cb,
+            PipelineStage.completed,
+            100,
+            "生成完成",
+            {"gameId": request.game_id, "userId": request.user_id},
+        )
 
         elapsed = int(time.time() * 1000) - start_ms
         code_bytes = len(qa_result.code.encode("utf-8"))
@@ -147,6 +260,13 @@ class PipelineOrchestrator:
             return qa_result, runtime_qa
 
         logger.warning(f"Runtime QA found {len(runtime_errors)} issue(s), attempting repair")
+        self._notify(
+            progress_cb,
+            PipelineStage.qa_checking,
+            84,
+            "运行时检查失败，正在修复（1/1）",
+            {"retry": 1, "maxRetries": 1, "errorCount": len(runtime_errors)},
+        )
         repaired_code = await self.qa_pipeline.repair_code(qa_result.code, runtime_errors, game_spec)
         repaired_result = await self.qa_pipeline.run_with_auto_fix(
             code=repaired_code,
@@ -155,16 +275,36 @@ class PipelineOrchestrator:
         )
         if not repaired_result.success:
             error_messages = self._format_errors(repaired_result.last_errors)
-            self._notify(progress_cb, PipelineStage.failed, 90, "AI did not produce a usable game version")
-            raise RuntimeError(f"Generated code failed QA after runtime repair: {error_messages}")
+            self._notify(
+                progress_cb,
+                PipelineStage.failed,
+                90,
+                "生成失败，未得到可用版本",
+                {"failedStage": "runtime_qa", "retryCount": repaired_result.retries},
+            )
+            raise PipelineExecutionError(
+                f"Generated code failed QA after runtime repair: {error_messages}",
+                stage=PipelineStage.qa_checking.value,
+                retry_count=repaired_result.retries,
+            )
 
         runtime_qa = await run_runtime_qa(repaired_result.code)
         if runtime_qa.ran and (runtime_qa.js_errors or not runtime_qa.canvas_renders):
             runtime_messages = runtime_qa.js_errors[:3]
             if not runtime_qa.canvas_renders:
                 runtime_messages.append("Canvas never rendered during runtime QA")
-            self._notify(progress_cb, PipelineStage.failed, 90, "AI did not produce a usable game version")
-            raise RuntimeError(f"Generated code failed runtime QA: {'; '.join(runtime_messages)}")
+            self._notify(
+                progress_cb,
+                PipelineStage.failed,
+                90,
+                "生成失败，未得到可用版本",
+                {"failedStage": "runtime_qa", "retryCount": repaired_result.retries},
+            )
+            raise PipelineExecutionError(
+                f"Generated code failed runtime QA: {'; '.join(runtime_messages)}",
+                stage=PipelineStage.qa_checking.value,
+                retry_count=repaired_result.retries,
+            )
 
         return repaired_result, runtime_qa
 
@@ -184,7 +324,7 @@ class PipelineOrchestrator:
                 "Code review found %s clearly incomplete issue(s), triggering one targeted repair pass",
                 len(repair_errors),
             )
-            self._notify(progress_cb, PipelineStage.qa_checking, 82, "Repairing clearly incomplete game output")
+            self._notify(progress_cb, PipelineStage.qa_checking, 82, "正在修复明显不完整的输出")
             repaired_code = await self.qa_pipeline.repair_code(
                 qa_result.code,
                 repair_errors,
@@ -198,8 +338,18 @@ class PipelineOrchestrator:
             )
             if not repaired_result.success:
                 error_messages = self._format_errors(repaired_result.last_errors)
-                self._notify(progress_cb, PipelineStage.failed, 90, "AI did not produce a usable game version")
-                raise RuntimeError(f"Generated code failed QA after code review repair: {error_messages}")
+                self._notify(
+                    progress_cb,
+                    PipelineStage.failed,
+                    90,
+                    "生成失败，未得到可用版本",
+                    {"failedStage": "code_review", "retryCount": repaired_result.retries},
+                )
+                raise PipelineExecutionError(
+                    f"Generated code failed QA after code review repair: {error_messages}",
+                    stage=PipelineStage.qa_checking.value,
+                    retry_count=repaired_result.retries,
+                )
 
             rerun_review = await self.code_reviewer.review(repaired_result.code)
             return repaired_result, rerun_review
@@ -212,79 +362,243 @@ class PipelineOrchestrator:
             )
         return qa_result, review_result
 
-    async def _stage_intent_parse(self, description: str) -> GameSpec:
+    async def _stage_intent_parse(
+        self,
+        description: str,
+        game_id: str,
+        user_id: str,
+        progress_cb: ProgressCallback,
+    ) -> GameSpec:
         """Stage 02: description to GameSpec."""
         last_exc = None
-        for attempt in range(3):
+        max_attempts = DEFAULT_STAGE_TOTAL_ATTEMPTS
+        for attempt in range(1, max_attempts + 1):
             try:
-                spec = await self.dialogue_engine.parse_description_to_spec(description)
+                spec = await self.dialogue_engine.parse_description_to_spec(
+                    description,
+                    allow_fallback=False,
+                )
                 logger.info(f"Intent parse succeeded on attempt {attempt}: game_type={spec.game_type}")
                 return spec
             except Exception as exc:
                 last_exc = exc
                 logger.warning(f"Intent parse attempt {attempt} failed: {exc}")
+                if attempt < max_attempts:
+                    self._notify(
+                        progress_cb,
+                        PipelineStage.intent_parsing,
+                        15,
+                        f"意图解析失败，重试中（{attempt}/{max_attempts - 1}）",
+                        self._retry_details(game_id, user_id, attempt, max_attempts, exc),
+                    )
                 await asyncio.sleep(0.5)
 
         logger.error(f"Intent parse failed after retries, using defaults: {last_exc}")
+        self._log_stage_failure(
+            game_id=game_id,
+            user_id=user_id,
+            stage=PipelineStage.intent_parsing.value,
+            error=self._error_message(last_exc),
+            retry_count=max_attempts - 1,
+            fallback="mock_parse",
+        )
+        self._notify(
+            progress_cb,
+            PipelineStage.intent_parsing,
+            18,
+            "意图解析失败，已切换默认解析继续生成",
+            {"gameId": game_id, "userId": user_id, "fallback": "mock_parse"},
+        )
         from .dialogue_engine import _mock_parse
 
         return _mock_parse(description)
 
-    async def _stage_design(self, spec: GameSpec) -> GDD:
+    async def _stage_design(
+        self,
+        spec: GameSpec,
+        game_id: str,
+        user_id: str,
+        progress_cb: ProgressCallback,
+    ) -> GDD:
         """Stage 03: GameSpec to GDD."""
-        try:
-            return await self.game_designer.design(spec)
-        except Exception as exc:
-            logger.warning(f"Game designer failed ({exc}), using defaults")
-            return GDD()
+        max_attempts = DEFAULT_STAGE_TOTAL_ATTEMPTS
+        last_exc: Exception | None = None
 
-    def _stage_match_template(self, spec: GameSpec) -> TemplateMatchResult:
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return await self.game_designer.design(spec)
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(f"Game designer attempt {attempt} failed ({exc})")
+                if attempt < max_attempts:
+                    self._notify(
+                        progress_cb,
+                        PipelineStage.designing,
+                        30,
+                        f"游戏数值设计失败，重试中（{attempt}/{max_attempts - 1}）",
+                        self._retry_details(game_id, user_id, attempt, max_attempts, exc),
+                    )
+                    await asyncio.sleep(0.5)
+
+        self._log_stage_failure(
+            game_id=game_id,
+            user_id=user_id,
+            stage=PipelineStage.designing.value,
+            error=self._error_message(last_exc),
+            retry_count=max_attempts - 1,
+            fallback="default_gdd",
+        )
+        self._notify(
+            progress_cb,
+            PipelineStage.designing,
+            33,
+            "游戏数值设计失败，已切换默认参数继续生成",
+            {"gameId": game_id, "userId": user_id, "fallback": "default_gdd"},
+        )
+        return GDD()
+
+    def _stage_match_template(
+        self,
+        spec: GameSpec,
+        game_id: str,
+        user_id: str,
+        progress_cb: ProgressCallback,
+    ) -> TemplateMatchResult:
         """Stage 04: template matching."""
-        try:
-            template_id, confidence = self.template_engine.match(spec)
-            path = (
-                "template" if confidence >= settings.TEMPLATE_CONFIDENCE_THRESHOLD
-                else "hybrid" if confidence >= settings.HYBRID_CONFIDENCE_THRESHOLD
-                else "llm"
-            )
-            logger.info(f"Template match: {template_id} (confidence={confidence:.2f}, path={path})")
-            return TemplateMatchResult(
-                template_id=template_id,
-                confidence=confidence,
-                path=path,
-            )
-        except Exception as exc:
-            logger.warning(f"Template match failed ({exc}), using LLM path")
-            return TemplateMatchResult(path="llm")
+        max_attempts = DEFAULT_STAGE_TOTAL_ATTEMPTS
+        last_exc: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                template_id, confidence = self.template_engine.match(spec)
+                path = (
+                    "template" if confidence >= settings.TEMPLATE_CONFIDENCE_THRESHOLD
+                    else "hybrid" if confidence >= settings.HYBRID_CONFIDENCE_THRESHOLD
+                    else "llm"
+                )
+                logger.info(f"Template match: {template_id} (confidence={confidence:.2f}, path={path})")
+                return TemplateMatchResult(
+                    template_id=template_id,
+                    confidence=confidence,
+                    path=path,
+                )
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(f"Template match attempt {attempt} failed ({exc})")
+                if attempt < max_attempts:
+                    self._notify(
+                        progress_cb,
+                        PipelineStage.template_matching,
+                        45,
+                        f"模板匹配失败，重试中（{attempt}/{max_attempts - 1}）",
+                        self._retry_details(game_id, user_id, attempt, max_attempts, exc),
+                    )
+
+        self._log_stage_failure(
+            game_id=game_id,
+            user_id=user_id,
+            stage=PipelineStage.template_matching.value,
+            error=self._error_message(last_exc),
+            retry_count=max_attempts - 1,
+            fallback="llm_path",
+        )
+        return TemplateMatchResult(path="llm")
 
     async def _stage_generate_code(
         self,
         spec: GameSpec,
         gdd: GDD,
         match: TemplateMatchResult,
+        game_id: str,
+        user_id: str,
+        progress_cb: ProgressCallback,
         description: str = "",
     ):
         """Stage 05: generate HTML code."""
-        result = await self.code_generator.generate(
-            spec=spec,
-            gdd=gdd,
-            template_id=match.template_id,
-            confidence=match.confidence,
-            description=description,
-        )
-        logger.info(f"Code generated: strategy={result.strategy}, size={result.code_size_bytes}B")
-        return result
+        max_attempts = DEFAULT_STAGE_TOTAL_ATTEMPTS
+        last_exc: Exception | None = None
+        attempts_used = 0
 
-    async def _stage_qa(self, code: str, spec: GameSpec) -> QAResult:
+        for attempt in range(1, max_attempts + 1):
+            attempts_used = attempt
+            try:
+                result = await self.code_generator.generate(
+                    spec=spec,
+                    gdd=gdd,
+                    template_id=match.template_id,
+                    confidence=match.confidence,
+                    description=description,
+                    allow_fallback=attempt == max_attempts,
+                )
+                logger.info(f"Code generated: strategy={result.strategy}, size={result.code_size_bytes}B")
+                return result
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(f"Code generation attempt {attempt} failed: {exc}")
+                if attempt < max_attempts and self._is_retryable_generation_error(exc):
+                    self._notify(
+                        progress_cb,
+                        PipelineStage.code_generating,
+                        60,
+                        f"代码生成失败，重试中（{attempt}/{max_attempts - 1}）",
+                        self._retry_details(game_id, user_id, attempt, max_attempts, exc),
+                    )
+                    await asyncio.sleep(min(attempt, 2))
+                    continue
+                break
+
+        self._log_stage_failure(
+            game_id=game_id,
+            user_id=user_id,
+            stage=PipelineStage.code_generating.value,
+            error=self._error_message(last_exc),
+            retry_count=max(0, attempts_used - 1),
+        )
+        raise PipelineExecutionError(
+            f"Code generation failed after {attempts_used} attempts: {self._error_message(last_exc)}",
+            stage=PipelineStage.code_generating.value,
+            retry_count=max(0, attempts_used - 1),
+        )
+
+    async def _stage_qa(
+        self,
+        code: str,
+        spec: GameSpec,
+        game_id: str,
+        user_id: str,
+        progress_cb: ProgressCallback,
+    ) -> QAResult:
         """Stage 06: QA with auto-fix."""
         try:
+            def on_retry(retry_index: int, max_retries: int, errors: list[QACheckError]) -> None:
+                self._notify(
+                    progress_cb,
+                    PipelineStage.qa_checking,
+                    78,
+                    f"质量检查未通过，正在自动修复（{retry_index}/{max_retries}）",
+                    {
+                        "gameId": game_id,
+                        "userId": user_id,
+                        "retry": retry_index,
+                        "maxRetries": max_retries,
+                        "errorCount": len(errors),
+                        "errors": [error.message for error in errors[:3]],
+                    },
+                )
+
             return await self.qa_pipeline.run_with_auto_fix(
                 code=code,
                 game_spec=spec,
                 max_retries=settings.QA_MAX_RETRIES,
+                retry_cb=on_retry,
             )
         except Exception as exc:
             logger.error(f"QA pipeline error: {exc}")
+            self._log_stage_failure(
+                game_id=game_id,
+                user_id=user_id,
+                stage=PipelineStage.qa_checking.value,
+                error=self._error_message(exc),
+            )
             return QAResult(success=False, code=code, retries=0)
 
     async def iterate(
@@ -293,33 +607,111 @@ class PipelineOrchestrator:
         current_code: str,
         feedback: str,
         conversation: list,
+        user_id: str = "system",
         progress_cb: ProgressCallback = None,
     ) -> dict:
         """Stage 07: Incremental code modification."""
-        self._notify(progress_cb, PipelineStage.code_generating, 30, "Analyzing requested changes")
-
-        try:
-            updated_code, iter_type = await self.code_generator.iterate(
-                current_code=current_code,
-                feedback=feedback,
-                conversation=conversation,
-            )
-        except Exception as exc:
-            logger.error(f"Iteration failed: {exc}")
-            updated_code = current_code
-            iter_type = None
-
-        self._notify(progress_cb, PipelineStage.qa_checking, 70, "Validating iterated code")
-        qa = await self.qa_pipeline.run_with_auto_fix(
-            code=updated_code,
-            max_retries=1,
+        max_attempts = DEFAULT_STAGE_TOTAL_ATTEMPTS
+        self._notify(
+            progress_cb,
+            PipelineStage.code_generating,
+            30,
+            "分析修改意图",
+            {"gameId": game_id, "userId": user_id, "attempt": 1, "maxAttempts": max_attempts},
         )
 
-        self._notify(progress_cb, PipelineStage.completed, 100, "Iteration completed")
+        last_exc: Exception | None = None
+        updated_code = current_code
+        iter_type = None
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                updated_code, iter_type = await self.code_generator.iterate(
+                    current_code=current_code,
+                    feedback=feedback,
+                    conversation=conversation,
+                    allow_fallback=attempt == max_attempts,
+                )
+                break
+            except Exception as exc:
+                last_exc = exc
+                logger.error(f"Iteration attempt {attempt} failed: {exc}")
+                if attempt < max_attempts and self._is_retryable_generation_error(exc):
+                    self._notify(
+                        progress_cb,
+                        PipelineStage.code_generating,
+                        40,
+                        f"代码修改失败，正在重试（{attempt}/{max_attempts - 1}）",
+                        self._retry_details(game_id, user_id, attempt, max_attempts, exc),
+                    )
+                    await asyncio.sleep(min(attempt, 2))
+                    continue
+
+                self._log_stage_failure(
+                    game_id=game_id,
+                    user_id=user_id,
+                    stage=PipelineStage.code_generating.value,
+                    error=self._error_message(last_exc),
+                    retry_count=max_attempts - 1,
+                )
+                raise PipelineExecutionError(
+                    f"Iteration failed after {attempt} attempts: {self._error_message(last_exc)}",
+                    stage=PipelineStage.code_generating.value,
+                    retry_count=max(0, attempt - 1),
+                )
+
+        self._notify(
+            progress_cb,
+            PipelineStage.qa_checking,
+            70,
+            "质量检查与自动修复",
+            {"gameId": game_id, "userId": user_id, "attempt": 1, "maxAttempts": settings.QA_MAX_RETRIES + 1},
+        )
+
+        def on_retry(retry_index: int, max_retries: int, errors: list[QACheckError]) -> None:
+            self._notify(
+                progress_cb,
+                PipelineStage.qa_checking,
+                78,
+                f"修改后的质量检查未通过，正在修复（{retry_index}/{max_retries}）",
+                {
+                    "gameId": game_id,
+                    "userId": user_id,
+                    "retry": retry_index,
+                    "maxRetries": max_retries,
+                    "errorCount": len(errors),
+                    "errors": [error.message for error in errors[:3]],
+                },
+            )
+
+        qa = await self.qa_pipeline.run_with_auto_fix(
+            code=updated_code,
+            max_retries=settings.QA_MAX_RETRIES,
+            retry_cb=on_retry,
+        )
+
+        if not qa.success:
+            error_messages = self._format_errors(qa.last_errors)
+            self._log_stage_failure(
+                game_id=game_id,
+                user_id=user_id,
+                stage=PipelineStage.qa_checking.value,
+                error=error_messages,
+                retry_count=qa.retries,
+            )
+            raise PipelineExecutionError(
+                f"Iterated code failed QA: {error_messages}",
+                stage=PipelineStage.qa_checking.value,
+                retry_count=qa.retries,
+            )
+
+        self._notify(progress_cb, PipelineStage.completed, 100, "迭代完成")
         return {
             "html_code": qa.code,
             "iteration_type": iter_type.value if iter_type else "element_change",
             "qa_passed": qa.success,
+            "qa_retries": qa.retries,
+            "iteration_retries": max(0, attempt - 1),
         }
 
     def _compute_quality(
@@ -416,9 +808,94 @@ class PipelineOrchestrator:
         stage: PipelineStage,
         pct: int,
         msg: str,
+        details: Optional[dict[str, Any]] = None,
     ) -> None:
         if cb:
             try:
-                cb(stage.value, pct, msg)
+                cb(stage.value, pct, msg, details)
             except Exception:
                 pass
+
+    @staticmethod
+    def _error_message(error: Optional[Exception | BaseException | str]) -> str:
+        if error is None:
+            return "unknown error"
+        if isinstance(error, str):
+            return error
+        return str(error)
+
+    @classmethod
+    def _retry_details(
+        cls,
+        game_id: str,
+        user_id: str,
+        retry_index: int,
+        max_attempts: int,
+        error: Optional[Exception | BaseException | str],
+    ) -> dict[str, Any]:
+        return {
+            "gameId": game_id,
+            "userId": user_id,
+            "retry": retry_index,
+            "maxRetries": max_attempts - 1,
+            "attempt": retry_index + 1,
+            "maxAttempts": max_attempts,
+            "error": cls._error_message(error),
+        }
+
+    @staticmethod
+    def _is_retryable_generation_error(error: Exception | BaseException | str | None) -> bool:
+        if error is None:
+            return False
+
+        if isinstance(error, (httpx.TimeoutException, httpx.NetworkError)):
+            return True
+
+        if isinstance(error, httpx.HTTPStatusError):
+            status_code = error.response.status_code if error.response is not None else None
+            return status_code == 429 or bool(status_code and status_code >= 500)
+
+        response = getattr(error, "response", None)
+        status_code = getattr(response, "status_code", None) or getattr(response, "status", None)
+        if isinstance(status_code, int):
+            return status_code == 429 or status_code >= 500
+
+        error_code = str(getattr(error, "code", "") or "").upper()
+        if error_code in {"ECONNRESET", "ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "ETIMEDOUT"}:
+            return True
+
+        message = str(error).lower()
+        retryable_markers = (
+            "temporary",
+            "transient",
+            "timeout",
+            "timed out",
+            "temporarily unavailable",
+            "service unavailable",
+            "connection reset",
+            "socket hang up",
+            "rate limit",
+            "too many requests",
+        )
+        return any(marker in message for marker in retryable_markers)
+
+    def _log_stage_failure(
+        self,
+        *,
+        game_id: str,
+        user_id: str,
+        stage: str,
+        error: str,
+        retry_count: int = 0,
+        fallback: Optional[str] = None,
+    ) -> None:
+        payload = {
+            "game_id": game_id,
+            "user_id": user_id,
+            "stage": stage,
+            "retry_count": retry_count,
+            "error": error,
+        }
+        if fallback:
+            payload["fallback"] = fallback
+        logger.error("PIPELINE_STAGE_FAILURE %s", json.dumps(payload, ensure_ascii=False))

@@ -818,9 +818,33 @@ io('http://localhost:3002/ws', {
 }
 ```
 
+#### `gen:error`
+
+```json
+{
+  "type": "gen:error",
+  "gameId": "string",
+  "data": {
+    "success": false,
+    "error": "Generated code failed QA",
+    "details": {
+      "stage": "qa_checking",
+      "retryCount": 3
+    }
+  },
+  "stage": "qa_checking",
+  "details": {
+    "stage": "qa_checking",
+    "retryCount": 3
+  },
+  "status": "error",
+  "timestamp": 0
+}
+```
+
 #### `notification`
 
-通知事件，`data` 结构见 `Notification`。
+通知事件，`data` 结构见 `Notification`。生成失败时仍会发 `type="error"` 的通知作为兼容补充，但终态失败事件以 `gen:error` 为准。
 
 ### 客户端事件
 

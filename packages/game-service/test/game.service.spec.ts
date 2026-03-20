@@ -1,308 +1,242 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
-import { HttpService } from '@nestjs/axios';
-import { PrismaService } from '../src/prisma/prisma.service';
+import axios from 'axios';
+import { ConfigService } from '@nestjs/config';
+import { GameService } from '../src/game/game.service';
+
+jest.mock('axios');
+
+const mockedAxios = axios as jest.Mocked<typeof axios>;
 
 describe('GameService', () => {
-  let service: any;
-  let prismaService: PrismaService;
-  let httpService: HttpService;
+  let service: GameService;
+  let prisma: any;
+  let bundleService: any;
+  let statsService: any;
+  let configService: ConfigService;
+  let wsGateway: any;
 
-  const mockGame = {
-    id: 'game-123',
-    authorId: 'user-123',
-    title: 'Test Game',
-    description: 'A test game',
-    gameType: 'dodge',
-    code: '<html><canvas></canvas></html>',
-    status: 'draft',
-    publishedAt: null,
-    createdAt: new Date('2024-01-01'),
-    updatedAt: new Date('2024-01-01'),
-    playCount: BigInt(0),
-    likeCount: BigInt(0),
-    forkCount: BigInt(0),
-    commentCount: 0,
-    version: 1,
-    forkDepth: 0,
-  };
-
-  const mockPrismaService = {
-    game: {
-      create: jest.fn(),
-      findUnique: jest.fn(),
-      update: jest.fn(),
-      findMany: jest.fn(),
-    },
-  };
-
-  const mockHttpService = {
-    post: jest.fn(),
-  };
-
-  beforeEach(async () => {
-    const GameService = class {
-      constructor(
-        private prisma: any,
-        private httpService: any,
-      ) {}
-
-      async create(userId: string, data: any) {
-        const gameData = {
-          id: 'game-' + Date.now(),
-          authorId: userId,
-          title: data.title,
-          description: data.description,
-          gameType: 'dodge',
-          status: 'draft',
-          playCount: BigInt(0),
-          likeCount: BigInt(0),
-          forkCount: BigInt(0),
-          commentCount: 0,
-          version: 1,
-          forkDepth: 0,
-        };
-
-        return this.prisma.game.create({
-          data: gameData,
-        });
-      }
-
-      async findById(id: string) {
-        return this.prisma.game.findUnique({
-          where: { id },
-        });
-      }
-
-      async publish(gameId: string, userId: string) {
-        const game = await this.prisma.game.findUnique({
-          where: { id: gameId },
-        });
-
-        if (!game) {
-          throw new NotFoundException('Game not found');
-        }
-
-        if (game.authorId !== userId) {
-          throw new ForbiddenException('Not authorized');
-        }
-
-        if (game.status === 'published') {
-          throw new BadRequestException('Game already published');
-        }
-
-        return this.prisma.game.update({
-          where: { id: gameId },
-          data: {
-            status: 'published',
-            publishedAt: new Date(),
-          },
-        });
-      }
-
-      async iterate(gameId: string, userId: string, changes: any) {
-        const game = await this.prisma.game.findUnique({
-          where: { id: gameId },
-        });
-
-        if (!game) {
-          throw new NotFoundException('Game not found');
-        }
-
-        if (game.authorId !== userId) {
-          throw new ForbiddenException('Not authorized');
-        }
-
-        return this.prisma.game.update({
-          where: { id: gameId },
-          data: changes,
-        });
-      }
-
-      async getPlayData(gameId: string) {
-        const game = await this.prisma.game.findUnique({
-          where: { id: gameId },
-        });
-
-        if (!game) {
-          throw new NotFoundException('Game not found');
-        }
-
-        // Increment play count
-        return this.prisma.game.update({
-          where: { id: gameId },
-          data: {
-            playCount: {
-              increment: 1,
-            },
-          },
-        });
-      }
+  beforeEach(() => {
+    prisma = {
+      game: {
+        create: jest.fn(),
+        findUnique: jest.fn(),
+        update: jest.fn(),
+        findMany: jest.fn(),
+        count: jest.fn(),
+      },
     };
+    bundleService = {
+      getBundle: jest.fn(),
+      saveBundle: jest.fn(),
+      getLatestBundle: jest.fn(),
+      getBundleHistory: jest.fn(),
+    };
+    statsService = {
+      incrementPlayCount: jest.fn(),
+    };
+    wsGateway = {
+      emitGenerationProgress: jest.fn(),
+      emitGenerationComplete: jest.fn(),
+      emitGenerationError: jest.fn(),
+      emitNotification: jest.fn(),
+    };
+    configService = {
+      get: jest.fn((key: string, defaultValue?: string) => {
+        const values: Record<string, string> = {
+          AI_ENGINE_URL: 'http://ai-engine.test',
+          PUBLIC_API_BASE_URL: 'https://www.gamevallies.com',
+          APP_URL: 'https://www.gamevallies.com',
+        };
+        return values[key] ?? defaultValue;
+      }),
+    } as unknown as ConfigService;
 
-    service = new GameService(mockPrismaService as any, mockHttpService as any);
-    prismaService = mockPrismaService as any;
-    httpService = mockHttpService as any;
+    mockedAxios.post.mockReset();
+    jest.useRealTimers();
 
-    jest.clearAllMocks();
+    service = new GameService(
+      prisma,
+      bundleService,
+      statsService,
+      configService,
+      wsGateway,
+    );
   });
 
-  describe('create', () => {
-    it('should successfully create a new game', async () => {
-      const createData = {
-        title: 'New Game',
-        description: 'A new game description',
-      };
-
-      const newGame = { ...mockGame, title: createData.title };
-      mockPrismaService.game.create.mockResolvedValueOnce(newGame);
-
-      const result = await service.create('user-123', createData);
-
-      expect(result).toEqual(newGame);
-      expect(mockPrismaService.game.create).toHaveBeenCalled();
-    });
-
-    it('should initialize game with draft status', async () => {
-      const createData = {
-        title: 'New Game',
-        description: 'A description',
-      };
-
-      const newGame = { ...mockGame, status: 'draft' };
-      mockPrismaService.game.create.mockResolvedValueOnce(newGame);
-
-      const result = await service.create('user-123', createData);
-
-      expect(result.status).toBe('draft');
-    });
+  afterEach(() => {
+    jest.useRealTimers();
   });
 
-  describe('findById', () => {
-    it('should return game when found', async () => {
-      mockPrismaService.game.findUnique.mockResolvedValueOnce(mockGame);
-
-      const result = await service.findById('game-123');
-
-      expect(result).toEqual(mockGame);
-      expect(mockPrismaService.game.findUnique).toHaveBeenCalledWith({
-        where: { id: 'game-123' },
-      });
-    });
-
-    it('should return null when game not found', async () => {
-      mockPrismaService.game.findUnique.mockResolvedValueOnce(null);
-
-      const result = await service.findById('nonexistent');
-
-      expect(result).toBeNull();
-    });
-  });
-
-  describe('publish', () => {
-    it('should successfully publish a draft game', async () => {
-      const draftGame = { ...mockGame, status: 'draft' };
-      const publishedGame = { ...draftGame, status: 'published', publishedAt: new Date() };
-
-      mockPrismaService.game.findUnique.mockResolvedValueOnce(draftGame);
-      mockPrismaService.game.update.mockResolvedValueOnce(publishedGame);
-
-      const result = await service.publish('game-123', 'user-123');
-
-      expect(result.status).toBe('published');
-      expect(result.publishedAt).toBeDefined();
-    });
-
-    it('should throw NotFoundException when game not found', async () => {
-      mockPrismaService.game.findUnique.mockResolvedValueOnce(null);
-
-      await expect(service.publish('nonexistent', 'user-123')).rejects.toThrow(
-        NotFoundException
-      );
-    });
-
-    it('should throw ForbiddenException when not owner', async () => {
-      mockPrismaService.game.findUnique.mockResolvedValueOnce(mockGame);
-
-      await expect(service.publish('game-123', 'different-user')).rejects.toThrow(
-        ForbiddenException
-      );
-    });
-
-    it('should throw BadRequestException when already published', async () => {
-      const publishedGame = { ...mockGame, status: 'published' };
-      mockPrismaService.game.findUnique.mockResolvedValueOnce(publishedGame);
-
-      await expect(service.publish('game-123', 'user-123')).rejects.toThrow(
-        BadRequestException
-      );
-    });
-  });
-
-  describe('iterate', () => {
-    it('should successfully iterate on owned game', async () => {
-      const changes = {
-        title: 'Updated Title',
-        code: '<html><canvas></canvas></html>',
-      };
-
-      const updatedGame = { ...mockGame, ...changes };
-      mockPrismaService.game.findUnique.mockResolvedValueOnce(mockGame);
-      mockPrismaService.game.update.mockResolvedValueOnce(updatedGame);
-
-      const result = await service.iterate('game-123', 'user-123', changes);
-
-      expect(result.title).toBe('Updated Title');
-      expect(mockPrismaService.game.update).toHaveBeenCalledWith({
-        where: { id: 'game-123' },
-        data: changes,
-      });
-    });
-
-    it('should throw ForbiddenException when not owner', async () => {
-      mockPrismaService.game.findUnique.mockResolvedValueOnce(mockGame);
-
-      await expect(
-        service.iterate('game-123', 'different-user', { title: 'Hacked' })
-      ).rejects.toThrow(ForbiddenException);
-    });
-
-    it('should throw NotFoundException when game not found', async () => {
-      mockPrismaService.game.findUnique.mockResolvedValueOnce(null);
-
-      await expect(
-        service.iterate('nonexistent', 'user-123', { title: 'Updated' })
-      ).rejects.toThrow(NotFoundException);
-    });
-  });
-
-  describe('getPlayData', () => {
-    it('should increment play count', async () => {
-      const gameWithPlays = { ...mockGame, playCount: BigInt(5) };
-      mockPrismaService.game.findUnique.mockResolvedValueOnce(gameWithPlays);
-
-      const updatedGame = { ...gameWithPlays, playCount: BigInt(6) };
-      mockPrismaService.game.update.mockResolvedValueOnce(updatedGame);
-
-      const result = await service.getPlayData('game-123');
-
-      expect(result.playCount).toBe(BigInt(6));
-      expect(mockPrismaService.game.update).toHaveBeenCalledWith({
-        where: { id: 'game-123' },
+  it('does not retry ai-engine 504 responses and persists structured failure context', async () => {
+    mockedAxios.post.mockRejectedValue({
+      message: 'Request failed with status code 504',
+      response: {
+        status: 504,
         data: {
-          playCount: {
-            increment: 1,
+          detail: {
+            message: 'Generated code failed QA',
+            failed_stage: 'qa_checking',
+            retry_count: 3,
           },
         },
+      },
+    });
+
+    await (service as any).runPipeline('game-504', 'user-504', 'make a runner');
+
+    expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+    expect(prisma.game.update).toHaveBeenCalledWith({
+      where: { id: 'game-504' },
+      data: expect.objectContaining({
+        status: 'failed',
+        failedStage: 'qa_checking',
+        failedReason: 'Generated code failed QA',
+        retryCount: 3,
+        lastErrorAt: expect.any(Date),
+      }),
+    });
+    expect(wsGateway.emitNotification).toHaveBeenCalledWith(
+      'user-504',
+      expect.objectContaining({
+        type: 'error',
+        gameId: 'game-504',
+      }),
+    );
+    expect(wsGateway.emitGenerationError).toHaveBeenCalledWith(
+      'user-504',
+      'game-504',
+      'Generated code failed QA',
+      expect.objectContaining({
+        stage: 'qa_checking',
+        retryCount: 3,
+      }),
+    );
+  });
+
+  it('retries transient network failures and publishes after a later success', async () => {
+    jest.useFakeTimers();
+
+    mockedAxios.post
+      .mockRejectedValueOnce({
+        code: 'ECONNRESET',
+        message: 'socket hang up',
+      })
+      .mockResolvedValueOnce({
+        data: {
+          html_code: '<!DOCTYPE html><html><head><title>测试游戏</title></head><body></body></html>',
+          strategy: 'llm',
+          qa_passed: true,
+          qa_retries: 1,
+          game_spec: { game_type: 'runner' },
+          generation_time_ms: 1234,
+          code_size_bytes: 88,
+          quality_score: 91,
+          quality_breakdown: { qa_penalty: 0 },
+        },
       });
+
+    prisma.game.findUnique.mockResolvedValue({
+      title: 'Game abcdef12',
+    });
+    prisma.game.update.mockResolvedValue({});
+    bundleService.getBundle.mockResolvedValue(null);
+    bundleService.saveBundle.mockResolvedValue(undefined);
+
+    const runPromise = (service as any).runPipeline(
+      'game-network',
+      'user-network',
+      'make a runner',
+    );
+
+    await Promise.resolve();
+    await jest.runOnlyPendingTimersAsync();
+    await runPromise;
+
+    expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+    expect(wsGateway.emitGenerationProgress).toHaveBeenCalledWith(
+      'user-network',
+      'game-network',
+      'AI 生成服务请求失败，重试中（1/2）',
+      60,
+      expect.objectContaining({
+        stage: 'code_generating',
+        retry: 1,
+        maxRetries: 2,
+        attempt: 2,
+        maxAttempts: 3,
+      }),
+    );
+    expect(bundleService.saveBundle).toHaveBeenCalled();
+    expect(wsGateway.emitGenerationComplete).toHaveBeenCalledWith(
+      'user-network',
+      'game-network',
+      'https://www.gamevallies.com/games/game-network/preview',
+    );
+  });
+
+  it('retries iteration publish persistence before surfacing success', async () => {
+    jest.useFakeTimers();
+
+    mockedAxios.post.mockResolvedValue({
+      data: {
+        html_code: '<!DOCTYPE html><html><body>updated</body></html>',
+        iteration_type: 'element_change',
+        generation_time_ms: 456,
+        qa_retries: 1,
+        iteration_retries: 2,
+      },
     });
 
-    it('should throw NotFoundException when game not found', async () => {
-      mockPrismaService.game.findUnique.mockResolvedValueOnce(null);
-
-      await expect(service.getPlayData('nonexistent')).rejects.toThrow(
-        NotFoundException
-      );
+    prisma.game.findUnique.mockResolvedValue({
+      id: 'game-iter',
+      authorId: 'user-iter',
+      version: 1,
+      status: 'draft',
     });
+    prisma.game.update.mockResolvedValue({});
+    bundleService.getLatestBundle.mockResolvedValue({
+      htmlCode: '<html>old</html>',
+    });
+    bundleService.getBundleHistory.mockResolvedValue([]);
+    bundleService.getBundle
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        gameId: 'game-iter',
+        version: 2,
+      });
+    bundleService.saveBundle
+      .mockRejectedValueOnce(new Error('mongo temporarily unavailable'))
+      .mockResolvedValueOnce(undefined);
+
+    const runPromise = (service as any).runIteration(
+      'game-iter',
+      'user-iter',
+      'make it faster',
+      2,
+      [],
+      '<html>old</html>',
+    );
+
+    await Promise.resolve();
+    await jest.runOnlyPendingTimersAsync();
+    await runPromise;
+
+    expect(bundleService.saveBundle).toHaveBeenCalledTimes(2);
+    expect(wsGateway.emitGenerationProgress).toHaveBeenCalledWith(
+      'user-iter',
+      'game-iter',
+      '发布生成结果失败，重试中（1/2）',
+      90,
+      expect.objectContaining({
+        stage: 'publishing',
+        retry: 1,
+        maxRetries: 2,
+      }),
+    );
+    expect(wsGateway.emitGenerationComplete).toHaveBeenCalledWith(
+      'user-iter',
+      'game-iter',
+      'https://www.gamevallies.com/games/game-iter/preview',
+    );
   });
 });

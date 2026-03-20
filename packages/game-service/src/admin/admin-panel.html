@@ -228,10 +228,28 @@ tbody tr:hover{background:#f8fafc}
         <div class="stat-card"><div class="label">总点赞数</div><div class="value" id="s-likes">-</div></div>
         <div class="stat-card"><div class="label">总用户数</div><div class="value" id="s-users">-</div></div>
         <div class="stat-card"><div class="label">总 Fork 数</div><div class="value" id="s-forks">-</div></div>
+        <div class="stat-card"><div class="label">平均质量分</div><div class="value" id="s-quality">-</div></div>
+        <div class="stat-card"><div class="label">平均重试次数</div><div class="value" id="s-retries">-</div></div>
       </div>
       <div style="margin-bottom:16px">
         <h3 style="font-size:16px;font-weight:600;color:#1e293b;margin-bottom:12px">状态分布</h3>
         <div id="statusBars" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+      </div>
+      <div style="margin-bottom:16px">
+        <h3 style="font-size:16px;font-weight:600;color:#1e293b;margin-bottom:12px">失败阶段分布</h3>
+        <div id="failureStageBars" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+      </div>
+      <div style="margin-bottom:16px">
+        <h3 style="font-size:16px;font-weight:600;color:#1e293b;margin-bottom:12px">重试次数分布</h3>
+        <div id="retryBars" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+      </div>
+      <div style="margin-bottom:16px">
+        <h3 style="font-size:16px;font-weight:600;color:#1e293b;margin-bottom:12px">质量分分布</h3>
+        <div id="qualityBars" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+      </div>
+      <div style="margin-bottom:16px">
+        <h3 style="font-size:16px;font-weight:600;color:#1e293b;margin-bottom:12px">高频失败原因</h3>
+        <div id="failureReasonList" style="display:flex;flex-direction:column;gap:8px"></div>
       </div>
       <div style="display:flex;gap:10px">
         <button class="btn btn-primary" onclick="switchTab('create')">+ 添加游戏</button>
@@ -573,12 +591,56 @@ async function loadStats() {
     document.getElementById('s-likes').textContent = fmtNum(d.totalLikes);
     document.getElementById('s-users').textContent = fmtNum(d.totalUsers);
     document.getElementById('s-forks').textContent = fmtNum(d.totalForks);
+    document.getElementById('s-quality').textContent = Number(d.avgQualityScore || 0).toFixed(1);
+    document.getElementById('s-retries').textContent = Number(d.avgRetryCount || 0).toFixed(1);
 
     const bars = document.getElementById('statusBars');
     bars.innerHTML = '';
     const statusLabels = { published: '已发布', draft: '草稿', banned: '已封禁', review: '审核中', generating: '生成中', failed: '失败' };
     for (const [k, v] of Object.entries(d.byStatus || {})) {
       bars.innerHTML += `<div class="badge badge-${k}" style="font-size:13px;padding:6px 14px">${statusLabels[k] || k}: ${v}</div>`;
+    }
+
+    const failureBars = document.getElementById('failureStageBars');
+    failureBars.innerHTML = '';
+    const failedByStage = d.failedByStage || {};
+    if (!Object.keys(failedByStage).length) {
+      failureBars.innerHTML = '<div style="font-size:13px;color:#94a3b8">暂无失败阶段数据</div>';
+    } else {
+      for (const [k, v] of Object.entries(failedByStage)) {
+        failureBars.innerHTML += `<div class="badge badge-failed" style="font-size:13px;padding:6px 14px">${escHtml(k)}: ${v}</div>`;
+      }
+    }
+
+    const retryBars = document.getElementById('retryBars');
+    retryBars.innerHTML = '';
+    for (const [k, v] of Object.entries(d.retryBuckets || {})) {
+      retryBars.innerHTML += `<div class="badge badge-review" style="font-size:13px;padding:6px 14px">${escHtml(k)}: ${v}</div>`;
+    }
+
+    const qualityBars = document.getElementById('qualityBars');
+    qualityBars.innerHTML = '';
+    for (const [k, v] of Object.entries(d.qualityBuckets || {})) {
+      qualityBars.innerHTML += `<div class="badge badge-published" style="font-size:13px;padding:6px 14px">${escHtml(k)}: ${v}</div>`;
+    }
+
+    const failureReasonList = document.getElementById('failureReasonList');
+    failureReasonList.innerHTML = '';
+    const topFailureReasons = d.topFailureReasons || [];
+    if (!topFailureReasons.length) {
+      failureReasonList.innerHTML = '<div style="font-size:13px;color:#94a3b8">暂无高频失败原因</div>';
+    } else {
+      failureReasonList.innerHTML = topFailureReasons.map(item => (
+        `<div style="background:#fff;border:1px solid #fecdd3;border-radius:10px;padding:10px 12px">` +
+        `<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start">` +
+        `<div>` +
+        `<div style="font-size:12px;color:#9f1239;font-weight:600">${escHtml(item.stage || 'unknown')}</div>` +
+        `<div style="font-size:13px;color:#475569;margin-top:4px">${escHtml(item.reason || 'unknown error')}</div>` +
+        `</div>` +
+        `<div style="font-size:12px;color:#9f1239;white-space:nowrap">x${Number(item.count || 0)}</div>` +
+        `</div>` +
+        `</div>`
+      )).join('');
     }
   } catch (e) {
     toast('加载统计失败: ' + e.message, 'error');
@@ -1203,11 +1265,11 @@ function renderLogs(d) {
 
   let html = '<div class="table-wrap"><table><thead><tr>' +
     '<th>用户</th><th>提示词</th><th>游戏标题</th><th>状态</th>' +
-    '<th>策略</th><th>耗时</th><th>大小</th><th>QA</th><th>创建时间</th><th>操作</th>' +
+    '<th>失败信息</th><th>策略</th><th>耗时</th><th>大小</th><th>QA</th><th>创建时间</th><th>操作</th>' +
     '</tr></thead><tbody>';
 
   if (!d.items.length) {
-    html += '<tr><td colspan="10" style="text-align:center;color:#94a3b8;padding:40px">暂无记录</td></tr>';
+    html += '<tr><td colspan="11" style="text-align:center;color:#94a3b8;padding:40px">暂无记录</td></tr>';
   }
 
   for (const g of d.items) {
@@ -1219,18 +1281,28 @@ function renderLogs(d) {
     const timeMs = g.genTimeMs ? (g.genTimeMs / 1000).toFixed(1) + 's' : '-';
     const size = g.codeSizeBytes ? (g.codeSizeBytes / 1024).toFixed(1) + 'KB' : '-';
     const qa = g.qaPassed === true ? '<span style="color:#16a34a">通过</span>' : g.qaPassed === false ? '<span style="color:#dc2626">失败</span>' : '-';
+    const retrySummaryParts = [];
+    if (g.retryCount) retrySummaryParts.push('总重试 ' + g.retryCount);
+    if (Number(g.qaRetries || 0) > 0) retrySummaryParts.push('QA ' + g.qaRetries);
+    if (Number(g.iterationRetries || 0) > 0) retrySummaryParts.push('迭代 ' + g.iterationRetries);
+    const qaSummary = retrySummaryParts.length
+      ? qa + '<div style="font-size:11px;color:#64748b;margin-top:4px">' + retrySummaryParts.join(' / ') + '</div>'
+      : qa;
     const time = new Date(g.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
     const previewUrl = gameBaseUrl + '/games/' + g.gameId + '/preview';
+    const failureReason = g.failedReason ? (g.failedReason.length > 36 ? g.failedReason.slice(0, 36) + '...' : g.failedReason) : '-';
+    const failureSummary = g.failedStage ? (`<div style="font-size:12px;color:#dc2626">${escHtml(g.failedStage)}</div><div style="font-size:11px;color:#64748b" title="${escAttr(g.failedReason || '')}">${escHtml(failureReason)}</div>`) : '-';
 
     html += '<tr>' +
       '<td><strong>' + escHtml(author) + '</strong></td>' +
       '<td title="' + escAttr(g.description || '') + '">' + escHtml(desc) + '</td>' +
       '<td>' + escHtml(g.title) + '</td>' +
       '<td><span class="badge badge-' + stCls + '">' + st + '</span></td>' +
+      '<td>' + failureSummary + '</td>' +
       '<td>' + strategy + '</td>' +
       '<td>' + timeMs + '</td>' +
       '<td>' + size + '</td>' +
-      '<td>' + qa + '</td>' +
+      '<td>' + qaSummary + '</td>' +
       '<td>' + time + '</td>' +
       '<td>' +
         '<a href="' + previewUrl + '" target="_blank" class="btn btn-sm btn-secondary" style="margin-right:4px">预览</a>' +
@@ -1267,11 +1339,19 @@ async function showLogDetail(gameId) {
     detail += '<div class="form-group"><label>作者</label><div>' + escHtml(g.author?.displayName || g.author?.username || '-') + '</div></div>';
     detail += '<div class="form-group"><label>状态</label><div><span class="badge badge-' + g.status + '">' + g.status + '</span></div></div>';
     detail += '<div class="form-group"><label>创建时间</label><div>' + new Date(g.createdAt).toLocaleString('zh-CN') + '</div></div>';
+    detail += '<div class="form-group"><label>失败阶段</label><div>' + escHtml(g.failedStage || '-') + '</div></div>';
+    detail += '<div class="form-group"><label>失败重试次数</label><div>' + (g.retryCount ?? '-') + '</div></div>';
+    detail += '<div class="form-group"><label>最后失败时间</label><div>' + (g.lastErrorAt ? new Date(g.lastErrorAt).toLocaleString('zh-CN') : '-') + '</div></div>';
     detail += '<div class="form-group"><label>游戏链接</label><div><a href="' + previewUrl + '" target="_blank">' + previewUrl + '</a></div></div>';
     detail += '</div>';
 
     detail += '<div class="form-group" style="margin-top:16px"><label>用户提示词</label>';
     detail += '<div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:12px;font-size:13px;white-space:pre-wrap;max-height:200px;overflow-y:auto">' + escHtml(g.description || '(无)') + '</div></div>';
+
+    if (g.failedReason) {
+      detail += '<div class="form-group" style="margin-top:16px"><label>失败原因</label>';
+      detail += '<div style="background:#fff1f2;border:1px solid #fecdd3;border-radius:8px;padding:12px;font-size:13px;white-space:pre-wrap;color:#9f1239">' + escHtml(g.failedReason) + '</div></div>';
+    }
 
     if (meta.strategy || meta.genTimeMs || meta.qaPassed !== undefined) {
       detail += '<h4 style="margin-top:20px;margin-bottom:12px;font-size:14px;color:#1e293b">生成详情</h4>';
@@ -1280,6 +1360,7 @@ async function showLogDetail(gameId) {
       detail += '<div class="form-group"><label>耗时</label><div>' + (meta.genTimeMs ? (meta.genTimeMs/1000).toFixed(1) + 's' : '-') + '</div></div>';
       detail += '<div class="form-group"><label>QA 通过</label><div>' + (meta.qaPassed === true ? '是' : meta.qaPassed === false ? '否' : '-') + '</div></div>';
       detail += '<div class="form-group"><label>QA 重试</label><div>' + (meta.qaRetries ?? '-') + '</div></div>';
+      detail += '<div class="form-group"><label>迭代重试</label><div>' + (meta.iterationRetries ?? '-') + '</div></div>';
       detail += '<div class="form-group"><label>代码大小</label><div>' + (bundle?.codeSizeBytes ? (bundle.codeSizeBytes/1024).toFixed(1) + 'KB' : '-') + '</div></div>';
       detail += '<div class="form-group"><label>质量分</label><div>' + (meta.qualityScore ?? '-') + '</div></div>';
       detail += '<div class="form-group"><label>版本</label><div>v' + (bundle?.version || 0) + '</div></div>';

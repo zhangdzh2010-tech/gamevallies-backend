@@ -300,6 +300,7 @@ class GenerateCodeResponse(BaseModel):
 class IterateRequest(BaseModel):
     game_id: str
     feedback: str
+    user_id: str = "system"
     conversation: List[Dict[str, str]] = Field(default_factory=list)
     current_code: str
 
@@ -309,6 +310,8 @@ class IterateResponse(BaseModel):
     changes: List[str]
     iteration_type: str = "element_change"
     generation_time_ms: int
+    qa_retries: int = 0
+    iteration_retries: int = 0
 
 
 class QACheckRequest(BaseModel):

@@ -16,8 +16,10 @@ Legacy endpoints (kept for backward compatibility):
 
 from __future__ import annotations
 
+import asyncio
 import time
 import logging
+import httpx
 from fastapi import APIRouter, HTTPException
 from typing import Optional
 
@@ -36,8 +38,10 @@ from ..models import (
     RunPipelineResponse,
 )
 from ...engine.dialogue_engine import DialogueEngine, _sessions
-from ...engine.pipeline_orchestrator import PipelineOrchestrator
+from ...engine.pipeline_orchestrator import PipelineExecutionError, PipelineOrchestrator
 from ...engine.qa_pipeline import QAPipeline
+from ...config.settings import settings
+from ...services.websocket_manager import manager
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +51,41 @@ router = APIRouter(prefix="/api/v1/ai", tags=["ai"])
 _orchestrator = PipelineOrchestrator()
 _dialogue_engine = DialogueEngine()
 _qa_pipeline = QAPipeline()
+
+
+async def _relay_progress_to_game_service(
+    *,
+    game_id: str,
+    user_id: str,
+    stage: str,
+    pct: int,
+    message: str,
+    details: Optional[dict] = None,
+) -> None:
+    base_url = settings.GAME_SERVICE_UPSTREAM_URL.rstrip("/")
+    if not base_url or stage == "completed":
+        return
+
+    headers = {}
+    if settings.ADMIN_TOKEN:
+        headers["x-admin-token"] = settings.ADMIN_TOKEN
+
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            await client.post(
+                f"{base_url}/api/v1/internal/generation/progress",
+                json={
+                    "gameId": game_id,
+                    "userId": user_id,
+                    "stage": stage,
+                    "percentage": pct,
+                    "message": message,
+                    "details": details or {},
+                },
+                headers=headers,
+            )
+    except Exception as exc:
+        logger.debug("Failed to relay generation progress to game-service: %s", exc)
 
 
 # ===========================================================================
@@ -133,11 +172,45 @@ async def expand_prompt(request: dict):
 async def run_pipeline(request: RunPipelineRequest) -> RunPipelineResponse:
     """Run stages 02-06: description → GameSpec → GDD → code → QA → HTML."""
     try:
-        return await _orchestrator.run(request)
+        def progress_cb(stage: str, pct: int, message: str, details: Optional[dict] = None) -> None:
+            loop = asyncio.get_running_loop()
+            async def fanout() -> None:
+                await manager.send_progress(
+                    request.game_id,
+                    stage,
+                    pct,
+                    message,
+                    details,
+                )
+                await _relay_progress_to_game_service(
+                    game_id=request.game_id,
+                    user_id=request.user_id,
+                    stage=stage,
+                    pct=pct,
+                    message=message,
+                    details=details,
+                )
+
+            loop.create_task(fanout())
+
+        return await _orchestrator.run(request, progress_cb=progress_cb)
+    except PipelineExecutionError as e:
+        await manager.send_error(request.game_id, str(e))
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "message": str(e),
+                "failed_stage": e.stage,
+                "retry_count": e.retry_count,
+                "fallback": e.fallback,
+            },
+        )
     except RuntimeError as e:
+        await manager.send_error(request.game_id, str(e))
         raise HTTPException(status_code=504, detail=str(e))
     except Exception as e:
         logger.exception("Pipeline run error")
+        await manager.send_error(request.game_id, str(e))
         raise HTTPException(status_code=500, detail=f"Pipeline error: {str(e)}")
 
 
@@ -150,11 +223,34 @@ async def pipeline_iterate(request: IterateRequest) -> IterateResponse:
     """Stage 07: incremental code modification from user feedback."""
     start = time.time()
     try:
+        def progress_cb(stage: str, pct: int, message: str, details: Optional[dict] = None) -> None:
+            loop = asyncio.get_running_loop()
+            async def fanout() -> None:
+                await manager.send_progress(
+                    request.game_id,
+                    stage,
+                    pct,
+                    message,
+                    details,
+                )
+                await _relay_progress_to_game_service(
+                    game_id=request.game_id,
+                    user_id=request.user_id,
+                    stage=stage,
+                    pct=pct,
+                    message=message,
+                    details=details,
+                )
+
+            loop.create_task(fanout())
+
         result = await _orchestrator.iterate(
             game_id=request.game_id,
             current_code=request.current_code,
             feedback=request.feedback,
             conversation=request.conversation,
+            user_id=request.user_id,
+            progress_cb=progress_cb,
         )
         elapsed = int((time.time() - start) * 1000)
         return IterateResponse(
@@ -162,9 +258,23 @@ async def pipeline_iterate(request: IterateRequest) -> IterateResponse:
             changes=[f"Applied: {request.feedback}", f"Type: {result['iteration_type']}"],
             iteration_type=result["iteration_type"],
             generation_time_ms=elapsed,
+            qa_retries=result.get("qa_retries", 0),
+            iteration_retries=result.get("iteration_retries", 0),
+        )
+    except PipelineExecutionError as e:
+        await manager.send_error(request.game_id, str(e))
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": str(e),
+                "failed_stage": e.stage,
+                "retry_count": e.retry_count,
+                "fallback": e.fallback,
+            },
         )
     except Exception as e:
         logger.exception("Pipeline iterate error")
+        await manager.send_error(request.game_id, str(e))
         raise HTTPException(status_code=500, detail=f"Iteration error: {str(e)}")
 
 
