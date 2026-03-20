@@ -62,6 +62,10 @@ export function configureApp(app: INestApplication): void {
         path: 'users/:id/stats',
         method: RequestMethod.GET,
       },
+      {
+        path: '33zqDBay4T.txt',
+        method: RequestMethod.GET,
+      },
     ],
   });
 }

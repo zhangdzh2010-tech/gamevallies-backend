@@ -1,269 +1,225 @@
-# Gamevallies Environment Variable Guide
+# GameVallies Environment Sync Guide
 
-> Last updated: 2026-03-19
->
-> This document intentionally contains no real secrets.
-> Use placeholders here, and put actual values only in local `.env` files or your deployment secret manager.
+Last updated: 2026-03-20
 
----
+This document is the single source of truth for backend runtime and deployment
+variables. The current production setup uses one public domain:
 
-## 1. Files
+`https://www.gamevallies.com`
 
-| File | Repo | Purpose | Who uses it |
-|---|---|---|---|
-| `front/.env` | `gamevallies-front` | Frontend production build-time variables | Deployers |
-| `front/.env.development` | `gamevallies-front` | Frontend local development variables | Developers |
-| `front/.env.deploy` | `gamevallies-front` | Frontend deployment credentials | Deployers |
-| `backend/.env` | `gamevallies-backend` | Backend local development variables | Developers |
-| `backend/.env.deploy` | `gamevallies-backend` | Backend deployment variables | Deployers |
-| `backend/.env.example` | `gamevallies-backend` | Safe example template | Everyone |
+All public URLs returned to the mini program and H5 should use this domain.
+Service-to-service proxying inside `gv-user-service` uses private upstream URLs.
 
----
+## 1. File roles
 
-## 2. Frontend
+| File | Purpose |
+| --- | --- |
+| `backend/.env` | Local runtime reference file for backend services |
+| `backend/.env.example` | Runtime key template with the latest key set |
+| `backend/.env.deploy` | Actual deployment variables for local manual deploy |
+| `backend/.env.deploy.example` | Deploy template with the latest key set |
 
-### 2.1 Production build example
+## 2. Runtime variables
 
-Recommended unified-domain setup:
-
-```bash
-TARO_APP_API_BASE=https://<unified-api-domain>
-TARO_APP_AUTH_SERVICE_URL=https://<unified-api-domain>
-TARO_APP_GAME_SERVICE_URL=https://<unified-api-domain>
-TARO_APP_SOCIAL_SERVICE_URL=https://<unified-api-domain>
-TARO_APP_FEED_SERVICE_URL=https://<unified-api-domain>
-TARO_APP_AI_SERVICE_URL=https://<unified-api-domain>
-TARO_APP_GAME_CONTENT_URL=https://<unified-api-domain>
-TARO_APP_WS_URL=
-SENTRY_DSN=
-SEGMENT_WRITE_KEY=
-```
-
-Legacy multi-domain setup:
-
-```bash
-TARO_APP_AUTH_SERVICE_URL=https://<auth-gateway-domain>
-TARO_APP_GAME_SERVICE_URL=https://<game-gateway-domain>
-TARO_APP_SOCIAL_SERVICE_URL=https://<social-gateway-domain>
-TARO_APP_FEED_SERVICE_URL=https://<feed-gateway-domain>
-TARO_APP_AI_SERVICE_URL=https://<ai-gateway-domain>
-TARO_APP_WS_URL=
-TARO_APP_GAME_CONTENT_URL=https://<game-content-domain>
-SENTRY_DSN=
-SEGMENT_WRITE_KEY=
-```
-
-### 2.2 Local development example
-
-```bash
-TARO_APP_AUTH_SERVICE_URL=http://<your-ip>:3001
-TARO_APP_GAME_SERVICE_URL=http://<your-ip>:3002
-TARO_APP_SOCIAL_SERVICE_URL=http://<your-ip>:3003
-TARO_APP_FEED_SERVICE_URL=http://<your-ip>:3004
-TARO_APP_AI_SERVICE_URL=http://<your-ip>:8001
-TARO_APP_WS_URL=ws://<your-ip>:3001
-TARO_APP_GAME_CONTENT_URL=http://<your-ip>:3002
-SENTRY_DSN=
-SEGMENT_WRITE_KEY=
-```
-
-### 2.3 Frontend deploy credentials example
-
-```bash
-VOLCENGINE_ACCESS_KEY=<volcengine_access_key>
-VOLCENGINE_SECRET_KEY=<volcengine_secret_key>
-VOLCENGINE_REGION=cn-shanghai
-VOLCENGINE_REGISTRY=<registry_host>
-VOLCENGINE_REGISTRY_NAMESPACE=<registry_namespace>
-VOLCENGINE_REGISTRY_USERNAME=<registry_username>
-VOLCENGINE_REGISTRY_PASSWORD=<registry_password>
-IMAGE_TAG=latest
-```
-
----
-
-## 3. Backend
-
-### 3.1 Local development example
-
-```bash
-DATABASE_URL="mysql://<user>:<password>@localhost:3306/gamevallies"
-REDIS_URL=redis://:<password>@localhost:6379
-
-JWT_SECRET=<jwt_secret>
-JWT_REFRESH_SECRET=<jwt_refresh_secret>
-JWT_EXPIRES_IN=24h
-JWT_REFRESH_EXPIRES_IN=7d
-NODE_ENV=development
-
-USER_SERVICE_URL=http://localhost:3001
-GAME_SERVICE_URL=http://localhost:3002
-FEED_SERVICE_URL=http://localhost:3004
-AI_ENGINE_URL=http://localhost:8000
-GAME_SERVICE_UPSTREAM_URL=http://localhost:3002
-FEED_SERVICE_UPSTREAM_URL=http://localhost:3004
-PUBLIC_API_BASE_URL=http://localhost:3001
-APP_URL=http://localhost:3002
-
-LLM_MODE=real
-LLM_API_KEY=<llm_api_key>
-LLM_BASE_URL=https://<llm-base-url>
-LLM_MODEL=<llm_model>
-LLM_FAST_MODEL=<llm_fast_model>
-```
-
-### 3.2 Deployment example
-
-```bash
-VOLCENGINE_ACCESS_KEY=<volcengine_access_key>
-VOLCENGINE_SECRET_KEY=<volcengine_secret_key>
-VOLCENGINE_REGION=cn-shanghai
-VOLCENGINE_API_HOST=open.volcengineapi.com
-
-VOLCENGINE_VPC_ID=<vpc_id>
-VOLCENGINE_SUBNET_ID=<subnet_id>
-VOLCENGINE_SECURITY_GROUP_ID=<security_group_id>
-
-VOLCENGINE_REGISTRY=<registry_host>
-VOLCENGINE_REGISTRY_NAMESPACE=<registry_namespace>
-VOLCENGINE_REGISTRY_USERNAME=<registry_username>
-VOLCENGINE_REGISTRY_PASSWORD=<registry_password>
-VOLCENGINE_TOS_BUCKET=<deploy_bucket>
-IMAGE_TAG=latest
-
-FRONTEND_URL=https://<frontend-domain>
-USER_SERVICE_URL=https://<user-service-domain>
-GAME_SERVICE_URL=https://<game-service-domain>
-FEED_SERVICE_URL=https://<feed-service-domain>
-AI_ENGINE_URL=https://<ai-engine-inner-domain>
-GAME_SERVICE_UPSTREAM_URL=https://<game-service-domain>
-FEED_SERVICE_UPSTREAM_URL=https://<feed-service-domain>
-PUBLIC_API_BASE_URL=https://<unified-api-domain>
-
-DATABASE_URL=mysql://<user>:<password>@<mysql-host>:3306/gamevallies
-REDIS_URL=redis://:<password>@<redis-host>:6379
-
-JWT_SECRET=<jwt_secret>
-JWT_REFRESH_SECRET=<jwt_refresh_secret>
-CORS_ORIGIN=*
-
-LLM_MODE=real
-LLM_API_KEY=<llm_api_key>
-LLM_BASE_URL=https://<llm-base-url>
-LLM_MODEL=<llm_model>
-LLM_FAST_MODEL=<llm_fast_model>
-
-ALIYUN_ACCESS_KEY_ID=<aliyun_access_key_id>
-ALIYUN_ACCESS_KEY_SECRET=<aliyun_access_key_secret>
-ALIYUN_SMS_REGION_ID=cn-hangzhou
-ALIYUN_SMS_SIGN_NAME=智了科技
-ALIYUN_SMS_TPL_REGISTER=SMS_503430059
-ALIYUN_SMS_TPL_LOGIN=SMS_503470064
-
-WECHAT_MINIAPP_APP_ID=<wechat_miniapp_app_id>
-WECHAT_MINIAPP_APP_SECRET=<wechat_miniapp_app_secret>
-```
-
----
-
-## 4. Service Checklist
-
-### 4.1 User service
-
-Required:
+The backend currently expects the following runtime variables:
 
 ```bash
 NODE_ENV=production
 PORT=3001
-DATABASE_URL=mysql://<user>:<password>@<mysql-host>:3306/gamevallies
-REDIS_URL=redis://:<password>@<redis-host>:6379
-JWT_SECRET=<jwt_secret>
-JWT_REFRESH_SECRET=<jwt_refresh_secret>
 CORS_ORIGIN=*
-ALIYUN_ACCESS_KEY_ID=<aliyun_access_key_id>
-ALIYUN_ACCESS_KEY_SECRET=<aliyun_access_key_secret>
+ADMIN_TOKEN=admin123
+
+DATABASE_URL=mysql://gamevallies:gamevallies@2026@mysql5f64263dff43.rds.ivolces.com:3306/gamevallies
+REDIS_URL=redis://:gamevallies2026@redis-shzlsq69qwdo5877a.redis.ivolces.com:6379
+
+JWT_SECRET=02e9621b10d223a2aa1bd18b25bb1023802238dcf3de0f55ce3059c4e34290d0
+JWT_REFRESH_SECRET=56154800a4084f1b89ba9459923bdd6bc2ae57f11bb4a0b5c7b6c58a20982f0a
+
+PUBLIC_API_BASE_URL=https://www.gamevallies.com
+USER_SERVICE_URL=https://www.gamevallies.com
+GAME_SERVICE_URL=https://www.gamevallies.com
+FEED_SERVICE_URL=https://www.gamevallies.com
+AI_ENGINE_URL=https://sd6na7o7g00oknv60o970.apigateway-cn-shanghai-inner.volceapi.com
+GAME_SERVICE_UPSTREAM_URL=https://sd6n8j9fmqc3q4mg90pr0.apigateway-cn-shanghai-inner.volceapi.com
+FEED_SERVICE_UPSTREAM_URL=https://sd6n8kcmp8bgiaakgorig.apigateway-cn-shanghai-inner.volceapi.com
+
+ALIYUN_ACCESS_KEY_ID=LTAI5tFkYReK6cMtwcioNfGw
+ALIYUN_ACCESS_KEY_SECRET=9SGZeB5N2SmEpzBVvQKUc1yvDA2Iwx
 ALIYUN_SMS_REGION_ID=cn-hangzhou
 ALIYUN_SMS_SIGN_NAME=智了科技
 ALIYUN_SMS_TPL_REGISTER=SMS_503430059
 ALIYUN_SMS_TPL_LOGIN=SMS_503470064
-WECHAT_MINIAPP_APP_ID=<wechat_miniapp_app_id>
-WECHAT_MINIAPP_APP_SECRET=<wechat_miniapp_app_secret>
-GAME_SERVICE_UPSTREAM_URL=https://<game-service-domain>
-FEED_SERVICE_UPSTREAM_URL=https://<feed-service-domain>
+VERIFY_CODE_SEND_INTERVAL_SECONDS=60
+
+WECHAT_MINIAPP_APP_ID=wx77918f137dc7f5a5
+WECHAT_MINIAPP_APP_SECRET=895a0f5d6c9360fd744c6246ee6313a6
 ```
 
-### 4.2 Game service
+## 3. Deployment-only variables
 
-Required:
+Manual deployment also requires Volcengine and VCR variables:
 
 ```bash
-NODE_ENV=production
-PORT=3002
-DATABASE_URL=mysql://<user>:<password>@<mysql-host>:3306/gamevallies
-REDIS_URL=redis://:<password>@<redis-host>:6379
-JWT_SECRET=<jwt_secret>
-APP_URL=https://<game-service-domain>
-PUBLIC_API_BASE_URL=https://<unified-api-domain>
-GAME_SERVICE_URL=https://<game-service-domain>
-AI_ENGINE_URL=https://<ai-engine-inner-domain>
+VOLCENGINE_ACCESS_KEY=...
+VOLCENGINE_SECRET_KEY=...
+VOLCENGINE_REGION=cn-shanghai
+VOLCENGINE_API_HOST=open.volcengineapi.com
+VOLCENGINE_VPC_ID=vpc-7uh247krgohs72200skd7y04
+VOLCENGINE_SUBNET_ID=subnet-33guvcwoe43y86k70bqnvis8n
+VOLCENGINE_SECURITY_GROUP_ID=sg-7uh24dhusuf472200rliec4v
+
+VOLCENGINE_REGISTRY=gamevallies-repo-cn-shanghai.cr.volces.com
+VOLCENGINE_REGISTRY_NAMESPACE=gamevallies
+VOLCENGINE_REGISTRY_USERNAME="6448手机用户#UeaqaB@2112970785"
+VOLCENGINE_REGISTRY_PASSWORD="Gamevallies@2026"
+VOLCENGINE_TOS_BUCKET=gamevallies-deploy
+IMAGE_TAG=latest
 ```
 
-### 4.3 Feed service
-
-Required:
+If you deploy `ai-engine`, keep these variables in `.env.deploy` as well:
 
 ```bash
-NODE_ENV=production
-PORT=3004
-DATABASE_URL=mysql://<user>:<password>@<mysql-host>:3306/gamevallies
-REDIS_URL=redis://:<password>@<redis-host>:6379
-JWT_SECRET=<jwt_secret>
-APP_URL=https://<frontend-domain>
-GAME_SERVICE_URL=https://<game-service-domain>
-PUBLIC_API_BASE_URL=https://<unified-api-domain>
-```
-
-### 4.4 AI engine
-
-Required:
-
-```bash
-PORT=8000
-DATABASE_URL=mysql://<user>:<password>@<mysql-host>:3306/gamevallies
-REDIS_URL=redis://:<password>@<redis-host>:6379
 LLM_MODE=real
-LLM_API_KEY=<llm_api_key>
-LLM_BASE_URL=https://<llm-base-url>
-LLM_MODEL=<llm_model>
-LLM_FAST_MODEL=<llm_fast_model>
+LLM_API_KEY=...
+LLM_BASE_URL=https://api.minimaxi.com
+LLM_MODEL=MiniMax-M2.5
+LLM_FAST_MODEL=MiniMax-M2.5
 ```
 
----
+## 4. Public vs private URL rules
 
-## 5. Rules
+Use these rules consistently:
 
-### 5.1 Public vs internal URLs
+- `PUBLIC_API_BASE_URL` must be `https://www.gamevallies.com`
+- `USER_SERVICE_URL`, `GAME_SERVICE_URL`, `FEED_SERVICE_URL` should also be `https://www.gamevallies.com`
+- `AI_ENGINE_URL`, `GAME_SERVICE_UPSTREAM_URL`, `FEED_SERVICE_UPSTREAM_URL` must stay on the private `*-inner.volceapi.com` network
 
-```text
-Public:  xxx.apigateway-cn-shanghai.volceapi.com
-Internal: xxx.apigateway-cn-shanghai-inner.volceapi.com
-```
+Why:
 
-Use `PUBLIC_API_BASE_URL` for the browser-facing unified API domain.
-Use public service URLs as upstreams unless you have matching internal gateway domains.
-Use internal URLs only for service-to-service traffic inside the private network.
+- Frontend and mini program only know the single public domain
+- `gv-user-service` handles unified proxy routes such as `/api/v1/games`,
+  `/api/v1/feed`, `/api/v1/social`, `/api/v1/comments`, `/api/v1/ai`,
+  `/games/*`
+- Internal forwarding should not bounce back through the public domain
 
-### 5.2 Frontend production build
+## 5. SMS variable names that must be used
+
+The current code reads these exact names:
+
+- `ALIYUN_ACCESS_KEY_ID`
+- `ALIYUN_ACCESS_KEY_SECRET`
+- `ALIYUN_SMS_REGION_ID`
+- `ALIYUN_SMS_SIGN_NAME`
+- `ALIYUN_SMS_TPL_REGISTER`
+- `ALIYUN_SMS_TPL_LOGIN`
+- `VERIFY_CODE_SEND_INTERVAL_SECONDS`
+
+Do not use these old names anymore:
+
+- `ALIYUN_REGION_ID`
+- `ALIYUN_ENDPOINT`
+- `ALIYUN_SMS_TEMPLATE_CODE`
+- `ALIYUN_SMS_TEMPLATE_PARAM_CODE`
+- `ALIYUN_SMS_TEMPLATE_PARAM_MIN`
+
+## 6. Production function env checklist
+
+### 6.1 gv-user-service
+
+Must contain at least:
+
+- `NODE_ENV=production`
+- `PORT=3001`
+- `DATABASE_URL`
+- `REDIS_URL`
+- `JWT_SECRET`
+- `JWT_REFRESH_SECRET`
+- `CORS_ORIGIN=*`
+- `ADMIN_TOKEN=admin123`
+- `PUBLIC_API_BASE_URL=https://www.gamevallies.com`
+- `USER_SERVICE_URL=https://www.gamevallies.com`
+- `GAME_SERVICE_URL=https://www.gamevallies.com`
+- `FEED_SERVICE_URL=https://www.gamevallies.com`
+- `AI_ENGINE_URL=https://sd6na7o7g00oknv60o970.apigateway-cn-shanghai-inner.volceapi.com`
+- `GAME_SERVICE_UPSTREAM_URL=https://sd6n8j9fmqc3q4mg90pr0.apigateway-cn-shanghai-inner.volceapi.com`
+- `FEED_SERVICE_UPSTREAM_URL=https://sd6n8kcmp8bgiaakgorig.apigateway-cn-shanghai-inner.volceapi.com`
+- `ALIYUN_ACCESS_KEY_ID`
+- `ALIYUN_ACCESS_KEY_SECRET`
+- `ALIYUN_SMS_REGION_ID=cn-hangzhou`
+- `ALIYUN_SMS_SIGN_NAME=智了科技`
+- `ALIYUN_SMS_TPL_REGISTER=SMS_503430059`
+- `ALIYUN_SMS_TPL_LOGIN=SMS_503470064`
+- `VERIFY_CODE_SEND_INTERVAL_SECONDS=60`
+- `WECHAT_MINIAPP_APP_ID`
+- `WECHAT_MINIAPP_APP_SECRET`
+
+### 6.2 gv-game-service
+
+Must contain at least:
+
+- `NODE_ENV=production`
+- `PORT=3002`
+- `DATABASE_URL`
+- `REDIS_URL`
+- `JWT_SECRET`
+- `JWT_REFRESH_SECRET`
+- `CORS_ORIGIN=*`
+- `ADMIN_TOKEN=admin123`
+- `PUBLIC_API_BASE_URL=https://www.gamevallies.com`
+- `APP_URL=https://www.gamevallies.com`
+- `AI_ENGINE_URL=https://sd6na7o7g00oknv60o970.apigateway-cn-shanghai-inner.volceapi.com`
+
+### 6.3 gv-feed-service
+
+Must contain at least:
+
+- `NODE_ENV=production`
+- `PORT=3004`
+- `DATABASE_URL`
+- `REDIS_URL`
+- `JWT_SECRET`
+- `JWT_REFRESH_SECRET`
+- `CORS_ORIGIN=*`
+- `ADMIN_TOKEN=admin123`
+- `PUBLIC_API_BASE_URL=https://www.gamevallies.com`
+- `APP_URL=https://www.gamevallies.com`
+- `GAME_SERVICE_URL=https://www.gamevallies.com`
+
+### 6.4 gv-ai-engine
+
+Must contain at least:
+
+- `PORT=8000`
+- `DATABASE_URL`
+- `REDIS_URL`
+- `LLM_MODE`
+- `LLM_API_KEY`
+- `LLM_BASE_URL`
+- `LLM_MODEL`
+- `LLM_FAST_MODEL`
+- `CORS_ORIGINS=["*"]`
+
+## 7. Verification checks after deploy
+
+After publishing, verify these URLs:
 
 ```bash
-mv .env.development .env.development.bak
-npm run build:h5
-mv .env.development.bak .env.development
+curl https://www.gamevallies.com/33zqDBay4T.txt
+curl https://www.gamevallies.com/api/v1/health
+curl https://www.gamevallies.com/api/v1/games/explore/published?limit=1
+curl https://www.gamevallies.com/api/v1/feed/latest?limit=1
 ```
 
-### 5.3 Secret handling
+Expected:
 
-- Never commit real keys, passwords, tokens, or production connection strings.
-- Store local values in `.env`, `.env.development`, or `.env.deploy`, which should stay ignored by git.
-- Store deployed values in your platform secret manager.
-- If a real secret is ever committed, rotate it instead of only deleting it from docs.
+- `33zqDBay4T.txt` returns `5142b16983df09708831078604fbcfeb`
+- auth routes are no longer `404`
+- `gameUrl`, `previewUrl`, and share URLs are all based on `https://www.gamevallies.com`
+
+## 8. Common mistakes
+
+- Using old Aliyun SMS variable names
+- Leaving one service on an old API gateway domain
+- Setting `GAME_SERVICE_UPSTREAM_URL` or `FEED_SERVICE_UPSTREAM_URL` to the public domain instead of the private inner domain
+- Forgetting the double quotes around `VOLCENGINE_REGISTRY_USERNAME` because it contains `#`
+- Updating code but not refreshing `.env.deploy`
