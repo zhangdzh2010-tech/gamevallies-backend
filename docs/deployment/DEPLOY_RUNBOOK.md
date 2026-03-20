@@ -17,7 +17,7 @@ Before you deploy, make sure these files are up to date:
 - `backend/.env.example`
 - `backend/.env.deploy`
 - `backend/.env.deploy.example`
-- `backend/docs/ENV_SYNC_GUIDE.md`
+- `backend/docs/deployment/ENV_SYNC_GUIDE.md`
 
 The authoritative values for the current production rollout are:
 
@@ -31,7 +31,28 @@ The authoritative values for the current production rollout are:
 
 ## 2. Required variables
 
+Deployment uses:
+
+- environment file: `backend/.env.deploy`
+- template files: `backend/.env.deploy.example` and `backend/.env.example`
+- deploy script: `python scripts/deploy.py <service-name>`
+
+How to obtain values:
+
+- Copy the latest team-approved production values into `.env.deploy`
+- Use `.env.deploy.example` only as the field checklist, not as the source of real values
+- If a field belongs to cloud infrastructure or a third-party platform, fetch it from that platform's console and sync it back into `.env.deploy`
+
 ### 2.1 Deployment infrastructure
+
+Source:
+
+- `VOLCENGINE_ACCESS_KEY`, `VOLCENGINE_SECRET_KEY`: Volcengine IAM / API credentials
+- `VOLCENGINE_REGION`, `VOLCENGINE_API_HOST`: fixed team deployment settings, copied from the current production `.env.deploy`
+- `VOLCENGINE_VPC_ID`, `VOLCENGINE_SUBNET_ID`, `VOLCENGINE_SECURITY_GROUP_ID`: Volcengine VPC / subnet / security group console
+- `VOLCENGINE_REGISTRY`, `VOLCENGINE_REGISTRY_NAMESPACE`, `VOLCENGINE_REGISTRY_USERNAME`, `VOLCENGINE_REGISTRY_PASSWORD`: Volcengine VCR console
+- `VOLCENGINE_TOS_BUCKET`: Volcengine TOS console
+- `IMAGE_TAG`: set per release by the deployer; use a unique value such as timestamp or git commit hash
 
 ```bash
 VOLCENGINE_ACCESS_KEY=...
@@ -46,10 +67,20 @@ VOLCENGINE_REGISTRY_NAMESPACE=gamevallies
 VOLCENGINE_REGISTRY_USERNAME="6448手机用户#UeaqaB@2112970785"
 VOLCENGINE_REGISTRY_PASSWORD="Gamevallies@2026"
 VOLCENGINE_TOS_BUCKET=gamevallies-deploy
-IMAGE_TAG=latest
+IMAGE_TAG=<unique-tag>
 ```
 
 ### 2.2 Runtime env shared by backend services
+
+Source:
+
+- `NODE_ENV`: fixed as `production`
+- `CORS_ORIGIN`, `ADMIN_TOKEN`: current production `.env.deploy`
+- `DATABASE_URL`: production MySQL / RDS instance
+- `REDIS_URL`: production Redis instance
+- `JWT_SECRET`, `JWT_REFRESH_SECRET`: current production auth secrets from `.env.deploy`
+- `PUBLIC_API_BASE_URL`, `USER_SERVICE_URL`, `GAME_SERVICE_URL`, `FEED_SERVICE_URL`: current public domain routing values
+- `AI_ENGINE_URL`, `GAME_SERVICE_UPSTREAM_URL`, `FEED_SERVICE_UPSTREAM_URL`: internal APIG upstream addresses from the current production `.env.deploy` and Volcengine APIG console
 
 ```bash
 NODE_ENV=production
@@ -70,6 +101,14 @@ FEED_SERVICE_UPSTREAM_URL=https://sd6n8kcmp8bgiaakgorig.apigateway-cn-shanghai-i
 
 ### 2.3 user-service only
 
+Source:
+
+- `PORT`: fixed by service deployment convention
+- `WECHAT_MINIAPP_APP_ID`, `WECHAT_MINIAPP_APP_SECRET`: WeChat Mini Program admin console
+- `ALIYUN_ACCESS_KEY_ID`, `ALIYUN_ACCESS_KEY_SECRET`: Aliyun RAM / AccessKey console
+- `ALIYUN_SMS_REGION_ID`, `ALIYUN_SMS_SIGN_NAME`, `ALIYUN_SMS_TPL_REGISTER`, `ALIYUN_SMS_TPL_LOGIN`: Aliyun SMS console
+- `VERIFY_CODE_SEND_INTERVAL_SECONDS`: current production `.env.deploy`
+
 ```bash
 PORT=3001
 WECHAT_MINIAPP_APP_ID=wx77918f137dc7f5a5
@@ -85,6 +124,10 @@ VERIFY_CODE_SEND_INTERVAL_SECONDS=60
 
 ### 2.4 game-service and feed-service ports
 
+Source:
+
+- `PORT`: fixed by service deployment convention in `scripts/deploy.py`
+
 ```bash
 # game-service
 PORT=3002
@@ -94,6 +137,13 @@ PORT=3004
 ```
 
 ### 2.5 ai-engine only
+
+Source:
+
+- `PORT`: fixed by service deployment convention
+- `LLM_MODE`: current production `.env.deploy`
+- `LLM_API_KEY`: current LLM provider key
+- `LLM_BASE_URL`, `LLM_MODEL`, `LLM_FAST_MODEL`: active LLM provider configuration from `.env.deploy`
 
 ```bash
 PORT=8000
@@ -106,9 +156,11 @@ LLM_FAST_MODEL=MiniMax-M2.5
 
 ## 3. Deploy steps
 
-Run all commands from `d:\workspace\gamevallies-backend`.
+Run all commands from `d:\Project\gamevallies\gamevallies-backend`.
 
 ### 3.1 Load environment
+
+This step loads deployment values from `backend/.env.deploy` into the current shell.
 
 PowerShell:
 
@@ -138,6 +190,7 @@ Important:
 
 - The username contains `#`
 - Keep quotes around `VOLCENGINE_REGISTRY_USERNAME` in `.env.deploy`
+- Do not reuse `latest`; use a unique tag such as a timestamp or git commit hash
 - If image sync later fails inside VeFaaS, re-check the exact same username and password first
 
 ### 3.3 Deploy one service
@@ -162,6 +215,10 @@ python scripts/deploy.py
 3. VeFaaS update or create
 4. Wait for image sync
 5. Release a new revision
+
+`scripts/deploy.py` is the only supported production deployment entrypoint. Do
+not deploy by mixing manual console edits with ad hoc local commands unless the
+runbook explicitly tells you to.
 
 ## 4. Post-deploy validation
 
@@ -207,7 +264,7 @@ Check:
 - `VOLCENGINE_REGISTRY_USERNAME`
 - `VOLCENGINE_REGISTRY_PASSWORD`
 - whether the username still includes the `#` suffix
-- whether the new image was actually pushed to `:latest`
+- whether the new image was actually pushed with the intended unique tag
 
 ### 5.2 Mini program web-view still blocked
 
@@ -216,6 +273,8 @@ Check:
 - WeChat `web-view` business domain includes `https://www.gamevallies.com`
 - frontend build uses `TARO_APP_GAME_CONTENT_URL=https://www.gamevallies.com`
 - backend `PUBLIC_API_BASE_URL=https://www.gamevallies.com`
+- if the domain was just configured or updated in WeChat, allow time for the business-domain change to propagate before changing backend routes
+- if the warning disappears later without any code change, treat the WeChat business-domain propagation delay as the primary cause, not the UUID path format
 
 ### 5.3 SMS verification code not sent
 

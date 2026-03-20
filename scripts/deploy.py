@@ -59,6 +59,54 @@ PUBLIC_API_BASE_URL = os.environ.get("PUBLIC_API_BASE_URL",         "")
 GAME_SERVICE_UPSTREAM_URL = os.environ.get("GAME_SERVICE_UPSTREAM_URL", GAME_SERVICE_URL)
 FEED_SERVICE_UPSTREAM_URL = os.environ.get("FEED_SERVICE_UPSTREAM_URL", FEED_SERVICE_URL)
 
+COMMON_DEPLOY_ENV_KEYS = [
+    "VOLCENGINE_ACCESS_KEY",
+    "VOLCENGINE_SECRET_KEY",
+    "VOLCENGINE_REGISTRY_NAMESPACE",
+    "VOLCENGINE_REGISTRY",
+    "VOLCENGINE_REGISTRY_USERNAME",
+    "VOLCENGINE_REGISTRY_PASSWORD",
+]
+
+COMMON_RUNTIME_ENV_KEYS = [
+    "DATABASE_URL",
+    "REDIS_URL",
+    "JWT_SECRET",
+    "JWT_REFRESH_SECRET",
+    "PUBLIC_API_BASE_URL",
+    "USER_SERVICE_URL",
+    "GAME_SERVICE_URL",
+    "FEED_SERVICE_URL",
+]
+
+SERVICE_REQUIRED_ENV_KEYS = {
+    "user-service": [
+        "AI_ENGINE_URL",
+        "GAME_SERVICE_UPSTREAM_URL",
+        "FEED_SERVICE_UPSTREAM_URL",
+        "WECHAT_MINIAPP_APP_ID",
+        "WECHAT_MINIAPP_APP_SECRET",
+        "ALIYUN_ACCESS_KEY_ID",
+        "ALIYUN_ACCESS_KEY_SECRET",
+        "ALIYUN_SMS_REGION_ID",
+        "ALIYUN_SMS_SIGN_NAME",
+        "ALIYUN_SMS_TPL_REGISTER",
+        "ALIYUN_SMS_TPL_LOGIN",
+        "VERIFY_CODE_SEND_INTERVAL_SECONDS",
+    ],
+    "game-service": [
+        "AI_ENGINE_URL",
+    ],
+    "feed-service": [],
+    "ai-engine": [
+        "LLM_MODE",
+        "LLM_API_KEY",
+        "LLM_BASE_URL",
+        "LLM_MODEL",
+        "LLM_FAST_MODEL",
+    ],
+}
+
 
 def get_api() -> volcenginesdkvefaas.VEFAASApi:
     cfg = volcenginesdkcore.Configuration()
@@ -167,6 +215,24 @@ def build_envs_create(port: int, ai: bool = False, svc: str = "") -> list:
 
 def image_uri(svc_name: str) -> str:
     return f"{REGISTRY}/{NAMESPACE}/{svc_name}:{IMAGE_TAG}"
+
+
+def _missing_env(keys: list[str]) -> list[str]:
+    return [key for key in keys if not os.environ.get(key, "").strip()]
+
+
+def validate_env(target_services: list[dict]) -> None:
+    missing = set(_missing_env(COMMON_DEPLOY_ENV_KEYS + COMMON_RUNTIME_ENV_KEYS))
+
+    for svc in target_services:
+        missing.update(_missing_env(SERVICE_REQUIRED_ENV_KEYS.get(svc["svc"], [])))
+
+    if missing:
+        print("❌ 部署前环境变量校验失败，缺少以下字段：")
+        for key in sorted(missing):
+            print(f"   - {key}")
+        print("   请先补齐 .env.deploy（或当前 shell 环境）后再重试。")
+        sys.exit(1)
 
 
 def shell(cmd: list) -> bool:
@@ -373,6 +439,8 @@ def main():
     if not services:
         print(f"❌ 未知服务: {target}，可选: {[s['svc'] for s in SERVICES]} | all")
         sys.exit(1)
+
+    validate_env(services)
 
     api = get_api()
 
