@@ -7,8 +7,16 @@ const CORS_ALLOWED_HEADERS = [
   'x-refresh-token',
   'x-admin-token',
 ];
-const WECHAT_DOMAIN_VERIFICATION_PATH = '/33zqDBay4T.txt';
-const WECHAT_DOMAIN_VERIFICATION_CONTENT = '5142b16983df09708831078604fbcfeb';
+const WECHAT_DOMAIN_VERIFICATIONS = [
+  {
+    path: '/33zqDBay4T.txt',
+    content: '5142b16983df09708831078604fbcfeb',
+  },
+  {
+    path: '/8e70db656271ec4f59fc23aecfecf727.txt',
+    content: 'b57d2fe8ec3015f6dac218e7f96401b033210a57',
+  },
+] as const;
 
 export function configureApp(app: INestApplication): void {
   app.enableCors({
@@ -19,9 +27,11 @@ export function configureApp(app: INestApplication): void {
   });
 
   const expressApp = app.getHttpAdapter().getInstance();
-  expressApp.get(WECHAT_DOMAIN_VERIFICATION_PATH, (_req: unknown, res: any) => {
-    res.type('text/plain').send(WECHAT_DOMAIN_VERIFICATION_CONTENT);
-  });
+  for (const verification of WECHAT_DOMAIN_VERIFICATIONS) {
+    expressApp.get(verification.path, (_req: unknown, res: any) => {
+      res.type('text/plain').send(verification.content);
+    });
+  }
 
   registerUnifiedApiProxy(app);
 
@@ -64,6 +74,10 @@ export function configureApp(app: INestApplication): void {
       },
       {
         path: '33zqDBay4T.txt',
+        method: RequestMethod.GET,
+      },
+      {
+        path: '8e70db656271ec4f59fc23aecfecf727.txt',
         method: RequestMethod.GET,
       },
     ],
