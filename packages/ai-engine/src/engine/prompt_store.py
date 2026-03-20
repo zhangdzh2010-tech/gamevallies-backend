@@ -113,7 +113,7 @@ def _load_from_db() -> Dict[str, str]:
 # Public API
 # ---------------------------------------------------------------------------
 
-def refresh() -> None:
+def refresh(*, raise_on_error: bool = False) -> int:
     """Reload all prompts from the database into the in-memory cache.
 
     If the database is unavailable the existing cache is kept and a warning
@@ -124,9 +124,13 @@ def refresh() -> None:
         _cache = _load_from_db()
         _loaded = True
         logger.info("prompt_store: loaded %d prompts from DB", len(_cache))
+        return len(_cache)
     except Exception:
         _loaded = True  # mark loaded so we don't retry on every call
         logger.warning("prompt_store: failed to load prompts from DB, using defaults", exc_info=True)
+        if raise_on_error:
+            raise
+        return len(_cache)
 
 
 def get_prompt(key: str, default: Optional[str] = None) -> Optional[str]:
@@ -138,3 +142,8 @@ def get_prompt(key: str, default: Optional[str] = None) -> Optional[str]:
     if not _loaded:
         refresh()
     return _cache.get(key, default)
+
+
+def cached_prompt_count() -> int:
+    """Return the number of prompts currently cached in memory."""
+    return len(_cache)

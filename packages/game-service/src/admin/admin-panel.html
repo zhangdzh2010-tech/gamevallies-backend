@@ -163,6 +163,71 @@ tbody tr:hover{background:#f8fafc}
 .back-btn{cursor:pointer;display:inline-flex;align-items:center;gap:6px;color:#64748b;font-size:13px;margin-bottom:16px}
 .back-btn:hover{color:#2563eb}
 
+/* Generation log detail */
+.log-detail{display:flex;flex-direction:column;gap:18px}
+.log-hero{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;padding:22px 24px;border:1px solid #e5e7eb;border-radius:18px;background:linear-gradient(135deg,#f8fbff 0%,#fefefe 100%)}
+.log-hero-main{min-width:0;flex:1}
+.log-hero-eyebrow{display:inline-flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:#64748b;margin-bottom:10px}
+.log-hero-title{font-size:26px;line-height:1.15;font-weight:700;color:#0f172a;letter-spacing:-.02em;word-break:break-word}
+.log-hero-meta{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}
+.log-chip{display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:999px;background:#fff;border:1px solid #e2e8f0;font-size:12px;color:#475569}
+.log-chip code{font-size:12px;background:none;color:#0f172a}
+.log-badge-lg{display:inline-flex;align-items:center;justify-content:center;padding:9px 16px;border-radius:999px;font-size:13px;font-weight:700;white-space:nowrap}
+.log-stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:12px}
+.log-stat-card{padding:15px 16px;border:1px solid #e5e7eb;border-radius:16px;background:#fff;box-shadow:0 8px 24px rgba(15,23,42,.04)}
+.log-stat-card .value{font-size:24px;font-weight:700;color:#0f172a;line-height:1.1}
+.log-stat-card .label{font-size:12px;color:#64748b;margin-top:6px}
+.log-grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(300px,.95fr);gap:16px}
+.log-column{display:flex;flex-direction:column;gap:16px}
+.log-card{background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:18px 20px;box-shadow:0 8px 24px rgba(15,23,42,.04)}
+.log-card-title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+.log-card-title h4{font-size:15px;font-weight:700;color:#0f172a}
+.log-card-sub{font-size:12px;color:#94a3b8}
+.log-kv-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.log-kv{padding:12px 14px;border-radius:12px;background:#f8fafc;border:1px solid #eef2f7;min-width:0}
+.log-kv .k{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#94a3b8;margin-bottom:7px}
+.log-kv .v{font-size:14px;line-height:1.55;color:#1e293b;word-break:break-word}
+.log-kv .v code{font-family:'SF Mono','Fira Code','Cascadia Code',Consolas,monospace;font-size:12px;color:#0f172a}
+.log-stage-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+.log-stage{padding:12px 14px;border-radius:14px;border:1px solid #e5e7eb;background:#fff;min-height:92px;display:flex;flex-direction:column;gap:8px;justify-content:space-between}
+.log-stage-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.log-stage-icon{width:28px;height:28px;border-radius:10px;background:#f8fafc;display:flex;align-items:center;justify-content:center;font-size:14px}
+.log-stage-state{font-size:11px;font-weight:700;padding:3px 8px;border-radius:999px;background:#f8fafc;color:#64748b}
+.log-stage-name{font-size:14px;font-weight:700;color:#1e293b}
+.log-stage-desc{font-size:12px;color:#64748b;line-height:1.45}
+.log-stage.done{border-color:#bbf7d0;background:#f0fdf4}
+.log-stage.done .log-stage-icon{background:#dcfce7}
+.log-stage.done .log-stage-state{background:#dcfce7;color:#15803d}
+.log-stage.failed{border-color:#fecdd3;background:#fff1f2}
+.log-stage.failed .log-stage-icon{background:#ffe4e6}
+.log-stage.failed .log-stage-state{background:#ffe4e6;color:#be123c}
+.log-stage.current{border-color:#bfdbfe;background:#eff6ff}
+.log-stage.current .log-stage-icon{background:#dbeafe}
+.log-stage.current .log-stage-state{background:#dbeafe;color:#1d4ed8}
+.log-stage.pending{opacity:.82}
+.log-alert{padding:14px 16px;border-radius:14px;border:1px solid #fecdd3;background:#fff1f2;color:#9f1239;font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+.log-note{padding:14px 16px;border-radius:14px;border:1px solid #dbeafe;background:#eff6ff;color:#1e3a8a;font-size:13px;line-height:1.6}
+.log-note strong{color:#1e293b}
+.log-textbox{padding:14px 16px;border-radius:14px;background:#f8fafc;border:1px solid #e5e7eb;font-size:13px;line-height:1.7;white-space:pre-wrap;word-break:break-word}
+.log-linkbox{display:flex;align-items:flex-start;gap:10px;padding:14px 16px;border-radius:14px;background:#f8fafc;border:1px solid #e5e7eb}
+.log-linkicon{width:34px;height:34px;border-radius:12px;background:#eff6ff;color:#2563eb;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.log-linkmeta{min-width:0;flex:1}
+.log-linkmeta .label{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#94a3b8;margin-bottom:5px}
+.log-linkmeta a{display:block;font-size:13px;line-height:1.6;word-break:break-all}
+.log-code{background:#0f172a;color:#dbeafe;border-radius:16px;padding:16px 18px;font-size:12px;line-height:1.6;overflow:auto;border:1px solid #1e293b;max-height:260px}
+
+@media (max-width: 900px){
+  .log-grid{grid-template-columns:1fr}
+}
+
+@media (max-width: 640px){
+  .log-hero{padding:18px}
+  .log-hero-title{font-size:22px}
+  .log-kv-grid{grid-template-columns:1fr}
+  .log-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .log-stage-grid{grid-template-columns:1fr}
+}
+
 /* Toast */
 .toast-container{position:fixed;top:20px;right:20px;z-index:10000;display:flex;flex-direction:column;gap:8px}
 .toast{padding:12px 20px;border-radius:8px;font-size:13px;font-weight:500;box-shadow:0 4px 12px rgba(0,0,0,.15);animation:slideIn .3s;max-width:400px}
@@ -1244,6 +1309,21 @@ function showCreateUser() {
 
 // ===================== Generation Logs =====================
 let logPage = 1;
+const LOG_DETAIL_STAGES = [
+  { id: 'started', label: '任务创建', desc: '创建游戏记录并初始化通知', icon: '1' },
+  { id: 'intent_parsing', label: '意图解析', desc: '解析用户提示词为结构化规格', icon: '2' },
+  { id: 'designing', label: '数值设计', desc: '生成 GDD 与关键玩法参数', icon: '3' },
+  { id: 'template_matching', label: '模板匹配', desc: '决定 template / hybrid / llm 路径', icon: '4' },
+  { id: 'code_generating', label: '代码生成', desc: '生成或改写 HTML5 游戏代码', icon: '5' },
+  { id: 'qa_checking', label: '质量检查', desc: '执行 QA、自修复与安全校验', icon: '6' },
+  { id: 'publishing', label: '结果落库', desc: '保存 bundle、更新游戏状态与版本', icon: '7' },
+  { id: 'completed', label: '生成完成', desc: '成功结束，可在前台预览或发布', icon: '8' },
+];
+const LOG_STAGE_ALIASES = {
+  pipeline_run: 'code_generating',
+  iteration: 'code_generating',
+  failed: 'code_generating',
+};
 
 async function loadLogs() {
   const search = document.getElementById('log-search').value;
@@ -1328,55 +1408,147 @@ async function showLogDetail(gameId) {
   try {
     const g = await api('/games/' + gameId);
     const bundle = g.bundles && g.bundles[0];
-    const meta = (bundle && bundle.metadata) || {};
+    const meta = Object.assign({}, (bundle && bundle.generationMeta) || {}, (bundle && bundle.metadata) || {});
+    const spec = meta.gameSpec || bundle?.spec || null;
     const gameBaseUrl = window.location.origin;
     const previewUrl = gameBaseUrl + '/games/' + gameId + '/preview';
+    const statusText = statusLabel(g.status);
+    const author = g.author?.displayName || g.author?.username || '-';
+    const finalStageRaw = g.failedStage || (g.status === 'draft' || g.status === 'published' ? 'completed' : g.status === 'generating' ? 'code_generating' : null);
+    const finalStage = LOG_STAGE_ALIASES[finalStageRaw] || finalStageRaw;
+    const finalStageLabel = LOG_DETAIL_STAGES.find(s => s.id === finalStage)?.label || finalStage || '-';
+    const finalStageIndex = LOG_DETAIL_STAGES.findIndex(s => s.id === finalStage);
+    const genSeconds = meta.genTimeMs ? (meta.genTimeMs / 1000).toFixed(1) + 's' : '-';
+    const codeSize = bundle?.codeSizeBytes ? (bundle.codeSizeBytes / 1024).toFixed(1) + ' KB' : '-';
+    const retryCount = Number(g.retryCount || 0);
+    const qaRetries = Number(meta.qaRetries || 0);
+    const iterationRetries = Number(meta.iterationRetries || 0);
+    const qaText = meta.qaPassed === true ? '通过' : meta.qaPassed === false ? '未通过' : '-';
+    const qualityText = meta.qualityScore !== undefined && meta.qualityScore !== null ? String(meta.qualityScore) : '-';
+    const strategyText = meta.strategy || '-';
+    const summaryNote = g.failedReason
+      ? '当前后台持久化的是最后一次失败摘要。若需要完整逐步骤重试与报错细节，请到 VeFaaS / 应用日志查看。'
+      : '当前记录没有最终失败摘要。若要查看生成过程中的细粒度进度与临时重试，仍需结合实时 WebSocket 或 VeFaaS 日志。';
 
-    let detail = '<div style="max-width:800px">';
-    detail += '<div class="form-grid">';
-    detail += '<div class="form-group"><label>游戏 ID</label><div style="font-family:monospace;font-size:13px">' + gameId + '</div></div>';
-    detail += '<div class="form-group"><label>标题</label><div>' + escHtml(g.title) + '</div></div>';
-    detail += '<div class="form-group"><label>作者</label><div>' + escHtml(g.author?.displayName || g.author?.username || '-') + '</div></div>';
-    detail += '<div class="form-group"><label>状态</label><div><span class="badge badge-' + g.status + '">' + g.status + '</span></div></div>';
-    detail += '<div class="form-group"><label>创建时间</label><div>' + new Date(g.createdAt).toLocaleString('zh-CN') + '</div></div>';
-    detail += '<div class="form-group"><label>失败阶段</label><div>' + escHtml(g.failedStage || '-') + '</div></div>';
-    detail += '<div class="form-group"><label>失败重试次数</label><div>' + (g.retryCount ?? '-') + '</div></div>';
-    detail += '<div class="form-group"><label>最后失败时间</label><div>' + (g.lastErrorAt ? new Date(g.lastErrorAt).toLocaleString('zh-CN') : '-') + '</div></div>';
-    detail += '<div class="form-group"><label>游戏链接</label><div><a href="' + previewUrl + '" target="_blank">' + previewUrl + '</a></div></div>';
+    let detail = '<div class="log-detail">';
+    detail += '<div class="log-hero">';
+    detail += '<div class="log-hero-main">';
+    detail += '<div class="log-hero-eyebrow">生成记录详情</div>';
+    detail += '<div class="log-hero-title">' + escHtml(g.title || '未命名游戏') + '</div>';
+    detail += '<div class="log-hero-meta">';
+    detail += '<span class="log-chip">作者 <strong>' + escHtml(author) + '</strong></span>';
+    detail += '<span class="log-chip">游戏 ID <code>' + escHtml(gameId) + '</code></span>';
+    detail += '<span class="log-chip">创建于 ' + new Date(g.createdAt).toLocaleString('zh-CN') + '</span>';
+    detail += '</div></div>';
+    detail += '<span class="log-badge-lg badge badge-' + g.status + '">' + escHtml(statusText) + '</span>';
     detail += '</div>';
 
-    detail += '<div class="form-group" style="margin-top:16px"><label>用户提示词</label>';
-    detail += '<div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:12px;font-size:13px;white-space:pre-wrap;max-height:200px;overflow-y:auto">' + escHtml(g.description || '(无)') + '</div></div>';
+    detail += '<div class="log-stat-grid">';
+    detail += '<div class="log-stat-card"><div class="value">' + retryCount + '</div><div class="label">总重试次数</div></div>';
+    detail += '<div class="log-stat-card"><div class="value">' + escHtml(finalStageLabel) + '</div><div class="label">最终阶段</div></div>';
+    detail += '<div class="log-stat-card"><div class="value">' + genSeconds + '</div><div class="label">生成耗时</div></div>';
+    detail += '<div class="log-stat-card"><div class="value">' + qaRetries + '</div><div class="label">QA 重试</div></div>';
+    detail += '<div class="log-stat-card"><div class="value">' + qualityText + '</div><div class="label">质量分</div></div>';
+    detail += '<div class="log-stat-card"><div class="value">v' + (bundle?.version || 0) + '</div><div class="label">当前版本</div></div>';
+    detail += '</div>';
 
-    if (g.failedReason) {
-      detail += '<div class="form-group" style="margin-top:16px"><label>失败原因</label>';
-      detail += '<div style="background:#fff1f2;border:1px solid #fecdd3;border-radius:8px;padding:12px;font-size:13px;white-space:pre-wrap;color:#9f1239">' + escHtml(g.failedReason) + '</div></div>';
-    }
+    detail += '<div class="log-grid">';
+    detail += '<div class="log-column">';
 
-    if (meta.strategy || meta.genTimeMs || meta.qaPassed !== undefined) {
-      detail += '<h4 style="margin-top:20px;margin-bottom:12px;font-size:14px;color:#1e293b">生成详情</h4>';
-      detail += '<div class="form-grid">';
-      detail += '<div class="form-group"><label>生成策略</label><div>' + (meta.strategy || '-') + '</div></div>';
-      detail += '<div class="form-group"><label>耗时</label><div>' + (meta.genTimeMs ? (meta.genTimeMs/1000).toFixed(1) + 's' : '-') + '</div></div>';
-      detail += '<div class="form-group"><label>QA 通过</label><div>' + (meta.qaPassed === true ? '是' : meta.qaPassed === false ? '否' : '-') + '</div></div>';
-      detail += '<div class="form-group"><label>QA 重试</label><div>' + (meta.qaRetries ?? '-') + '</div></div>';
-      detail += '<div class="form-group"><label>迭代重试</label><div>' + (meta.iterationRetries ?? '-') + '</div></div>';
-      detail += '<div class="form-group"><label>代码大小</label><div>' + (bundle?.codeSizeBytes ? (bundle.codeSizeBytes/1024).toFixed(1) + 'KB' : '-') + '</div></div>';
-      detail += '<div class="form-group"><label>质量分</label><div>' + (meta.qualityScore ?? '-') + '</div></div>';
-      detail += '<div class="form-group"><label>版本</label><div>v' + (bundle?.version || 0) + '</div></div>';
+    detail += '<div class="log-card">';
+    detail += '<div class="log-card-title"><h4>阶段概览</h4><span class="log-card-sub">参照主流程展示当前能确认的最终阶段</span></div>';
+    detail += '<div class="log-stage-grid">';
+    detail += LOG_DETAIL_STAGES.map((stage, index) => {
+      let stageCls = 'pending';
+      let stageState = '未到达';
+      if (g.failedStage === stage.id) {
+        stageCls = 'failed';
+        stageState = '失败';
+      } else if (finalStageIndex >= 0 && index < finalStageIndex) {
+        stageCls = 'done';
+        stageState = '已完成';
+      } else if (finalStageIndex >= 0 && index === finalStageIndex && !g.failedStage) {
+        stageCls = 'current';
+        stageState = stage.id === 'completed' ? '已完成' : '当前';
+      }
+      return '<div class="log-stage ' + stageCls + '">' +
+        '<div class="log-stage-top"><div class="log-stage-icon">' + stage.icon + '</div><span class="log-stage-state">' + stageState + '</span></div>' +
+        '<div class="log-stage-name">' + escHtml(stage.label) + '</div>' +
+        '<div class="log-stage-desc">' + escHtml(stage.desc) + '</div>' +
+      '</div>';
+    }).join('');
+    detail += '</div></div>';
+
+    detail += '<div class="log-card">';
+    detail += '<div class="log-card-title"><h4>失败记录</h4><span class="log-card-sub">当前后台仅保存最终失败摘要</span></div>';
+    detail += '<div class="log-kv-grid">';
+    detail += '<div class="log-kv"><div class="k">失败阶段</div><div class="v">' + escHtml(g.failedStage || '-') + '</div></div>';
+    detail += '<div class="log-kv"><div class="k">最后失败时间</div><div class="v">' + (g.lastErrorAt ? new Date(g.lastErrorAt).toLocaleString('zh-CN') : '-') + '</div></div>';
+    detail += '<div class="log-kv"><div class="k">总重试次数</div><div class="v">' + retryCount + '</div></div>';
+    detail += '<div class="log-kv"><div class="k">定位建议</div><div class="v">后台详情看最终摘要，完整逐步骤报错请查 VeFaaS / 应用日志</div></div>';
+    detail += '</div>';
+    detail += g.failedReason
+      ? '<div class="log-alert" style="margin-top:14px">' + escHtml(g.failedReason) + '</div>'
+      : '<div class="log-note" style="margin-top:14px"><strong>暂无最终失败摘要。</strong> 这通常表示该任务最终成功，或中途临时重试未被持久化到数据库。</div>';
+    detail += '<div class="log-note" style="margin-top:12px">' + summaryNote + '</div>';
+    detail += '</div>';
+
+    detail += '<div class="log-card">';
+    detail += '<div class="log-card-title"><h4>用户输入</h4><span class="log-card-sub">用于触发生成的原始提示词</span></div>';
+    detail += '<div class="log-textbox">' + escHtml(g.description || '(无)') + '</div>';
+    detail += '</div>';
+
+    if (spec) {
+      detail += '<div class="log-card">';
+      detail += '<div class="log-card-title"><h4>Game Spec</h4><span class="log-card-sub">已保存的结构化规格</span></div>';
+      detail += '<pre class="log-code">' + escHtml(JSON.stringify(spec, null, 2)) + '</pre>';
       detail += '</div>';
     }
 
-    if (meta.gameSpec) {
-      detail += '<div class="form-group" style="margin-top:16px"><label>Game Spec</label>';
-      detail += '<pre style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:12px;font-size:12px;max-height:200px;overflow:auto">' + escHtml(JSON.stringify(meta.gameSpec, null, 2)) + '</pre></div>';
-    }
+    detail += '</div>';
+    detail += '<div class="log-column">';
 
+    detail += '<div class="log-card">';
+    detail += '<div class="log-card-title"><h4>记录摘要</h4><span class="log-card-sub">和主页面卡片相同的信息层级</span></div>';
+    detail += '<div class="log-kv-grid">';
+    detail += '<div class="log-kv"><div class="k">状态</div><div class="v"><span class="badge badge-' + g.status + '">' + escHtml(statusText) + '</span></div></div>';
+    detail += '<div class="log-kv"><div class="k">最终阶段</div><div class="v">' + escHtml(finalStageLabel) + '</div></div>';
+    detail += '<div class="log-kv"><div class="k">作者</div><div class="v">' + escHtml(author) + '</div></div>';
+    detail += '<div class="log-kv"><div class="k">更新时间</div><div class="v">' + (g.updatedAt ? new Date(g.updatedAt).toLocaleString('zh-CN') : '-') + '</div></div>';
+    detail += '<div class="log-kv"><div class="k">游戏 ID</div><div class="v"><code>' + escHtml(gameId) + '</code></div></div>';
+    detail += '<div class="log-kv"><div class="k">版本</div><div class="v">v' + (bundle?.version || 0) + '</div></div>';
+    detail += '</div>';
+    detail += '</div>';
+
+    detail += '<div class="log-card">';
+    detail += '<div class="log-card-title"><h4>生成指标</h4><span class="log-card-sub">来自 bundle metadata / generationMeta</span></div>';
+    detail += '<div class="log-kv-grid">';
+    detail += '<div class="log-kv"><div class="k">生成策略</div><div class="v">' + escHtml(strategyText) + '</div></div>';
+    detail += '<div class="log-kv"><div class="k">耗时</div><div class="v">' + genSeconds + '</div></div>';
+    detail += '<div class="log-kv"><div class="k">QA 结果</div><div class="v">' + qaText + '</div></div>';
+    detail += '<div class="log-kv"><div class="k">QA 重试</div><div class="v">' + qaRetries + '</div></div>';
+    detail += '<div class="log-kv"><div class="k">迭代重试</div><div class="v">' + iterationRetries + '</div></div>';
+    detail += '<div class="log-kv"><div class="k">代码大小</div><div class="v">' + codeSize + '</div></div>';
+    detail += '<div class="log-kv"><div class="k">质量分</div><div class="v">' + qualityText + '</div></div>';
+    detail += '<div class="log-kv"><div class="k">发布时间</div><div class="v">' + (g.publishedAt ? new Date(g.publishedAt).toLocaleString('zh-CN') : '-') + '</div></div>';
+    detail += '</div>';
+    detail += '</div>';
+
+    detail += '<div class="log-card">';
+    detail += '<div class="log-card-title"><h4>前台入口</h4><span class="log-card-sub">便于直接验证线上展示</span></div>';
+    detail += '<div class="log-linkbox">';
+    detail += '<div class="log-linkicon">↗</div>';
+    detail += '<div class="log-linkmeta"><div class="label">预览地址</div><a href="' + previewUrl + '" target="_blank">' + previewUrl + '</a></div>';
+    detail += '</div>';
+    detail += '</div>';
+
+    detail += '</div>';
+    detail += '</div>';
     detail += '</div>';
 
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
-    overlay.innerHTML = '<div class="modal"><div class="modal-header"><h3>生成记录详情</h3><button class="modal-close" onclick="this.closest(\'.modal-overlay\').remove()">&times;</button></div><div class="modal-body" style="padding:24px">' + detail + '</div></div>';
+    overlay.innerHTML = '<div class="modal" style="max-width:1120px"><div class="modal-header"><h3>生成记录详情</h3><button class="modal-close" onclick="this.closest(\'.modal-overlay\').remove()">&times;</button></div><div class="modal-body">' + detail + '</div></div>';
     document.body.appendChild(overlay);
     overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
   } catch(e) {

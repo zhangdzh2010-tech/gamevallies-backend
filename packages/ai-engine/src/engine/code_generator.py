@@ -324,8 +324,6 @@ class CodeGenerator:
             updated = self._param_adjust(current_code, feedback)
             if updated != current_code:
                 return updated, iter_type
-            # Fallback to LLM if regex didn't match
-            iter_type = IterationType.element_change
 
         updated = await self._llm_iterate(
             current_code,
@@ -402,7 +400,12 @@ class CodeGenerator:
             f"{m.get('role','user')}: {m.get('content','')}" for m in conversation[-4:]
         )
 
-        if iter_type == IterationType.element_change:
+        if iter_type == IterationType.param_adjust:
+            prompt = get_prompt("prompt.param_adjust", PARAM_ADJUST_PROMPT).format(
+                feedback=feedback,
+                code=code,
+            )
+        elif iter_type == IterationType.element_change:
             prompt = get_prompt("prompt.element_change", ELEMENT_CHANGE_PROMPT).format(feedback=feedback, code=code)
         else:
             prompt = get_prompt("prompt.mechanic_change", MECHANIC_CHANGE_PROMPT).format(
