@@ -88,11 +88,17 @@ Content-Type: application/json
 Response:
 ```json
 {
-  "gameId": "uuid",
-  "wsChannel": "game:uuid",
-  "status": "generating"
+  "code": 0,
+  "message": "success",
+  "data": {
+    "gameId": "uuid"
+  }
 }
 ```
+
+Notes:
+- 生成进度默认通过 `game-service` 的 `/ws?token=<jwt_token>` 推送，不再返回单独的 `wsChannel`
+- 客户端创建成功后，用当前登录用户的 JWT 订阅同一个 `/ws` 连接即可收到 `gen:progress` / `gen:complete`
 
 #### Get Game Details
 ```
@@ -179,9 +185,28 @@ Connect to `ws://localhost:3002/ws?token=<jwt_token>`
 - **gen:progress**: Generation progress update
   ```json
   {
+    "type": "gen:progress",
     "gameId": "uuid",
-    "stage": "解析游戏意图|设计游戏参数|匹配游戏模板|生成游戏代码|质量检测|生成完成",
-    "percentage": 0-100,
+    "data": {
+      "progress": 60,
+      "message": "代码生成失败，重试中（1/2）",
+      "details": {
+        "stage": "code_generating",
+        "retry": 1,
+        "maxRetries": 2,
+        "attempt": 2,
+        "maxAttempts": 3
+      }
+    },
+    "stage": "code_generating",
+    "percentage": 60,
+    "details": {
+      "stage": "code_generating",
+      "retry": 1,
+      "maxRetries": 2,
+      "attempt": 2,
+      "maxAttempts": 3
+    },
     "timestamp": 1234567890
   }
   ```
@@ -200,9 +225,43 @@ Connect to `ws://localhost:3002/ws?token=<jwt_token>`
 - **gen:complete**: Generation completed
   ```json
   {
+    "type": "gen:complete",
     "gameId": "uuid",
+    "data": {
+      "success": true,
+      "game": {
+        "id": "uuid",
+        "gameUrl": "http://.../games/uuid/index.html",
+        "previewUrl": "http://.../games/uuid/preview",
+        "status": "ready"
+      },
+      "error": null
+    },
     "previewUrl": "http://...",
     "status": "success",
+    "timestamp": 1234567890
+  }
+  ```
+
+- **gen:error**: Terminal generation failure
+  ```json
+  {
+    "type": "gen:error",
+    "gameId": "uuid",
+    "data": {
+      "success": false,
+      "error": "Generated code failed QA",
+      "details": {
+        "stage": "qa_checking",
+        "retryCount": 3
+      }
+    },
+    "stage": "qa_checking",
+    "details": {
+      "stage": "qa_checking",
+      "retryCount": 3
+    },
+    "status": "error",
     "timestamp": 1234567890
   }
   ```
@@ -216,6 +275,8 @@ Connect to `ws://localhost:3002/ws?token=<jwt_token>`
     "timestamp": 1234567890
   }
   ```
+
+  Generation failures still emit `notification` with `type: "error"` for backward compatibility, but the canonical terminal event is now `gen:error`.
 
 - **game:update**: Real-time game updates
 - **game:stats**: Broadcasted game statistics
@@ -233,7 +294,7 @@ Connect to `ws://localhost:3002/ws?token=<jwt_token>`
 - `description` (String)
 - `tags` (String array)
 - `gameType` (String)
-- `status` (String: draft, published, banned, error, generating)
+- `status` (String: draft, published, banned, failed, generating)
 - `currentVersion` (Integer)
 - `forkedFrom` (UUID, nullable)
 - `forkDepth` (Integer)
@@ -247,6 +308,10 @@ Connect to `ws://localhost:3002/ws?token=<jwt_token>`
 - `deletedAt` (DateTime, nullable)
 - `createdAt` (DateTime)
 - `updatedAt` (DateTime)
+- `failedStage` (String, nullable)
+- `failedReason` (Text, nullable)
+- `retryCount` (Integer)
+- `lastErrorAt` (DateTime, nullable)
 
 ### Game Bundles Collection (MongoDB)
 - `_id` (MongoDB ObjectId)

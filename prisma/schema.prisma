@@ -96,6 +96,10 @@ model Game {
   description  String?    @db.Text
   slug         String?    @unique @db.VarChar(128)
   status       GameStatus @default(draft)
+  failedStage  String?    @map("failed_stage") @db.VarChar(64)
+  failedReason String?    @map("failed_reason") @db.Text
+  retryCount   Int        @default(0) @map("retry_count")
+  lastErrorAt  DateTime?  @map("last_error_at") @db.DateTime(3)
   gameType     String?    @map("game_type") @db.VarChar(32)
   tags         Json       @default("[]")
   forkedFrom   String?    @map("forked_from") @db.VarChar(36)

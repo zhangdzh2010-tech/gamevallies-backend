@@ -108,24 +108,29 @@ export class GameWebSocketGateway implements OnGatewayConnection, OnGatewayDisco
     gameId: string,
     stage: string,
     percentage: number,
+    details?: Record<string, unknown>,
   ): void {
     try {
       const event = 'gen:progress';
+      const stageCode =
+        typeof details?.stage === 'string' ? String(details.stage) : stage;
       const data = {
         type: event,
         gameId,
         data: {
           progress: percentage,
           message: stage,
+          details: details || {},
         },
-        stage,
+        stage: stageCode,
         percentage,
+        details: details || {},
         timestamp: Date.now(),
       };
 
       this.emitToUser(userId, event, data);
       this.logger.debug(
-        `Generation progress: ${gameId} - ${stage} ${percentage}%`,
+        `Generation progress: ${gameId} - ${stageCode} ${percentage}%`,
       );
     } catch (error) {
       this.logger.error(`Failed to emit generation progress: ${error.message}`);
@@ -157,6 +162,37 @@ export class GameWebSocketGateway implements OnGatewayConnection, OnGatewayDisco
       this.logger.log(`Generation complete: ${gameId}`);
     } catch (error) {
       this.logger.error(`Failed to emit generation complete: ${error.message}`);
+    }
+  }
+
+  emitGenerationError(
+    userId: string,
+    gameId: string,
+    error: string,
+    details?: Record<string, unknown>,
+  ): void {
+    try {
+      const event = 'gen:error';
+      const stageCode =
+        typeof details?.stage === 'string' ? String(details.stage) : 'failed';
+      const data = {
+        type: event,
+        gameId,
+        data: {
+          success: false,
+          error,
+          details: details || {},
+        },
+        stage: stageCode,
+        details: details || {},
+        timestamp: Date.now(),
+        status: 'error',
+      };
+
+      this.emitToUser(userId, event, data);
+      this.logger.error(`Generation error: ${gameId} - ${error}`);
+    } catch (emitError) {
+      this.logger.error(`Failed to emit generation error: ${emitError.message}`);
     }
   }
 

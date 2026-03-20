@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 try:
     import esprima
@@ -30,6 +30,8 @@ from ..services.llm_client import LLMClient
 from .prompt_store import get_prompt
 
 logger = logging.getLogger(__name__)
+
+QARetryCallback = Optional[Callable[[int, int, List[QACheckError]], None]]
 
 # ---------------------------------------------------------------------------
 # L2 – Forbidden API patterns
@@ -153,6 +155,7 @@ class QAPipeline:
         code: str,
         game_spec: Optional[GameSpec] = None,
         max_retries: int = None,
+        retry_cb: QARetryCallback = None,
     ) -> QAResult:
         max_retries = max_retries if max_retries is not None else settings.QA_MAX_RETRIES
         code = self._apply_deterministic_repairs(code)
@@ -170,6 +173,11 @@ class QAPipeline:
                 logger.warning("QA failed but LLM auto-fix disabled (mock mode)")
                 break
 
+            if retry_cb:
+                try:
+                    retry_cb(attempt + 1, max_retries, result.errors)
+                except Exception:
+                    pass
             logger.info(f"QA attempt {attempt} failed ({len(result.errors)} errors), triggering LLM auto-fix")
             code = await self.repair_code(code, result.errors, game_spec)
 

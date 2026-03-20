@@ -17,6 +17,8 @@
   后端 API、数据模型、WebSocket 事件和兼容路由说明。
 - [`integration/FRONTEND_ADAPTATION_P0_P2.md`](./integration/FRONTEND_ADAPTATION_P0_P2.md)
   前端对接质量分、生成进度、创作者声誉等能力的适配说明。
+- [`integration/GENERATION_PIPELINE_IMPROVEMENT_PLAN.md`](./integration/GENERATION_PIPELINE_IMPROVEMENT_PLAN.md)
+  游戏生成 8 阶段的重试、用户提示、失败日志与落库改造任务清单。
 
 ### `testing/`
 

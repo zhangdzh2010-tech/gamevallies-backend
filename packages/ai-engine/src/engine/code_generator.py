@@ -161,6 +161,7 @@ class CodeGenerator:
         template_id: Optional[str] = None,
         confidence: float = 0.0,
         description: str = "",
+        allow_fallback: bool = True,
     ) -> GenerateCodeResult:
         start = time.time()
 
@@ -168,13 +169,13 @@ class CodeGenerator:
             html = self._mock_generate(spec)
             strategy = "mock"
         elif confidence >= settings.TEMPLATE_CONFIDENCE_THRESHOLD and template_id:
-            html = self._template_fill(spec, gdd, template_id)
+            html = self._template_fill(spec, gdd, template_id, allow_fallback=allow_fallback)
             strategy = "template"
         elif confidence >= settings.HYBRID_CONFIDENCE_THRESHOLD and template_id:
-            html = await self._hybrid_generate(spec, gdd, template_id)
+            html = await self._hybrid_generate(spec, gdd, template_id, allow_fallback=allow_fallback)
             strategy = "hybrid"
         else:
-            html = await self._llm_generate(spec, gdd, description=description)
+            html = await self._llm_generate(spec, gdd, description=description, allow_fallback=allow_fallback)
             strategy = "llm"
 
         elapsed = int((time.time() - start) * 1000)
@@ -190,10 +191,18 @@ class CodeGenerator:
     # Path A: Template fill
     # ------------------------------------------------------------------
 
-    def _template_fill(self, spec: GameSpec, gdd: GDD, template_id: str) -> str:
+    def _template_fill(
+        self,
+        spec: GameSpec,
+        gdd: GDD,
+        template_id: str,
+        allow_fallback: bool = True,
+    ) -> str:
         try:
             return self.template_engine.generate(spec, template_id)
         except Exception as e:
+            if not allow_fallback:
+                raise
             logger.warning(f"Template fill failed ({e}), falling back to mock")
             return self._mock_generate(spec)
 
@@ -201,8 +210,14 @@ class CodeGenerator:
     # Path B: Hybrid (template skeleton + LLM customisation)
     # ------------------------------------------------------------------
 
-    async def _hybrid_generate(self, spec: GameSpec, gdd: GDD, template_id: str) -> str:
-        skeleton = self._template_fill(spec, gdd, template_id)
+    async def _hybrid_generate(
+        self,
+        spec: GameSpec,
+        gdd: GDD,
+        template_id: str,
+        allow_fallback: bool = True,
+    ) -> str:
+        skeleton = self._template_fill(spec, gdd, template_id, allow_fallback=allow_fallback)
 
         prompt = (
             f"Here is a base game template:\n\n{skeleton}\n\n"
@@ -221,6 +236,8 @@ class CodeGenerator:
             )
             return _extract_html(text)
         except Exception as e:
+            if not allow_fallback:
+                raise
             logger.warning(f"Hybrid LLM failed ({e}), using skeleton")
             return skeleton
 
@@ -228,7 +245,13 @@ class CodeGenerator:
     # Path C: Full LLM generation
     # ------------------------------------------------------------------
 
-    async def _llm_generate(self, spec: GameSpec, gdd: GDD, description: str = "") -> str:
+    async def _llm_generate(
+        self,
+        spec: GameSpec,
+        gdd: GDD,
+        description: str = "",
+        allow_fallback: bool = True,
+    ) -> str:
         # Use user's original description directly for better results
         if description:
             full_prompt = (
@@ -275,6 +298,8 @@ class CodeGenerator:
             )
             return _extract_html(text)
         except Exception as e:
+            if not allow_fallback:
+                raise
             logger.error(f"Full LLM generation failed: {e}")
             return self._mock_generate(spec)
 
@@ -287,6 +312,7 @@ class CodeGenerator:
         current_code: str,
         feedback: str,
         conversation: List[dict],
+        allow_fallback: bool = True,
     ) -> Tuple[str, IterationType]:
         """Classify feedback and apply minimal incremental change."""
         if self.llm_mode == "mock" or not self._client.is_enabled():
@@ -301,7 +327,13 @@ class CodeGenerator:
             # Fallback to LLM if regex didn't match
             iter_type = IterationType.element_change
 
-        updated = await self._llm_iterate(current_code, feedback, conversation, iter_type)
+        updated = await self._llm_iterate(
+            current_code,
+            feedback,
+            conversation,
+            iter_type,
+            allow_fallback=allow_fallback,
+        )
         return updated, iter_type
 
     async def _classify_iteration(self, feedback: str) -> IterationType:
@@ -364,6 +396,7 @@ class CodeGenerator:
         feedback: str,
         conversation: List[dict],
         iter_type: IterationType,
+        allow_fallback: bool = True,
     ) -> str:
         history_text = "\n".join(
             f"{m.get('role','user')}: {m.get('content','')}" for m in conversation[-4:]
@@ -385,6 +418,8 @@ class CodeGenerator:
             )
             return _extract_html(text)
         except Exception as e:
+            if not allow_fallback:
+                raise
             logger.error(f"LLM iterate failed: {e}")
             return code
 

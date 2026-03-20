@@ -190,7 +190,34 @@ interface GenCompleteEvent {
 }
 ```
 
-### 事件：`notification` — 生成失败通知
+### 事件：`gen:error` — 生成失败终态
+
+```typescript
+socket.on('gen:error', (data: GenErrorEvent) => {
+  showError(data.data.error);
+  markGenerationFailed(data.gameId, data.stage);
+});
+
+interface GenErrorEvent {
+  type: 'gen:error';
+  gameId: string;
+  stage: string;          // 失败阶段英文 code
+  status: 'error';
+  details: {
+    stage?: string;
+    retryCount?: number;
+    fallback?: string;
+  };
+  data: {
+    success: false;
+    error: string;
+    details: Record<string, unknown>;
+  };
+  timestamp: number;
+}
+```
+
+### 事件：`notification` — 生成失败通知（兼容）
 
 ```typescript
 socket.on('notification', (data: NotificationEvent) => {
@@ -207,6 +234,8 @@ interface NotificationEvent {
   id: string;
 }
 ```
+
+> 建议前端把 `gen:error` 作为生成失败终态的主监听事件，`notification` 仅保留给旧逻辑和通用 toast。
 
 ---
 

@@ -314,7 +314,11 @@ class DialogueEngine:
             raise ValueError(f"Session {session_id} not found")
         return _build_game_spec(session.slots)
 
-    async def parse_description_to_spec(self, description: str) -> GameSpec:
+    async def parse_description_to_spec(
+        self,
+        description: str,
+        allow_fallback: bool = True,
+    ) -> GameSpec:
         """Single-shot parse: description → GameSpec (no conversation)."""
         if settings.LLM_MODE == "mock":
             return _mock_parse(description)
@@ -332,9 +336,13 @@ class DialogueEngine:
             if slot_data:
                 slots = SlotState(**{k: v for k, v in slot_data.items() if v is not None})
                 return _build_game_spec(slots)
+            if not allow_fallback:
+                raise ValueError("LLM slot extraction returned no valid JSON")
             logger.warning("LLM slot extraction returned no valid JSON, using mock")
             return _mock_parse(description)
         except Exception as e:
+            if not allow_fallback:
+                raise
             logger.warning(f"LLM slot extraction failed, using mock: {e}")
             return _mock_parse(description)
 

@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     # WebSocket
     WS_HEARTBEAT_INTERVAL: int = 30
 
+    # Service upstreams
+    GAME_SERVICE_UPSTREAM_URL: str = ""
+    ADMIN_TOKEN: str = "admin123"
+
     PORT: int = 8000
 
     class Config:

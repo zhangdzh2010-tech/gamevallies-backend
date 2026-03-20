@@ -22,6 +22,7 @@ const STAGE_LABELS: Record<string, string> = {
   template_matching: '匹配游戏模板',
   code_generating: '生成游戏代码',
   qa_checking: '质量检测',
+  publishing: '发布生成结果',
   completed: '生成完成',
   failed: '生成失败',
 };
@@ -32,16 +33,43 @@ const STAGE_PCT: Record<string, number> = {
   template_matching: 40,
   code_generating: 60,
   qa_checking: 80,
+  publishing: 90,
   completed: 100,
   failed: -1,
 };
 
-/** Retry an async operation up to `maxAttempts` times on network/5xx errors */
+interface RetryContext {
+  retry: number;
+  maxRetries: number;
+  attempt: number;
+  maxAttempts: number;
+  error: unknown;
+}
+
+interface RetryOptions {
+  maxAttempts?: number;
+  delayMs?: number;
+  retryOnHttpResponse?: boolean;
+  retryOnNetworkError?: boolean;
+  onRetry?: (context: RetryContext) => void | Promise<void>;
+}
+
+interface FailureContext {
+  message: string;
+  failedStage?: string;
+  retryCount: number;
+  fallback?: string;
+}
+
+/** Retry an async operation on transient network/5xx errors. */
 async function withRetry<T>(
   fn: () => Promise<T>,
-  maxAttempts: number = 2,
-  delayMs: number = 3000,
+  options: RetryOptions = {},
 ): Promise<T> {
+  const maxAttempts = options.maxAttempts ?? 2;
+  const delayMs = options.delayMs ?? 3000;
+  const retryOnHttpResponse = options.retryOnHttpResponse ?? true;
+  const retryOnNetworkError = options.retryOnNetworkError ?? true;
   let lastError: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
@@ -50,9 +78,27 @@ async function withRetry<T>(
       lastError = err;
       // Do NOT retry on timeout (ECONNABORTED) — AI engine already started processing,
       // a retry would launch a duplicate pipeline job
+      const isHttpRetryable =
+        retryOnHttpResponse &&
+        Boolean(err?.response) &&
+        (err.response.status >= 500 || err.response.status === 429);
+      const isNetworkRetryable =
+        retryOnNetworkError &&
+        !err?.response &&
+        Boolean(err?.code);
       const isRetryable =
-        err.response && err.response.status >= 500;
+        err?.code !== 'ECONNABORTED' &&
+        (isHttpRetryable || isNetworkRetryable);
       if (!isRetryable || attempt === maxAttempts) break;
+      if (options.onRetry) {
+        await options.onRetry({
+          retry: attempt,
+          maxRetries: maxAttempts - 1,
+          attempt: attempt + 1,
+          maxAttempts,
+          error: err,
+        });
+      }
       await new Promise((r) => setTimeout(r, delayMs));
     }
   }
@@ -111,13 +157,21 @@ export class GameService {
           authorId: userId,
           description,
           status: 'generating',
+          failedStage: null,
+          failedReason: null,
+          retryCount: 0,
+          lastErrorAt: null,
           title: dto.title?.trim() || `Game ${gameId.substring(0, 8)}`,
           commentCount: 0,
           forkDepth: 0,
         },
       });
 
-      this.wsGateway.emitGenerationProgress(userId, gameId, 'started', 0);
+      this.emitProgress(userId, gameId, 'started', 0, {
+        stage: 'started',
+        attempt: 1,
+        maxAttempts: 1,
+      });
 
       // Run pipeline asynchronously – client subscribes to WebSocket for progress
       setImmediate(() => {
@@ -145,9 +199,6 @@ export class GameService {
     description: string,
   ): Promise<void> {
     try {
-      // Emit initial stage
-      this.emitStage(userId, gameId, 'intent_parsing');
-
       const response = await withRetry(() =>
         axios.post(
           `${this.aiEngineUrl}/api/v1/ai/pipeline/run`,
@@ -158,7 +209,28 @@ export class GameService {
             platform: 'wechat_webview',
           },
           { timeout: 660000 },
-        )
+        ),
+        {
+          maxAttempts: 3,
+          delayMs: 3000,
+          retryOnHttpResponse: false,
+          onRetry: async ({ retry, maxRetries, attempt, maxAttempts, error }) => {
+            this.emitProgress(
+              userId,
+              gameId,
+              `AI 生成服务请求失败，重试中（${retry}/${maxRetries}）`,
+              STAGE_PCT.code_generating,
+              {
+                stage: 'code_generating',
+                retry,
+                maxRetries,
+                attempt,
+                maxAttempts,
+                error: this.extractErrorMessage(error),
+              },
+            );
+          },
+        },
       );
 
       const {
@@ -173,28 +245,7 @@ export class GameService {
         quality_breakdown: qualityBreakdown = {},
       } = response.data;
 
-      this.emitStage(userId, gameId, 'qa_checking');
-
       const bundlePreviewUrl = this.buildPreviewUrl(gameId);
-
-      await this.bundleService.saveBundle({
-        gameId,
-        version: 1,
-        htmlCode,
-        cssCode: '',
-        jsCode: '',
-        metadata: {
-          strategy,
-          qaPassed,
-          qaRetries,
-          gameSpec,
-          genTimeMs,
-          codeSizeBytes,
-          qualityScore,
-          qualityBreakdown,
-        },
-        previewUrl: bundlePreviewUrl,
-      });
 
       // Extract <title> from HTML; fallback to type-based deriveTitle
       const htmlTitleMatch = htmlCode.match(/<title>([^<]{1,60})<\/title>/i);
@@ -205,30 +256,73 @@ export class GameService {
       const currentGame = await this.prisma.game.findUnique({ where: { id: gameId }, select: { title: true } });
       const isPlaceholderTitle = /^Game\s+[0-9a-f]{8}$/i.test(currentGame?.title || '');
 
-      await this.prisma.game.update({
-        where: { id: gameId },
-        data: {
+      this.emitStage(userId, gameId, 'publishing', {
+        stage: 'publishing',
+        attempt: 1,
+        maxAttempts: 3,
+      });
+
+      await this.persistGeneratedGameResult({
+        gameId,
+        userId,
+        version: 1,
+        htmlCode,
+        previewUrl: bundlePreviewUrl,
+        metadata: {
+          strategy,
+          qaPassed,
+          qaRetries,
+          gameSpec,
+          genTimeMs,
+          codeSizeBytes,
+          qualityScore,
+          qualityBreakdown,
+        },
+        gameTitle: isPlaceholderTitle ? gameTitle : undefined,
+        updateData: {
           status: 'draft',
           version: 1,
           gameType: gameSpec?.game_type || null,
           qualityScore,
-          ...(isPlaceholderTitle ? { title: gameTitle } : {}),
+          failedStage: null,
+          failedReason: null,
+          retryCount: 0,
+          lastErrorAt: null,
         },
       });
 
-      this.emitStage(userId, gameId, 'completed');
-      this.wsGateway.emitGenerationComplete(userId, gameId, bundlePreviewUrl);
+      this.emitStage(userId, gameId, 'completed', {
+        stage: 'completed',
+        qaRetries,
+      });
     } catch (error) {
-      this.logger.error(`Pipeline failed for game ${gameId}: ${error.message}`);
-
-      await this.prisma.game.update({
-        where: { id: gameId },
-        data: { status: 'failed' },
+      const failure = this.extractFailureContext(error);
+      const errorMessage = failure.message;
+      this.logger.error(`Pipeline failed for game ${gameId}: ${errorMessage}`);
+      this.logStructuredFailure('PIPELINE_RUN_FAILURE', {
+        gameId,
+        userId,
+        stage: failure.failedStage || 'failed',
+        retryCount: failure.retryCount,
+        error: errorMessage,
       });
 
+      await this.persistFailureState({
+        gameId,
+        failedStage: failure.failedStage || 'pipeline_run',
+        failedReason: errorMessage,
+        retryCount: failure.retryCount,
+        status: 'failed',
+      });
+
+      this.wsGateway.emitGenerationError(userId, gameId, errorMessage, {
+        stage: failure.failedStage || 'pipeline_run',
+        retryCount: failure.retryCount,
+        fallback: failure.fallback,
+      });
       this.wsGateway.emitNotification(userId, {
         type: 'error',
-        message: `Game generation failed: ${error.message}`,
+        message: `Game generation failed: ${errorMessage}`,
         gameId,
       });
     }
@@ -253,10 +347,167 @@ export class GameService {
     return '新游戏';
   }
 
-  private emitStage(userId: string, gameId: string, stage: string): void {
+  private emitProgress(
+    userId: string,
+    gameId: string,
+    message: string,
+    percentage: number,
+    details?: Record<string, unknown>,
+  ): void {
+    this.wsGateway.emitGenerationProgress(userId, gameId, message, percentage, details);
+  }
+
+  private emitStage(
+    userId: string,
+    gameId: string,
+    stage: string,
+    details?: Record<string, unknown>,
+  ): void {
     const pct = STAGE_PCT[stage] ?? 50;
     const label = STAGE_LABELS[stage] ?? stage;
-    this.wsGateway.emitGenerationProgress(userId, gameId, label, pct);
+    this.emitProgress(userId, gameId, label, pct, details);
+  }
+
+  private extractErrorMessage(error: any): string {
+    const detail = error?.response?.data?.detail;
+    if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+      return detail.message || detail.error || error?.message || 'unknown error';
+    }
+    return (
+      detail ||
+      error?.response?.data?.message ||
+      error?.message ||
+      'unknown error'
+    );
+  }
+
+  private extractFailureContext(error: any): FailureContext {
+    const detail = error?.response?.data?.detail;
+    if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+      return {
+        message:
+          detail.message ||
+          detail.error ||
+          error?.message ||
+          'unknown error',
+        failedStage: detail.failed_stage || detail.failedStage || undefined,
+        retryCount: Number(detail.retry_count ?? detail.retryCount ?? 0) || 0,
+        fallback: detail.fallback || undefined,
+      };
+    }
+
+    return {
+      message: this.extractErrorMessage(error),
+      failedStage: undefined,
+      retryCount: 0,
+      fallback: undefined,
+    };
+  }
+
+  private logStructuredFailure(event: string, payload: Record<string, unknown>): void {
+    this.logger.error(`${event} ${JSON.stringify(payload)}`);
+  }
+
+  private async persistFailureState(params: {
+    gameId: string;
+    failedStage: string;
+    failedReason: string;
+    retryCount: number;
+    status?: GameStatus;
+  }): Promise<void> {
+    const { gameId, failedStage, failedReason, retryCount, status } = params;
+    await this.prisma.game.update({
+      where: { id: gameId },
+      data: {
+        ...(status ? { status } : {}),
+        failedStage,
+        failedReason,
+        retryCount,
+        lastErrorAt: new Date(),
+      },
+    });
+  }
+
+  private async persistGeneratedGameResult(params: {
+    gameId: string;
+    userId: string;
+    version: number;
+    htmlCode: string;
+    previewUrl: string;
+    metadata: any;
+    gameTitle?: string;
+    updateData: any;
+  }): Promise<void> {
+    const {
+      gameId,
+      userId,
+      version,
+      htmlCode,
+      previewUrl,
+      metadata,
+      gameTitle,
+      updateData,
+    } = params;
+
+    const maxAttempts = 3;
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const existingBundle = await this.bundleService.getBundle(gameId, version);
+        if (!existingBundle) {
+          await this.bundleService.saveBundle({
+            gameId,
+            version,
+            htmlCode,
+            cssCode: '',
+            jsCode: '',
+            metadata,
+            previewUrl,
+          });
+        }
+
+        await this.prisma.game.update({
+          where: { id: gameId },
+          data: {
+            ...updateData,
+            ...(gameTitle ? { title: gameTitle } : {}),
+          },
+        });
+
+        this.wsGateway.emitGenerationComplete(userId, gameId, previewUrl);
+        return;
+      } catch (error) {
+        lastError = error;
+        if (attempt < maxAttempts) {
+          this.emitProgress(
+            userId,
+            gameId,
+            `发布生成结果失败，重试中（${attempt}/${maxAttempts - 1}）`,
+            STAGE_PCT.publishing,
+            {
+              stage: 'publishing',
+              retry: attempt,
+              maxRetries: maxAttempts - 1,
+              attempt: attempt + 1,
+              maxAttempts,
+              error: this.extractErrorMessage(error),
+            },
+          );
+          await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+          continue;
+        }
+      }
+    }
+
+    this.logStructuredFailure('PIPELINE_PUBLISH_FAILURE', {
+      gameId,
+      userId,
+      stage: 'publishing',
+      retryCount: maxAttempts - 1,
+      error: this.extractErrorMessage(lastError),
+    });
+    throw lastError;
   }
 
   async findById(id: string): Promise<any> {
@@ -434,7 +685,6 @@ export class GameService {
       }
 
       const version = (game.version || 1) + 1;
-      this.wsGateway.emitGenerationProgress(userId, id, '分析修改意图', 20);
 
       const bundle = await this.bundleService.getLatestBundle(id);
       const bundleHistory = await this.bundleService.getBundleHistory(id);
@@ -466,53 +716,88 @@ export class GameService {
     currentCode: string,
   ): Promise<void> {
     try {
-      this.wsGateway.emitGenerationProgress(userId, gameId, '生成代码修改', 40);
-
       const response = await withRetry(() =>
         axios.post(
           `${this.aiEngineUrl}/api/v1/ai/pipeline/iterate`,
           {
             game_id: gameId,
             feedback,
+            user_id: userId,
             conversation: conversationHistory,
             current_code: currentCode,
           },
           { timeout: 660000 },
         )
+        ,
+        {
+          retryOnHttpResponse: false,
+        }
       );
 
       const {
         html_code: htmlCode = currentCode,
         iteration_type: iterationType = 'element_change',
         generation_time_ms: genTimeMs = 0,
+        qa_retries: qaRetries = 0,
+        iteration_retries: iterationRetries = 0,
       } = response.data;
-
-      this.wsGateway.emitGenerationProgress(userId, gameId, '质量检测', 80);
 
       const bundlePreviewUrl = this.buildPreviewUrl(gameId);
 
-      await this.bundleService.saveBundle({
-        gameId,
-        version: nextVersion,
-        htmlCode,
-        cssCode: '',
-        jsCode: '',
-        metadata: { feedback, iterationType, genTimeMs },
-        previewUrl: bundlePreviewUrl,
+      this.emitStage(userId, gameId, 'publishing', {
+        stage: 'publishing',
+        attempt: 1,
+        maxAttempts: 3,
       });
 
-      await this.prisma.game.update({
-        where: { id: gameId },
-        data: { version: nextVersion, status: 'draft' },
+      await this.persistGeneratedGameResult({
+        gameId,
+        userId,
+        version: nextVersion,
+        htmlCode,
+        previewUrl: bundlePreviewUrl,
+        metadata: {
+          feedback,
+          iterationType,
+          genTimeMs,
+          qaRetries,
+          iterationRetries,
+        },
+        updateData: {
+          version: nextVersion,
+          status: 'draft',
+          failedStage: null,
+          failedReason: null,
+          retryCount: 0,
+          lastErrorAt: null,
+        },
       });
 
       this.wsGateway.emitGenerationProgress(userId, gameId, '迭代完成', 100);
-      this.wsGateway.emitGenerationComplete(userId, gameId, bundlePreviewUrl);
     } catch (error) {
-      this.logger.error(`Iteration failed for game ${gameId}: ${error.message}`);
+      const failure = this.extractFailureContext(error);
+      this.logger.error(`Iteration failed for game ${gameId}: ${failure.message}`);
+      this.logStructuredFailure('PIPELINE_ITERATION_FAILURE', {
+        gameId,
+        userId,
+        stage: failure.failedStage || 'iteration',
+        retryCount: failure.retryCount,
+        error: failure.message,
+      });
+      await this.persistFailureState({
+        gameId,
+        failedStage: failure.failedStage || 'iteration',
+        failedReason: failure.message,
+        retryCount: failure.retryCount,
+      });
+      this.wsGateway.emitGenerationError(userId, gameId, failure.message, {
+        stage: failure.failedStage || 'iteration',
+        retryCount: failure.retryCount,
+        fallback: failure.fallback,
+      });
       this.wsGateway.emitNotification(userId, {
         type: 'error',
-        message: `Game iteration failed: ${error.message}`,
+        message: `Game iteration failed: ${failure.message}`,
         gameId,
       });
     }
