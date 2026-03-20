@@ -20,7 +20,7 @@ import asyncio
 import time
 import logging
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from typing import Optional
 
 from ..models import (
@@ -39,6 +39,7 @@ from ..models import (
 )
 from ...engine.dialogue_engine import DialogueEngine, _sessions
 from ...engine.pipeline_orchestrator import PipelineExecutionError, PipelineOrchestrator
+from ...engine.prompt_store import cached_prompt_count, refresh as refresh_prompt_cache
 from ...engine.qa_pipeline import QAPipeline
 from ...config.settings import settings
 from ...services.websocket_manager import manager
@@ -51,6 +52,12 @@ router = APIRouter(prefix="/api/v1/ai", tags=["ai"])
 _orchestrator = PipelineOrchestrator()
 _dialogue_engine = DialogueEngine()
 _qa_pipeline = QAPipeline()
+
+
+def _require_admin_token(token: Optional[str]) -> None:
+    expected = settings.ADMIN_TOKEN or "admin123"
+    if not token or token != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 async def _relay_progress_to_game_service(
@@ -162,6 +169,26 @@ async def expand_prompt(request: dict):
     except Exception as e:
         logger.error(f"Prompt expansion failed: {e}")
         return {"expanded_prompt": description}
+
+
+@router.post("/prompts/refresh")
+async def refresh_prompts(
+    x_admin_token: Optional[str] = Header(default=None, alias="x-admin-token"),
+):
+    """Reload the in-memory prompt cache from system_configs."""
+    _require_admin_token(x_admin_token)
+    try:
+        prompt_count = refresh_prompt_cache(raise_on_error=True)
+    except Exception as exc:
+        logger.exception("Prompt cache refresh failed")
+        raise HTTPException(status_code=503, detail=f"Prompt refresh failed: {exc}") from exc
+
+    return {
+        "status": "ok",
+        "message": "prompt cache refreshed",
+        "prompt_count": prompt_count,
+        "cached_prompt_count": cached_prompt_count(),
+    }
 
 
 # ===========================================================================
