@@ -235,11 +235,74 @@ class PipelineStage(str, Enum):
     failed = "failed"
 
 
+class AsyncTaskType(str, Enum):
+    pipeline_run = "pipeline_run"
+    pipeline_iterate = "pipeline_iterate"
+
+
+class AsyncTaskStatus(str, Enum):
+    queued = "queued"
+    running = "running"
+    succeeded = "succeeded"
+    failed = "failed"
+    canceled = "canceled"
+
+
+class AsyncTaskProgress(BaseModel):
+    stage: str
+    pct: int
+    message: str
+    details: Dict[str, Any] = Field(default_factory=dict)
+    updated_at: float
+
+
+class AsyncTaskError(BaseModel):
+    message: str
+    failed_stage: Optional[str] = None
+    retry_count: int = 0
+    fallback: Optional[str] = None
+
+
+class AsyncTaskHandleResponse(BaseModel):
+    task_id: str
+    task_type: AsyncTaskType
+    status: AsyncTaskStatus
+    game_id: str
+    user_id: str
+    timeout_s: int
+    ws_channel: str
+    poll_url: str
+    cancel_url: str
+
+
+class AsyncTaskResponse(BaseModel):
+    task_id: str
+    task_type: AsyncTaskType
+    status: AsyncTaskStatus
+    game_id: str
+    user_id: str
+    timeout_s: int
+    created_at: float
+    started_at: Optional[float] = None
+    completed_at: Optional[float] = None
+    progress: Optional[AsyncTaskProgress] = None
+    error: Optional[AsyncTaskError] = None
+    result: Optional[Dict[str, Any]] = None
+    ws_channel: str
+
+
+class ListAsyncTasksResponse(BaseModel):
+    items: List[AsyncTaskResponse] = Field(default_factory=list)
+    total: int = 0
+
+
 class RunPipelineRequest(BaseModel):
     game_id: str
     description: str
     user_id: str
     platform: str = "wechat_webview"
+    timeout_s: int = Field(default=600, ge=30, le=3600)
+    task_id: Optional[str] = None
 
 
 class RunPipelineResponse(BaseModel):
@@ -287,6 +350,7 @@ class GenerateCodeRequest(BaseModel):
     description: Optional[str] = None
     template_id: Optional[str] = None
     platform: str = "wechat_webview"
+    timeout_s: int = Field(default=600, ge=30, le=3600)
 
 
 class GenerateCodeResponse(BaseModel):
@@ -303,6 +367,8 @@ class IterateRequest(BaseModel):
     user_id: str = "system"
     conversation: List[Dict[str, str]] = Field(default_factory=list)
     current_code: str
+    timeout_s: int = Field(default=600, ge=30, le=3600)
+    task_id: Optional[str] = None
 
 
 class IterateResponse(BaseModel):

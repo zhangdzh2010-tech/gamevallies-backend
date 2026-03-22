@@ -2,8 +2,11 @@
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+import asyncio
 import pytest
+from unittest.mock import AsyncMock, patch
 from src.engine.qa_pipeline import QAPipeline
+from src.api.models import GameSpec, QACheckError
 
 qa = QAPipeline()
 
@@ -30,7 +33,12 @@ function update() {
     game.score += 1;
     if (game.score > 100) { game.gameOver = true; }
 }
-function loop() { update(); requestAnimationFrame(loop); }
+function render() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#22c55e';
+    ctx.fillRect(180, 520, 60, 60);
+}
+function loop() { update(); render(); requestAnimationFrame(loop); }
 requestAnimationFrame(loop);
 </script>
 </body>
@@ -77,6 +85,20 @@ class TestL2Security:
         code = VALID_GAME.replace("game.score += 1;", "new WebSocket('ws://x');")
         assert any("WebSocket" in e.message for e in qa._check_l2_security(code))
 
+    def test_external_script_src_detected(self):
+        code = VALID_GAME.replace(
+            "</head>",
+            '<script src="https://cdn.example.com/game.js"></script></head>',
+        )
+        assert any("external script src" in e.message for e in qa._check_l2_security(code))
+
+    def test_external_css_asset_detected(self):
+        code = VALID_GAME.replace(
+            "</head>",
+            "<style>body{background-image:url(https://cdn.example.com/bg.png);}</style></head>",
+        )
+        assert any("external CSS asset" in e.message for e in qa._check_l2_security(code))
+
 
 class TestL3Startup:
     def test_valid_passes(self):
@@ -102,6 +124,22 @@ class TestL3Startup:
         code = VALID_GAME.replace("requestAnimationFrame", "//RAF")
         _, warnings = qa._check_l3_startup(code)
         assert any("game loop" in w.message.lower() for w in warnings)
+
+    def test_missing_draw_commands_errors(self):
+        code = VALID_GAME.replace(
+            "function render() {\n    ctx.clearRect(0, 0, canvas.width, canvas.height);\n    ctx.fillStyle = '#22c55e';\n    ctx.fillRect(180, 520, 60, 60);\n}\n",
+            "",
+        )
+        errors, _ = qa._check_l3_startup(code)
+        assert any("blank screen" in e.message.lower() for e in errors)
+
+    def test_array_fill_does_not_count_as_rendering(self):
+        code = VALID_GAME.replace(
+            "ctx.fillRect(180, 520, 60, 60);",
+            "const samples = new Array(10).fill(0);",
+        )
+        errors, _ = qa._check_l3_startup(code)
+        assert any("blank screen" in e.message.lower() for e in errors)
 
     def test_unmatched_braces(self):
         code = VALID_GAME + "{" * 20
@@ -238,3 +276,69 @@ class TestFullCheck:
         assert len(result.errors) >= 3
         assert result.validation_summary["L2_security"] is False
         assert result.validation_summary["L3_startup"] is False
+
+
+def test_repair_code_supports_fix_round_prompt_variables():
+    pipeline = QAPipeline()
+    errors = [QACheckError(type="L1_syntax", message="Missing </html>", severity="error")]
+
+    with patch(
+        "src.engine.qa_pipeline.get_prompt",
+        return_value="Round {fix_round}/{max_fix_rounds}::{game_type}::{error_list}::{code}",
+    ), patch(
+        "src.engine.qa_pipeline.settings.LLM_MODE",
+        "real",
+    ), patch.object(
+        pipeline._client,
+        "is_enabled",
+        return_value=True,
+    ), patch.object(
+        pipeline._client,
+        "complete",
+        new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
+    ) as mock_complete:
+        asyncio.run(
+            pipeline.repair_code(
+                "<!DOCTYPE html><html>",
+                errors,
+                GameSpec(game_type="dodge"),
+                fix_round=2,
+                max_fix_rounds=3,
+            )
+        )
+
+    prompt = mock_complete.await_args.kwargs["messages"][0]["content"]
+    assert "Round 2/3::dodge" in prompt
+    assert "Missing </html>" in prompt
+
+
+def test_repair_code_falls_back_when_db_prompt_template_is_invalid():
+    pipeline = QAPipeline()
+    errors = [QACheckError(type="L1_syntax", message="Missing </html>", severity="error")]
+
+    with patch(
+        "src.engine.qa_pipeline.get_prompt",
+        return_value="Broken template {",
+    ), patch(
+        "src.engine.qa_pipeline.settings.LLM_MODE",
+        "real",
+    ), patch.object(
+        pipeline._client,
+        "is_enabled",
+        return_value=True,
+    ), patch.object(
+        pipeline._client,
+        "complete",
+        new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
+    ) as mock_complete:
+        asyncio.run(
+            pipeline.repair_code(
+                "<!DOCTYPE html><html>",
+                errors,
+                GameSpec(game_type="runner"),
+            )
+        )
+
+    prompt = mock_complete.await_args.kwargs["messages"][0]["content"]
+    assert "The code has the following issues that MUST be fixed" in prompt
+    assert "Game type: runner" in prompt

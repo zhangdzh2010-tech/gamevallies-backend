@@ -2,9 +2,14 @@
 
 New endpoints (pipeline):
   POST /api/v1/ai/pipeline/run       – full stages 02-06 (description → HTML)
+  POST /api/v1/ai/pipeline/run/async – async task wrapper for long-running generation
   POST /api/v1/ai/pipeline/iterate   – stage 07 (feedback → updated HTML)
+  POST /api/v1/ai/pipeline/iterate/async – async task wrapper for iteration
   POST /api/v1/ai/dialogue/chat      – stage 01 (one dialogue turn)
   GET  /api/v1/ai/dialogue/session/{session_id} – get current session state
+  GET  /api/v1/ai/tasks/{task_id}    – async task status/result
+  GET  /api/v1/ai/tasks              – list async tasks
+  POST /api/v1/ai/tasks/{task_id}/cancel – cancel async task
 
 Legacy endpoints (kept for backward compatibility):
   POST /api/v1/ai/generate-code      – old format, now wraps pipeline
@@ -20,16 +25,21 @@ import asyncio
 import time
 import logging
 import httpx
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Query, status as http_status
 from typing import Optional
 
 from ..models import (
+    AsyncTaskHandleResponse,
+    AsyncTaskResponse,
+    AsyncTaskStatus,
+    AsyncTaskType,
     ChatRequest,
     ChatResponse,
     GenerateCodeRequest,
     GenerateCodeResponse,
     IterateRequest,
     IterateResponse,
+    ListAsyncTasksResponse,
     ParseIntentRequest,
     ParseIntentResponse,
     QACheckRequest,
@@ -42,6 +52,8 @@ from ...engine.pipeline_orchestrator import PipelineExecutionError, PipelineOrch
 from ...engine.prompt_store import cached_prompt_count, refresh as refresh_prompt_cache
 from ...engine.qa_pipeline import QAPipeline
 from ...config.settings import settings
+from ...services.async_task_manager import task_manager
+from ...services.llm_gateway import gateway, llm_request_context
 from ...services.websocket_manager import manager
 
 logger = logging.getLogger(__name__)
@@ -64,6 +76,7 @@ async def _relay_progress_to_game_service(
     *,
     game_id: str,
     user_id: str,
+    task_id: Optional[str],
     stage: str,
     pct: int,
     message: str,
@@ -82,6 +95,7 @@ async def _relay_progress_to_game_service(
             await client.post(
                 f"{base_url}/api/v1/internal/generation/progress",
                 json={
+                    "taskId": task_id,
                     "gameId": game_id,
                     "userId": user_id,
                     "stage": stage,
@@ -93,6 +107,108 @@ async def _relay_progress_to_game_service(
             )
     except Exception as exc:
         logger.debug("Failed to relay generation progress to game-service: %s", exc)
+
+
+def _resolve_timeout_s(value: Optional[int]) -> int:
+    return int(value or settings.PIPELINE_TIMEOUT_S)
+
+
+def _make_progress_cb(
+    *,
+    game_id: str,
+    user_id: str,
+    task_id: Optional[str] = None,
+):
+    def progress_cb(stage: str, pct: int, message: str, details: Optional[dict] = None) -> None:
+        loop = asyncio.get_running_loop()
+
+        async def fanout() -> None:
+            if task_id:
+                await task_manager.update_progress(
+                    task_id,
+                    stage=stage,
+                    pct=pct,
+                    message=message,
+                    details=details,
+                )
+            await manager.send_progress(
+                game_id,
+                stage,
+                pct,
+                message,
+                details,
+            )
+            await _relay_progress_to_game_service(
+                game_id=game_id,
+                user_id=user_id,
+                task_id=task_id,
+                stage=stage,
+                pct=pct,
+                message=message,
+                details=details,
+            )
+
+        loop.create_task(fanout())
+
+    return progress_cb
+
+
+async def _run_pipeline_internal(
+    request: RunPipelineRequest,
+    *,
+    task_id: Optional[str] = None,
+) -> RunPipelineResponse:
+    progress_cb = _make_progress_cb(
+        game_id=request.game_id,
+        user_id=request.user_id,
+        task_id=task_id or request.task_id,
+    )
+    with llm_request_context(
+        game_id=request.game_id,
+        user_id=request.user_id,
+        task_id=task_id or request.task_id,
+    ):
+        return await _orchestrator.run(
+            request,
+            progress_cb=progress_cb,
+            timeout_s=_resolve_timeout_s(request.timeout_s),
+        )
+
+
+async def _run_iteration_internal(
+    request: IterateRequest,
+    *,
+    task_id: Optional[str] = None,
+) -> IterateResponse:
+    start = time.time()
+    progress_cb = _make_progress_cb(
+        game_id=request.game_id,
+        user_id=request.user_id,
+        task_id=task_id or request.task_id,
+    )
+    with llm_request_context(
+        game_id=request.game_id,
+        user_id=request.user_id,
+        task_id=task_id or request.task_id,
+    ):
+        result = await _orchestrator.iterate(
+            game_id=request.game_id,
+            current_code=request.current_code,
+            feedback=request.feedback,
+            conversation=request.conversation,
+            user_id=request.user_id,
+            progress_cb=progress_cb,
+            timeout_s=_resolve_timeout_s(request.timeout_s),
+        )
+    elapsed = int((time.time() - start) * 1000)
+    return IterateResponse(
+        html_code=result["html_code"],
+        changes=[f"Applied: {request.feedback}", f"Type: {result['iteration_type']}"],
+        iteration_type=result["iteration_type"],
+        generation_time_ms=elapsed,
+        qa_retries=result.get("qa_retries", 0),
+        iteration_retries=result.get("iteration_retries", 0),
+    )
 
 
 # ===========================================================================
@@ -160,10 +276,12 @@ async def expand_prompt(request: dict):
 
     try:
         text = await client.complete(
-            model=client.model_for(fast=True),
             max_tokens=1024,
             system=system,
             messages=[{"role": "user", "content": f"游戏想法：{description}"}],
+            step_key="expand_prompt",
+            stage="prompt_expand",
+            prefer_fast=True,
         )
         return {"expanded_prompt": text.strip()}
     except Exception as e:
@@ -191,6 +309,34 @@ async def refresh_prompts(
     }
 
 
+@router.post("/llm-gateway/refresh")
+async def refresh_llm_gateway(
+    x_admin_token: Optional[str] = Header(default=None, alias="x-admin-token"),
+):
+    _require_admin_token(x_admin_token)
+    provider_count = gateway.refresh(raise_on_error=True)
+    return {
+        "status": "ok",
+        "message": "llm gateway refreshed",
+        "provider_count": provider_count,
+    }
+
+
+@router.post("/llm-gateway/providers/{provider_id}/test")
+async def test_llm_gateway_provider(
+    provider_id: str,
+    x_admin_token: Optional[str] = Header(default=None, alias="x-admin-token"),
+):
+    _require_admin_token(x_admin_token)
+    try:
+        return await gateway.test_provider(provider_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("LLM gateway provider test failed")
+        raise HTTPException(status_code=500, detail=f"Provider test failed: {exc}") from exc
+
+
 # ===========================================================================
 # Stages 02-06 – Full pipeline run
 # ===========================================================================
@@ -199,28 +345,7 @@ async def refresh_prompts(
 async def run_pipeline(request: RunPipelineRequest) -> RunPipelineResponse:
     """Run stages 02-06: description → GameSpec → GDD → code → QA → HTML."""
     try:
-        def progress_cb(stage: str, pct: int, message: str, details: Optional[dict] = None) -> None:
-            loop = asyncio.get_running_loop()
-            async def fanout() -> None:
-                await manager.send_progress(
-                    request.game_id,
-                    stage,
-                    pct,
-                    message,
-                    details,
-                )
-                await _relay_progress_to_game_service(
-                    game_id=request.game_id,
-                    user_id=request.user_id,
-                    stage=stage,
-                    pct=pct,
-                    message=message,
-                    details=details,
-                )
-
-            loop.create_task(fanout())
-
-        return await _orchestrator.run(request, progress_cb=progress_cb)
+        return await _run_pipeline_internal(request)
     except PipelineExecutionError as e:
         await manager.send_error(request.game_id, str(e))
         raise HTTPException(
@@ -241,6 +366,31 @@ async def run_pipeline(request: RunPipelineRequest) -> RunPipelineResponse:
         raise HTTPException(status_code=500, detail=f"Pipeline error: {str(e)}")
 
 
+@router.post(
+    "/pipeline/run/async",
+    response_model=AsyncTaskHandleResponse,
+    status_code=http_status.HTTP_202_ACCEPTED,
+)
+async def run_pipeline_async(request: RunPipelineRequest) -> AsyncTaskHandleResponse:
+    """Create an async generation task for stages 02-06."""
+    timeout_s = _resolve_timeout_s(request.timeout_s)
+
+    async def runner(task_id: str) -> RunPipelineResponse:
+        try:
+            return await _run_pipeline_internal(request, task_id=task_id)
+        except Exception as exc:
+            await manager.send_error(request.game_id, str(exc))
+            raise
+
+    return await task_manager.create_task(
+        task_type=AsyncTaskType.pipeline_run,
+        game_id=request.game_id,
+        user_id=request.user_id,
+        timeout_s=timeout_s,
+        runner=runner,
+    )
+
+
 # ===========================================================================
 # Stage 07 – Iteration
 # ===========================================================================
@@ -248,50 +398,12 @@ async def run_pipeline(request: RunPipelineRequest) -> RunPipelineResponse:
 @router.post("/pipeline/iterate", response_model=IterateResponse)
 async def pipeline_iterate(request: IterateRequest) -> IterateResponse:
     """Stage 07: incremental code modification from user feedback."""
-    start = time.time()
     try:
-        def progress_cb(stage: str, pct: int, message: str, details: Optional[dict] = None) -> None:
-            loop = asyncio.get_running_loop()
-            async def fanout() -> None:
-                await manager.send_progress(
-                    request.game_id,
-                    stage,
-                    pct,
-                    message,
-                    details,
-                )
-                await _relay_progress_to_game_service(
-                    game_id=request.game_id,
-                    user_id=request.user_id,
-                    stage=stage,
-                    pct=pct,
-                    message=message,
-                    details=details,
-                )
-
-            loop.create_task(fanout())
-
-        result = await _orchestrator.iterate(
-            game_id=request.game_id,
-            current_code=request.current_code,
-            feedback=request.feedback,
-            conversation=request.conversation,
-            user_id=request.user_id,
-            progress_cb=progress_cb,
-        )
-        elapsed = int((time.time() - start) * 1000)
-        return IterateResponse(
-            html_code=result["html_code"],
-            changes=[f"Applied: {request.feedback}", f"Type: {result['iteration_type']}"],
-            iteration_type=result["iteration_type"],
-            generation_time_ms=elapsed,
-            qa_retries=result.get("qa_retries", 0),
-            iteration_retries=result.get("iteration_retries", 0),
-        )
+        return await _run_iteration_internal(request)
     except PipelineExecutionError as e:
         await manager.send_error(request.game_id, str(e))
         raise HTTPException(
-            status_code=500,
+            status_code=504 if "timed out" in str(e).lower() else 500,
             detail={
                 "message": str(e),
                 "failed_stage": e.stage,
@@ -303,6 +415,62 @@ async def pipeline_iterate(request: IterateRequest) -> IterateResponse:
         logger.exception("Pipeline iterate error")
         await manager.send_error(request.game_id, str(e))
         raise HTTPException(status_code=500, detail=f"Iteration error: {str(e)}")
+
+
+@router.post(
+    "/pipeline/iterate/async",
+    response_model=AsyncTaskHandleResponse,
+    status_code=http_status.HTTP_202_ACCEPTED,
+)
+async def pipeline_iterate_async(request: IterateRequest) -> AsyncTaskHandleResponse:
+    """Create an async iteration task for stage 07."""
+    timeout_s = _resolve_timeout_s(request.timeout_s)
+
+    async def runner(task_id: str) -> IterateResponse:
+        try:
+            return await _run_iteration_internal(request, task_id=task_id)
+        except Exception as exc:
+            await manager.send_error(request.game_id, str(exc))
+            raise
+
+    return await task_manager.create_task(
+        task_type=AsyncTaskType.pipeline_iterate,
+        game_id=request.game_id,
+        user_id=request.user_id,
+        timeout_s=timeout_s,
+        runner=runner,
+    )
+
+
+@router.get("/tasks/{task_id}", response_model=AsyncTaskResponse)
+async def get_async_task(task_id: str) -> AsyncTaskResponse:
+    task = await task_manager.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
+
+
+@router.get("/tasks", response_model=ListAsyncTasksResponse)
+async def list_async_tasks(
+    user_id: Optional[str] = Query(default=None),
+    game_id: Optional[str] = Query(default=None),
+    status: Optional[AsyncTaskStatus] = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> ListAsyncTasksResponse:
+    return await task_manager.list_tasks(
+        user_id=user_id,
+        game_id=game_id,
+        status=status,
+        limit=limit,
+    )
+
+
+@router.post("/tasks/{task_id}/cancel", response_model=AsyncTaskResponse)
+async def cancel_async_task(task_id: str) -> AsyncTaskResponse:
+    task = await task_manager.cancel_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
 
 
 # ===========================================================================
@@ -333,8 +501,12 @@ async def generate_code_legacy(request: GenerateCodeRequest) -> GenerateCodeResp
             description=description,
             user_id="system",
             platform=request.platform,
+            timeout_s=_resolve_timeout_s(request.timeout_s),
         )
-        result = await _orchestrator.run(pipeline_req)
+        result = await _orchestrator.run(
+            pipeline_req,
+            timeout_s=_resolve_timeout_s(pipeline_req.timeout_s),
+        )
         elapsed = int((time.time() - start) * 1000)
         return GenerateCodeResponse(
             html_code=result.html_code,

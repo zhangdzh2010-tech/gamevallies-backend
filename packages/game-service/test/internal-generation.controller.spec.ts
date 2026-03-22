@@ -4,6 +4,7 @@ import { InternalGenerationController } from '../src/game/internal-generation.co
 describe('InternalGenerationController', () => {
   let controller: InternalGenerationController;
   let wsGateway: { emitGenerationProgress: jest.Mock };
+  let generationTaskService: { recordProgress: jest.Mock; ingestLlmCallLog: jest.Mock; recordActivity: jest.Mock };
   const previousToken = process.env.ADMIN_TOKEN;
 
   beforeEach(() => {
@@ -11,7 +12,12 @@ describe('InternalGenerationController', () => {
     wsGateway = {
       emitGenerationProgress: jest.fn(),
     };
-    controller = new InternalGenerationController(wsGateway as any);
+    generationTaskService = {
+      recordProgress: jest.fn(),
+      ingestLlmCallLog: jest.fn(),
+      recordActivity: jest.fn(),
+    };
+    controller = new InternalGenerationController(wsGateway as any, generationTaskService as any);
   });
 
   afterAll(() => {
@@ -22,8 +28,8 @@ describe('InternalGenerationController', () => {
     }
   });
 
-  it('relays progress into the default game-service websocket channel', () => {
-    const result = controller.relayProgress('unit-test-token', {
+  it('relays progress into the default game-service websocket channel', async () => {
+    const result = await controller.relayProgress('unit-test-token', {
       userId: 'user-1',
       gameId: 'game-1',
       stage: 'code_generating',
@@ -53,9 +59,9 @@ describe('InternalGenerationController', () => {
     );
   });
 
-  it('rejects invalid admin tokens', () => {
+  it('rejects invalid admin tokens', async () => {
     try {
-      controller.relayProgress('wrong-token', {
+      await controller.relayProgress('wrong-token', {
         userId: 'user-1',
         gameId: 'game-1',
         stage: 'code_generating',
@@ -69,18 +75,18 @@ describe('InternalGenerationController', () => {
     }
   });
 
-  it('validates required progress payload fields', () => {
-    expect(() =>
+  it('validates required progress payload fields', async () => {
+    await expect(
       controller.relayProgress('unit-test-token', {
         userId: 'user-1',
         gameId: 'game-1',
         percentage: 60,
       }),
-    ).toThrow(BadRequestException);
+    ).rejects.toThrow(BadRequestException);
   });
 
-  it('continues accepting the startup token after the admin token changes at runtime', () => {
-    controller.relayProgress('unit-test-token', {
+  it('continues accepting the startup token after the admin token changes at runtime', async () => {
+    await controller.relayProgress('unit-test-token', {
       userId: 'user-1',
       gameId: 'game-1',
       stage: 'intent_parsing',
@@ -90,7 +96,7 @@ describe('InternalGenerationController', () => {
 
     process.env.ADMIN_TOKEN = 'rotated-token';
 
-    expect(() =>
+    await expect(
       controller.relayProgress('unit-test-token', {
         userId: 'user-2',
         gameId: 'game-2',
@@ -98,6 +104,50 @@ describe('InternalGenerationController', () => {
         percentage: 60,
         message: '生成游戏代码',
       }),
-    ).not.toThrow();
+    ).resolves.toEqual(expect.objectContaining({
+      data: expect.objectContaining({ relayed: true }),
+    }));
+  });
+
+  it('relays long-running task activity and preserves progress percentage when provided by the task store', async () => {
+    generationTaskService.recordActivity.mockResolvedValue({
+      progressPct: 78,
+    });
+
+    const result = await controller.relayTaskActivity('unit-test-token', {
+      taskId: 'task-1',
+      userId: 'user-1',
+      gameId: 'game-1',
+      stage: 'qa_checking',
+      stepKey: 'qa_fix',
+      message: 'qa_fix 仍在调用 MiniMax Shanghai（已等待 45s）',
+      details: {
+        activityState: 'heartbeat',
+      },
+    });
+
+    expect(generationTaskService.recordActivity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: 'task-1',
+        userId: 'user-1',
+        gameId: 'game-1',
+        stage: 'qa_checking',
+        stepKey: 'qa_fix',
+      }),
+    );
+    expect(wsGateway.emitGenerationProgress).toHaveBeenCalledWith(
+      'user-1',
+      'game-1',
+      'qa_fix 仍在调用 MiniMax Shanghai（已等待 45s）',
+      78,
+      {
+        activityState: 'heartbeat',
+        stage: 'qa_checking',
+        stepKey: 'qa_fix',
+      },
+    );
+    expect(result).toEqual(expect.objectContaining({
+      data: expect.objectContaining({ relayed: true }),
+    }));
   });
 });

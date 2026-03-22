@@ -8,12 +8,19 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import axios from 'axios';
-import { GameStatus } from '@prisma/client';
+import {
+  GameAccessGrantSource,
+  GenerationTaskType,
+  GameStatus,
+  Prisma,
+  UserSubscriptionStatus,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { BundleService } from '../bundle/bundle.service';
 import { StatsService } from '../stats/stats.service';
 import { GameWebSocketGateway } from '../websocket/websocket.gateway';
 import { CreateGameDto, PublishGameDto, IterateGameDto } from './dto';
+import { GenerationTaskService } from './generation-task.service';
 
 // Pipeline stage labels for WebSocket progress events
 const STAGE_LABELS: Record<string, string> = {
@@ -59,6 +66,25 @@ interface FailureContext {
   failedStage?: string;
   retryCount: number;
   fallback?: string;
+}
+
+interface AccessGrantDecision {
+  canPlay: boolean;
+  requireSubscription: boolean;
+  quotaRemaining: number;
+  accessGrantSource: GameAccessGrantSource;
+  accessGrantSubscriptionId: string | null;
+}
+
+interface GenerationTaskSummary {
+  taskId: string;
+  taskType: 'pipeline_run' | 'pipeline_iterate';
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'timed_out';
+  timeoutS: number;
+  wsChannel: string;
+  pollUrl: string;
+  eventsUrl?: string;
+  cancelUrl?: string;
 }
 
 /** Retry an async operation on transient network/5xx errors. */
@@ -109,6 +135,8 @@ async function withRetry<T>(
 export class GameService {
   private readonly logger = new Logger(GameService.name);
   private aiEngineUrl: string;
+  private aiEngineTargetCache = new Map<string, { url: string; cachedAt: number }>();
+  private readonly aiEngineTargetCacheTtlMs = 10_000;
 
   constructor(
     private prisma: PrismaService,
@@ -116,11 +144,104 @@ export class GameService {
     private statsService: StatsService,
     private configService: ConfigService,
     private wsGateway: GameWebSocketGateway,
+    private generationTaskService: GenerationTaskService,
   ) {
     this.aiEngineUrl = this.configService.get<string>(
       'AI_ENGINE_URL',
       'http://localhost:8000',
     );
+  }
+
+  private resolveExecutionRegion(rawValue?: unknown): string {
+    const normalized = String(
+      rawValue
+      ?? this.configService.get<string>('AI_ENGINE_DEFAULT_REGION')
+      ?? this.configService.get<string>('SERVICE_REGION')
+      ?? 'cn_shanghai',
+    ).trim();
+
+    return normalized === 'ap_southeast_johor' ? normalized : 'cn_shanghai';
+  }
+
+  async getAiEngineBaseUrl(executionRegion?: string): Promise<string> {
+    return this.resolveAiEngineEndpoint(executionRegion);
+  }
+
+  private getConfiguredAiEngineUrlForRegion(executionRegion?: string): string {
+    const region = this.resolveExecutionRegion(executionRegion);
+    const defaultRegion = this.resolveExecutionRegion(
+      this.configService.get<string>('AI_ENGINE_DEFAULT_REGION')
+      || this.configService.get<string>('SERVICE_REGION')
+      || 'cn_shanghai',
+    );
+
+    const regionSpecificUrl = region === 'ap_southeast_johor'
+      ? this.configService.get<string>('AI_ENGINE_URL_AP_SOUTHEAST_JOHOR', '')
+      : this.configService.get<string>('AI_ENGINE_URL_CN_SHANGHAI', '');
+    const normalizedRegionSpecificUrl = (regionSpecificUrl || '').trim().replace(/\/$/, '');
+    if (normalizedRegionSpecificUrl) {
+      return normalizedRegionSpecificUrl;
+    }
+
+    if (defaultRegion === region) {
+      return (this.aiEngineUrl || '').trim().replace(/\/$/, '');
+    }
+
+    return '';
+  }
+
+  private async resolveAiEngineEndpoint(executionRegion?: string): Promise<string> {
+    const region = this.resolveExecutionRegion(executionRegion);
+    const cached = this.aiEngineTargetCache.get(region);
+    const now = Date.now();
+
+    if (cached && (now - cached.cachedAt) < this.aiEngineTargetCacheTtlMs) {
+      return cached.url;
+    }
+
+    const targetRepo = (this.prisma as any).aiEngineRegionTarget;
+    const targetQuery = targetRepo?.findFirst
+      ? targetRepo.findFirst({
+          where: {
+            executionRegion: region,
+            deployEnabled: true,
+            deployStatus: 'deployed',
+            aiEngineUrl: { not: null },
+          },
+          select: {
+            aiEngineUrl: true,
+          },
+          orderBy: { updatedAt: 'desc' },
+        })
+      : null;
+    const target = targetQuery
+      ? await Promise.resolve(targetQuery).catch(() => null)
+      : null;
+
+    const targetUrl = (target?.aiEngineUrl || '').trim().replace(/\/$/, '');
+    if (targetUrl) {
+      this.aiEngineTargetCache.set(region, {
+        url: targetUrl,
+        cachedAt: now,
+      });
+      return targetUrl;
+    }
+
+    const configuredUrl = this.getConfiguredAiEngineUrlForRegion(region);
+    if (configuredUrl) {
+      this.aiEngineTargetCache.set(region, {
+        url: configuredUrl,
+        cachedAt: now,
+      });
+      return configuredUrl;
+    }
+
+    const fallbackUrl = (this.aiEngineUrl || '').trim().replace(/\/$/, '');
+    if (fallbackUrl && process.env.NODE_ENV !== 'production') {
+      return fallbackUrl;
+    }
+
+    throw new Error(`missing_ai_engine_region_target: no deployed ai-engine target for region ${region}`);
   }
 
   private getPublicBaseUrl(): string {
@@ -146,25 +267,237 @@ export class GameService {
     return Promise.all(games.map((game) => this.attachPreviewUrl(game)));
   }
 
+  private async resolveDefaultFreeQuota(
+    client: PrismaService | Prisma.TransactionClient,
+  ): Promise<number> {
+    const envValue = Number.parseInt(process.env.BILLING_DEFAULT_FREE_QUOTA || '', 10);
+    if (Number.isFinite(envValue) && envValue >= 0) {
+      return envValue;
+    }
+
+    const config = await client.systemConfig.findUnique({
+      where: { configKey: 'billing.default_free_quota' },
+      select: { configValue: true },
+    });
+    const configValue = Number.parseInt(config?.configValue || '', 10);
+
+    if (Number.isFinite(configValue) && configValue >= 0) {
+      return configValue;
+    }
+
+    return 5;
+  }
+
+  private resolvePipelineTimeout(rawValue?: unknown): number {
+    const fallback = Number.parseInt(
+      String(this.configService.get<string>('PIPELINE_TIMEOUT_S', '600') ?? '600'),
+      10,
+    );
+    const parsed = Number.parseInt(String(rawValue ?? fallback), 10);
+
+    if (!Number.isFinite(parsed)) {
+      return 600;
+    }
+
+    return Math.min(3600, Math.max(30, parsed));
+  }
+
+  private buildUpstreamTimeoutMs(timeoutS?: unknown): number {
+    return (this.resolvePipelineTimeout(timeoutS) + 60) * 1000;
+  }
+
+  private ensurePersistableGeneratedHtml(htmlCode: string): string {
+    const normalized = (htmlCode || '').trim();
+    if (!normalized) {
+      throw new Error('AI pipeline returned empty HTML output');
+    }
+
+    const lower = normalized.toLowerCase();
+    if (!lower.includes('<html') || !lower.includes('<body') || !lower.includes('</html>')) {
+      throw new Error('AI pipeline returned incomplete HTML output');
+    }
+
+    return htmlCode;
+  }
+
+  private buildGenerationTaskSummary(
+    gameId: string,
+    taskType: 'pipeline_run' | 'pipeline_iterate',
+    timeoutS?: unknown,
+    version?: number,
+  ): GenerationTaskSummary {
+    const resolvedTimeoutS = this.resolvePipelineTimeout(timeoutS);
+    const suffix = taskType === 'pipeline_iterate' && version ? `:v${version}` : '';
+
+    return {
+      taskId: `${gameId}:${taskType}${suffix}`,
+      taskType,
+      status: 'queued',
+      timeoutS: resolvedTimeoutS,
+      wsChannel: `game:${gameId}`,
+      pollUrl: `/api/v1/games/${gameId}/generation-status`,
+    };
+  }
+
+  private isTimeoutError(error: unknown): boolean {
+    const message = this.extractErrorMessage(error as any);
+    return /timed out|timeout|deadline exceeded|ECONNABORTED/i.test(message);
+  }
+
+  private async ensureUserQuota(
+    client: PrismaService | Prisma.TransactionClient,
+    userId: string,
+  ) {
+    const totalFreeQuota = await this.resolveDefaultFreeQuota(client);
+    return client.userQuota.upsert({
+      where: { userId },
+      update: {},
+      create: {
+        userId,
+        totalFreeQuota,
+        usedFreeQuota: 0,
+      },
+    });
+  }
+
+  private async markExpiredSubscriptions(
+    client: PrismaService | Prisma.TransactionClient,
+    userId: string,
+  ) {
+    const now = new Date();
+    await client.userSubscription.updateMany({
+      where: {
+        userId,
+        status: UserSubscriptionStatus.active,
+        expiresAt: { lte: now },
+      },
+      data: {
+        status: UserSubscriptionStatus.expired,
+      },
+    });
+  }
+
+  private async findActiveSubscription(
+    client: PrismaService | Prisma.TransactionClient,
+    userId: string,
+  ) {
+    return client.userSubscription.findFirst({
+      where: {
+        userId,
+        status: UserSubscriptionStatus.active,
+        expiresAt: { gt: new Date() },
+      },
+      orderBy: {
+        expiresAt: 'desc',
+      },
+      include: {
+        plan: true,
+      },
+    });
+  }
+
+  private computeQuotaRemaining(
+    quota: { totalFreeQuota: number; usedFreeQuota: number },
+    subscription?: { quotaThisPeriod: number; usedThisPeriod: number } | null,
+  ) {
+    const freeRemaining = Math.max(quota.totalFreeQuota - quota.usedFreeQuota, 0);
+    const subscriptionRemaining = subscription
+      ? Math.max(subscription.quotaThisPeriod - subscription.usedThisPeriod, 0)
+      : 0;
+    return freeRemaining + subscriptionRemaining;
+  }
+
   async create(userId: string, dto: CreateGameDto): Promise<any> {
     try {
       const gameId = randomUUID();
       const description = dto.description || dto.prompt || '';
+      const title = dto.title?.trim() || `Game ${gameId.substring(0, 8)}`;
+      const timeoutS = this.resolvePipelineTimeout(dto.timeoutS);
+      const executionRegion = this.resolveExecutionRegion(dto.regionHint);
+      const { access, task } = await this.prisma.$transaction(async (tx) => {
+        await this.markExpiredSubscriptions(tx, userId);
+        const quota = await this.ensureUserQuota(tx, userId);
+        const subscription = await this.findActiveSubscription(tx, userId);
+        const freeRemaining = Math.max(quota.totalFreeQuota - quota.usedFreeQuota, 0);
+        const subscriptionRemaining = subscription
+          ? Math.max(subscription.quotaThisPeriod - subscription.usedThisPeriod, 0)
+          : 0;
 
-      const game = await this.prisma.game.create({
-        data: {
-          id: gameId,
-          authorId: userId,
-          description,
-          status: 'generating',
-          failedStage: null,
-          failedReason: null,
-          retryCount: 0,
-          lastErrorAt: null,
-          title: dto.title?.trim() || `Game ${gameId.substring(0, 8)}`,
-          commentCount: 0,
-          forkDepth: 0,
-        },
+        let canPlay = false;
+        let requireSubscription = true;
+        let quotaRemaining = 0;
+        let accessGrantSource: GameAccessGrantSource = GameAccessGrantSource.none;
+        let accessGrantSubscriptionId: string | null = null;
+
+        if (freeRemaining > 0) {
+          const updatedQuota = await tx.userQuota.update({
+            where: { userId },
+            data: {
+              usedFreeQuota: { increment: 1 },
+            },
+          });
+          canPlay = true;
+          requireSubscription = false;
+          quotaRemaining = this.computeQuotaRemaining(updatedQuota, subscription);
+          accessGrantSource = GameAccessGrantSource.free_quota;
+        } else if (subscription && subscriptionRemaining > 0) {
+          const updatedSubscription = await tx.userSubscription.update({
+            where: { id: subscription.id },
+            data: {
+              usedThisPeriod: { increment: 1 },
+            },
+          });
+          canPlay = true;
+          requireSubscription = false;
+          quotaRemaining = this.computeQuotaRemaining(quota, updatedSubscription);
+          accessGrantSource = GameAccessGrantSource.subscription_quota;
+          accessGrantSubscriptionId = subscription.id;
+        }
+
+        await tx.game.create({
+          data: {
+            id: gameId,
+            authorId: userId,
+            description,
+            status: 'generating',
+            failedStage: null,
+            failedReason: null,
+            retryCount: 0,
+            lastErrorAt: null,
+            title,
+            commentCount: 0,
+            forkDepth: 0,
+            canPlay,
+            requireSubscription,
+            accessGrantSource,
+            accessGrantSubscriptionId,
+          },
+        });
+
+        const task = await this.generationTaskService.createTask({
+          gameId,
+          userId,
+          taskType: GenerationTaskType.pipeline_run,
+          region: executionRegion,
+          timeoutS,
+          version: 1,
+          metadata: {
+            description,
+            region: executionRegion,
+          },
+          client: tx,
+        });
+
+        return {
+          access: {
+            canPlay,
+            requireSubscription,
+            quotaRemaining,
+            accessGrantSource,
+            accessGrantSubscriptionId,
+          },
+          task,
+        };
       });
 
       this.emitProgress(userId, gameId, 'started', 0, {
@@ -175,13 +508,19 @@ export class GameService {
 
       // Run pipeline asynchronously – client subscribes to WebSocket for progress
       setImmediate(() => {
-        this.runPipeline(gameId, userId, description);
+        this.runPipeline(gameId, userId, description, timeoutS, task.id, executionRegion);
       });
 
       return {
         gameId,
+        title,
+        description,
         wsChannel: `game:${gameId}`,
         status: 'generating',
+        canPlay: access.canPlay,
+        quotaRemaining: access.quotaRemaining,
+        requireSubscription: access.requireSubscription,
+        generationTask: this.generationTaskService.toTaskSummary(task),
       };
     } catch (error) {
       this.logger.error(`Failed to create game: ${error.message}`);
@@ -197,18 +536,29 @@ export class GameService {
     gameId: string,
     userId: string,
     description: string,
+    timeoutS?: number,
+    taskId?: string,
+    executionRegion?: string,
   ): Promise<void> {
     try {
+      const resolvedTimeoutS = this.resolvePipelineTimeout(timeoutS);
+      const aiEngineBaseUrl = await this.resolveAiEngineEndpoint(executionRegion);
+      if (taskId) {
+        await this.generationTaskService.markRunning(taskId);
+      }
       const response = await withRetry(() =>
         axios.post(
-          `${this.aiEngineUrl}/api/v1/ai/pipeline/run`,
+          `${aiEngineBaseUrl}/api/v1/ai/pipeline/run`,
           {
             game_id: gameId,
             description,
             user_id: userId,
             platform: 'wechat_webview',
+            region: this.resolveExecutionRegion(executionRegion),
+            timeout_s: resolvedTimeoutS,
+            task_id: taskId,
           },
-          { timeout: 660000 },
+          { timeout: this.buildUpstreamTimeoutMs(resolvedTimeoutS) },
         ),
         {
           maxAttempts: 3,
@@ -227,8 +577,26 @@ export class GameService {
                 attempt,
                 maxAttempts,
                 error: this.extractErrorMessage(error),
+                taskId,
               },
             );
+            if (taskId) {
+              await this.generationTaskService.recordProgress({
+                taskId,
+                gameId,
+                userId,
+                stage: 'code_generating',
+                percentage: STAGE_PCT.code_generating,
+                message: `AI 生成服务请求失败，重试中（${retry}/${maxRetries}）`,
+                details: {
+                  retry,
+                  maxRetries,
+                  attempt,
+                  maxAttempts,
+                  error: this.extractErrorMessage(error),
+                },
+              });
+            }
           },
         },
       );
@@ -244,6 +612,7 @@ export class GameService {
         quality_score: qualityScore = 0,
         quality_breakdown: qualityBreakdown = {},
       } = response.data;
+      this.ensurePersistableGeneratedHtml(htmlCode);
 
       const bundlePreviewUrl = this.buildPreviewUrl(gameId);
 
@@ -291,6 +660,22 @@ export class GameService {
         },
       });
 
+      if (taskId) {
+        await this.generationTaskService.markSucceeded({
+          taskId,
+          previewUrl: bundlePreviewUrl,
+          resultSummary: {
+            strategy,
+            qaPassed,
+            qaRetries,
+            gameType: gameSpec?.game_type || null,
+            generationTimeMs: genTimeMs,
+            codeSizeBytes,
+            qualityScore,
+          },
+        });
+      }
+
       this.emitStage(userId, gameId, 'completed', {
         stage: 'completed',
         qaRetries,
@@ -313,7 +698,21 @@ export class GameService {
         failedReason: errorMessage,
         retryCount: failure.retryCount,
         status: 'failed',
+        refundConsumedAccess: true,
       });
+
+      if (taskId) {
+        await this.generationTaskService.markFailed({
+          taskId,
+          failedStage: failure.failedStage || 'pipeline_run',
+          errorMessage,
+          retryCount: failure.retryCount,
+          fallback: failure.fallback,
+          timedOut: this.isTimeoutError(error),
+        }).catch((taskError) => {
+          this.logger.warn(`Failed to update generation task ${taskId}: ${taskError.message}`);
+        });
+      }
 
       this.wsGateway.emitGenerationError(userId, gameId, errorMessage, {
         stage: failure.failedStage || 'pipeline_run',
@@ -414,18 +813,94 @@ export class GameService {
     failedReason: string;
     retryCount: number;
     status?: GameStatus;
+    refundConsumedAccess?: boolean;
   }): Promise<void> {
-    const { gameId, failedStage, failedReason, retryCount, status } = params;
-    await this.prisma.game.update({
-      where: { id: gameId },
-      data: {
-        ...(status ? { status } : {}),
-        failedStage,
-        failedReason,
-        retryCount,
-        lastErrorAt: new Date(),
-      },
+    const {
+      gameId,
+      failedStage,
+      failedReason,
+      retryCount,
+      status,
+      refundConsumedAccess,
+    } = params;
+
+    await this.prisma.$transaction(async (tx) => {
+      const game = await tx.game.findUnique({
+        where: { id: gameId },
+        select: {
+          id: true,
+          authorId: true,
+          accessGrantSource: true,
+          accessGrantSubscriptionId: true,
+        },
+      });
+
+      if (!game) {
+        throw new NotFoundException('Game not found');
+      }
+
+      const refundApplied = refundConsumedAccess
+        ? await this.refundConsumedGenerationAccess(tx, game)
+        : false;
+
+      await tx.game.update({
+        where: { id: gameId },
+        data: {
+          ...(status ? { status } : {}),
+          failedStage,
+          failedReason,
+          retryCount,
+          lastErrorAt: new Date(),
+          ...(refundApplied
+            ? {
+                accessGrantSource: GameAccessGrantSource.none,
+                accessGrantSubscriptionId: null,
+              }
+            : {}),
+        },
+      });
     });
+  }
+
+  private async refundConsumedGenerationAccess(
+    tx: Prisma.TransactionClient,
+    game: {
+      id: string;
+      authorId: string;
+      accessGrantSource: GameAccessGrantSource;
+      accessGrantSubscriptionId: string | null;
+    },
+  ): Promise<boolean> {
+    if (game.accessGrantSource === GameAccessGrantSource.free_quota) {
+      const result = await tx.userQuota.updateMany({
+        where: {
+          userId: game.authorId,
+          usedFreeQuota: { gt: 0 },
+        },
+        data: {
+          usedFreeQuota: { decrement: 1 },
+        },
+      });
+      return result.count > 0;
+    }
+
+    if (
+      game.accessGrantSource === GameAccessGrantSource.subscription_quota
+      && game.accessGrantSubscriptionId
+    ) {
+      const result = await tx.userSubscription.updateMany({
+        where: {
+          id: game.accessGrantSubscriptionId,
+          usedThisPeriod: { gt: 0 },
+        },
+        data: {
+          usedThisPeriod: { decrement: 1 },
+        },
+      });
+      return result.count > 0;
+    }
+
+    return false;
   }
 
   private async persistGeneratedGameResult(params: {
@@ -605,6 +1080,66 @@ export class GameService {
     }
   }
 
+  async unlock(id: string, userId: string): Promise<any> {
+    return this.prisma.$transaction(async (tx) => {
+      await this.markExpiredSubscriptions(tx, userId);
+
+      const game = await tx.game.findUnique({
+        where: { id },
+      });
+
+      if (!game) {
+        throw new NotFoundException('Game not found');
+      }
+
+      if (game.authorId !== userId) {
+        throw new ForbiddenException('You do not have permission to unlock this game');
+      }
+
+      const quota = await this.ensureUserQuota(tx, userId);
+      const currentSubscription = await this.findActiveSubscription(tx, userId);
+
+      if (game.canPlay) {
+        return {
+          unlocked: true,
+          canPlay: true,
+          quotaRemaining: this.computeQuotaRemaining(quota, currentSubscription),
+        };
+      }
+
+      if (!currentSubscription) {
+        throw new ForbiddenException('No active subscription available to unlock this game');
+      }
+
+      if (currentSubscription.usedThisPeriod >= currentSubscription.quotaThisPeriod) {
+        throw new ForbiddenException('Your current subscription quota has been exhausted');
+      }
+
+      const updatedSubscription = await tx.userSubscription.update({
+        where: { id: currentSubscription.id },
+        data: {
+          usedThisPeriod: { increment: 1 },
+        },
+      });
+
+      await tx.game.update({
+        where: { id },
+        data: {
+          canPlay: true,
+          requireSubscription: false,
+          accessGrantSource: GameAccessGrantSource.subscription_unlock,
+          accessGrantSubscriptionId: currentSubscription.id,
+        },
+      });
+
+      return {
+        unlocked: true,
+        canPlay: true,
+        quotaRemaining: this.computeQuotaRemaining(quota, updatedSubscription),
+      };
+    });
+  }
+
   async publish(id: string, userId: string, dto: PublishGameDto): Promise<any> {
     try {
       const game = await this.prisma.game.findUnique({ where: { id } });
@@ -685,6 +1220,7 @@ export class GameService {
       }
 
       const version = (game.version || 1) + 1;
+      const timeoutS = this.resolvePipelineTimeout(dto.timeoutS);
 
       const bundle = await this.bundleService.getLatestBundle(id);
       const bundleHistory = await this.bundleService.getBundleHistory(id);
@@ -693,11 +1229,56 @@ export class GameService {
         feedback: b.metadata?.feedback || '',
       }));
 
-      setImmediate(() => {
-        this.runIteration(id, userId, dto.feedback, version, conversationHistory, bundle?.htmlCode || '');
+      const latestTask = await this.generationTaskService.getLatestTaskForGame(id, userId).catch(() => null);
+      const executionRegion = this.resolveExecutionRegion(dto.regionHint || latestTask?.region);
+
+      const task = await this.prisma.$transaction(async (tx) => {
+        await tx.game.update({
+          where: { id },
+          data: {
+            status: 'generating',
+            failedStage: null,
+            failedReason: null,
+            retryCount: 0,
+            lastErrorAt: null,
+          },
+        });
+
+        return this.generationTaskService.createTask({
+          gameId: id,
+          userId,
+          taskType: GenerationTaskType.pipeline_iterate,
+          region: executionRegion,
+          timeoutS,
+          version,
+          metadata: {
+            feedback: dto.feedback,
+            region: executionRegion,
+          },
+          client: tx,
+        });
       });
 
-      return { gameId: id, version, status: 'iterating' };
+      setImmediate(() => {
+        this.runIteration(
+          id,
+          userId,
+          dto.feedback,
+          version,
+          conversationHistory,
+          bundle?.htmlCode || '',
+          timeoutS,
+          task.id,
+          executionRegion,
+        );
+      });
+
+      return {
+        gameId: id,
+        version,
+        status: 'iterating',
+        generationTask: this.generationTaskService.toTaskSummary(task),
+      };
     } catch (error) {
       this.logger.error(`Failed to iterate game: ${error.message}`);
       throw error;
@@ -714,19 +1295,30 @@ export class GameService {
     nextVersion: number,
     conversationHistory: any[],
     currentCode: string,
+    timeoutS?: number,
+    taskId?: string,
+    executionRegion?: string,
   ): Promise<void> {
     try {
+      const resolvedTimeoutS = this.resolvePipelineTimeout(timeoutS);
+      const aiEngineBaseUrl = await this.resolveAiEngineEndpoint(executionRegion);
+      if (taskId) {
+        await this.generationTaskService.markRunning(taskId);
+      }
       const response = await withRetry(() =>
         axios.post(
-          `${this.aiEngineUrl}/api/v1/ai/pipeline/iterate`,
+          `${aiEngineBaseUrl}/api/v1/ai/pipeline/iterate`,
           {
             game_id: gameId,
             feedback,
             user_id: userId,
             conversation: conversationHistory,
             current_code: currentCode,
+            region: this.resolveExecutionRegion(executionRegion),
+            timeout_s: resolvedTimeoutS,
+            task_id: taskId,
           },
-          { timeout: 660000 },
+          { timeout: this.buildUpstreamTimeoutMs(resolvedTimeoutS) },
         )
         ,
         {
@@ -741,6 +1333,7 @@ export class GameService {
         qa_retries: qaRetries = 0,
         iteration_retries: iterationRetries = 0,
       } = response.data;
+      this.ensurePersistableGeneratedHtml(htmlCode);
 
       const bundlePreviewUrl = this.buildPreviewUrl(gameId);
 
@@ -773,6 +1366,21 @@ export class GameService {
         },
       });
 
+      if (taskId) {
+        await this.generationTaskService.markSucceeded({
+          taskId,
+          previewUrl: bundlePreviewUrl,
+          resultSummary: {
+            feedback,
+            iterationType,
+            generationTimeMs: genTimeMs,
+            qaRetries,
+            iterationRetries,
+            version: nextVersion,
+          },
+        });
+      }
+
       this.wsGateway.emitGenerationProgress(userId, gameId, '迭代完成', 100);
     } catch (error) {
       const failure = this.extractFailureContext(error);
@@ -790,6 +1398,18 @@ export class GameService {
         failedReason: failure.message,
         retryCount: failure.retryCount,
       });
+      if (taskId) {
+        await this.generationTaskService.markFailed({
+          taskId,
+          failedStage: failure.failedStage || 'iteration',
+          errorMessage: failure.message,
+          retryCount: failure.retryCount,
+          fallback: failure.fallback,
+          timedOut: this.isTimeoutError(error),
+        }).catch((taskError) => {
+          this.logger.warn(`Failed to update iteration task ${taskId}: ${taskError.message}`);
+        });
+      }
       this.wsGateway.emitGenerationError(userId, gameId, failure.message, {
         stage: failure.failedStage || 'iteration',
         retryCount: failure.retryCount,
@@ -801,6 +1421,93 @@ export class GameService {
         gameId,
       });
     }
+  }
+
+  async getGenerationStatus(id: string, userId: string): Promise<any> {
+    const game = await this.prisma.game.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        authorId: true,
+        status: true,
+        version: true,
+        failedStage: true,
+        failedReason: true,
+        retryCount: true,
+        lastErrorAt: true,
+        canPlay: true,
+        requireSubscription: true,
+      },
+    });
+
+    if (!game) {
+      throw new NotFoundException('Game not found');
+    }
+    if (game.authorId !== userId) {
+      throw new ForbiddenException('You do not have permission to view this task');
+    }
+
+    const latestTask = await this.generationTaskService.getLatestTaskForGame(id, userId);
+    if (latestTask) {
+      return {
+        ...this.generationTaskService.toTaskSummary(latestTask),
+        stage: latestTask.progressStage || latestTask.failedStage || 'queued',
+        gameId: id,
+        version: latestTask.version ?? (game.version || 1),
+        previewUrl: latestTask.previewUrl || this.buildPreviewUrl(id),
+        gameStatus: game.status,
+        canPlay: game.canPlay,
+        requireSubscription: game.requireSubscription,
+        failedStage: latestTask.failedStage || game.failedStage,
+        failedReason: latestTask.errorMessage || game.failedReason,
+        retryCount: latestTask.retryCount ?? (game.retryCount || 0),
+        lastErrorAt: game.lastErrorAt,
+      };
+    }
+
+    const taskStatus = game.status === 'failed'
+      ? 'failed'
+      : game.status === 'generating'
+        ? 'running'
+        : 'succeeded';
+    const stage = game.status === 'failed'
+      ? (game.failedStage || 'failed')
+      : game.status === 'generating'
+        ? 'generating'
+        : 'completed';
+
+    return {
+      taskId: `${id}:pipeline`,
+      taskType: 'pipeline_run',
+      status: taskStatus,
+      stage,
+      gameId: id,
+      version: game.version || 1,
+      wsChannel: `game:${id}`,
+      pollUrl: `/api/v1/games/${id}/generation-status`,
+      previewUrl: this.buildPreviewUrl(id),
+      gameStatus: game.status,
+      canPlay: game.canPlay,
+      requireSubscription: game.requireSubscription,
+      failedStage: game.failedStage,
+      failedReason: game.failedReason,
+      retryCount: game.retryCount || 0,
+      lastErrorAt: game.lastErrorAt,
+    };
+  }
+
+  async getTask(taskId: string, userId: string): Promise<any> {
+    const task = await this.generationTaskService.getTaskForUser(taskId, userId);
+    return this.generationTaskService.toTaskSummary(task);
+  }
+
+  async getTaskEvents(taskId: string, userId: string, limit?: number): Promise<any> {
+    return this.generationTaskService.listTaskEvents(taskId, userId, limit);
+  }
+
+  async cancelTask(taskId: string, userId: string): Promise<any> {
+    const task = await this.generationTaskService.requestCancel(taskId, userId);
+    return this.generationTaskService.toTaskSummary(task);
   }
 
   async getShareData(id: string): Promise<any> {

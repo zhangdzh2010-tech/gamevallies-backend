@@ -9,6 +9,7 @@ from .config.settings import settings
 from .api.endpoints.generate import router as generate_router
 from .services.websocket_manager import manager
 from .api.models import GenerateProgress
+from .services.llm_client import _build_openai_compatible_chat_url
 
 # Lifecycle events
 @asynccontextmanager
@@ -17,6 +18,10 @@ async def lifespan(app: FastAPI):
     # Startup
     print(f"Starting PlayForge AI Engine in {settings.ENVIRONMENT} mode")
     print(f"LLM Mode: {settings.LLM_MODE}")
+    if settings.LLM_MODE == "real" and settings.LLM_API_KEY and settings.LLM_BASE_URL:
+        print(f"LLM Base URL: {settings.LLM_BASE_URL}")
+        print(f"LLM Chat Endpoint: {_build_openai_compatible_chat_url(settings.LLM_BASE_URL)}")
+        print(f"LLM Model: {settings.LLM_MODEL}")
     yield
     # Shutdown
     print("Shutting down PlayForge AI Engine")

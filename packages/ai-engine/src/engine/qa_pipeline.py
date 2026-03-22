@@ -33,6 +33,13 @@ logger = logging.getLogger(__name__)
 
 QARetryCallback = Optional[Callable[[int, int, List[QACheckError]], None]]
 
+
+class _SafePromptFormatDict(dict):
+    """Preserve unknown placeholders instead of raising KeyError."""
+
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
+
 # ---------------------------------------------------------------------------
 # L2 – Forbidden API patterns
 # ---------------------------------------------------------------------------
@@ -49,6 +56,10 @@ FORBIDDEN_PATTERNS: List[Tuple[str, str]] = [
     (r"\bsessionStorage\b", "sessionStorage"),
     (r"\bdocument\.cookie\b", "document.cookie"),
     (r"\bdocument\.write\b", "document.write"),
+    (r"<script\b[^>]*\bsrc\s*=\s*['\"](?:https?:)?//", "external script src"),
+    (r"<(?:img|audio|video|source|iframe)\b[^>]*\bsrc\s*=\s*['\"](?:https?:)?//", "external media src"),
+    (r"<link\b[^>]*\bhref\s*=\s*['\"](?:https?:)?//", "external stylesheet"),
+    (r"url\(\s*['\"]?(?:https?:)?//", "external CSS asset"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -146,6 +157,44 @@ class QAPipeline:
             validation_summary=summary,
         )
 
+    def _has_canvas_draw_commands(self, code: str) -> bool:
+        visible_draw_methods = (
+            "fillRect",
+            "strokeRect",
+            "drawImage",
+            "fillText",
+            "strokeText",
+            "putImageData",
+            "fill",
+            "stroke",
+        )
+        method_pattern = r"(?:%s)" % "|".join(visible_draw_methods)
+
+        if re.search(
+            rf"getContext\s*\(\s*['\"](?:2d|webgl|webgl2)['\"]\s*\)\s*\.\s*{method_pattern}\s*\(",
+            code,
+            re.IGNORECASE,
+        ):
+            return True
+
+        context_vars = {
+            match.group(1)
+            for match in re.finditer(
+                r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*[^;]*getContext\s*\(\s*['\"](?:2d|webgl|webgl2)['\"]\s*\)",
+                code,
+                re.IGNORECASE,
+            )
+        }
+        for var_name in context_vars:
+            if re.search(
+                rf"\b{re.escape(var_name)}\s*\.\s*{method_pattern}\s*\(",
+                code,
+                re.IGNORECASE,
+            ):
+                return True
+
+        return False
+
     # ------------------------------------------------------------------
     # Public: auto-fix loop
     # ------------------------------------------------------------------
@@ -179,7 +228,13 @@ class QAPipeline:
                 except Exception:
                     pass
             logger.info(f"QA attempt {attempt} failed ({len(result.errors)} errors), triggering LLM auto-fix")
-            code = await self.repair_code(code, result.errors, game_spec)
+            code = await self.repair_code(
+                code,
+                result.errors,
+                game_spec,
+                fix_round=attempt + 1,
+                max_fix_rounds=max_retries,
+            )
 
         final = self.check(code)
         return QAResult(
@@ -195,12 +250,21 @@ class QAPipeline:
         errors: List[QACheckError],
         game_spec: Optional[GameSpec] = None,
         max_tokens: int = 8192,
+        fix_round: int = 1,
+        max_fix_rounds: int = 1,
     ) -> str:
         repaired = self._apply_deterministic_repairs(code)
         if settings.LLM_MODE == "mock" or not self._client.is_enabled() or not errors:
             return repaired
 
-        llm_fixed = await self._fix_with_llm(repaired, errors, game_spec, max_tokens=max_tokens)
+        llm_fixed = await self._fix_with_llm(
+            repaired,
+            errors,
+            game_spec,
+            max_tokens=max_tokens,
+            fix_round=fix_round,
+            max_fix_rounds=max_fix_rounds,
+        )
         return self._apply_deterministic_repairs(llm_fixed)
 
     # ------------------------------------------------------------------
@@ -434,6 +498,13 @@ class QAPipeline:
                 severity="warning",
             ))
 
+        if not self._has_canvas_draw_commands(code):
+            errors.append(QACheckError(
+                type="L3_startup",
+                message="No canvas drawing commands detected – game may render a blank screen",
+                severity="error",
+            ))
+
         # Detect obvious JS syntax errors: unmatched braces
         open_braces = code.count("{")
         close_braces = code.count("}")
@@ -614,22 +685,32 @@ class QAPipeline:
         errors: List[QACheckError],
         game_spec: Optional[GameSpec],
         max_tokens: int,
+        fix_round: int = 1,
+        max_fix_rounds: int = 1,
     ) -> str:
         error_list = "\n".join(f"  - [{e.type}] {e.message}" for e in errors)
         game_type = game_spec.game_type if game_spec else "unknown"
 
         prompt_template = get_prompt("prompt.qa_fix", FIX_PROMPT)
-        prompt = prompt_template.format(
-            error_list=error_list,
-            game_type=game_type,
-            code=code,
-        )
+        prompt_values = {
+            "error_list": error_list,
+            "game_type": game_type,
+            "code": code,
+            "fix_round": fix_round,
+            "max_fix_rounds": max_fix_rounds,
+        }
+        try:
+            prompt = prompt_template.format_map(_SafePromptFormatDict(prompt_values))
+        except Exception as exc:
+            logger.warning(f"QA fix prompt template invalid, falling back to built-in template: {exc}")
+            prompt = FIX_PROMPT.format(**prompt_values)
         try:
             from .code_generator import _extract_html
             text = await self._client.complete(
-                model=self._client.model_for(),
                 max_tokens=max_tokens,
                 messages=[{"role": "user", "content": prompt}],
+                step_key="qa_fix",
+                stage="qa_checking",
             )
             return _extract_html(text)
         except Exception as e:

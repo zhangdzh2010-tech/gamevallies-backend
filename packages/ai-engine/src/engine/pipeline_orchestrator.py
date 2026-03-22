@@ -66,39 +66,49 @@ class PipelineOrchestrator:
         self.code_reviewer = CodeReviewer()
         self.quality_scorer = QualityScorer()
 
+    def _runtime_qa_required(self) -> bool:
+        return settings.RUNTIME_QA_REQUIRED or settings.ENVIRONMENT == "production"
+
     async def run(
         self,
         request: RunPipelineRequest,
         progress_cb: ProgressCallback = None,
+        timeout_s: Optional[int] = None,
     ) -> RunPipelineResponse:
+        stage_context: dict[str, str] = {"stage": PipelineStage.intent_parsing.value}
+        effective_timeout_s = timeout_s or settings.PIPELINE_TIMEOUT_S
         try:
             return await asyncio.wait_for(
-                self._run_stages(request, progress_cb),
-                timeout=settings.PIPELINE_TIMEOUT_S,
+                self._run_stages(request, progress_cb, stage_context),
+                timeout=effective_timeout_s,
             )
         except asyncio.TimeoutError:
-            logger.error(f"Pipeline timed out after {settings.PIPELINE_TIMEOUT_S}s")
+            timed_out_stage = stage_context.get("stage", PipelineStage.failed.value)
+            logger.error(f"Pipeline timed out during {timed_out_stage} after {effective_timeout_s}s")
             self._log_stage_failure(
                 game_id=request.game_id,
                 user_id=request.user_id,
                 stage=PipelineStage.failed.value,
-                error=f"Pipeline timed out after {settings.PIPELINE_TIMEOUT_S}s",
+                error=f"Pipeline timed out during {timed_out_stage} after {effective_timeout_s}s",
             )
             self._notify(
                 progress_cb,
                 PipelineStage.failed,
                 -1,
                 "生成超时",
-                {"gameId": request.game_id, "userId": request.user_id},
+                {"gameId": request.game_id, "userId": request.user_id, "failedStage": timed_out_stage},
             )
-            raise RuntimeError(f"Pipeline timed out after {settings.PIPELINE_TIMEOUT_S}s")
+            raise RuntimeError(f"Pipeline timed out during {timed_out_stage} after {effective_timeout_s}s")
 
     async def _run_stages(
         self,
         request: RunPipelineRequest,
         progress_cb: ProgressCallback,
+        stage_context: Optional[dict[str, str]] = None,
     ) -> RunPipelineResponse:
         start_ms = int(time.time() * 1000)
+        if stage_context is not None:
+            stage_context["stage"] = PipelineStage.intent_parsing.value
         self._notify(
             progress_cb,
             PipelineStage.intent_parsing,
@@ -113,6 +123,8 @@ class PipelineOrchestrator:
             progress_cb,
         )
 
+        if stage_context is not None:
+            stage_context["stage"] = PipelineStage.designing.value
         self._notify(
             progress_cb,
             PipelineStage.designing,
@@ -127,6 +139,8 @@ class PipelineOrchestrator:
             progress_cb,
         )
 
+        if stage_context is not None:
+            stage_context["stage"] = PipelineStage.template_matching.value
         self._notify(
             progress_cb,
             PipelineStage.template_matching,
@@ -141,6 +155,8 @@ class PipelineOrchestrator:
             progress_cb,
         )
 
+        if stage_context is not None:
+            stage_context["stage"] = PipelineStage.code_generating.value
         self._notify(
             progress_cb,
             PipelineStage.code_generating,
@@ -158,6 +174,8 @@ class PipelineOrchestrator:
             description=request.description,
         )
 
+        if stage_context is not None:
+            stage_context["stage"] = PipelineStage.qa_checking.value
         self._notify(
             progress_cb,
             PipelineStage.qa_checking,
@@ -198,6 +216,8 @@ class PipelineOrchestrator:
         qa_result, runtime_qa = await self._repair_runtime_failures(qa_result, game_spec, progress_cb)
         qa_result, review_result = await self._run_code_review(qa_result, game_spec, progress_cb)
 
+        if stage_context is not None:
+            stage_context["stage"] = PipelineStage.completed.value
         self._notify(
             progress_cb,
             PipelineStage.completed,
@@ -243,6 +263,19 @@ class PipelineOrchestrator:
     ) -> tuple[QAResult, RuntimeQAResult]:
         runtime_qa = await run_runtime_qa(qa_result.code)
         if not runtime_qa.ran:
+            if self._runtime_qa_required():
+                self._notify(
+                    progress_cb,
+                    PipelineStage.failed,
+                    90,
+                    "运行时检查不可用，已中止发布",
+                    {"failedStage": "runtime_qa_unavailable", "retryCount": qa_result.retries},
+                )
+                raise PipelineExecutionError(
+                    "Runtime QA unavailable: Playwright is not installed or browser launch failed",
+                    stage=PipelineStage.qa_checking.value,
+                    retry_count=qa_result.retries,
+                )
             return qa_result, runtime_qa
 
         runtime_errors = [
@@ -599,7 +632,18 @@ class PipelineOrchestrator:
                 stage=PipelineStage.qa_checking.value,
                 error=self._error_message(exc),
             )
-            return QAResult(success=False, code=code, retries=0)
+            return QAResult(
+                success=False,
+                code=code,
+                retries=0,
+                last_errors=[
+                    QACheckError(
+                        type="qa_pipeline",
+                        message=self._error_message(exc),
+                        severity="error",
+                    )
+                ],
+            )
 
     async def iterate(
         self,
@@ -609,9 +653,44 @@ class PipelineOrchestrator:
         conversation: list,
         user_id: str = "system",
         progress_cb: ProgressCallback = None,
+        timeout_s: Optional[int] = None,
+    ) -> dict:
+        effective_timeout_s = timeout_s or settings.PIPELINE_TIMEOUT_S
+        stage_context: dict[str, str] = {"stage": PipelineStage.code_generating.value}
+        try:
+            return await asyncio.wait_for(
+                self._iterate_impl(
+                    game_id=game_id,
+                    current_code=current_code,
+                    feedback=feedback,
+                    conversation=conversation,
+                    user_id=user_id,
+                    progress_cb=progress_cb,
+                    stage_context=stage_context,
+                ),
+                timeout=effective_timeout_s,
+            )
+        except asyncio.TimeoutError as exc:
+            timed_out_stage = stage_context.get("stage", PipelineStage.failed.value)
+            raise PipelineExecutionError(
+                f"Iteration timed out during {timed_out_stage} after {effective_timeout_s}s",
+                stage=timed_out_stage,
+            ) from exc
+
+    async def _iterate_impl(
+        self,
+        game_id: str,
+        current_code: str,
+        feedback: str,
+        conversation: list,
+        user_id: str = "system",
+        progress_cb: ProgressCallback = None,
+        stage_context: Optional[dict[str, str]] = None,
     ) -> dict:
         """Stage 07: Incremental code modification."""
         max_attempts = DEFAULT_STAGE_TOTAL_ATTEMPTS
+        if stage_context is not None:
+            stage_context["stage"] = PipelineStage.code_generating.value
         self._notify(
             progress_cb,
             PipelineStage.code_generating,
@@ -667,6 +746,8 @@ class PipelineOrchestrator:
             "质量检查与自动修复",
             {"gameId": game_id, "userId": user_id, "attempt": 1, "maxAttempts": settings.QA_MAX_RETRIES + 1},
         )
+        if stage_context is not None:
+            stage_context["stage"] = PipelineStage.qa_checking.value
 
         def on_retry(retry_index: int, max_retries: int, errors: list[QACheckError]) -> None:
             self._notify(
@@ -706,6 +787,8 @@ class PipelineOrchestrator:
             )
 
         self._notify(progress_cb, PipelineStage.completed, 100, "迭代完成")
+        if stage_context is not None:
+            stage_context["stage"] = PipelineStage.completed.value
         return {
             "html_code": qa.code,
             "iteration_type": iter_type.value if iter_type else "element_change",

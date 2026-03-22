@@ -28,6 +28,59 @@ enum UserRole {
   admin
 }
 
+enum SubscriptionPeriod {
+  monthly
+  yearly
+}
+
+enum UserSubscriptionStatus {
+  active
+  expired
+  cancelled
+}
+
+enum SubscriptionOrderStatus {
+  pending
+  paid
+  failed
+  refunded
+  canceled
+}
+
+enum GameAccessGrantSource {
+  none
+  free_quota
+  subscription_quota
+  subscription_unlock
+}
+
+enum GenerationTaskType {
+  pipeline_run
+  pipeline_iterate
+}
+
+enum GenerationTaskStatus {
+  queued
+  running
+  succeeded
+  failed
+  canceled
+  timed_out
+}
+
+enum GenerationTaskEventType {
+  status
+  progress
+  llm_call
+  note
+  error
+}
+
+enum LLMProviderType {
+  openai_compatible
+  anthropic
+}
+
 model User {
   id             String       @id @default(uuid()) @db.VarChar(36)
   username       String       @unique @db.VarChar(32)
@@ -59,6 +112,12 @@ model User {
   refreshTokens      RefreshToken[]      @relation("UserRefreshTokens")
   followingRelations UserFollow[]        @relation("FollowerUser")
   followerRelations  UserFollow[]        @relation("FollowingUser")
+  quota              UserQuota?
+  subscriptions      UserSubscription[]
+  subscriptionOrders SubscriptionOrder[]
+  generationTasks    GenerationTask[]    @relation("UserGenerationTasks")
+  generationTaskEvents GenerationTaskEvent[] @relation("UserGenerationTaskEvents")
+  llmCallLogs        LlmCallLog[]        @relation("UserLlmCallLogs")
 
   @@map("users")
 }
@@ -116,6 +175,10 @@ model Game {
   visibility     String     @default("public") @db.VarChar(16)
   allowComments  Boolean    @default(true) @map("allow_comments")
   allowFork      Boolean    @default(true) @map("allow_fork")
+  canPlay        Boolean    @default(true) @map("can_play")
+  requireSubscription Boolean @default(false) @map("require_subscription")
+  accessGrantSource GameAccessGrantSource @default(none) @map("access_grant_source")
+  accessGrantSubscriptionId String? @map("access_grant_subscription_id") @db.VarChar(36)
   createdAt      DateTime   @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt      DateTime   @updatedAt @map("updated_at") @db.DateTime(3)
   publishedAt    DateTime?  @map("published_at") @db.DateTime(3)
@@ -127,6 +190,9 @@ model Game {
   comments           Comment[]           @relation("GameComments")
   earnings           CreatorEarning[]    @relation("GameEarnings")
   bundles            GameBundle[]        @relation("GameBundles")
+  generationTasks    GenerationTask[]    @relation("GameGenerationTasks")
+  generationTaskEvents GenerationTaskEvent[] @relation("GameGenerationTaskEvents")
+  llmCallLogs        LlmCallLog[]        @relation("GameLlmCallLogs")
 
   @@index([authorId])
   @@index([gameType, qualityScore])
@@ -134,6 +200,89 @@ model Game {
   @@index([status, publishedAt])
   @@index([status, playCount])
   @@map("games")
+}
+
+model UserQuota {
+  id             String   @id @default(uuid()) @db.VarChar(36)
+  userId         String   @unique @map("user_id") @db.VarChar(36)
+  totalFreeQuota Int      @default(5) @map("total_free_quota")
+  usedFreeQuota  Int      @default(0) @map("used_free_quota")
+  createdAt      DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_quotas")
+}
+
+model SubscriptionPlan {
+  id           String             @id @db.VarChar(64)
+  name         String             @db.VarChar(128)
+  description  String?            @db.VarChar(255)
+  price        Int
+  currency     String             @default("CNY") @db.VarChar(3)
+  period       SubscriptionPeriod
+  quota        Int
+  features     Json               @default("[]")
+  recommended  Boolean            @default(false)
+  badge        String?            @db.VarChar(32)
+  sortOrder    Int                @default(0) @map("sort_order")
+  active       Boolean            @default(true)
+  createdAt    DateTime           @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt    DateTime           @updatedAt @map("updated_at") @db.DateTime(3)
+
+  subscriptions UserSubscription[]
+  orders        SubscriptionOrder[]
+
+  @@index([active, sortOrder])
+  @@map("subscription_plans")
+}
+
+model UserSubscription {
+  id              String                 @id @default(uuid()) @db.VarChar(36)
+  userId          String                 @map("user_id") @db.VarChar(36)
+  planId          String                 @map("plan_id") @db.VarChar(64)
+  status          UserSubscriptionStatus @default(active)
+  startedAt       DateTime               @map("started_at") @db.DateTime(3)
+  expiresAt       DateTime               @map("expires_at") @db.DateTime(3)
+  usedThisPeriod  Int                    @default(0) @map("used_this_period")
+  quotaThisPeriod Int                    @map("quota_this_period")
+  autoRenew       Boolean                @default(false) @map("auto_renew")
+  createdAt       DateTime               @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt       DateTime               @updatedAt @map("updated_at") @db.DateTime(3)
+
+  user User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan SubscriptionPlan @relation(fields: [planId], references: [id])
+
+  @@index([userId, status, expiresAt])
+  @@map("user_subscriptions")
+}
+
+model SubscriptionOrder {
+  id                  String                  @id @db.VarChar(64)
+  userId              String                  @map("user_id") @db.VarChar(36)
+  planId              String                  @map("plan_id") @db.VarChar(64)
+  amount              Int
+  currency            String                  @default("CNY") @db.VarChar(3)
+  status              SubscriptionOrderStatus @default(pending)
+  provider            String                  @default("wechat_pay") @db.VarChar(32)
+  outTradeNo          String                  @unique @map("out_trade_no") @db.VarChar(64)
+  paymentId           String?                 @map("payment_id") @db.VarChar(128)
+  prepayId            String?                 @map("prepay_id") @db.VarChar(128)
+  gameIdToUnlock      String?                 @map("game_id_to_unlock") @db.VarChar(36)
+  description         String?                 @db.VarChar(255)
+  paymentPayload      Json?                   @map("payment_payload")
+  paymentResponse     Json?                   @map("payment_response")
+  paidAt              DateTime?               @map("paid_at") @db.DateTime(3)
+  expiresAt           DateTime?               @map("expires_at") @db.DateTime(3)
+  createdAt           DateTime                @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt           DateTime                @updatedAt @map("updated_at") @db.DateTime(3)
+
+  user User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan SubscriptionPlan @relation(fields: [planId], references: [id])
+
+  @@index([userId, status, createdAt])
+  @@map("subscription_orders")
 }
 
 // ==================== 游戏代码存储（原 MongoDB game_bundles） ====================
@@ -174,6 +323,275 @@ model GameTemplate {
 
   @@index([gameType])
   @@map("game_templates")
+}
+
+// ==================== LLM 网关与异步任务 ====================
+
+model CloudProviderAccount {
+  id                       String                 @id @default(uuid()) @db.VarChar(36)
+  vendor                   String                 @db.VarChar(32)
+  accountKey               String                 @unique @map("account_key") @db.VarChar(64)
+  displayName              String                 @map("display_name") @db.VarChar(128)
+  enabled                  Boolean                @default(true)
+  credentialMode           String                 @default("env_secret") @map("credential_mode") @db.VarChar(32)
+  defaultRegistry          String?                @map("default_registry") @db.VarChar(255)
+  defaultRegistryNamespace String?                @map("default_registry_namespace") @db.VarChar(128)
+  defaultVpcId             String?                @map("default_vpc_id") @db.VarChar(128)
+  defaultSubnetId          String?                @map("default_subnet_id") @db.VarChar(128)
+  defaultSecurityGroupId   String?                @map("default_security_group_id") @db.VarChar(128)
+  syncedAt                 DateTime?              @map("synced_at") @db.DateTime(3)
+  createdAt                DateTime               @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt                DateTime               @updatedAt @map("updated_at") @db.DateTime(3)
+
+  regions                  CloudRegionCatalog[]
+  aiEngineRegionTargets    AiEngineRegionTarget[]
+
+  @@index([vendor, enabled])
+  @@map("cloud_provider_accounts")
+}
+
+model CloudRegionCatalog {
+  id              String                 @id @default(uuid()) @db.VarChar(36)
+  accountId       String                 @map("account_id") @db.VarChar(36)
+  vendor          String                 @db.VarChar(32)
+  regionCode      String                 @map("region_code") @db.VarChar(64)
+  regionName      String                 @map("region_name") @db.VarChar(64)
+  regionGroup     String?                @map("region_group") @db.VarChar(32)
+  vcrSupported    Boolean                @default(true) @map("vcr_supported")
+  vefaasSupported Boolean                @default(true) @map("vefaas_supported")
+  apigSupported   Boolean                @default(true) @map("apig_supported")
+  deploySupported Boolean                @default(true) @map("deploy_supported")
+  enabled         Boolean                @default(true)
+  syncedAt        DateTime               @default(now()) @map("synced_at") @db.DateTime(3)
+  createdAt       DateTime               @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt       DateTime               @updatedAt @map("updated_at") @db.DateTime(3)
+
+  account         CloudProviderAccount   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  aiEngineRegionTargets AiEngineRegionTarget[]
+
+  @@unique([accountId, regionCode], name: "cloud_region_catalog_account_id_region_code_key")
+  @@index([vendor, enabled])
+  @@map("cloud_region_catalog")
+}
+
+model AiEngineRegionTarget {
+  id                 String                 @id @default(uuid()) @db.VarChar(36)
+  accountId          String                 @map("account_id") @db.VarChar(36)
+  regionCatalogId    String                 @map("region_catalog_id") @db.VarChar(36)
+  vendor             String                 @db.VarChar(32)
+  cloudRegionCode    String                 @map("cloud_region_code") @db.VarChar(64)
+  executionRegion    String                 @map("execution_region") @db.VarChar(32)
+  displayName        String                 @map("display_name") @db.VarChar(128)
+  functionName       String                 @map("function_name") @db.VarChar(128)
+  registry           String                 @db.VarChar(255)
+  registryNamespace  String                 @map("registry_namespace") @db.VarChar(128)
+  imageRepository    String                 @map("image_repository") @db.VarChar(128)
+  serviceRegionEnv   String                 @map("service_region_env") @db.VarChar(32)
+  aiEngineUrl        String?                @map("ai_engine_url") @db.VarChar(255)
+  deployEnabled      Boolean                @default(true) @map("deploy_enabled")
+  deployStatus       String                 @default("pending") @map("deploy_status") @db.VarChar(32)
+  lastRevision       String?                @map("last_revision") @db.VarChar(64)
+  lastImageTag       String?                @map("last_image_tag") @db.VarChar(128)
+  lastReleaseStatus  String?                @map("last_release_status") @db.VarChar(64)
+  lastDeployError    String?                @map("last_deploy_error") @db.Text
+  lastDeployedAt     DateTime?              @map("last_deployed_at") @db.DateTime(3)
+  createdAt          DateTime               @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt          DateTime               @updatedAt @map("updated_at") @db.DateTime(3)
+
+  account            CloudProviderAccount   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  regionCatalog      CloudRegionCatalog     @relation(fields: [regionCatalogId], references: [id], onDelete: Cascade)
+  providers          LlmGatewayProvider[]
+
+  @@unique([executionRegion], name: "ai_engine_region_targets_execution_region_key")
+  @@index([deployEnabled, deployStatus])
+  @@index([vendor, cloudRegionCode])
+  @@map("ai_engine_region_targets")
+}
+
+model LlmGatewayProvider {
+  id               String          @id @default(uuid()) @db.VarChar(36)
+  name             String          @db.VarChar(64)
+  providerType     LLMProviderType @map("provider_type")
+  regionTargetId   String?         @map("region_target_id") @db.VarChar(36)
+  cloudVendor      String?         @map("cloud_vendor") @db.VarChar(32)
+  cloudRegionCode  String?         @map("cloud_region_code") @db.VarChar(64)
+  region           String          @default("cn_shanghai") @db.VarChar(32)
+  baseUrl          String          @map("base_url") @db.VarChar(255)
+  apiKey           String          @map("api_key") @db.Text
+  model            String          @db.VarChar(128)
+  fastModel        String?         @map("fast_model") @db.VarChar(128)
+  requestTimeoutS  Int             @default(600) @map("request_timeout_s")
+  connectTimeoutS  Int             @default(15) @map("connect_timeout_s")
+  enabled          Boolean         @default(true)
+  priority         Int             @default(100)
+  description      String?         @db.VarChar(255)
+  extraConfig      Json?           @map("extra_config")
+  createdAt        DateTime        @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt        DateTime        @updatedAt @map("updated_at") @db.DateTime(3)
+
+  stepRoutes       LlmStepRoute[]
+  llmCallLogs      LlmCallLog[]
+  testRecords      LlmGatewayTestRecord[]
+  regionTarget     AiEngineRegionTarget? @relation(fields: [regionTargetId], references: [id], onDelete: SetNull)
+
+  @@index([enabled, region, priority])
+  @@index([providerType, region])
+  @@index([regionTargetId])
+  @@map("llm_gateway_providers")
+}
+
+model LlmStepRoute {
+  id                  String             @id @default(uuid()) @db.VarChar(36)
+  stepKey             String             @map("step_key") @db.VarChar(64)
+  region              String             @default("cn_shanghai") @db.VarChar(32)
+  providerId          String             @map("provider_id") @db.VarChar(36)
+  fallbackProviderIds Json               @default("[]") @map("fallback_provider_ids")
+  modelOverride       String?            @map("model_override") @db.VarChar(128)
+  fastModelOverride   String?            @map("fast_model_override") @db.VarChar(128)
+  requestTimeoutS     Int?               @map("request_timeout_s")
+  connectTimeoutS     Int?               @map("connect_timeout_s")
+  enabled             Boolean            @default(true)
+  createdAt           DateTime           @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt           DateTime           @updatedAt @map("updated_at") @db.DateTime(3)
+
+  provider            LlmGatewayProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@unique([stepKey, region], name: "llm_step_routes_step_key_region_key")
+  @@index([enabled, region])
+  @@index([providerId])
+  @@map("llm_step_routes")
+}
+
+model LlmStepCatalog {
+  id          String    @id @default(uuid()) @db.VarChar(36)
+  stepKey     String    @unique @map("step_key") @db.VarChar(64)
+  stepOrder   Int       @map("step_order")
+  stageLabel  String?   @map("stage_label") @db.VarChar(64)
+  displayName String    @map("display_name") @db.VarChar(128)
+  description String?   @db.VarChar(255)
+  enabled     Boolean   @default(true)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+
+  @@index([enabled, stepOrder])
+  @@map("llm_step_catalog")
+}
+
+model LlmGatewayTestRecord {
+  id                String             @id @default(uuid()) @db.VarChar(36)
+  providerId        String             @map("provider_id") @db.VarChar(36)
+  success           Boolean
+  region            String             @default("cn_shanghai") @db.VarChar(32)
+  resolvedEndpoint  String?            @map("resolved_endpoint") @db.VarChar(255)
+  model             String?            @db.VarChar(128)
+  latencyMs         Int?               @map("latency_ms")
+  httpStatus        Int?               @map("http_status")
+  errorMessage      String?            @map("error_message") @db.Text
+  testedAt          DateTime           @default(now()) @map("tested_at") @db.DateTime(3)
+
+  provider          LlmGatewayProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@index([providerId, testedAt])
+  @@map("llm_gateway_test_records")
+}
+
+model GenerationTask {
+  id                   String                @id @default(uuid()) @db.VarChar(36)
+  gameId               String                @map("game_id") @db.VarChar(36)
+  userId               String                @map("user_id") @db.VarChar(36)
+  taskType             GenerationTaskType    @map("task_type")
+  region               String                @default("cn_shanghai") @db.VarChar(32)
+  status               GenerationTaskStatus  @default(queued)
+  timeoutS             Int                   @map("timeout_s")
+  version              Int?
+  cancelRequested      Boolean               @default(false) @map("cancel_requested")
+  upstreamTaskId       String?               @map("upstream_task_id") @db.VarChar(64)
+  progressStage        String?               @map("progress_stage") @db.VarChar(64)
+  progressPct          Int?                  @map("progress_pct")
+  progressMessage      String?               @map("progress_message") @db.VarChar(255)
+  failedStage          String?               @map("failed_stage") @db.VarChar(64)
+  errorMessage         String?               @map("error_message") @db.Text
+  retryCount           Int                   @default(0) @map("retry_count")
+  fallback             String?               @db.VarChar(64)
+  wsChannel            String                @map("ws_channel") @db.VarChar(128)
+  previewUrl           String?               @map("preview_url") @db.VarChar(255)
+  gatewayConfigVersion Int?                  @map("gateway_config_version")
+  routeSnapshot        Json?                 @map("route_snapshot")
+  resultSummary        Json?                 @map("result_summary")
+  metadata             Json?
+  startedAt            DateTime?             @map("started_at") @db.DateTime(3)
+  completedAt          DateTime?             @map("completed_at") @db.DateTime(3)
+  createdAt            DateTime              @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt            DateTime              @updatedAt @map("updated_at") @db.DateTime(3)
+
+  game                 Game                  @relation("GameGenerationTasks", fields: [gameId], references: [id], onDelete: Cascade)
+  user                 User                  @relation("UserGenerationTasks", fields: [userId], references: [id], onDelete: Cascade)
+  events               GenerationTaskEvent[]
+  llmCallLogs          LlmCallLog[]
+
+  @@index([gameId, createdAt])
+  @@index([region, status, updatedAt])
+  @@index([userId, status, createdAt])
+  @@index([status, updatedAt])
+  @@map("generation_tasks")
+}
+
+model GenerationTaskEvent {
+  id           String                  @id @default(uuid()) @db.VarChar(36)
+  taskId       String                  @map("task_id") @db.VarChar(36)
+  gameId       String                  @map("game_id") @db.VarChar(36)
+  userId       String                  @map("user_id") @db.VarChar(36)
+  eventType    GenerationTaskEventType @map("event_type")
+  stage        String?                 @db.VarChar(64)
+  percentage   Int?
+  message      String                  @db.VarChar(255)
+  details      Json?
+  createdAt    DateTime                @default(now()) @map("created_at") @db.DateTime(3)
+
+  task         GenerationTask          @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  game         Game                    @relation("GameGenerationTaskEvents", fields: [gameId], references: [id], onDelete: Cascade)
+  user         User                    @relation("UserGenerationTaskEvents", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, createdAt])
+  @@index([gameId, createdAt])
+  @@index([userId, createdAt])
+  @@map("generation_task_events")
+}
+
+model LlmCallLog {
+  id                   String             @id @default(uuid()) @db.VarChar(36)
+  taskId               String?            @map("task_id") @db.VarChar(36)
+  gameId               String             @map("game_id") @db.VarChar(36)
+  userId               String             @map("user_id") @db.VarChar(36)
+  stage                String             @db.VarChar(64)
+  stepKey              String             @map("step_key") @db.VarChar(64)
+  providerId           String?            @map("provider_id") @db.VarChar(36)
+  providerName         String?            @map("provider_name") @db.VarChar(64)
+  providerType         String?            @map("provider_type") @db.VarChar(32)
+  region               String?            @db.VarChar(32)
+  model                String?            @db.VarChar(128)
+  requestTimeoutS      Int?               @map("request_timeout_s")
+  connectTimeoutS      Int?               @map("connect_timeout_s")
+  latencyMs            Int?               @map("latency_ms")
+  httpStatus           Int?               @map("http_status")
+  success              Boolean            @default(false)
+  upstreamRequestId    String?            @map("upstream_request_id") @db.VarChar(128)
+  errorCode            String?            @map("error_code") @db.VarChar(128)
+  errorMessage         String?            @map("error_message") @db.Text
+  errorBodyExcerpt     String?            @map("error_body_excerpt") @db.Text
+  configVersion        Int?               @map("config_version")
+  routeSnapshot        Json?              @map("route_snapshot")
+  createdAt            DateTime           @default(now()) @map("created_at") @db.DateTime(3)
+
+  task                 GenerationTask?    @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  game                 Game               @relation("GameLlmCallLogs", fields: [gameId], references: [id], onDelete: Cascade)
+  user                 User               @relation("UserLlmCallLogs", fields: [userId], references: [id], onDelete: Cascade)
+  provider             LlmGatewayProvider? @relation(fields: [providerId], references: [id], onDelete: SetNull)
+
+  @@index([taskId, createdAt])
+  @@index([gameId, createdAt])
+  @@index([stepKey, createdAt])
+  @@map("llm_call_logs")
 }
 
 // ==================== 社交互动 ====================

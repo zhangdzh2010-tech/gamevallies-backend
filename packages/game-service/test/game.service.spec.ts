@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { ConfigService } from '@nestjs/config';
+import { GameAccessGrantSource } from '@prisma/client';
 import { GameService } from '../src/game/game.service';
 
 jest.mock('axios');
@@ -13,9 +14,11 @@ describe('GameService', () => {
   let statsService: any;
   let configService: ConfigService;
   let wsGateway: any;
+  let generationTaskService: any;
 
   beforeEach(() => {
     prisma = {
+      $transaction: jest.fn(),
       game: {
         create: jest.fn(),
         findUnique: jest.fn(),
@@ -23,7 +26,24 @@ describe('GameService', () => {
         findMany: jest.fn(),
         count: jest.fn(),
       },
+      userQuota: {
+        upsert: jest.fn(),
+        update: jest.fn(),
+        updateMany: jest.fn(),
+      },
+      userSubscription: {
+        updateMany: jest.fn(),
+        findFirst: jest.fn(),
+        update: jest.fn(),
+      },
+      systemConfig: {
+        findUnique: jest.fn(),
+      },
+      aiEngineRegionTarget: {
+        findFirst: jest.fn(),
+      },
     };
+    prisma.$transaction.mockImplementation(async (callback: (tx: any) => any) => callback(prisma));
     bundleService = {
       getBundle: jest.fn(),
       saveBundle: jest.fn(),
@@ -38,6 +58,35 @@ describe('GameService', () => {
       emitGenerationComplete: jest.fn(),
       emitGenerationError: jest.fn(),
       emitNotification: jest.fn(),
+    };
+    generationTaskService = {
+      createTask: jest.fn(async ({ gameId, taskType, timeoutS, version }: any) => ({
+        id: `${gameId}:${taskType}`,
+        taskType,
+        status: 'queued',
+        timeoutS,
+        wsChannel: `game:${gameId}`,
+        gameId,
+        version: version ?? 1,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })),
+      markRunning: jest.fn(),
+      recordProgress: jest.fn(),
+      markSucceeded: jest.fn(),
+      markFailed: jest.fn(),
+      getLatestTaskForGame: jest.fn(),
+      getTaskForUser: jest.fn(),
+      listTaskEvents: jest.fn(),
+      requestCancel: jest.fn(),
+      toTaskSummary: jest.fn((task: any) => ({
+        taskId: task.id,
+        taskType: task.taskType,
+        status: task.status,
+        timeoutS: task.timeoutS,
+        wsChannel: task.wsChannel,
+        pollUrl: `/api/v1/games/tasks/${task.id}`,
+      })),
     };
     configService = {
       get: jest.fn((key: string, defaultValue?: string) => {
@@ -59,6 +108,7 @@ describe('GameService', () => {
       statsService,
       configService,
       wsGateway,
+      generationTaskService,
     );
   });
 
@@ -67,6 +117,14 @@ describe('GameService', () => {
   });
 
   it('does not retry ai-engine 504 responses and persists structured failure context', async () => {
+    prisma.game.findUnique.mockResolvedValue({
+      id: 'game-504',
+      authorId: 'user-504',
+      accessGrantSource: GameAccessGrantSource.subscription_quota,
+      accessGrantSubscriptionId: 'sub-504',
+    });
+    prisma.userSubscription.updateMany.mockResolvedValue({ count: 1 });
+
     mockedAxios.post.mockRejectedValue({
       message: 'Request failed with status code 504',
       response: {
@@ -84,6 +142,15 @@ describe('GameService', () => {
     await (service as any).runPipeline('game-504', 'user-504', 'make a runner');
 
     expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+    expect(prisma.userSubscription.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'sub-504',
+        usedThisPeriod: { gt: 0 },
+      },
+      data: {
+        usedThisPeriod: { decrement: 1 },
+      },
+    });
     expect(prisma.game.update).toHaveBeenCalledWith({
       where: { id: 'game-504' },
       data: expect.objectContaining({
@@ -92,6 +159,8 @@ describe('GameService', () => {
         failedReason: 'Generated code failed QA',
         retryCount: 3,
         lastErrorAt: expect.any(Date),
+        accessGrantSource: GameAccessGrantSource.none,
+        accessGrantSubscriptionId: null,
       }),
     });
     expect(wsGateway.emitNotification).toHaveBeenCalledWith(
@@ -173,6 +242,46 @@ describe('GameService', () => {
     );
   });
 
+  it('fails closed when ai-engine returns empty html output', async () => {
+    prisma.game.findUnique.mockResolvedValue({
+      id: 'game-empty',
+      authorId: 'user-empty',
+      accessGrantSource: GameAccessGrantSource.none,
+      accessGrantSubscriptionId: null,
+    });
+    prisma.game.update.mockResolvedValue({});
+
+    mockedAxios.post.mockResolvedValue({
+      data: {
+        strategy: 'llm',
+        qa_passed: true,
+        qa_retries: 0,
+        game_spec: { game_type: 'runner' },
+        generation_time_ms: 123,
+        code_size_bytes: 0,
+      },
+    });
+
+    await (service as any).runPipeline('game-empty', 'user-empty', 'make a runner');
+
+    expect(bundleService.saveBundle).not.toHaveBeenCalled();
+    expect(prisma.game.update).toHaveBeenCalledWith({
+      where: { id: 'game-empty' },
+      data: expect.objectContaining({
+        status: 'failed',
+        failedReason: 'AI pipeline returned empty HTML output',
+      }),
+    });
+    expect(wsGateway.emitGenerationError).toHaveBeenCalledWith(
+      'user-empty',
+      'game-empty',
+      'AI pipeline returned empty HTML output',
+      expect.objectContaining({
+        stage: 'pipeline_run',
+      }),
+    );
+  });
+
   it('retries iteration publish persistence before surfacing success', async () => {
     jest.useFakeTimers();
 
@@ -238,5 +347,264 @@ describe('GameService', () => {
       'game-iter',
       'https://www.gamevallies.com/games/game-iter/preview',
     );
+  });
+
+  it('does not refund the original creation quota when an iteration fails later', async () => {
+    prisma.game.findUnique.mockResolvedValue({
+      id: 'game-iter-failed',
+      authorId: 'user-iter',
+      accessGrantSource: GameAccessGrantSource.free_quota,
+      accessGrantSubscriptionId: null,
+    });
+    prisma.game.update.mockResolvedValue({});
+
+    mockedAxios.post.mockRejectedValue({
+      response: {
+        data: {
+          detail: {
+            message: 'Iteration QA failed',
+            failed_stage: 'qa_checking',
+            retry_count: 1,
+          },
+        },
+      },
+      message: 'Request failed with status code 400',
+    });
+
+    await (service as any).runIteration(
+      'game-iter-failed',
+      'user-iter',
+      'make it harder',
+      2,
+      [],
+      '<html>old</html>',
+    );
+
+    expect(prisma.userQuota.updateMany).not.toHaveBeenCalled();
+    expect(prisma.game.update).toHaveBeenCalledWith({
+      where: { id: 'game-iter-failed' },
+      data: expect.objectContaining({
+        failedStage: 'qa_checking',
+        failedReason: 'Iteration QA failed',
+        retryCount: 1,
+      }),
+    });
+  });
+
+  it('consumes free quota during creation and returns playable state', async () => {
+    const runPipelineSpy = jest.spyOn(service as any, 'runPipeline').mockResolvedValue(undefined);
+
+    prisma.userSubscription.updateMany.mockResolvedValue({ count: 0 });
+    prisma.userQuota.upsert.mockResolvedValue({
+      userId: 'user-free',
+      totalFreeQuota: 5,
+      usedFreeQuota: 0,
+    });
+    prisma.userSubscription.findFirst.mockResolvedValue(null);
+    prisma.userQuota.update.mockResolvedValue({
+      userId: 'user-free',
+      totalFreeQuota: 5,
+      usedFreeQuota: 1,
+    });
+    prisma.game.create.mockResolvedValue({ id: 'game-free' });
+
+    const result = await service.create('user-free', {
+      description: 'make a puzzle game',
+    } as any);
+
+    expect(prisma.game.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        authorId: 'user-free',
+        canPlay: true,
+        requireSubscription: false,
+      }),
+    });
+    expect(result).toEqual(expect.objectContaining({
+      canPlay: true,
+      quotaRemaining: 4,
+      requireSubscription: false,
+      generationTask: expect.objectContaining({
+        taskType: 'pipeline_run',
+        status: 'queued',
+        timeoutS: 600,
+        pollUrl: expect.stringContaining('/api/v1/games/'),
+      }),
+    }));
+
+    await new Promise((resolve) => setImmediate(resolve));
+    runPipelineSpy.mockRestore();
+  });
+
+  it('still creates a locked game when all quota is exhausted', async () => {
+    const runPipelineSpy = jest.spyOn(service as any, 'runPipeline').mockResolvedValue(undefined);
+
+    prisma.userSubscription.updateMany.mockResolvedValue({ count: 0 });
+    prisma.userQuota.upsert.mockResolvedValue({
+      userId: 'user-locked',
+      totalFreeQuota: 5,
+      usedFreeQuota: 5,
+    });
+    prisma.userSubscription.findFirst.mockResolvedValue(null);
+    prisma.game.create.mockResolvedValue({ id: 'game-locked' });
+
+    const result = await service.create('user-locked', {
+      description: 'make a runner',
+    } as any);
+
+    expect(prisma.game.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        authorId: 'user-locked',
+        canPlay: false,
+        requireSubscription: true,
+      }),
+    });
+    expect(result).toEqual(expect.objectContaining({
+      canPlay: false,
+      quotaRemaining: 0,
+      requireSubscription: true,
+      generationTask: expect.objectContaining({
+        taskType: 'pipeline_run',
+        timeoutS: 600,
+      }),
+    }));
+
+    await new Promise((resolve) => setImmediate(resolve));
+    runPipelineSpy.mockRestore();
+  });
+
+  it('unlocks a locked game by consuming one subscription quota', async () => {
+    prisma.userSubscription.updateMany.mockResolvedValue({ count: 0 });
+    prisma.game.findUnique.mockResolvedValue({
+      id: 'game-lock',
+      authorId: 'user-lock',
+      canPlay: false,
+    });
+    prisma.userQuota.upsert.mockResolvedValue({
+      userId: 'user-lock',
+      totalFreeQuota: 5,
+      usedFreeQuota: 5,
+    });
+    prisma.userSubscription.findFirst.mockResolvedValue({
+      id: 'sub-lock',
+      userId: 'user-lock',
+      quotaThisPeriod: 10,
+      usedThisPeriod: 1,
+      expiresAt: new Date('2026-04-21T00:00:00.000Z'),
+      plan: {
+        id: 'plan_monthly_basic',
+        name: '基础月卡',
+      },
+    });
+    prisma.userSubscription.update.mockResolvedValue({
+      id: 'sub-lock',
+      quotaThisPeriod: 10,
+      usedThisPeriod: 2,
+    });
+    prisma.game.update.mockResolvedValue(undefined);
+
+    const result = await service.unlock('game-lock', 'user-lock');
+
+    expect(prisma.game.update).toHaveBeenCalledWith({
+      where: { id: 'game-lock' },
+      data: {
+        canPlay: true,
+        requireSubscription: false,
+        accessGrantSource: GameAccessGrantSource.subscription_unlock,
+        accessGrantSubscriptionId: 'sub-lock',
+      },
+    });
+    expect(result).toEqual({
+      unlocked: true,
+      canPlay: true,
+      quotaRemaining: 8,
+    });
+  });
+
+  it('passes custom timeout through to ai-engine pipeline calls', async () => {
+    mockedAxios.post.mockResolvedValue({
+      data: {
+        html_code: '<!DOCTYPE html><html><head><title>超时测试</title></head><body></body></html>',
+        strategy: 'llm',
+        qa_passed: true,
+        qa_retries: 0,
+        game_spec: { game_type: 'runner' },
+        generation_time_ms: 1000,
+        code_size_bytes: 88,
+        quality_score: 90,
+        quality_breakdown: {},
+      },
+    });
+    prisma.game.findUnique.mockResolvedValue({
+      title: 'Game abcdef12',
+    });
+    prisma.game.update.mockResolvedValue({});
+    bundleService.getBundle.mockResolvedValue(null);
+    bundleService.saveBundle.mockResolvedValue(undefined);
+
+    await (service as any).runPipeline('game-timeout', 'user-timeout', 'make a runner', 900);
+
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      'http://ai-engine.test/api/v1/ai/pipeline/run',
+      expect.objectContaining({
+        game_id: 'game-timeout',
+        timeout_s: 900,
+      }),
+      expect.objectContaining({
+        timeout: 960000,
+      }),
+    );
+  });
+
+  it('prefers deployed region target endpoints over legacy env fallbacks', async () => {
+    prisma.aiEngineRegionTarget.findFirst.mockResolvedValue({
+      aiEngineUrl: 'https://ai-db.example.com',
+    });
+
+    const resolvedUrl = await (service as any).resolveAiEngineEndpoint('cn_shanghai');
+
+    expect(prisma.aiEngineRegionTarget.findFirst).toHaveBeenCalledWith({
+      where: {
+        executionRegion: 'cn_shanghai',
+        deployEnabled: true,
+        deployStatus: 'deployed',
+        aiEngineUrl: { not: null },
+      },
+      select: {
+        aiEngineUrl: true,
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+    expect(resolvedUrl).toBe('https://ai-db.example.com');
+  });
+
+  it('returns an author-only generation status payload for polling', async () => {
+    prisma.game.findUnique.mockResolvedValue({
+      id: 'game-status',
+      authorId: 'user-status',
+      status: 'failed',
+      version: 2,
+      failedStage: 'qa_checking',
+      failedReason: 'Generated code failed QA',
+      retryCount: 2,
+      lastErrorAt: new Date('2026-03-21T10:00:00.000Z'),
+      canPlay: false,
+      requireSubscription: true,
+    });
+
+    const result = await service.getGenerationStatus('game-status', 'user-status');
+
+    expect(result).toEqual(expect.objectContaining({
+      taskId: 'game-status:pipeline',
+      taskType: 'pipeline_run',
+      status: 'failed',
+      stage: 'qa_checking',
+      gameId: 'game-status',
+      version: 2,
+      wsChannel: 'game:game-status',
+      pollUrl: '/api/v1/games/game-status/generation-status',
+      previewUrl: 'https://www.gamevallies.com/games/game-status/preview',
+      failedReason: 'Generated code failed QA',
+      retryCount: 2,
+    }));
   });
 });

@@ -7,7 +7,7 @@ class IntentParser:
     def parse(self, description: str) -> dict:
         """Parse Chinese/English game description to determine game type"""
         if not description or not isinstance(description, str):
-            return {"game_type": "dodge", "confidence": 0.5}
+            return {"game_type": "dodge", "confidence": 0.3}
 
         description_lower = description.lower()
 

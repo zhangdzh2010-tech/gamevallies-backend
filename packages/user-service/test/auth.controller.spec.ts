@@ -1,30 +1,13 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
-import { CanActivate, ExecutionContext } from '@nestjs/common';
-import request from 'supertest';
 import { AuthController } from '../src/auth/auth.controller';
-import { AuthService } from '../src/auth/auth.service';
-import { JwtAuthGuard } from '../src/auth/jwt-auth.guard';
-import { ConflictException, UnauthorizedException } from '@nestjs/common';
-
-// Mock guard that bypasses JWT validation and injects a test user
-class MockJwtAuthGuard implements CanActivate {
-  canActivate(context: ExecutionContext): boolean {
-    const req = context.switchToHttp().getRequest();
-    req.user = { userId: 'user-123', username: 'testuser' };
-    return true;
-  }
-}
 
 describe('AuthController', () => {
-  let app: INestApplication;
-
   const mockUser = {
     id: 'user-123',
     username: 'testuser',
-    email: 'test@example.com',
+    phone: '13800138000',
     displayName: 'Test User',
     role: 'user',
+    createdAt: new Date('2026-03-20T00:00:00.000Z'),
   };
 
   const mockAuthResponse = {
@@ -35,190 +18,192 @@ describe('AuthController', () => {
   };
 
   const mockAuthService = {
-    register: jest.fn(),
-    login: jest.fn(),
+    loginByPassword: jest.fn(),
     refreshToken: jest.fn(),
     revokeRefreshToken: jest.fn(),
-    sendVerificationCode: jest.fn(),
-    verifyCode: jest.fn(),
-    resetPassword: jest.fn(),
-    changePassword: jest.fn(),
+    sendSmsCode: jest.fn(),
+    registerByPhone: jest.fn(),
+    loginByPhone: jest.fn(),
+    loginByWechatMiniapp: jest.fn(),
     validateUser: jest.fn(),
   };
 
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      controllers: [AuthController],
-      providers: [
-        {
-          provide: AuthService,
-          useValue: mockAuthService,
-        },
-      ],
-    })
-      .overrideGuard(JwtAuthGuard)
-      .useClass(MockJwtAuthGuard)
-      .compile();
+  const mockSmsService = {
+    queryDetails: jest.fn(),
+  };
 
-    app = module.createNestApplication();
-    app.useGlobalPipes(new ValidationPipe({ whitelist: true }));
-    await app.init();
+  let controller: AuthController;
 
+  beforeEach(() => {
     jest.clearAllMocks();
+    controller = new AuthController(mockAuthService as any, mockSmsService as any);
   });
 
-  afterEach(async () => {
-    await app.close();
-  });
+  it('login delegates to password login service and returns wrapped tokens', async () => {
+    mockAuthService.loginByPassword.mockResolvedValueOnce(mockAuthResponse);
 
-  describe('POST /auth/register', () => {
-    it('should return 201 and user data on successful registration', async () => {
-      mockAuthService.register.mockResolvedValueOnce(mockAuthResponse);
+    const result = await controller.login({
+      account: 'testuser',
+      password: 'SecurePass123!',
+    } as any);
 
-      const response = await request(app.getHttpServer())
-        .post('/auth/register')
-        .send({
-          username: 'newuser',
-          email: 'newuser@example.com',
-          password: 'SecurePass123!',
-          displayName: 'New User',
-        })
-        .expect(201);
-
-      expect(response.body.code).toBe(0);
-      expect(response.body.data).toHaveProperty('user');
-    });
-
-    it('should return 409 when username already exists', async () => {
-      mockAuthService.register.mockRejectedValueOnce(
-        new ConflictException('Username already taken'),
-      );
-
-      await request(app.getHttpServer())
-        .post('/auth/register')
-        .send({
-          username: 'existinguser',
-          email: 'new@example.com',
-          password: 'SecurePass123!',
-          displayName: 'New User',
-        })
-        .expect(409);
-    });
-
-    it('should return 409 when email already exists', async () => {
-      mockAuthService.register.mockRejectedValueOnce(
-        new ConflictException('Email already registered'),
-      );
-
-      await request(app.getHttpServer())
-        .post('/auth/register')
-        .send({
-          username: 'newuser',
-          email: 'existing@example.com',
-          password: 'SecurePass123!',
-          displayName: 'New User',
-        })
-        .expect(409);
+    expect(mockAuthService.loginByPassword).toHaveBeenCalledWith(
+      'testuser',
+      'SecurePass123!',
+    );
+    expect(result).toMatchObject({
+      code: 0,
+      data: {
+        token: 'access-token-jwt',
+        refreshToken: 'refresh-token-uuid',
+        user: expect.objectContaining({
+          username: 'testuser',
+          phone: '13800138000',
+        }),
+      },
     });
   });
 
-  describe('POST /auth/login', () => {
-    it('should return 200 and tokens on successful login', async () => {
-      mockAuthService.login.mockResolvedValueOnce(mockAuthResponse);
+  it('sendSmsCode delegates phone and purpose to auth service', async () => {
+    const result = await controller.sendSmsCode({
+      phone: '13800138000',
+      type: 'login',
+    } as any);
 
-      const response = await request(app.getHttpServer())
-        .post('/auth/login')
-        .send({
-          account: 'testuser',
-          password: 'SecurePass123!',
-        })
-        .expect(200);
-
-      expect(response.body.code).toBe(0);
-      expect(response.body.data).toHaveProperty('token');
-      expect(response.body.data).toHaveProperty('refreshToken');
-      expect(response.body.data).toHaveProperty('user');
-    });
-
-    it('should return 401 for invalid credentials', async () => {
-      mockAuthService.login.mockRejectedValueOnce(
-        new UnauthorizedException('Invalid email/username or password'),
-      );
-
-      await request(app.getHttpServer())
-        .post('/auth/login')
-        .send({
-          account: 'testuser',
-          password: 'WrongPassword!',
-        })
-        .expect(401);
-    });
-
-    it('should return 401 for non-existent user', async () => {
-      mockAuthService.login.mockRejectedValueOnce(
-        new UnauthorizedException('Invalid email/username or password'),
-      );
-
-      await request(app.getHttpServer())
-        .post('/auth/login')
-        .send({
-          account: 'nonexistent',
-          password: 'SecurePass123!',
-        })
-        .expect(401);
+    expect(mockAuthService.sendSmsCode).toHaveBeenCalledWith('13800138000', 'login');
+    expect(result).toEqual({
+      code: 0,
+      message: 'success',
+      data: null,
     });
   });
 
-  describe('POST /auth/refresh', () => {
-    it('should return 200 and new tokens on successful refresh', async () => {
-      mockAuthService.refreshToken.mockResolvedValueOnce({
-        accessToken: 'new-access-token',
+  it('registerByPhone returns wrapped user payload', async () => {
+    mockAuthService.registerByPhone.mockResolvedValueOnce(mockAuthResponse);
+
+    const result = await controller.registerByPhone({
+      phone: '13800138000',
+      smsCode: '123456',
+      nickname: 'Test User',
+      password: 'SecurePass123!',
+    } as any);
+
+    expect(mockAuthService.registerByPhone).toHaveBeenCalledWith(
+      '13800138000',
+      '123456',
+      'Test User',
+      'SecurePass123!',
+    );
+    expect(result).toMatchObject({
+      data: {
+        user: {
+          displayName: 'Test User',
+        },
+      },
+    });
+  });
+
+  it('loginByPhone returns tokens for SMS login', async () => {
+    mockAuthService.loginByPhone.mockResolvedValueOnce(mockAuthResponse);
+
+    const result = await controller.loginByPhone({
+      phone: '13800138000',
+      smsCode: '123456',
+    } as any);
+
+    expect(mockAuthService.loginByPhone).toHaveBeenCalledWith('13800138000', '123456');
+    expect(result.data.token).toBe('access-token-jwt');
+  });
+
+  it('loginByWechatMiniapp returns wrapped tokens and user', async () => {
+    mockAuthService.loginByWechatMiniapp.mockResolvedValueOnce(mockAuthResponse);
+
+    const result = await controller.loginByWechatMiniapp({
+      code: 'wx-code',
+      nickname: 'Wechat User',
+      avatarUrl: 'https://example.com/avatar.png',
+    } as any);
+
+    expect(mockAuthService.loginByWechatMiniapp).toHaveBeenCalledWith(
+      'wx-code',
+      'Wechat User',
+      'https://example.com/avatar.png',
+    );
+    expect(result.data.refreshToken).toBe('refresh-token-uuid');
+  });
+
+  it('refresh returns rotated tokens', async () => {
+    mockAuthService.refreshToken.mockResolvedValueOnce({
+      accessToken: 'new-access-token',
+      refreshToken: 'new-refresh-uuid',
+      expiresIn: 86400,
+    });
+
+    const result = await controller.refresh({ refreshToken: 'valid-refresh-token' } as any);
+
+    expect(mockAuthService.refreshToken).toHaveBeenCalledWith('valid-refresh-token');
+    expect(result).toEqual({
+      code: 0,
+      message: 'success',
+      data: {
+        token: 'new-access-token',
         refreshToken: 'new-refresh-uuid',
-        expiresIn: 86400,
-      });
-
-      const response = await request(app.getHttpServer())
-        .post('/auth/refresh')
-        .send({ refreshToken: 'valid-refresh-token' })
-        .expect(200);
-
-      expect(response.body.code).toBe(0);
-      expect(response.body.data).toHaveProperty('token');
-      expect(response.body.data).toHaveProperty('refreshToken');
-    });
-
-    it('should return 401 for expired/invalid refresh token', async () => {
-      mockAuthService.refreshToken.mockRejectedValueOnce(
-        new UnauthorizedException('Refresh token has been revoked'),
-      );
-
-      await request(app.getHttpServer())
-        .post('/auth/refresh')
-        .send({ refreshToken: 'expired-token' })
-        .expect(401);
+      },
     });
   });
 
-  describe('POST /auth/logout', () => {
-    it('should return 200 on successful logout with refresh token header', async () => {
-      mockAuthService.revokeRefreshToken.mockResolvedValueOnce(undefined);
+  it('logout revokes refresh token when header exists', async () => {
+    const result = await controller.logout({
+      headers: {
+        'x-refresh-token': 'valid-refresh-token',
+      },
+    } as any);
 
-      const response = await request(app.getHttpServer())
-        .post('/auth/logout')
-        .set('x-refresh-token', 'valid-refresh-token')
-        .expect(200);
+    expect(mockAuthService.revokeRefreshToken).toHaveBeenCalledWith('valid-refresh-token');
+    expect(result.data).toBeNull();
+  });
 
-      expect(response.body.code).toBe(0);
-      expect(mockAuthService.revokeRefreshToken).toHaveBeenCalledWith('valid-refresh-token');
+  it('logout skips revoke when refresh token header is absent', async () => {
+    const result = await controller.logout({ headers: {} } as any);
+
+    expect(mockAuthService.revokeRefreshToken).not.toHaveBeenCalled();
+    expect(result.data).toBeNull();
+  });
+
+  it('getProfile loads current user from request context', async () => {
+    mockAuthService.validateUser.mockResolvedValueOnce(mockUser);
+
+    const result = await controller.getProfile({
+      user: { userId: 'user-123' },
     });
 
-    it('should return 200 even without refresh token header', async () => {
-      const response = await request(app.getHttpServer())
-        .post('/auth/logout')
-        .expect(200);
+    expect(mockAuthService.validateUser).toHaveBeenCalledWith('user-123');
+    expect(result).toMatchObject({
+      data: {
+        username: 'testuser',
+      },
+    });
+  });
 
-      expect(response.body.code).toBe(0);
-      expect(mockAuthService.revokeRefreshToken).not.toHaveBeenCalled();
+  it('querySmsDetails proxies SMS query results', async () => {
+    mockSmsService.queryDetails.mockResolvedValueOnce([
+      { phoneNum: '13800138000', content: '验证码：123456' },
+    ]);
+
+    const result = await controller.querySmsDetails('13800138000', '20260320');
+
+    expect(mockSmsService.queryDetails).toHaveBeenCalledWith('13800138000', '20260320');
+    expect(result.data).toHaveLength(1);
+  });
+
+  it('querySmsDetails returns an inline error payload when params are missing', async () => {
+    const result = await controller.querySmsDetails('', '');
+
+    expect(mockSmsService.queryDetails).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      code: 0,
+      message: 'success',
+      data: { error: 'phone and date (YYYYMMDD) required' },
     });
   });
 });

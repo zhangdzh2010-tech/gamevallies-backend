@@ -17,6 +17,7 @@ import { UserService } from './user.service';
 import { UpdateProfileDto } from './dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { ok, okAlt, presentUser, toPage } from '../common/api-response';
+import { BillingService } from '../billing/billing.service';
 
 class UpdateAvatarDto {
   @IsString()
@@ -25,12 +26,21 @@ class UpdateAvatarDto {
 
 @Controller('users')
 export class UserController {
-  constructor(private userService: UserService) {}
+  constructor(
+    private userService: UserService,
+    private readonly billingService: BillingService,
+  ) {}
 
   @Get('me')
   @UseGuards(JwtAuthGuard)
   async getCurrentUser(@Req() req: any) {
     return ok(presentUser(await this.userService.findById(req.user.userId)));
+  }
+
+  @Get('quota')
+  @UseGuards(JwtAuthGuard)
+  async getQuota(@Req() req: any) {
+    return ok(await this.billingService.getQuota(req.user.userId));
   }
 
   @Get('search')

@@ -19,6 +19,8 @@
   前端对接质量分、生成进度、创作者声誉等能力的适配说明。
 - [`integration/GENERATION_PIPELINE_IMPROVEMENT_PLAN.md`](./integration/GENERATION_PIPELINE_IMPROVEMENT_PLAN.md)
   游戏生成 8 阶段的重试、用户提示、失败日志与落库改造任务清单。
+- [`integration/LLM_GATEWAY_ASYNC_TASK_DESIGN.md`](./integration/LLM_GATEWAY_ASYNC_TASK_DESIGN.md)
+  LLM 网关、多 Region、最末端错误日志与异步任务管理的详细设计文档。
 
 ### `testing/`
 

@@ -1,11 +1,113 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma } from '@prisma/client';
-import { randomUUID, createHash } from 'crypto';
+import { randomUUID } from 'crypto';
+import * as bcrypt from 'bcryptjs';
+import axios from 'axios';
 
 @Injectable()
 export class AdminService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly configService: ConfigService,
+  ) {}
+
+  private getFallbackAiEngineAdminBaseUrl(): string {
+    return this.configService.get<string>('AI_ENGINE_URL', 'http://localhost:8000').replace(/\/$/, '');
+  }
+
+  private normalizeExecutionRegion(rawValue?: string | null): string {
+    return (rawValue || '').trim() === 'ap_southeast_johor' ? 'ap_southeast_johor' : 'cn_shanghai';
+  }
+
+  private getConfiguredAiEngineAdminBaseUrlForRegion(executionRegion?: string | null): string {
+    const normalizedRegion = this.normalizeExecutionRegion(executionRegion);
+    const defaultRegion = this.normalizeExecutionRegion(
+      this.configService.get<string>('AI_ENGINE_DEFAULT_REGION')
+      || this.configService.get<string>('SERVICE_REGION')
+      || 'cn_shanghai',
+    );
+
+    const regionSpecificUrl = normalizedRegion === 'ap_southeast_johor'
+      ? this.configService.get<string>('AI_ENGINE_URL_AP_SOUTHEAST_JOHOR', '')
+      : this.configService.get<string>('AI_ENGINE_URL_CN_SHANGHAI', '');
+    const normalizedSpecificUrl = (regionSpecificUrl || '').trim().replace(/\/$/, '');
+    if (normalizedSpecificUrl) {
+      return normalizedSpecificUrl;
+    }
+
+    if (defaultRegion === normalizedRegion) {
+      return this.getFallbackAiEngineAdminBaseUrl();
+    }
+
+    return '';
+  }
+
+  private getDefaultExecutionRegion(): string {
+    const region = (
+      this.configService.get<string>('AI_ENGINE_DEFAULT_REGION')
+      || this.configService.get<string>('SERVICE_REGION')
+      || 'cn_shanghai'
+    ).trim();
+    return region === 'ap_southeast_johor' ? region : 'cn_shanghai';
+  }
+
+  private async getAiEngineAdminBaseUrls(regionTargetId?: string): Promise<string[]> {
+    const urls: string[] = [];
+    const appendUrl = (value?: string | null) => {
+      const normalized = (value || '').trim().replace(/\/$/, '');
+      if (normalized && !urls.includes(normalized)) {
+        urls.push(normalized);
+      }
+    };
+
+    if (regionTargetId) {
+      const target = await this.prisma.aiEngineRegionTarget.findUnique({
+        where: { id: regionTargetId },
+        select: {
+          executionRegion: true,
+          aiEngineUrl: true,
+          deployEnabled: true,
+          deployStatus: true,
+        },
+      }).catch(() => null);
+
+      if (target?.deployEnabled && target?.deployStatus === 'deployed') {
+        appendUrl(target.aiEngineUrl);
+      }
+      appendUrl(this.getConfiguredAiEngineAdminBaseUrlForRegion(target?.executionRegion));
+    } else {
+      const targets = await this.prisma.aiEngineRegionTarget.findMany({
+        where: {
+          deployEnabled: true,
+          deployStatus: 'deployed',
+          aiEngineUrl: { not: null },
+        },
+        select: {
+          aiEngineUrl: true,
+        },
+      }).catch(() => []);
+
+      for (const target of targets) {
+        appendUrl(target.aiEngineUrl);
+      }
+
+      appendUrl(this.getConfiguredAiEngineAdminBaseUrlForRegion('cn_shanghai'));
+      appendUrl(this.getConfiguredAiEngineAdminBaseUrlForRegion('ap_southeast_johor'));
+    }
+
+    if (urls.length > 0) {
+      return urls;
+    }
+
+    const fallback = this.getFallbackAiEngineAdminBaseUrl();
+    return fallback ? [fallback] : [];
+  }
+
+  private getAdminToken(): string {
+    return process.env.ADMIN_TOKEN || 'admin123';
+  }
 
   async listGames(
     page: number,
@@ -359,14 +461,7 @@ export class AdminService {
     if (!newPassword || newPassword.length < 6) {
       throw new BadRequestException('Password must be at least 6 characters');
     }
-    // Use bcryptjs if available, otherwise simple hash
-    let hash: string;
-    try {
-      const bcrypt = require('bcryptjs');
-      hash = await bcrypt.hash(newPassword, 12);
-    } catch {
-      hash = createHash('sha256').update(newPassword).digest('hex');
-    }
+    const hash = await bcrypt.hash(newPassword, 10);
     await this.prisma.user.update({ where: { id }, data: { passwordHash: hash } });
     return { success: true };
   }
@@ -376,15 +471,9 @@ export class AdminService {
     const existing = await this.prisma.user.findUnique({ where: { username: data.username } });
     if (existing) throw new BadRequestException('Username already exists');
 
-    let passwordHash: string | null = null;
-    if (data.password) {
-      try {
-        const bcrypt = require('bcryptjs');
-        passwordHash = await bcrypt.hash(data.password, 12);
-      } catch {
-        passwordHash = createHash('sha256').update(data.password).digest('hex');
-      }
-    }
+    const passwordHash = data.password
+      ? await bcrypt.hash(data.password, 10)
+      : null;
 
     const user = await this.prisma.user.create({
       data: {
@@ -503,6 +592,689 @@ export class AdminService {
     });
 
     return { items, total, page, limit, totalPages: Math.ceil(total / limit) };
+  }
+
+  async listGenerationTasks(page: number, limit: number, status?: string, search?: string) {
+    const where: Prisma.GenerationTaskWhereInput = {};
+
+    if (status && status !== 'all') {
+      where.status = status as any;
+    }
+    if (search) {
+      where.OR = [
+        { id: { contains: search } },
+        { gameId: { contains: search } },
+        { user: { username: { contains: search } } },
+        { game: { title: { contains: search } } },
+      ];
+    }
+
+    const [tasks, total] = await Promise.all([
+      this.prisma.generationTask.findMany({
+        where,
+        include: {
+          game: { select: { id: true, title: true, status: true } },
+          user: { select: { id: true, username: true, displayName: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.generationTask.count({ where }),
+    ]);
+
+    return { items: tasks, total, page, limit, totalPages: Math.ceil(total / limit) };
+  }
+
+  async getGenerationTask(taskId: string) {
+    const task = await this.prisma.generationTask.findUnique({
+      where: { id: taskId },
+      include: {
+        game: { select: { id: true, title: true, status: true } },
+        user: { select: { id: true, username: true, displayName: true } },
+        events: {
+          orderBy: { createdAt: 'asc' },
+          take: 300,
+        },
+        llmCallLogs: {
+          orderBy: { createdAt: 'asc' },
+          take: 300,
+        },
+      },
+    });
+
+    if (!task) {
+      throw new NotFoundException('Generation task not found');
+    }
+
+    return task;
+  }
+
+  async listGenerationTaskEvents(taskId: string, limit = 100) {
+    const task = await this.prisma.generationTask.findUnique({
+      where: { id: taskId },
+      select: { id: true },
+    });
+
+    if (!task) {
+      throw new NotFoundException('Generation task not found');
+    }
+
+    return {
+      items: await this.prisma.generationTaskEvent.findMany({
+        where: { taskId },
+        orderBy: { createdAt: 'asc' },
+        take: Math.max(1, Math.min(limit, 500)),
+      }),
+    };
+  }
+
+  async listCloudAccounts() {
+    return this.prisma.cloudProviderAccount.findMany({
+      orderBy: [{ enabled: 'desc' }, { createdAt: 'asc' }],
+    });
+  }
+
+  async listCloudRegions() {
+    return this.prisma.cloudRegionCatalog.findMany({
+      include: {
+        account: {
+          select: {
+            id: true,
+            vendor: true,
+            accountKey: true,
+            displayName: true,
+            enabled: true,
+          },
+        },
+      },
+      orderBy: [{ vendor: 'asc' }, { regionCode: 'asc' }],
+    });
+  }
+
+  async listAiEngineRegionTargets(params?: { providerSelectableOnly?: boolean }) {
+    const where: Prisma.AiEngineRegionTargetWhereInput = {};
+    if (params?.providerSelectableOnly) {
+      where.deployEnabled = true;
+      where.deployStatus = 'deployed';
+    }
+
+    const targets = await this.prisma.aiEngineRegionTarget.findMany({
+      where,
+      include: {
+        account: {
+          select: {
+            id: true,
+            vendor: true,
+            accountKey: true,
+            displayName: true,
+          },
+        },
+        regionCatalog: {
+          select: {
+            id: true,
+            regionCode: true,
+            regionName: true,
+            regionGroup: true,
+            deploySupported: true,
+            enabled: true,
+          },
+        },
+      },
+      orderBy: [{ executionRegion: 'asc' }, { createdAt: 'asc' }],
+    });
+
+    const enrichedTargets = targets.map((target) => ({
+      ...target,
+      resolvedAiEngineUrl: target.aiEngineUrl || this.getConfiguredAiEngineAdminBaseUrlForRegion(target.executionRegion) || null,
+    }));
+
+    if (params?.providerSelectableOnly) {
+      return enrichedTargets.filter((target) => (
+        target.deployEnabled !== false
+        && target.deployStatus === 'deployed'
+        && Boolean(target.resolvedAiEngineUrl)
+      ));
+    }
+
+    return enrichedTargets;
+  }
+
+  async upsertAiEngineRegionTarget(id: string | undefined, body: any) {
+    if (!body?.accountId) {
+      throw new BadRequestException('accountId is required');
+    }
+    if (!body?.regionCatalogId) {
+      throw new BadRequestException('regionCatalogId is required');
+    }
+    if (!body?.executionRegion) {
+      throw new BadRequestException('executionRegion is required');
+    }
+    if (!body?.displayName) {
+      throw new BadRequestException('displayName is required');
+    }
+    if (!body?.functionName) {
+      throw new BadRequestException('functionName is required');
+    }
+
+    const [account, regionCatalog, existing] = await Promise.all([
+      this.prisma.cloudProviderAccount.findUnique({ where: { id: body.accountId } }),
+      this.prisma.cloudRegionCatalog.findUnique({ where: { id: body.regionCatalogId } }),
+      id ? this.prisma.aiEngineRegionTarget.findUnique({ where: { id } }) : Promise.resolve(null),
+    ]);
+
+    if (!account || !account.enabled) {
+      throw new BadRequestException('Cloud account not found or disabled');
+    }
+    if (!regionCatalog || !regionCatalog.enabled) {
+      throw new BadRequestException('Cloud region not found or disabled');
+    }
+    if (regionCatalog.accountId !== account.id) {
+      throw new BadRequestException('regionCatalogId does not belong to the selected account');
+    }
+    if (!['cn_shanghai', 'ap_southeast_johor'].includes(body.executionRegion)) {
+      throw new BadRequestException('executionRegion must be cn_shanghai or ap_southeast_johor');
+    }
+    const expectedCloudRegionCode = body.executionRegion === 'ap_southeast_johor'
+      ? 'ap-southeast-johor'
+      : 'cn-shanghai';
+    if (regionCatalog.regionCode !== expectedCloudRegionCode) {
+      throw new BadRequestException(`regionCatalogId does not match executionRegion=${body.executionRegion}`);
+    }
+    if (existing && existing.executionRegion !== body.executionRegion) {
+      throw new BadRequestException('executionRegion cannot be changed after creation');
+    }
+
+    const explicitAiEngineUrl = body?.aiEngineUrl === undefined
+      ? undefined
+      : ((body.aiEngineUrl || '').trim() || null);
+    const explicitDeployStatus = body?.deployStatus === undefined
+      ? undefined
+      : String(body.deployStatus || '').trim() || null;
+    const explicitLastDeployedAt = body?.lastDeployedAt
+      ? new Date(body.lastDeployedAt)
+      : undefined;
+
+    const targetId = id || randomUUID();
+    return this.prisma.aiEngineRegionTarget.upsert({
+      where: { id: targetId },
+      create: {
+        id: targetId,
+        accountId: account.id,
+        regionCatalogId: regionCatalog.id,
+        vendor: account.vendor,
+        cloudRegionCode: regionCatalog.regionCode,
+        executionRegion: body.executionRegion,
+        displayName: body.displayName,
+        functionName: body.functionName,
+        registry: body.registry || account.defaultRegistry || '',
+        registryNamespace: body.registryNamespace || account.defaultRegistryNamespace || '',
+        imageRepository: body.imageRepository || body.functionName,
+        serviceRegionEnv: body.serviceRegionEnv || body.executionRegion,
+        aiEngineUrl: explicitAiEngineUrl ?? null,
+        deployEnabled: body.deployEnabled !== false,
+        deployStatus: explicitDeployStatus || existing?.deployStatus || (explicitAiEngineUrl ? 'deployed' : 'pending'),
+        lastRevision: body?.lastRevision ?? existing?.lastRevision ?? null,
+        lastImageTag: body?.lastImageTag ?? existing?.lastImageTag ?? null,
+        lastReleaseStatus: body?.lastReleaseStatus ?? existing?.lastReleaseStatus ?? null,
+        lastDeployError: body?.lastDeployError ?? existing?.lastDeployError ?? null,
+        lastDeployedAt: explicitLastDeployedAt ?? existing?.lastDeployedAt ?? (explicitAiEngineUrl ? new Date() : null),
+      },
+      update: {
+        accountId: account.id,
+        regionCatalogId: regionCatalog.id,
+        vendor: account.vendor,
+        cloudRegionCode: regionCatalog.regionCode,
+        displayName: body.displayName,
+        functionName: body.functionName,
+        registry: body.registry || account.defaultRegistry || '',
+        registryNamespace: body.registryNamespace || account.defaultRegistryNamespace || '',
+        imageRepository: body.imageRepository || body.functionName,
+        serviceRegionEnv: body.serviceRegionEnv || existing?.serviceRegionEnv || body.executionRegion,
+        aiEngineUrl: explicitAiEngineUrl !== undefined ? explicitAiEngineUrl : existing?.aiEngineUrl ?? null,
+        deployEnabled: body.deployEnabled !== false,
+        deployStatus: explicitDeployStatus || existing?.deployStatus || (explicitAiEngineUrl ? 'deployed' : 'pending'),
+        lastRevision: body?.lastRevision ?? existing?.lastRevision ?? null,
+        lastImageTag: body?.lastImageTag ?? existing?.lastImageTag ?? null,
+        lastReleaseStatus: body?.lastReleaseStatus ?? existing?.lastReleaseStatus ?? null,
+        lastDeployError: body?.lastDeployError ?? existing?.lastDeployError ?? null,
+        lastDeployedAt: explicitLastDeployedAt ?? existing?.lastDeployedAt ?? (explicitAiEngineUrl ? new Date() : null),
+      },
+      include: {
+        account: {
+          select: {
+            id: true,
+            accountKey: true,
+            displayName: true,
+            vendor: true,
+          },
+        },
+        regionCatalog: {
+          select: {
+            id: true,
+            regionCode: true,
+            regionName: true,
+            regionGroup: true,
+          },
+        },
+      },
+    });
+  }
+
+  async syncAiEngineRegionTargetDeployState(body: any) {
+    if (!body?.executionRegion) {
+      throw new BadRequestException('executionRegion is required');
+    }
+    const executionRegion = this.normalizeExecutionRegion(body?.executionRegion);
+    const existing = await this.prisma.aiEngineRegionTarget.findUnique({
+      where: { executionRegion },
+    });
+
+    if (!existing) {
+      throw new NotFoundException(`Region target not found for executionRegion=${executionRegion}`);
+    }
+
+    const nextAiEngineUrl = body?.aiEngineUrl === undefined
+      ? existing.aiEngineUrl
+      : (body.aiEngineUrl || '').trim() || null;
+    const nextDeployStatus = body?.deployStatus
+      || (body?.lastDeployError ? 'failed' : nextAiEngineUrl ? 'deployed' : existing.deployStatus || 'pending');
+    const nextLastDeployedAt = nextDeployStatus === 'deployed'
+      ? new Date(body?.lastDeployedAt || new Date())
+      : body?.lastDeployedAt
+        ? new Date(body.lastDeployedAt)
+        : existing.lastDeployedAt;
+
+    return this.prisma.aiEngineRegionTarget.update({
+      where: { id: existing.id },
+      data: {
+        aiEngineUrl: nextAiEngineUrl,
+        deployStatus: nextDeployStatus,
+        lastRevision: body?.lastRevision ?? existing.lastRevision,
+        lastImageTag: body?.lastImageTag ?? existing.lastImageTag,
+        lastReleaseStatus: body?.lastReleaseStatus ?? existing.lastReleaseStatus,
+        lastDeployError: body?.lastDeployError ?? null,
+        lastDeployedAt: nextLastDeployedAt,
+      },
+      include: {
+        account: {
+          select: {
+            id: true,
+            vendor: true,
+            accountKey: true,
+            displayName: true,
+          },
+        },
+        regionCatalog: {
+          select: {
+            id: true,
+            regionCode: true,
+            regionName: true,
+            regionGroup: true,
+          },
+        },
+      },
+    });
+  }
+
+  async listLlmProviders() {
+    const providers = await this.prisma.llmGatewayProvider.findMany({
+      include: {
+        regionTarget: {
+          select: {
+            id: true,
+            displayName: true,
+            executionRegion: true,
+            aiEngineUrl: true,
+            deployStatus: true,
+            deployEnabled: true,
+          },
+        },
+      },
+      orderBy: [{ priority: 'asc' }, { createdAt: 'desc' }],
+    });
+
+    return providers.map((provider) => ({
+      ...provider,
+      apiKey: undefined,
+      apiKeySet: Boolean(provider.apiKey),
+      apiKeyMasked: provider.apiKey
+        ? `${provider.apiKey.slice(0, 4)}...${provider.apiKey.slice(-4)}`
+        : null,
+      regionDisplayName: provider.regionTarget?.displayName || provider.region,
+    }));
+  }
+
+  async listLlmSteps() {
+    return this.prisma.llmStepCatalog.findMany({
+      where: { enabled: true },
+      orderBy: [{ stepOrder: 'asc' }, { stepKey: 'asc' }],
+    });
+  }
+
+  async upsertLlmProvider(id: string | undefined, body: any) {
+    if (!body?.name) {
+      throw new BadRequestException('Provider name is required');
+    }
+    if (!body?.providerType) {
+      throw new BadRequestException('providerType is required');
+    }
+    if (!body?.baseUrl && body.providerType !== 'anthropic') {
+      throw new BadRequestException('baseUrl is required');
+    }
+    if (!body?.model) {
+      throw new BadRequestException('model is required');
+    }
+    if (!body?.regionTargetId) {
+      throw new BadRequestException('regionTargetId is required');
+    }
+
+    const providerId = id || randomUUID();
+    const [existing, regionTarget] = await Promise.all([
+      id ? this.prisma.llmGatewayProvider.findUnique({ where: { id } }) : Promise.resolve(null),
+      this.prisma.aiEngineRegionTarget.findUnique({ where: { id: body.regionTargetId } }),
+    ]);
+    if (!regionTarget) {
+      throw new BadRequestException('regionTargetId is invalid');
+    }
+    const resolvedAiEngineUrl =
+      (regionTarget.aiEngineUrl || '').trim()
+      || this.getConfiguredAiEngineAdminBaseUrlForRegion(regionTarget.executionRegion);
+    if (!regionTarget.deployEnabled || regionTarget.deployStatus !== 'deployed' || !resolvedAiEngineUrl) {
+      throw new BadRequestException('Selected region target is not deployed and provider-selectable');
+    }
+    const apiKey = body.apiKey || existing?.apiKey;
+    if (!apiKey) {
+      throw new BadRequestException('apiKey is required');
+    }
+
+    const provider = await this.prisma.llmGatewayProvider.upsert({
+      where: { id: providerId },
+      create: {
+        id: providerId,
+        name: body.name,
+        providerType: body.providerType,
+        regionTargetId: regionTarget.id,
+        cloudVendor: regionTarget.vendor,
+        cloudRegionCode: regionTarget.cloudRegionCode,
+        region: regionTarget.executionRegion,
+        baseUrl: body.baseUrl || '',
+        apiKey,
+        model: body.model,
+        fastModel: body.fastModel || null,
+        requestTimeoutS: Number(body.requestTimeoutS || 600),
+        connectTimeoutS: Number(body.connectTimeoutS || 15),
+        enabled: body.enabled !== false,
+        priority: Number(body.priority || 100),
+        description: body.description || null,
+        extraConfig: body.extraConfig || undefined,
+      },
+      update: {
+        name: body.name,
+        providerType: body.providerType,
+        regionTargetId: regionTarget.id,
+        cloudVendor: regionTarget.vendor,
+        cloudRegionCode: regionTarget.cloudRegionCode,
+        region: regionTarget.executionRegion,
+        baseUrl: body.baseUrl || '',
+        apiKey,
+        model: body.model,
+        fastModel: body.fastModel || null,
+        requestTimeoutS: Number(body.requestTimeoutS || 600),
+        connectTimeoutS: Number(body.connectTimeoutS || 15),
+        enabled: body.enabled !== false,
+        priority: Number(body.priority || 100),
+        description: body.description || null,
+        extraConfig: body.extraConfig || undefined,
+      },
+    });
+
+    await this.refreshLlmGateway();
+    return {
+      ...provider,
+      apiKey: undefined,
+      apiKeySet: true,
+      apiKeyMasked: `${apiKey.slice(0, 4)}...${apiKey.slice(-4)}`,
+    };
+  }
+
+  async deleteLlmProvider(id: string) {
+    await this.prisma.llmGatewayProvider.delete({ where: { id } });
+    await this.refreshLlmGateway();
+    return { deleted: true };
+  }
+
+  async listLlmRoutes(executionRegion?: string) {
+    const resolvedRegion = executionRegion || this.getDefaultExecutionRegion();
+    const [steps, routes] = await Promise.all([
+      this.prisma.llmStepCatalog.findMany({
+        where: { enabled: true },
+        orderBy: [{ stepOrder: 'asc' }, { stepKey: 'asc' }],
+      }),
+      this.prisma.llmStepRoute.findMany({
+        where: {
+          region: resolvedRegion,
+        },
+        include: {
+          provider: {
+            select: {
+              id: true,
+              name: true,
+              region: true,
+              regionTargetId: true,
+              providerType: true,
+              model: true,
+              fastModel: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    const routeMap = new Map(routes.map((route) => [route.stepKey, route]));
+    return steps.map((step) => {
+      const route = routeMap.get(step.stepKey);
+      return {
+        id: route?.id || null,
+        stepKey: step.stepKey,
+        stepOrder: step.stepOrder,
+        stageLabel: step.stageLabel,
+        displayName: step.displayName,
+        description: step.description,
+        executionRegion: resolvedRegion,
+        enabled: route?.enabled ?? false,
+        providerId: route?.providerId ?? null,
+        providerKey: route?.provider?.name ?? null,
+        providerDisplayName: route?.provider?.name ?? null,
+        providerRegionTargetId: route?.provider?.regionTargetId ?? null,
+        providerRegionDisplayName: route?.provider?.region ?? null,
+        modelDefault: route?.provider?.model ?? null,
+        modelFast: route?.provider?.fastModel ?? null,
+        updatedAt: route?.updatedAt ?? null,
+      };
+    });
+  }
+
+  async getLlmRoute(id: string) {
+    const route = await this.prisma.llmStepRoute.findUnique({
+      where: { id },
+      include: {
+        provider: {
+          select: {
+            id: true,
+            name: true,
+            region: true,
+            regionTargetId: true,
+            providerType: true,
+            model: true,
+            fastModel: true,
+          },
+        },
+      },
+    });
+
+    if (!route) {
+      throw new NotFoundException('Route not found');
+    }
+
+    const step = await this.prisma.llmStepCatalog.findUnique({
+      where: { stepKey: route.stepKey },
+    });
+
+    return {
+      id: route.id,
+      stepKey: route.stepKey,
+      stepOrder: step?.stepOrder ?? null,
+      stageLabel: step?.stageLabel ?? null,
+      displayName: step?.displayName ?? null,
+      description: step?.description ?? null,
+      executionRegion: route.region,
+      enabled: route.enabled,
+      providerId: route.providerId,
+      providerKey: route.provider?.name ?? null,
+      providerDisplayName: route.provider?.name ?? null,
+      providerRegionTargetId: route.provider?.regionTargetId ?? null,
+      providerRegionDisplayName: route.provider?.region ?? null,
+      modelDefault: route.provider?.model ?? null,
+      modelFast: route.provider?.fastModel ?? null,
+      updatedAt: route.updatedAt,
+    };
+  }
+
+  async upsertLlmRoute(id: string | undefined, body: any) {
+    if (!body?.stepKey) {
+      throw new BadRequestException('stepKey is required');
+    }
+    if (!body?.providerId) {
+      throw new BadRequestException('providerId is required');
+    }
+
+    const [step, provider] = await Promise.all([
+      this.prisma.llmStepCatalog.findUnique({
+        where: { stepKey: body.stepKey },
+      }),
+      this.prisma.llmGatewayProvider.findUnique({
+        where: { id: body.providerId },
+      }),
+    ]);
+
+    if (!step || step.enabled === false) {
+      throw new BadRequestException('Unknown or disabled stepKey');
+    }
+    if (!provider) {
+      throw new BadRequestException('Provider not found');
+    }
+    const requestedRegion = body.executionRegion || body.region || provider.region;
+    const routeRegion = provider.region || this.getDefaultExecutionRegion();
+    if (requestedRegion && requestedRegion !== routeRegion) {
+      throw new BadRequestException('executionRegion must match the selected provider region');
+    }
+    const routeId = id || randomUUID();
+
+    const route = await this.prisma.llmStepRoute.upsert({
+      where: id ? { id } : { llm_step_routes_step_key_region_key: { stepKey: body.stepKey, region: routeRegion } },
+      create: {
+        id: routeId,
+        stepKey: body.stepKey,
+        region: routeRegion,
+        providerId: body.providerId,
+        fallbackProviderIds: [],
+        modelOverride: null,
+        fastModelOverride: null,
+        requestTimeoutS: null,
+        connectTimeoutS: null,
+        enabled: body.enabled !== false,
+      },
+      update: {
+        stepKey: body.stepKey,
+        region: routeRegion,
+        providerId: body.providerId,
+        fallbackProviderIds: [],
+        modelOverride: null,
+        fastModelOverride: null,
+        requestTimeoutS: null,
+        connectTimeoutS: null,
+        enabled: body.enabled !== false,
+      },
+      include: {
+        provider: {
+          select: {
+            id: true,
+            name: true,
+            region: true,
+            regionTargetId: true,
+            providerType: true,
+            model: true,
+            fastModel: true,
+          },
+        },
+      },
+    });
+
+    await this.refreshLlmGateway();
+    return {
+      ...route,
+      stepMeta: step,
+    };
+  }
+
+  async deleteLlmRoute(id: string) {
+    await this.prisma.llmStepRoute.delete({ where: { id } });
+    await this.refreshLlmGateway();
+    return { deleted: true };
+  }
+
+  async refreshLlmGateway() {
+    const urls = await this.getAiEngineAdminBaseUrls();
+    const responses = await Promise.all(
+      urls.map(async (baseUrl) => {
+        const response = await axios.post(
+          `${baseUrl}/api/v1/ai/llm-gateway/refresh`,
+          {},
+          {
+            headers: {
+              'x-admin-token': this.getAdminToken(),
+            },
+            timeout: 10000,
+          },
+        );
+        return {
+          baseUrl,
+          data: response.data,
+        };
+      }),
+    );
+    return {
+      refreshed: responses.length,
+      results: responses,
+    };
+  }
+
+  async testLlmProvider(providerId: string) {
+    const provider = await this.prisma.llmGatewayProvider.findUnique({
+      where: { id: providerId },
+      select: {
+        regionTargetId: true,
+      },
+    });
+    if (!provider) {
+      throw new NotFoundException('Provider not found');
+    }
+    const [baseUrl] = await this.getAiEngineAdminBaseUrls(provider.regionTargetId || undefined);
+    if (!baseUrl) {
+      throw new BadRequestException('No reachable ai-engine endpoint found for the selected provider');
+    }
+    const response = await axios.post(
+      `${baseUrl}/api/v1/ai/llm-gateway/providers/${providerId}/test`,
+      {},
+      {
+        headers: {
+          'x-admin-token': this.getAdminToken(),
+        },
+        timeout: 30000,
+      },
+    );
+    return response.data;
   }
 
   // ===================== Stats =====================

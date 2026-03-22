@@ -325,10 +325,12 @@ class DialogueEngine:
 
         try:
             text = await self._client.complete(
-                model=self._client.model_for(fast=True),
                 max_tokens=1024,
                 system=get_prompt("prompt.slot_extraction_system", SLOT_EXTRACTION_SYSTEM),
                 messages=[{"role": "user", "content": description}],
+                step_key="intent_parse",
+                stage="intent_parsing",
+                prefer_fast=True,
             )
             raw = text.strip()
             # Try to extract JSON object from response
@@ -355,10 +357,12 @@ class DialogueEngine:
         old_slots = session.slots.model_copy()
         try:
             slot_text = await self._client.complete(
-                model=self._client.model_for(fast=True),
                 max_tokens=1024,
                 system=get_prompt("prompt.slot_extraction_system", SLOT_EXTRACTION_SYSTEM),
                 messages=_history_to_anthropic(session.history),
+                step_key="dialogue.slot_extract",
+                stage="dialogue",
+                prefer_fast=True,
             )
             slot_data = _safe_parse_json(slot_text.strip())
             if not slot_data:
@@ -382,10 +386,12 @@ class DialogueEngine:
         )
         try:
             reply = await self._client.complete(
-                model=self._client.model_for(fast=True),
                 max_tokens=2048,
                 system=system,
                 messages=_history_to_anthropic(session.history),
+                step_key="dialogue.reply",
+                stage="dialogue",
+                prefer_fast=True,
             )
             reply = reply.strip()
         except Exception as e:

@@ -1,7 +1,14 @@
 /**
  * Aliyun SMS service.
  */
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  HttpException,
+  HttpStatus,
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 
 import Dysmsapi20170525, {
   SendSmsRequest,
@@ -18,6 +25,7 @@ export class SmsService {
   private readonly signName: string;
   private readonly tplRegister: string;
   private readonly tplLogin: string;
+  private readonly tplResetPassword: string;
 
   constructor() {
     const ak = process.env.ALIYUN_ACCESS_KEY_ID || '';
@@ -25,6 +33,7 @@ export class SmsService {
     this.signName = process.env.ALIYUN_SMS_SIGN_NAME || '智了科技';
     this.tplRegister = process.env.ALIYUN_SMS_TPL_REGISTER || 'SMS_503430059';
     this.tplLogin = process.env.ALIYUN_SMS_TPL_LOGIN || 'SMS_503470064';
+    this.tplResetPassword = process.env.ALIYUN_SMS_TPL_RESET_PASSWORD || this.tplLogin;
 
     if (!ak || !sk) {
       this.logger.error(
@@ -40,19 +49,27 @@ export class SmsService {
         }),
       );
       this.logger.log(
-        `SMS READY: sign="${this.signName}" register=${this.tplRegister} login=${this.tplLogin}`,
+        `SMS READY: sign="${this.signName}" register=${this.tplRegister} login=${this.tplLogin} reset=${this.tplResetPassword}`,
       );
     }
   }
 
   private templateFor(purpose: SmsPurpose): string {
-    return purpose === 'register' ? this.tplRegister : this.tplLogin;
+    switch (purpose) {
+      case 'register':
+        return this.tplRegister;
+      case 'reset_password':
+        return this.tplResetPassword;
+      case 'login':
+      default:
+        return this.tplLogin;
+    }
   }
 
   async sendCode(phone: string, code: string, purpose: SmsPurpose = 'login'): Promise<void> {
     if (!this.client) {
       this.logger.error(`SMS NOT CONFIGURED - cannot send to ${phone}`);
-      throw new Error('短信服务未配置，请联系管理员');
+      throw new ServiceUnavailableException('短信服务暂不可用，请稍后重试');
     }
 
     const templateCode = this.templateFor(purpose);
@@ -76,19 +93,30 @@ export class SmsService {
       );
 
       if (body?.code !== 'OK') {
-        const msg = this.mapError(body?.code, body?.message);
-        this.logger.error(`SMS FAILED: code=${body?.code} message=${body?.message}`);
-        throw new Error(msg);
+        this.logger.error(
+          `SMS FAILED: code=${body?.code} message=${body?.message} requestId=${body?.requestId}`,
+        );
+        throw this.toHttpException(body?.code, body?.message);
       }
 
       this.logger.log(`SMS sent OK -> bizId=${body?.bizId}`);
     } catch (err: any) {
-      if (err.message?.startsWith('短信') || err.message?.startsWith('发送')) {
+      if (err instanceof HttpException) {
         throw err;
       }
 
-      this.logger.error(`SMS SDK error: ${err.message}`, err.stack);
-      throw new Error('短信发送失败，请稍后重试');
+      const sdkCode = err?.data?.Code || err?.code;
+      const sdkMessage = err?.data?.Message || err?.message;
+      if (sdkCode || sdkMessage) {
+        this.logger.error(
+          `SMS SDK upstream error: code=${sdkCode || 'unknown'} message=${sdkMessage || 'unknown'}`,
+          err?.stack,
+        );
+        throw this.toHttpException(sdkCode, sdkMessage);
+      }
+
+      this.logger.error(`SMS SDK error: ${err?.message || err}`, err?.stack);
+      throw new ServiceUnavailableException('短信发送失败，请稍后重试');
     }
   }
 
@@ -111,22 +139,22 @@ export class SmsService {
     }
   }
 
-  private mapError(code?: string, message?: string): string {
+  private toHttpException(code?: string, message?: string): HttpException {
     switch (code) {
       case 'isv.BUSINESS_LIMIT_CONTROL':
-        return '发送过于频繁，请稍后再试';
+        return new HttpException('发送过于频繁，请稍后再试', HttpStatus.TOO_MANY_REQUESTS);
       case 'isv.MOBILE_NUMBER_ILLEGAL':
-        return '手机号格式不正确';
-      case 'isv.SMS_SIGNATURE_ILLEGAL':
-        return '短信签名不合法';
-      case 'isv.SMS_TEMPLATE_ILLEGAL':
-        return '短信模板不合法';
+        return new BadRequestException('手机号格式不正确');
       case 'isv.INVALID_PARAMETERS':
-        return '短信参数错误';
+        return new BadRequestException('短信参数错误');
+      case 'isv.SMS_SIGNATURE_ILLEGAL':
+      case 'isv.SMS_TEMPLATE_ILLEGAL':
       case 'isv.AMOUNT_NOT_ENOUGH':
-        return '短信余额不足';
+      case 'isv.PRODUCT_UN_SUBSCRIPT':
+      case 'isp.RAM_PERMISSION_DENY':
+        return new ServiceUnavailableException(message || '短信服务暂不可用，请稍后重试');
       default:
-        return message || '短信发送失败，请稍后重试';
+        return new ServiceUnavailableException(message || '短信发送失败，请稍后重试');
     }
   }
 }

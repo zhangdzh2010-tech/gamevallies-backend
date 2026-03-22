@@ -47,6 +47,21 @@ function normalizeBaseUrl(value: string | undefined): string | null {
   return trimmed || null;
 }
 
+function normalizeExecutionRegion(value: string | undefined): 'cn_shanghai' | 'ap_southeast_johor' {
+  return (value || '').trim() === 'ap_southeast_johor' ? 'ap_southeast_johor' : 'cn_shanghai';
+}
+
+export function resolveAiEngineProxyBaseUrl(): string | null {
+  const defaultRegion = normalizeExecutionRegion(
+    process.env.AI_ENGINE_DEFAULT_REGION || process.env.SERVICE_REGION || 'cn_shanghai',
+  );
+  const regionSpecificUrl = defaultRegion === 'ap_southeast_johor'
+    ? process.env.AI_ENGINE_URL_AP_SOUTHEAST_JOHOR
+    : process.env.AI_ENGINE_URL_CN_SHANGHAI;
+
+  return normalizeBaseUrl(regionSpecificUrl) || normalizeBaseUrl(process.env.AI_ENGINE_URL);
+}
+
 function matchesPrefix(pathname: string, prefix: string): boolean {
   return pathname === prefix || pathname.startsWith(`${prefix}/`);
 }
@@ -112,7 +127,7 @@ function buildTargetUrl(upstreamBaseUrl: string, originalUrl: string): string {
   return new URL(originalUrl, `${upstreamBaseUrl}/`).toString();
 }
 
-function getProxyTargets(): ProxyTarget[] {
+export function getProxyTargets(): ProxyTarget[] {
   return [
     {
       name: 'game-service',
@@ -136,9 +151,9 @@ function getProxyTargets(): ProxyTarget[] {
     },
     {
       name: 'ai-engine',
-      envKey: 'AI_ENGINE_URL',
-      upstreamBaseUrl: normalizeBaseUrl(process.env.AI_ENGINE_URL),
-      prefixes: ['/api/v1/ai'],
+      envKey: 'AI_ENGINE_URL_CN_SHANGHAI|AI_ENGINE_URL_AP_SOUTHEAST_JOHOR|AI_ENGINE_URL',
+      upstreamBaseUrl: resolveAiEngineProxyBaseUrl(),
+      prefixes: ['/api/v1/ai', '/ai'],
     },
   ];
 }
