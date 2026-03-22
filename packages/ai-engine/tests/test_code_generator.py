@@ -48,16 +48,25 @@ class CodeGenerator:
             "colors": self._modify_colors,
             "controls": self._modify_controls,
         }
+        trigger_map = {
+            "speed": ("speed", "faster", "slower"),
+            "difficulty": ("difficulty", "easier", "harder"),
+            "colors": ("colors", "color", "dark", "darker", "bright"),
+            "controls": ("controls", "touch"),
+        }
 
         modified_code = code
+        normalized_feedback = feedback.lower()
+        applied_modifications = []
         for key, modifier in modifications.items():
-            if key in feedback.lower():
+            if any(trigger in normalized_feedback for trigger in trigger_map[key]):
                 modified_code = modifier(modified_code, feedback)
+                applied_modifications.append(key)
 
         return {
             "original_code": code,
             "modified_code": modified_code,
-            "modifications": [k for k in modifications.keys() if k in feedback.lower()],
+            "modifications": applied_modifications,
         }
 
     def _modify_speed(self, code: str, feedback: str) -> str:

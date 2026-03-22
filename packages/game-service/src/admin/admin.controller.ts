@@ -155,6 +155,174 @@ export class AdminController {
     return ok(await this.adminService.listGenerationLogs(p, l, status, search));
   }
 
+  @Get('admin/tasks')
+  async listGenerationTasks(
+    @Headers('x-admin-token') token: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('status') status?: string,
+    @Query('search') search?: string,
+  ) {
+    checkAdminToken(token);
+    const p = Math.max(parseInt(page || '1', 10), 1);
+    const l = Math.min(Math.max(parseInt(limit || '20', 10), 1), 100);
+    return ok(await this.adminService.listGenerationTasks(p, l, status, search));
+  }
+
+  @Get('admin/tasks/:id')
+  async getGenerationTask(
+    @Headers('x-admin-token') token: string,
+    @Param('id') id: string,
+  ) {
+    checkAdminToken(token);
+    return ok(await this.adminService.getGenerationTask(id));
+  }
+
+  @Get('admin/tasks/:id/events')
+  async getGenerationTaskEvents(
+    @Headers('x-admin-token') token: string,
+    @Param('id') id: string,
+    @Query('limit') limit?: string,
+  ) {
+    checkAdminToken(token);
+    const l = Math.min(Math.max(parseInt(limit || '100', 10), 1), 500);
+    return ok(await this.adminService.listGenerationTaskEvents(id, l));
+  }
+
+  @Get('admin/llm/providers')
+  async listLlmProviders(@Headers('x-admin-token') token: string) {
+    checkAdminToken(token);
+    return ok(await this.adminService.listLlmProviders());
+  }
+
+  @Get('admin/cloud/accounts')
+  async listCloudAccounts(@Headers('x-admin-token') token: string) {
+    checkAdminToken(token);
+    return ok(await this.adminService.listCloudAccounts());
+  }
+
+  @Get('admin/cloud/regions')
+  async listCloudRegions(@Headers('x-admin-token') token: string) {
+    checkAdminToken(token);
+    return ok(await this.adminService.listCloudRegions());
+  }
+
+  @Get('admin/cloud/ai-engine-region-targets')
+  async listAiEngineRegionTargets(
+    @Headers('x-admin-token') token: string,
+    @Query('providerSelectableOnly') providerSelectableOnly?: string,
+  ) {
+    checkAdminToken(token);
+    return ok(await this.adminService.listAiEngineRegionTargets({
+      providerSelectableOnly: providerSelectableOnly === 'true',
+    }));
+  }
+
+  @Post('admin/cloud/ai-engine-region-targets')
+  async createAiEngineRegionTarget(@Headers('x-admin-token') token: string, @Body() body: any) {
+    checkAdminToken(token);
+    return ok(await this.adminService.upsertAiEngineRegionTarget(undefined, body), 'Region target saved');
+  }
+
+  @Put('admin/cloud/ai-engine-region-targets/:id')
+  async updateAiEngineRegionTarget(
+    @Headers('x-admin-token') token: string,
+    @Param('id') id: string,
+    @Body() body: any,
+  ) {
+    checkAdminToken(token);
+    return ok(await this.adminService.upsertAiEngineRegionTarget(id, body), 'Region target saved');
+  }
+
+  @Post('admin/cloud/ai-engine-region-targets/sync-deploy')
+  async syncAiEngineRegionTargetDeployState(
+    @Headers('x-admin-token') token: string,
+    @Body() body: any,
+  ) {
+    checkAdminToken(token);
+    return ok(await this.adminService.syncAiEngineRegionTargetDeployState(body), 'Region target deploy state synced');
+  }
+
+  @Get('admin/llm/steps')
+  async listLlmSteps(@Headers('x-admin-token') token: string) {
+    checkAdminToken(token);
+    return ok(await this.adminService.listLlmSteps());
+  }
+
+  @Post('admin/llm/providers')
+  async createLlmProvider(@Headers('x-admin-token') token: string, @Body() body: any) {
+    checkAdminToken(token);
+    return ok(await this.adminService.upsertLlmProvider(undefined, body), 'Provider saved');
+  }
+
+  @Put('admin/llm/providers/:id')
+  async updateLlmProvider(
+    @Headers('x-admin-token') token: string,
+    @Param('id') id: string,
+    @Body() body: any,
+  ) {
+    checkAdminToken(token);
+    return ok(await this.adminService.upsertLlmProvider(id, body), 'Provider saved');
+  }
+
+  @Delete('admin/llm/providers/:id')
+  async deleteLlmProvider(@Headers('x-admin-token') token: string, @Param('id') id: string) {
+    checkAdminToken(token);
+    return ok(await this.adminService.deleteLlmProvider(id), 'Provider deleted');
+  }
+
+  @Post('admin/llm/providers/:id/test')
+  async testLlmProvider(@Headers('x-admin-token') token: string, @Param('id') id: string) {
+    checkAdminToken(token);
+    return ok(await this.adminService.testLlmProvider(id));
+  }
+
+  @Get('admin/llm/routes')
+  async listLlmRoutes(
+    @Headers('x-admin-token') token: string,
+    @Query('executionRegion') executionRegion?: string,
+  ) {
+    checkAdminToken(token);
+    return ok(await this.adminService.listLlmRoutes(executionRegion));
+  }
+
+  @Get('admin/llm/routes/:id')
+  async getLlmRoute(
+    @Headers('x-admin-token') token: string,
+    @Param('id') id: string,
+  ) {
+    checkAdminToken(token);
+    return ok(await this.adminService.getLlmRoute(id));
+  }
+
+  @Post('admin/llm/routes')
+  async createLlmRoute(@Headers('x-admin-token') token: string, @Body() body: any) {
+    checkAdminToken(token);
+    return ok(await this.adminService.upsertLlmRoute(undefined, body), 'Route saved');
+  }
+
+  @Put('admin/llm/routes/:id')
+  async updateLlmRoute(
+    @Headers('x-admin-token') token: string,
+    @Param('id') id: string,
+    @Body() body: any,
+  ) {
+    checkAdminToken(token);
+    return ok(await this.adminService.upsertLlmRoute(id, body), 'Route saved');
+  }
+
+  @Delete('admin/llm/routes/:id')
+  async deleteLlmRoute(@Headers('x-admin-token') token: string, @Param('id') id: string) {
+    checkAdminToken(token);
+    return ok(await this.adminService.deleteLlmRoute(id), 'Route deleted');
+  }
+
+  @Post('admin/llm/refresh')
+  async refreshLlmGateway(@Headers('x-admin-token') token: string) {
+    checkAdminToken(token);
+    return ok(await this.adminService.refreshLlmGateway(), 'LLM gateway refreshed');
+  }
+
   // ===================== User Management =====================
 
   @Get('admin/users')

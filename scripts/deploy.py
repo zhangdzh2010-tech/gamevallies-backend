@@ -7,6 +7,8 @@
 用法:
   python scripts/deploy.py                  # 部署所有服务
   python scripts/deploy.py user-service     # 部署单个服务
+  python scripts/deploy.py ai-engine-cn     # 只部署中国区 ai-engine
+  python scripts/deploy.py ai-engine-global # 只部署海外区 ai-engine
 
 所需环境变量（参考 .env.deploy.example）:
   必填: VOLCENGINE_ACCESS_KEY, VOLCENGINE_SECRET_KEY
@@ -17,27 +19,34 @@
         VOLCENGINE_VPC_ID, VOLCENGINE_SUBNET_ID, VOLCENGINE_SECURITY_GROUP_ID
 """
 
+import json
 import os
 import sys
 import time
 import subprocess
+import urllib.request
+import urllib.error
 import warnings
 warnings.filterwarnings("ignore")
 
 import volcenginesdkvefaas
+import volcenginesdkapig20221112
 import volcenginesdkcore
+from volcenginesdkapig20221112.api import APIG20221112Api
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # svc key → function name in VeFaaS console (须与控制台函数名一致)
 # type="python" 表示 AI 引擎（独立 Dockerfile，不同构建参数）
+# 注意：ai-engine 在这里是逻辑服务入口，真正部署目标会在 resolve_target_services()
+# 中展开为 gv-ai-engine-cn / gv-ai-engine-global，旧 gv-ai-engine 不再作为默认发布目标。
 SERVICES = [
     {"svc": "user-service",   "name": "gv-user-service",   "port": 3001, "internet": True},
     {"svc": "game-service",   "name": "gv-game-service",   "port": 3002},
     # social-service 已合入 feed-service（节省函数配额）
     {"svc": "feed-service",   "name": "gv-feed-service",   "port": 3004},
-    # type="python": 独立 Dockerfile; internet=True: 需要访问公网（DeepSeek API）
-    {"svc": "ai-engine", "name": "gv-ai-engine", "port": 8000, "type": "python", "internet": True},
+    # type="python": 独立 Dockerfile; internet=True: 需要访问公网（LLM API）
+    {"svc": "ai-engine", "name": "ai-engine-logical", "port": 8000, "type": "python", "internet": True},
 ]
 
 AK                = os.environ.get("VOLCENGINE_ACCESS_KEY",         "")
@@ -51,13 +60,32 @@ VCR_PASSWORD      = os.environ.get("VOLCENGINE_REGISTRY_PASSWORD",  "")
 VPC_ID            = os.environ.get("VOLCENGINE_VPC_ID",             "")
 SUBNET_ID         = os.environ.get("VOLCENGINE_SUBNET_ID",          "")
 SECURITY_GROUP_ID = os.environ.get("VOLCENGINE_SECURITY_GROUP_ID",  "")
+VOLCENGINE_VPC_ID_CN_SHANGHAI = os.environ.get("VOLCENGINE_VPC_ID_CN_SHANGHAI", "").strip()
+VOLCENGINE_SUBNET_ID_CN_SHANGHAI = os.environ.get("VOLCENGINE_SUBNET_ID_CN_SHANGHAI", "").strip()
+VOLCENGINE_SECURITY_GROUP_ID_CN_SHANGHAI = os.environ.get("VOLCENGINE_SECURITY_GROUP_ID_CN_SHANGHAI", "").strip()
+VOLCENGINE_VPC_ID_AP_SOUTHEAST_JOHOR = os.environ.get("VOLCENGINE_VPC_ID_AP_SOUTHEAST_JOHOR", "").strip()
+VOLCENGINE_SUBNET_ID_AP_SOUTHEAST_JOHOR = os.environ.get("VOLCENGINE_SUBNET_ID_AP_SOUTHEAST_JOHOR", "").strip()
+VOLCENGINE_SECURITY_GROUP_ID_AP_SOUTHEAST_JOHOR = os.environ.get("VOLCENGINE_SECURITY_GROUP_ID_AP_SOUTHEAST_JOHOR", "").strip()
 AI_ENGINE_URL     = os.environ.get("AI_ENGINE_URL",                 "")
+AI_ENGINE_URL_CN_SHANGHAI = os.environ.get("AI_ENGINE_URL_CN_SHANGHAI", "").strip()
+AI_ENGINE_URL_AP_SOUTHEAST_JOHOR = os.environ.get("AI_ENGINE_URL_AP_SOUTHEAST_JOHOR", "").strip()
+AI_ENGINE_DEFAULT_REGION = os.environ.get("AI_ENGINE_DEFAULT_REGION", os.environ.get("SERVICE_REGION", "cn_shanghai")).strip()
 USER_SERVICE_URL  = os.environ.get("USER_SERVICE_URL",              "")
 GAME_SERVICE_URL  = os.environ.get("GAME_SERVICE_URL",              "")
 FEED_SERVICE_URL  = os.environ.get("FEED_SERVICE_URL",              "")
 PUBLIC_API_BASE_URL = os.environ.get("PUBLIC_API_BASE_URL",         "")
 GAME_SERVICE_UPSTREAM_URL = os.environ.get("GAME_SERVICE_UPSTREAM_URL", GAME_SERVICE_URL)
 FEED_SERVICE_UPSTREAM_URL = os.environ.get("FEED_SERVICE_UPSTREAM_URL", FEED_SERVICE_URL)
+VOLCENGINE_REGION_CN_SHANGHAI = os.environ.get("VOLCENGINE_REGION_CN_SHANGHAI", "cn-shanghai").strip()
+VOLCENGINE_REGION_AP_SOUTHEAST_JOHOR = os.environ.get("VOLCENGINE_REGION_AP_SOUTHEAST_JOHOR", "ap-southeast-johor").strip()
+VOLCENGINE_REGISTRY_CN_SHANGHAI = os.environ.get("VOLCENGINE_REGISTRY_CN_SHANGHAI", REGISTRY).strip()
+VOLCENGINE_REGISTRY_AP_SOUTHEAST_JOHOR = os.environ.get("VOLCENGINE_REGISTRY_AP_SOUTHEAST_JOHOR", REGISTRY).strip()
+AI_ENGINE_FUNCTION_NAME_CN_SHANGHAI = os.environ.get("AI_ENGINE_FUNCTION_NAME_CN_SHANGHAI", "gv-ai-engine-cn").strip()
+AI_ENGINE_FUNCTION_NAME_AP_SOUTHEAST_JOHOR = os.environ.get("AI_ENGINE_FUNCTION_NAME_AP_SOUTHEAST_JOHOR", "gv-ai-engine-global").strip()
+APIG_PATCH_SAFE_METHOD = "PATCH"
+DEFAULT_FUNCTION_REQUEST_TIMEOUT_S = 180
+AI_ENGINE_TIMEOUT_HEADROOM_S = 60
+APIG_TIMEOUT_MS_PER_SECOND = 1000
 
 COMMON_DEPLOY_ENV_KEYS = [
     "VOLCENGINE_ACCESS_KEY",
@@ -81,9 +109,10 @@ COMMON_RUNTIME_ENV_KEYS = [
 
 SERVICE_REQUIRED_ENV_KEYS = {
     "user-service": [
-        "AI_ENGINE_URL",
         "GAME_SERVICE_UPSTREAM_URL",
         "FEED_SERVICE_UPSTREAM_URL",
+        "WECHAT_PAY_MODE",
+        "BILLING_DEFAULT_FREE_QUOTA",
         "WECHAT_MINIAPP_APP_ID",
         "WECHAT_MINIAPP_APP_SECRET",
         "ALIYUN_ACCESS_KEY_ID",
@@ -95,7 +124,6 @@ SERVICE_REQUIRED_ENV_KEYS = {
         "VERIFY_CODE_SEND_INTERVAL_SECONDS",
     ],
     "game-service": [
-        "AI_ENGINE_URL",
     ],
     "feed-service": [],
     "ai-engine": [
@@ -104,16 +132,25 @@ SERVICE_REQUIRED_ENV_KEYS = {
         "LLM_BASE_URL",
         "LLM_MODEL",
         "LLM_FAST_MODEL",
+        "GAME_SERVICE_UPSTREAM_URL",
     ],
 }
 
 
-def get_api() -> volcenginesdkvefaas.VEFAASApi:
+def get_api(region_override: str | None = None) -> volcenginesdkvefaas.VEFAASApi:
     cfg = volcenginesdkcore.Configuration()
     cfg.ak = AK
     cfg.sk = SK
-    cfg.region = REGION
+    cfg.region = region_override or REGION
     return volcenginesdkvefaas.VEFAASApi(volcenginesdkcore.ApiClient(cfg))
+
+
+def get_apig_api(region_override: str | None = None) -> APIG20221112Api:
+    cfg = volcenginesdkcore.Configuration()
+    cfg.ak = AK
+    cfg.sk = SK
+    cfg.region = region_override or REGION
+    return APIG20221112Api(volcenginesdkcore.ApiClient(cfg))
 
 
 def get_function_id(api: volcenginesdkvefaas.VEFAASApi, name: str) -> str:
@@ -125,8 +162,388 @@ def get_function_id(api: volcenginesdkvefaas.VEFAASApi, name: str) -> str:
     return ""
 
 
-def _env_vars(port: int, svc: str = "") -> dict:
+def _safe_int(value: str | None, default: int) -> int:
+    try:
+        return int((value or "").strip() or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _desired_request_timeout(svc: dict) -> int | None:
+    if svc["svc"] not in {"ai-engine", "user-service"}:
+        return None
+    pipeline_timeout = _safe_int(os.environ.get("PIPELINE_TIMEOUT_S"), 600)
+    return max(DEFAULT_FUNCTION_REQUEST_TIMEOUT_S, pipeline_timeout + AI_ENGINE_TIMEOUT_HEADROOM_S)
+
+
+def _desired_route_timeout(svc: dict) -> int | None:
+    desired_request_timeout = _desired_request_timeout(svc)
+    if desired_request_timeout is None:
+        return None
+    return desired_request_timeout * APIG_TIMEOUT_MS_PER_SECOND
+
+
+def _normalize_execution_region(value: str | None) -> str:
+    return "ap_southeast_johor" if (value or "").strip() == "ap_southeast_johor" else "cn_shanghai"
+
+
+def _default_ai_engine_url_for_region(execution_region: str) -> str:
+    if execution_region == "ap_southeast_johor":
+        return AI_ENGINE_URL_AP_SOUTHEAST_JOHOR or (
+            AI_ENGINE_URL if _normalize_execution_region(AI_ENGINE_DEFAULT_REGION) == execution_region else ""
+        )
+    return AI_ENGINE_URL_CN_SHANGHAI or (
+        AI_ENGINE_URL if _normalize_execution_region(AI_ENGINE_DEFAULT_REGION) == execution_region else ""
+    )
+
+
+def build_ai_engine_targets() -> list[dict]:
+    return [
+        {
+            "svc": "ai-engine",
+            "name": AI_ENGINE_FUNCTION_NAME_CN_SHANGHAI or "gv-ai-engine-cn",
+            "port": 8000,
+            "type": "python",
+            "internet": True,
+            "cloud_region": VOLCENGINE_REGION_CN_SHANGHAI or "cn-shanghai",
+            "execution_region": "cn_shanghai",
+            "registry": VOLCENGINE_REGISTRY_CN_SHANGHAI or REGISTRY,
+        },
+        {
+            "svc": "ai-engine",
+            "name": AI_ENGINE_FUNCTION_NAME_AP_SOUTHEAST_JOHOR or "gv-ai-engine-global",
+            "port": 8000,
+            "type": "python",
+            "internet": True,
+            "cloud_region": VOLCENGINE_REGION_AP_SOUTHEAST_JOHOR or "ap-southeast-johor",
+            "execution_region": "ap_southeast_johor",
+            "registry": VOLCENGINE_REGISTRY_AP_SOUTHEAST_JOHOR or REGISTRY,
+        },
+    ]
+
+
+def resolve_target_services(target: str) -> list[dict]:
+    if target == "ai-engine-cn":
+        return [build_ai_engine_targets()[0]]
+    if target == "ai-engine-global":
+        return [build_ai_engine_targets()[1]]
+
+    selected = SERVICES if target == "all" else [s for s in SERVICES if s["svc"] == target]
+    resolved: list[dict] = []
+
+    for svc in selected:
+        if svc["svc"] == "ai-engine":
+            resolved.extend(build_ai_engine_targets())
+        else:
+            resolved.append(dict(svc))
+
+    return resolved
+
+
+def _get_admin_api_base_url() -> str:
+    candidates = [
+        (PUBLIC_API_BASE_URL or "").strip(),
+        (GAME_SERVICE_URL or "").strip(),
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        normalized = candidate.rstrip("/")
+        if normalized.endswith("/api/v1"):
+            return normalized
+        return f"{normalized}/api/v1"
+    return ""
+
+
+def sync_ai_engine_region_target_deploy_state(svc: dict) -> bool:
+    if svc["svc"] != "ai-engine":
+        return True
+
+    admin_base_url = _get_admin_api_base_url()
+    if not admin_base_url:
+        print("  ⚠️  跳过 Region Target 状态回写：未配置 PUBLIC_API_BASE_URL 或 GAME_SERVICE_URL")
+        return True
+
+    resolved_ai_engine_url = _default_ai_engine_url_for_region(svc.get("execution_region"))
+    deploy_error = (svc.get("_deploy_meta") or {}).get("deploy_error")
+    deploy_status = "failed" if deploy_error else "deployed"
+
+    payload = {
+        "executionRegion": svc.get("execution_region"),
+        "deployStatus": deploy_status,
+        "lastRevision": (svc.get("_deploy_meta") or {}).get("revision"),
+        "lastImageTag": IMAGE_TAG,
+        "lastReleaseStatus": (svc.get("_deploy_meta") or {}).get("release_status"),
+        "lastDeployError": deploy_error,
+    }
+    if resolved_ai_engine_url:
+        payload["aiEngineUrl"] = resolved_ai_engine_url
+    elif deploy_status == "deployed":
+        print(
+            "  ⚠️  未提供可回写的 ai-engine URL，Region Target 将保留现有 endpoint；"
+            "如需自动切流，请配置 AI_ENGINE_URL_CN_SHANGHAI / AI_ENGINE_URL_AP_SOUTHEAST_JOHOR"
+        )
+
+    request = urllib.request.Request(
+        f"{admin_base_url}/admin/cloud/ai-engine-region-targets/sync-deploy",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "x-admin-token": os.environ.get("ADMIN_TOKEN", "admin123"),
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            body = response.read().decode("utf-8", errors="ignore")
+            print(f"  ✅ Region Target 状态已回写: {svc.get('execution_region')} -> {response.status}")
+            if body:
+                print(f"     {body[:160]}")
+        return True
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        print(f"  ⚠️  Region Target 状态回写失败: HTTP {exc.code} {detail[:200]}")
+        return False
+    except Exception as exc:
+        print(f"  ⚠️  Region Target 状态回写失败: {exc}")
+        return False
+
+
+def _match_prefix_root_route(route: dict, svc: dict) -> bool:
+    match_rule = route.get("match_rule") or {}
+    path = match_rule.get("path") or {}
+    return (
+        route.get("name") == svc["name"]
+        and path.get("match_type") == "Prefix"
+        and path.get("match_content") == "/"
+    )
+
+
+def _build_match_rule_for_update(route: dict):
+    match_rule = route.get("match_rule") or {}
+    methods = list(match_rule.get("method") or [])
+    if APIG_PATCH_SAFE_METHOD not in methods:
+        methods.append(APIG_PATCH_SAFE_METHOD)
+
+    path = match_rule.get("path") or {}
+    return volcenginesdkapig20221112.MatchRuleForUpdateRouteInput(
+        header=match_rule.get("header"),
+        method=methods,
+        path=volcenginesdkapig20221112.PathForUpdateRouteInput(
+            match_content=path.get("match_content"),
+            match_type=path.get("match_type"),
+        ),
+        query_string=match_rule.get("query_string"),
+    )
+
+
+def _build_advanced_setting_for_update(route: dict, desired_timeout: int | None = None):
+    advanced = route.get("advanced_setting")
+    if not advanced and desired_timeout is None:
+        return None
+
+    advanced = advanced or {}
+
+    cors = advanced.get("cors_policy_setting")
+    retry = advanced.get("retry_policy_setting")
+    timeout = advanced.get("timeout_setting")
+    rewrite = advanced.get("url_rewrite_setting")
+
+    return volcenginesdkapig20221112.AdvancedSettingForUpdateRouteInput(
+        cors_policy_setting=(
+            volcenginesdkapig20221112.CorsPolicySettingForUpdateRouteInput(
+                enable=cors.get("enable"),
+                allow_credentials=cors.get("allow_credentials"),
+                allow_headers=cors.get("allow_headers"),
+                allow_methods=cors.get("allow_methods"),
+                allow_origins=cors.get("allow_origins"),
+                expose_headers=cors.get("expose_headers"),
+                max_age=cors.get("max_age"),
+            )
+            if cors is not None
+            else None
+        ),
+        header_operations=advanced.get("header_operations"),
+        mirror_policies=advanced.get("mirror_policies"),
+        retry_policy_setting=(
+            volcenginesdkapig20221112.RetryPolicySettingForUpdateRouteInput(
+                attempts=retry.get("attempts"),
+                enable=retry.get("enable"),
+                http_codes=retry.get("http_codes"),
+                retry_on=retry.get("retry_on"),
+            )
+            if retry is not None
+            else None
+        ),
+        timeout_setting=(
+            volcenginesdkapig20221112.TimeoutSettingForUpdateRouteInput(
+                enable=True if desired_timeout is not None else timeout.get("enable"),
+                timeout=desired_timeout if desired_timeout is not None else timeout.get("timeout"),
+            )
+            if timeout is not None or desired_timeout is not None
+            else None
+        ),
+        url_rewrite_setting=(
+            volcenginesdkapig20221112.URLRewriteSettingForUpdateRouteInput(
+                enable=rewrite.get("enable"),
+                url_rewrite=rewrite.get("url_rewrite"),
+            )
+            if rewrite is not None
+            else None
+        ),
+    )
+
+
+def _build_upstream_list_for_update(route: dict):
+    upstreams = []
+    for item in route.get("upstream_list") or []:
+        upstreams.append(
+            volcenginesdkapig20221112.UpstreamListForUpdateRouteInput(
+                ai_provider_settings=item.get("ai_provider_settings"),
+                upstream_id=item.get("upstream_id"),
+                version=item.get("version"),
+                weight=item.get("weight"),
+            )
+        )
+    return upstreams
+
+
+def ensure_apig_patch_method(
+    api: volcenginesdkvefaas.VEFAASApi,
+    apig_api: APIG20221112Api,
+    func_id: str,
+    svc: dict,
+) -> bool:
+    try:
+        triggers = api.list_triggers(volcenginesdkvefaas.ListTriggersRequest(function_id=func_id))
+    except Exception as e:
+        print(f"  ⚠️  跳过 APIG 方法校验：读取触发器失败: {e}")
+        return True
+
+    apig_trigger = None
+    for item in triggers.items or []:
+        trigger = item.to_dict()
+        if trigger.get("type") == "apig":
+            apig_trigger = trigger
+            break
+
+    if not apig_trigger:
+        return True
+
+    detail = json.loads(apig_trigger.get("detailed_config") or "{}")
+    gateway_id = detail.get("GatewayId")
+    upstream_id = detail.get("UpstreamId")
+    if not gateway_id or not upstream_id:
+        print("  ⚠️  跳过 APIG 方法校验：触发器缺少 GatewayId/UpstreamId")
+        return True
+
+    try:
+        routes = apig_api.list_routes(
+            volcenginesdkapig20221112.ListRoutesRequest(
+                gateway_id=gateway_id,
+                upstream_id=upstream_id,
+                page_number=1,
+                page_size=100,
+            )
+        )
+    except Exception as e:
+        print(f"  ⚠️  跳过 APIG 方法校验：读取路由失败: {e}")
+        return True
+
+    target_route = None
+    for item in routes.items or []:
+        route = item.to_dict()
+        if _match_prefix_root_route(route, svc):
+            target_route = route
+            break
+
+    if not target_route:
+        print("  ⚠️  跳过 APIG 方法校验：未找到主路由")
+        return True
+
+    methods = list((target_route.get("match_rule") or {}).get("method") or [])
+    desired_timeout = _desired_route_timeout(svc)
+    current_timeout = ((target_route.get("advanced_setting") or {}).get("timeout_setting") or {}).get("timeout")
+    current_timeout_enabled = ((target_route.get("advanced_setting") or {}).get("timeout_setting") or {}).get("enable")
+
+    needs_patch_method = APIG_PATCH_SAFE_METHOD not in methods
+    needs_timeout_sync = (
+        desired_timeout is not None
+        and (current_timeout != desired_timeout or not current_timeout_enabled)
+    )
+
+    if not needs_patch_method and not needs_timeout_sync:
+        if desired_timeout is not None:
+            print(
+                f"  ✅ APIG 主路由已包含 {APIG_PATCH_SAFE_METHOD}，超时={desired_timeout}ms"
+            )
+        else:
+            print(f"  ✅ APIG 主路由已包含 {APIG_PATCH_SAFE_METHOD}")
+        return True
+
+    try:
+        apig_api.update_route(
+            volcenginesdkapig20221112.UpdateRouteRequest(
+                id=target_route["id"],
+                name=target_route["name"],
+                enable=target_route.get("enable"),
+                priority=target_route.get("priority"),
+                match_rule=_build_match_rule_for_update(target_route),
+                advanced_setting=_build_advanced_setting_for_update(target_route, desired_timeout=desired_timeout),
+                fallback_setting=target_route.get("fallback_setting"),
+                upstream_list=_build_upstream_list_for_update(target_route),
+            )
+        )
+        action_parts = []
+        if needs_patch_method:
+            action_parts.append(f"补齐 {APIG_PATCH_SAFE_METHOD}")
+        if needs_timeout_sync and desired_timeout is not None:
+            action_parts.append(f"同步超时到 {desired_timeout}ms")
+        print(f"  ✅ 已为 APIG 主路由{'、'.join(action_parts)}")
+        return True
+    except Exception as e:
+        print(f"  ❌ APIG 主路由校正失败: {e}")
+        return False
+
+
+def ensure_function_request_timeout(
+    api: volcenginesdkvefaas.VEFAASApi,
+    func_id: str,
+    svc: dict,
+) -> bool:
+    desired_timeout = _desired_request_timeout(svc)
+    if desired_timeout is None:
+        return True
+
+    try:
+        function = api.get_function(volcenginesdkvefaas.GetFunctionRequest(id=func_id))
+    except Exception as e:
+        print(f"  ⚠️  跳过函数超时校验：读取函数失败: {e}")
+        return True
+
+    current_timeout = getattr(function, "request_timeout", None)
+    if current_timeout == desired_timeout:
+        print(f"  ✅ 函数请求超时已是 {desired_timeout}s")
+        return True
+
+    try:
+        api.update_function(
+            volcenginesdkvefaas.UpdateFunctionRequest(
+                id=func_id,
+                request_timeout=desired_timeout,
+            )
+        )
+        rel = api.release(volcenginesdkvefaas.ReleaseRequest(function_id=func_id, revision_number=0))
+        print(f"  ✅ 已将函数请求超时同步到 {desired_timeout}s（版本号: {rel.new_revision_number}，状态: {rel.status}）")
+        return True
+    except Exception as e:
+        print(f"  ❌ 函数请求超时同步失败: {e}")
+        return False
+
+
+def _env_vars(port: int, svc: dict | None = None) -> dict:
     """NestJS 服务公共环境变量"""
+    svc_name = svc["svc"] if svc else ""
     env = {
         "NODE_ENV":           "production",
         "PORT":               str(port),
@@ -145,30 +562,46 @@ def _env_vars(port: int, svc: str = "") -> dict:
         env["FEED_SERVICE_URL"] = FEED_SERVICE_URL
     if PUBLIC_API_BASE_URL:
         env["PUBLIC_API_BASE_URL"] = PUBLIC_API_BASE_URL
+    if AI_ENGINE_URL_CN_SHANGHAI:
+        env["AI_ENGINE_URL_CN_SHANGHAI"] = AI_ENGINE_URL_CN_SHANGHAI
+    if AI_ENGINE_URL_AP_SOUTHEAST_JOHOR:
+        env["AI_ENGINE_URL_AP_SOUTHEAST_JOHOR"] = AI_ENGINE_URL_AP_SOUTHEAST_JOHOR
+    if AI_ENGINE_DEFAULT_REGION:
+        env["AI_ENGINE_DEFAULT_REGION"] = _normalize_execution_region(AI_ENGINE_DEFAULT_REGION)
+    if svc and svc.get("execution_region"):
+        env["SERVICE_REGION"] = svc["execution_region"]
+
+    default_ai_engine_url = AI_ENGINE_URL or _default_ai_engine_url_for_region(
+        _normalize_execution_region(AI_ENGINE_DEFAULT_REGION)
+    )
+    if default_ai_engine_url:
+        env["AI_ENGINE_URL"] = default_ai_engine_url
 
     public_api_base = PUBLIC_API_BASE_URL or ""
-    if svc == "game-service":
+    if svc_name == "game-service":
         env["APP_URL"] = public_api_base or GAME_SERVICE_URL or "http://localhost:3002"
-        if AI_ENGINE_URL:
-            env["AI_ENGINE_URL"] = AI_ENGINE_URL
-    elif svc == "feed-service":
+    elif svc_name == "feed-service":
         env["APP_URL"] = public_api_base or USER_SERVICE_URL or GAME_SERVICE_URL or "https://playforge.app"
-    elif svc == "user-service":
-        if AI_ENGINE_URL:
-            env["AI_ENGINE_URL"] = AI_ENGINE_URL
+    elif svc_name == "user-service":
         if GAME_SERVICE_UPSTREAM_URL:
             env["GAME_SERVICE_UPSTREAM_URL"] = GAME_SERVICE_UPSTREAM_URL
         if FEED_SERVICE_UPSTREAM_URL:
             env["FEED_SERVICE_UPSTREAM_URL"] = FEED_SERVICE_UPSTREAM_URL
 
     # 阿里云短信 Dysmsapi（仅 user-service 需要）
-    if svc == "user-service":
+    if svc_name == "user-service":
         for key in [
             "ALIYUN_ACCESS_KEY_ID", "ALIYUN_ACCESS_KEY_SECRET",
             "ALIYUN_SMS_REGION_ID", "ALIYUN_SMS_SIGN_NAME",
             "ALIYUN_SMS_TPL_REGISTER", "ALIYUN_SMS_TPL_LOGIN",
             "VERIFY_CODE_SEND_INTERVAL_SECONDS",
             "WECHAT_MINIAPP_APP_ID", "WECHAT_MINIAPP_APP_SECRET",
+            "WECHAT_PAY_MODE", "WECHAT_PAY_MERCHANT_ID",
+            "WECHAT_PAY_NOTIFY_URL", "WECHAT_PAY_SERIAL_NO",
+            "WECHAT_PAY_PRIVATE_KEY", "WECHAT_PAY_PRIVATE_KEY_PATH",
+            "WECHAT_PAY_PUBLIC_KEY", "WECHAT_PAY_PUBLIC_KEY_PATH",
+            "WECHAT_PAY_API_V3_KEY", "WECHAT_PAY_API_BASE",
+            "BILLING_DEFAULT_FREE_QUOTA",
         ]:
             val = os.environ.get(key, "")
             if val:
@@ -177,9 +610,12 @@ def _env_vars(port: int, svc: str = "") -> dict:
     return env
 
 
-def _ai_env_vars(port: int) -> dict:
+def _ai_env_vars(port: int, svc: dict | None = None) -> dict:
     """AI 引擎（Python）环境变量"""
-    return {
+    execution_region = (svc or {}).get("execution_region") or _normalize_execution_region(
+        os.environ.get("SERVICE_REGION") or REGION
+    )
+    env = {
         "ENVIRONMENT":                   "production",
         "PORT":                          str(port),
         "DATABASE_URL":                  os.environ.get("DATABASE_URL", ""),
@@ -194,27 +630,59 @@ def _ai_env_vars(port: int) -> dict:
         "HYBRID_CONFIDENCE_THRESHOLD":   os.environ.get("HYBRID_CONFIDENCE_THRESHOLD", "0.5"),
         "QA_MAX_RETRIES":                os.environ.get("QA_MAX_RETRIES", "3"),
         "PIPELINE_TIMEOUT_S":            os.environ.get("PIPELINE_TIMEOUT_S", "600"),
+        "SERVICE_REGION":                execution_region,
+        "LLM_GATEWAY_CACHE_TTL_S":       os.environ.get("LLM_GATEWAY_CACHE_TTL_S", "10"),
     }
+    if GAME_SERVICE_UPSTREAM_URL:
+        env["GAME_SERVICE_UPSTREAM_URL"] = GAME_SERVICE_UPSTREAM_URL
+    if os.environ.get("ADMIN_TOKEN", ""):
+        env["ADMIN_TOKEN"] = os.environ.get("ADMIN_TOKEN", "admin123")
+    return env
 
 
-def build_envs_update(port: int, ai: bool = False, svc: str = "") -> list:
-    src = _ai_env_vars(port) if ai else _env_vars(port, svc=svc)
+def build_envs_update(port: int, ai: bool = False, svc: dict | None = None) -> list:
+    src = _ai_env_vars(port, svc=svc) if ai else _env_vars(port, svc=svc)
     return [
         volcenginesdkvefaas.EnvForUpdateFunctionInput(key=k, value=v)
         for k, v in src.items()
     ]
 
 
-def build_envs_create(port: int, ai: bool = False, svc: str = "") -> list:
-    src = _ai_env_vars(port) if ai else _env_vars(port, svc=svc)
+def build_envs_create(port: int, ai: bool = False, svc: dict | None = None) -> list:
+    src = _ai_env_vars(port, svc=svc) if ai else _env_vars(port, svc=svc)
     return [
         volcenginesdkvefaas.EnvForCreateFunctionInput(key=k, value=v)
         for k, v in src.items()
     ]
 
 
-def image_uri(svc_name: str) -> str:
-    return f"{REGISTRY}/{NAMESPACE}/{svc_name}:{IMAGE_TAG}"
+def image_uri(svc: dict) -> str:
+    registry = svc.get("registry") or REGISTRY
+    return f"{registry}/{NAMESPACE}/{svc['name']}:{IMAGE_TAG}"
+
+
+def _network_config_for_service(svc: dict) -> tuple[str, str, str]:
+    execution_region = (svc.get("execution_region") or "").strip()
+    cloud_region = (svc.get("cloud_region") or REGION).strip()
+
+    if svc["svc"] != "ai-engine":
+        return VPC_ID, SUBNET_ID, SECURITY_GROUP_ID
+
+    if execution_region == "ap_southeast_johor":
+        return (
+            VOLCENGINE_VPC_ID_AP_SOUTHEAST_JOHOR,
+            VOLCENGINE_SUBNET_ID_AP_SOUTHEAST_JOHOR,
+            VOLCENGINE_SECURITY_GROUP_ID_AP_SOUTHEAST_JOHOR,
+        )
+
+    if execution_region == "cn_shanghai":
+        return (
+            VOLCENGINE_VPC_ID_CN_SHANGHAI or (VPC_ID if cloud_region == REGION else ""),
+            VOLCENGINE_SUBNET_ID_CN_SHANGHAI or (SUBNET_ID if cloud_region == REGION else ""),
+            VOLCENGINE_SECURITY_GROUP_ID_CN_SHANGHAI or (SECURITY_GROUP_ID if cloud_region == REGION else ""),
+        )
+
+    return VPC_ID, SUBNET_ID, SECURITY_GROUP_ID
 
 
 def _missing_env(keys: list[str]) -> list[str]:
@@ -226,6 +694,35 @@ def validate_env(target_services: list[dict]) -> None:
 
     for svc in target_services:
         missing.update(_missing_env(SERVICE_REQUIRED_ENV_KEYS.get(svc["svc"], [])))
+        if svc["svc"] == "user-service":
+            wechat_pay_mode = os.environ.get("WECHAT_PAY_MODE", "mock").strip().lower()
+            if wechat_pay_mode == "real":
+                missing.update(_missing_env([
+                    "WECHAT_PAY_MERCHANT_ID",
+                    "WECHAT_PAY_SERIAL_NO",
+                    "WECHAT_PAY_API_V3_KEY",
+                ]))
+
+                has_private_key = bool(
+                    os.environ.get("WECHAT_PAY_PRIVATE_KEY", "").strip()
+                    or os.environ.get("WECHAT_PAY_PRIVATE_KEY_PATH", "").strip()
+                )
+                has_public_key = bool(
+                    os.environ.get("WECHAT_PAY_PUBLIC_KEY", "").strip()
+                    or os.environ.get("WECHAT_PAY_PUBLIC_KEY_PATH", "").strip()
+                )
+                if not has_private_key:
+                    missing.add("WECHAT_PAY_PRIVATE_KEY or WECHAT_PAY_PRIVATE_KEY_PATH")
+                if not has_public_key:
+                    missing.add("WECHAT_PAY_PUBLIC_KEY or WECHAT_PAY_PUBLIC_KEY_PATH")
+
+        if svc["svc"] == "ai-engine" and svc.get("execution_region") == "ap_southeast_johor":
+            if not VOLCENGINE_VPC_ID_AP_SOUTHEAST_JOHOR:
+                missing.add("VOLCENGINE_VPC_ID_AP_SOUTHEAST_JOHOR")
+            if not VOLCENGINE_SUBNET_ID_AP_SOUTHEAST_JOHOR:
+                missing.add("VOLCENGINE_SUBNET_ID_AP_SOUTHEAST_JOHOR")
+            if not VOLCENGINE_SECURITY_GROUP_ID_AP_SOUTHEAST_JOHOR:
+                missing.add("VOLCENGINE_SECURITY_GROUP_ID_AP_SOUTHEAST_JOHOR")
 
     if missing:
         print("❌ 部署前环境变量校验失败，缺少以下字段：")
@@ -254,26 +751,28 @@ def _svc_command(svc: dict) -> str:
 
 def _vpc_config_create(svc: dict):
     """构造 VPC 配置（CreateFunction 用）"""
-    if not (VPC_ID and SUBNET_ID and SECURITY_GROUP_ID):
+    vpc_id, subnet_id, security_group_id = _network_config_for_service(svc)
+    if not (vpc_id and subnet_id and security_group_id):
         return None
     return volcenginesdkvefaas.VpcConfigForCreateFunctionInput(
         enable_vpc=True,
-        vpc_id=VPC_ID,
-        subnet_ids=[SUBNET_ID],
-        security_group_ids=[SECURITY_GROUP_ID],
+        vpc_id=vpc_id,
+        subnet_ids=[subnet_id],
+        security_group_ids=[security_group_id],
         enable_shared_internet_access=svc.get("internet", False),
     )
 
 
 def _vpc_config_update(svc: dict):
     """构造 VPC 配置（UpdateFunction 用）"""
-    if not (VPC_ID and SUBNET_ID and SECURITY_GROUP_ID):
+    vpc_id, subnet_id, security_group_id = _network_config_for_service(svc)
+    if not (vpc_id and subnet_id and security_group_id):
         return None
     return volcenginesdkvefaas.VpcConfigForUpdateFunctionInput(
         enable_vpc=True,
-        vpc_id=VPC_ID,
-        subnet_ids=[SUBNET_ID],
-        security_group_ids=[SECURITY_GROUP_ID],
+        vpc_id=vpc_id,
+        subnet_ids=[subnet_id],
+        security_group_ids=[security_group_id],
         enable_shared_internet_access=svc.get("internet", False),
     )
 
@@ -282,6 +781,7 @@ def create_function(api: volcenginesdkvefaas.VEFAASApi, svc: dict, image: str) -
     """创建新函数，返回函数 ID。失败返回空字符串。"""
     name = svc["name"]
     is_ai = svc.get("type") == "python"
+    request_timeout = _desired_request_timeout(svc)
     print(f"  ➕ 函数不存在，自动创建 {name}...")
     create_req = volcenginesdkvefaas.CreateFunctionRequest(
         name=name,
@@ -294,7 +794,8 @@ def create_function(api: volcenginesdkvefaas.VEFAASApi, svc: dict, image: str) -
         ),
         port=svc["port"],
         command=_svc_command(svc),
-        envs=build_envs_create(svc["port"], ai=is_ai, svc=svc["svc"]),
+        envs=build_envs_create(svc["port"], ai=is_ai, svc=svc),
+        request_timeout=request_timeout,
     )
     vpc = _vpc_config_create(svc)
     if vpc:
@@ -333,8 +834,9 @@ def wait_image_sync(api: volcenginesdkvefaas.VEFAASApi, func_id: str, image: str
 
 def deploy_service(api: volcenginesdkvefaas.VEFAASApi, svc: dict) -> bool:
     name   = svc["name"]
-    image  = image_uri(name)
+    image  = image_uri(svc)
     is_ai  = svc.get("type") == "python"
+    request_timeout = _desired_request_timeout(svc)
 
     # 1. docker build
     print(f"  🔨 构建镜像: {image}")
@@ -381,7 +883,8 @@ def deploy_service(api: volcenginesdkvefaas.VEFAASApi, svc: dict) -> bool:
                 password=VCR_PASSWORD or SK,
             ),
             command=_svc_command(svc),
-            envs=build_envs_update(svc["port"], ai=is_ai, svc=svc["svc"]),
+            envs=build_envs_update(svc["port"], ai=is_ai, svc=svc),
+            request_timeout=request_timeout,
         )
         vpc = _vpc_config_update(svc)
         if vpc:
@@ -407,8 +910,18 @@ def deploy_service(api: volcenginesdkvefaas.VEFAASApi, svc: dict) -> bool:
     print(f"  🚀 发布新版本...")
     try:
         rel = api.release(volcenginesdkvefaas.ReleaseRequest(function_id=func_id, revision_number=0))
+        svc["_deploy_meta"] = {
+            "revision": str(getattr(rel, "new_revision_number", "") or ""),
+            "release_status": getattr(rel, "status", "") or "",
+            "deploy_error": None,
+        }
         print(f"  ✅ 发布成功（版本号: {rel.new_revision_number}，状态: {rel.status}）")
     except Exception as e:
+        svc["_deploy_meta"] = {
+            "revision": None,
+            "release_status": "failed",
+            "deploy_error": str(e),
+        }
         print(f"  ❌ 发布失败: {e}")
         return False
 
@@ -431,26 +944,48 @@ def main():
     print(f"   VPC ID:           {VPC_ID or '未设置'}")
     print(f"   Subnet ID:        {SUBNET_ID or '未设置'}")
     print(f"   Security Group:   {SECURITY_GROUP_ID or '未设置（跳过 VPC 配置）'}")
+    print(f"   上海 VPC:         {VOLCENGINE_VPC_ID_CN_SHANGHAI or VPC_ID or '未设置'}")
+    print(f"   柔佛 VPC:         {VOLCENGINE_VPC_ID_AP_SOUTHEAST_JOHOR or '未设置'}")
     print(f"   统一公网域名:     {PUBLIC_API_BASE_URL or '未设置（使用各服务默认域名）'}")
+    print(f"   AI 默认执行 Region: {_normalize_execution_region(AI_ENGINE_DEFAULT_REGION)}")
+    print(f"   AI 上海函数:      {AI_ENGINE_FUNCTION_NAME_CN_SHANGHAI} @ {VOLCENGINE_REGION_CN_SHANGHAI}")
+    print(f"   AI 柔佛函数:      {AI_ENGINE_FUNCTION_NAME_AP_SOUTHEAST_JOHOR} @ {VOLCENGINE_REGION_AP_SOUTHEAST_JOHOR}")
 
-    target   = sys.argv[1] if len(sys.argv) > 1 else "all"
-    services = SERVICES if target == "all" else [s for s in SERVICES if s["svc"] == target]
+    target = sys.argv[1] if len(sys.argv) > 1 else "all"
+    services = resolve_target_services(target)
 
     if not services:
-        print(f"❌ 未知服务: {target}，可选: {[s['svc'] for s in SERVICES]} | all")
+        print(f"❌ 未知服务: {target}，可选: {[s['svc'] for s in SERVICES]} | ai-engine-cn | ai-engine-global | all")
         sys.exit(1)
 
     validate_env(services)
 
-    api = get_api()
-
     print(f"\n🚀 开始部署 {len(services)} 个服务...")
     failed = []
     for svc in services:
+        api = get_api(svc.get("cloud_region"))
+        apig_api = get_apig_api(svc.get("cloud_region"))
         print(f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         print(f"🔨 {svc['name']}")
+        if svc.get("cloud_region"):
+            print(f"  🌍 云地域: {svc['cloud_region']} -> 执行 Region: {svc.get('execution_region', '-')}")
         if not deploy_service(api, svc):
             failed.append(svc["name"])
+            continue
+        func_id = get_function_id(api, svc["name"])
+        if not func_id:
+            print(f"  ❌ 无法读取 {svc['name']} 的函数 ID，跳过 APIG 方法校验")
+            failed.append(svc["name"])
+            continue
+        if not ensure_function_request_timeout(api, func_id, svc):
+            failed.append(svc["name"])
+            continue
+        if not ensure_apig_patch_method(api, apig_api, func_id, svc):
+            failed.append(svc["name"])
+            continue
+        if not sync_ai_engine_region_target_deploy_state(svc):
+            failed.append(svc["name"])
+            continue
 
     print(f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     if failed:

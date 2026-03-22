@@ -37,8 +37,29 @@ REVIEW_PROMPT = """Review this HTML5 game code and return a JSON object with exa
   "issues": [<string>, ...]          // list specific problems (empty list if none)
 }}
 
-Game code to review (first 8000 chars):
+Important review rule:
+- The code preview may omit the middle of the file for length. Do NOT report truncation or incompleteness solely because the preview is shortened.
+
+Game code preview:
 {code_preview}"""
+
+
+def _build_code_preview(html_code: str, limit: int = 8000) -> str:
+    """Build a stable review preview without hiding the file ending.
+
+    Showing both the head and tail avoids false "truncated/incomplete" judgments
+    that happen when the reviewer only sees the first chunk of a valid HTML file.
+    """
+    if len(html_code) <= limit:
+        return html_code
+
+    head_len = limit // 2
+    tail_len = limit - head_len
+    return (
+        html_code[:head_len]
+        + "\n\n... [middle omitted for review; original file continues] ...\n\n"
+        + html_code[-tail_len:]
+    )
 
 
 class CodeReviewer:
@@ -53,19 +74,18 @@ class CodeReviewer:
             logger.debug("LLM not enabled – skipping code review")
             return LLMReviewResult(ran=False)
 
-        # Truncate to avoid excessive token usage (~8000 chars ≈ 2000 tokens)
-        code_preview = html_code[:8000]
-        if len(html_code) > 8000:
-            code_preview += "\n\n... [truncated for review]"
+        code_preview = _build_code_preview(html_code)
 
         prompt = REVIEW_PROMPT.format(code_preview=code_preview)
 
         try:
             raw = await self._client.complete(
-                model=self._client.model_for(fast=True),   # use fast model for review
-                max_tokens=4096,
+                max_tokens=1024,
                 system=REVIEW_SYSTEM,
                 messages=[{"role": "user", "content": prompt}],
+                step_key="code_review",
+                stage="qa_checking",
+                prefer_fast=True,
             )
             return self._parse_review(raw)
         except Exception as exc:

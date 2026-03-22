@@ -34,7 +34,8 @@ class Settings(BaseSettings):
     QA_MAX_RETRIES: int = 3
     REVIEW_REPAIR_MAX_RETRIES: int = 0
     REVIEW_REPAIR_MAX_TOKENS: int = 3072
-    PIPELINE_TIMEOUT_S: int = 60
+    PIPELINE_TIMEOUT_S: int = 600
+    RUNTIME_QA_REQUIRED: bool = False
     MAX_ITERATIONS: int = 20
 
     # Slot Filling
@@ -53,6 +54,8 @@ class Settings(BaseSettings):
     # Service upstreams
     GAME_SERVICE_UPSTREAM_URL: str = ""
     ADMIN_TOKEN: str = "admin123"
+    SERVICE_REGION: str = "global"
+    LLM_GATEWAY_CACHE_TTL_S: int = 10
 
     PORT: int = 8000
 

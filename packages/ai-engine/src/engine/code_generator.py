@@ -229,10 +229,11 @@ class CodeGenerator:
         )
         try:
             text = await self._client.complete(
-                model=self._client.model_for(),
                 max_tokens=4096,
                 system=get_prompt("prompt.code_gen_system", SYSTEM_PROMPT_LAYER1),
                 messages=[{"role": "user", "content": prompt}],
+                step_key="code_generate.hybrid",
+                stage="code_generating",
             )
             return _extract_html(text)
         except Exception as e:
@@ -291,10 +292,11 @@ class CodeGenerator:
 
         try:
             text = await self._client.complete(
-                model=self._client.model_for(),
                 max_tokens=8192,
                 system=get_prompt("prompt.code_gen_system", SYSTEM_PROMPT_LAYER1),
                 messages=[{"role": "user", "content": full_prompt}],
+                step_key="code_generate.full",
+                stage="code_generating",
             )
             return _extract_html(text)
         except Exception as e:
@@ -337,12 +339,14 @@ class CodeGenerator:
     async def _classify_iteration(self, feedback: str) -> IterationType:
         try:
             text = await self._client.complete(
-                model=self._client.model_for(fast=True),
                 max_tokens=512,
                 messages=[{
                     "role": "user",
                     "content": get_prompt("prompt.iterate_classify", ITERATE_CLASSIFY_PROMPT).format(feedback=feedback),
                 }],
+                step_key="iterate.classify",
+                stage="code_generating",
+                prefer_fast=True,
             )
             label = text.strip().lower()
             for it in IterationType:
@@ -413,11 +417,18 @@ class CodeGenerator:
             )
 
         try:
+            if iter_type == IterationType.param_adjust:
+                step_key = "iterate.param_adjust"
+            elif iter_type == IterationType.element_change:
+                step_key = "iterate.element_change"
+            else:
+                step_key = "iterate.mechanic_change"
             text = await self._client.complete(
-                model=self._client.model_for(),
                 max_tokens=8192,
                 system=get_prompt("prompt.code_gen_system", SYSTEM_PROMPT_LAYER1),
                 messages=[{"role": "user", "content": prompt}],
+                step_key=step_key,
+                stage="code_generating",
             )
             return _extract_html(text)
         except Exception as e:

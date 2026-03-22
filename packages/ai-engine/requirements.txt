@@ -11,3 +11,4 @@ python-jose[cryptography]==3.3.0
 aiohttp==3.9.1
 anthropic==0.40.0
 pymysql==1.1.1
+playwright==1.43.0

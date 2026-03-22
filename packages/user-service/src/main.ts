@@ -3,7 +3,9 @@ import { AppModule } from './app.module';
 import { configureApp } from './bootstrap';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    rawBody: true,
+  });
 
   // Get port from environment variables, default to 3001
   const port = parseInt(process.env.PORT || '3001', 10);

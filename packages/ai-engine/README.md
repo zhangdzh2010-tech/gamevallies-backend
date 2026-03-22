@@ -41,7 +41,7 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 | `TEMPLATE_CONFIDENCE_THRESHOLD` | `0.8` | Confidence ≥ this → template-fill path |
 | `HYBRID_CONFIDENCE_THRESHOLD` | `0.5` | Confidence ≥ this → hybrid path |
 | `QA_MAX_RETRIES` | `3` | Max auto-fix retries after QA failure |
-| `PIPELINE_TIMEOUT_S` | `60` | Hard pipeline timeout (seconds) |
+| `PIPELINE_TIMEOUT_S` | `600` | Hard pipeline timeout (seconds) |
 | `MAX_ITERATIONS` | `20` | Max iteration rounds per game |
 | `SLOT_MIN_FILL_PCT` | `0.6` | Min slot fill % to enter clarifying state |
 | `CORS_ORIGINS` | `["*"]` | Allowed CORS origins (JSON array) |
@@ -101,7 +101,12 @@ On failure, Claude is called with a targeted fix prompt. Retries up to `QA_MAX_R
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/api/v1/ai/pipeline/run` | **Main**: description → HTML (stages 02–06) |
+| `POST` | `/api/v1/ai/pipeline/run/async` | 创建异步生成任务，立即返回任务句柄 |
 | `POST` | `/api/v1/ai/pipeline/iterate` | Stage 07: feedback → updated HTML |
+| `POST` | `/api/v1/ai/pipeline/iterate/async` | 创建异步迭代任务 |
+| `GET` | `/api/v1/ai/tasks/{task_id}` | 查询异步任务状态与结果 |
+| `GET` | `/api/v1/ai/tasks` | 列出异步任务，可按 `user_id/game_id/status` 过滤 |
+| `POST` | `/api/v1/ai/tasks/{task_id}/cancel` | 取消运行中的异步任务 |
 
 **POST /api/v1/ai/pipeline/run**
 ```json
@@ -109,7 +114,8 @@ On failure, Claude is called with a targeted fix prompt. Retries up to `QA_MAX_R
   "game_id": "uuid",
   "description": "做个太空躲避游戏，玩家左右移动躲陨石",
   "user_id": "user-uuid",
-  "platform": "wechat_webview"
+  "platform": "wechat_webview",
+  "timeout_s": 600
 }
 ```
 
@@ -133,9 +139,50 @@ Response:
   "game_id": "uuid",
   "feedback": "飞船速度太快了，降低一半",
   "conversation": [],
-  "current_code": "<!DOCTYPE html>..."
+  "current_code": "<!DOCTYPE html>...",
+  "timeout_s": 600
 }
 ```
+
+**POST /api/v1/ai/pipeline/run/async**
+```json
+{
+  "game_id": "uuid",
+  "description": "做个太空躲避游戏，玩家左右移动躲陨石",
+  "user_id": "user-uuid",
+  "timeout_s": 600
+}
+```
+
+Response:
+```json
+{
+  "task_id": "2fd0...",
+  "task_type": "pipeline_run",
+  "status": "queued",
+  "game_id": "uuid",
+  "user_id": "user-uuid",
+  "timeout_s": 600,
+  "ws_channel": "game:uuid",
+  "poll_url": "/api/v1/ai/tasks/2fd0...",
+  "cancel_url": "/api/v1/ai/tasks/2fd0.../cancel"
+}
+```
+
+### Async Task Lifecycle
+
+- `queued`：任务已创建，等待执行
+- `running`：任务执行中，可结合 `ws_channel` 订阅进度
+- `succeeded`：任务完成，`result` 中返回与同步接口一致的结果体
+- `failed`：任务失败，`error` 中包含失败阶段与重试次数
+- `canceled`：任务已取消
+
+前端推荐接法：
+
+1. 调用 `/pipeline/run/async` 或 `/pipeline/iterate/async`
+2. 保存 `task_id`、`ws_channel`、`poll_url`
+3. 优先监听 WebSocket 进度，断线或冷启动时轮询 `GET /api/v1/ai/tasks/{task_id}`
+4. 任务进入 `succeeded` 后直接读取 `result`
 
 ### Dialogue (Stage 01)
 

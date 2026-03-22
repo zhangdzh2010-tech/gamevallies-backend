@@ -13,11 +13,11 @@ The production public domain is:
 
 Before you deploy, make sure these files are up to date:
 
-- `backend/.env`
-- `backend/.env.example`
-- `backend/.env.deploy`
-- `backend/.env.deploy.example`
-- `backend/docs/deployment/ENV_SYNC_GUIDE.md`
+- `.env`
+- `.env.example`
+- `.env.deploy`
+- `.env.deploy.example`
+- `docs/deployment/ENV_SYNC_GUIDE.md`
 
 The authoritative values for the current production rollout are:
 
@@ -25,16 +25,22 @@ The authoritative values for the current production rollout are:
 - `USER_SERVICE_URL=https://www.gamevallies.com`
 - `GAME_SERVICE_URL=https://www.gamevallies.com`
 - `FEED_SERVICE_URL=https://www.gamevallies.com`
-- `AI_ENGINE_URL=https://sd6na7o7g00oknv60o970.apigateway-cn-shanghai-inner.volceapi.com`
+- `AI_ENGINE_URL_CN_SHANGHAI=https://sd6vrn9api80atrf10evg.apigateway-cn-shanghai-inner.volceapi.com`
 - `GAME_SERVICE_UPSTREAM_URL=https://sd6n8j9fmqc3q4mg90pr0.apigateway-cn-shanghai-inner.volceapi.com`
 - `FEED_SERVICE_UPSTREAM_URL=https://sd6n8kcmp8bgiaakgorig.apigateway-cn-shanghai-inner.volceapi.com`
+
+Legacy note:
+
+- `AI_ENGINE_URL` is now a compatibility fallback only.
+- The current China production path is `gv-ai-engine-cn`.
+- `gv-ai-engine` should be treated as a rollback-only legacy instance until final retirement.
 
 ## 2. Required variables
 
 Deployment uses:
 
-- environment file: `backend/.env.deploy`
-- template files: `backend/.env.deploy.example` and `backend/.env.example`
+- environment file: `.env.deploy`
+- template files: `.env.deploy.example` and `.env.example`
 - deploy script: `python scripts/deploy.py <service-name>`
 
 How to obtain values:
@@ -48,10 +54,10 @@ How to obtain values:
 Source:
 
 - `VOLCENGINE_ACCESS_KEY`, `VOLCENGINE_SECRET_KEY`: Volcengine IAM / API credentials
-- `VOLCENGINE_REGION`, `VOLCENGINE_API_HOST`: fixed team deployment settings, copied from the current production `.env.deploy`
+- `VOLCENGINE_REGION`: fixed team deployment setting, copied from the current production `.env.deploy`
+- `VOLCENGINE_API_HOST`, `VOLCENGINE_TOS_BUCKET`: kept in `.env.deploy` / templates for infra bookkeeping; the current `scripts/deploy.py` does not read them directly
 - `VOLCENGINE_VPC_ID`, `VOLCENGINE_SUBNET_ID`, `VOLCENGINE_SECURITY_GROUP_ID`: Volcengine VPC / subnet / security group console
 - `VOLCENGINE_REGISTRY`, `VOLCENGINE_REGISTRY_NAMESPACE`, `VOLCENGINE_REGISTRY_USERNAME`, `VOLCENGINE_REGISTRY_PASSWORD`: Volcengine VCR console
-- `VOLCENGINE_TOS_BUCKET`: Volcengine TOS console
 - `IMAGE_TAG`: set per release by the deployer; use a unique value such as timestamp or git commit hash
 
 ```bash
@@ -80,7 +86,8 @@ Source:
 - `REDIS_URL`: production Redis instance
 - `JWT_SECRET`, `JWT_REFRESH_SECRET`: current production auth secrets from `.env.deploy`
 - `PUBLIC_API_BASE_URL`, `USER_SERVICE_URL`, `GAME_SERVICE_URL`, `FEED_SERVICE_URL`: current public domain routing values
-- `AI_ENGINE_URL`, `GAME_SERVICE_UPSTREAM_URL`, `FEED_SERVICE_UPSTREAM_URL`: internal APIG upstream addresses from the current production `.env.deploy` and Volcengine APIG console
+- `AI_ENGINE_URL_CN_SHANGHAI`, `AI_ENGINE_URL_AP_SOUTHEAST_JOHOR`, `GAME_SERVICE_UPSTREAM_URL`, `FEED_SERVICE_UPSTREAM_URL`: internal APIG upstream addresses from the current production `.env.deploy` and Volcengine APIG console
+- `AI_ENGINE_URL`: compatibility fallback only; do not use as the primary China routing value for new deployments
 
 ```bash
 NODE_ENV=production
@@ -94,7 +101,10 @@ PUBLIC_API_BASE_URL=https://www.gamevallies.com
 USER_SERVICE_URL=https://www.gamevallies.com
 GAME_SERVICE_URL=https://www.gamevallies.com
 FEED_SERVICE_URL=https://www.gamevallies.com
-AI_ENGINE_URL=https://sd6na7o7g00oknv60o970.apigateway-cn-shanghai-inner.volceapi.com
+AI_ENGINE_URL=https://sd6vrn9api80atrf10evg.apigateway-cn-shanghai-inner.volceapi.com
+AI_ENGINE_URL_CN_SHANGHAI=https://sd6vrn9api80atrf10evg.apigateway-cn-shanghai-inner.volceapi.com
+AI_ENGINE_URL_AP_SOUTHEAST_JOHOR=
+AI_ENGINE_DEFAULT_REGION=cn_shanghai
 GAME_SERVICE_UPSTREAM_URL=https://sd6n8j9fmqc3q4mg90pr0.apigateway-cn-shanghai-inner.volceapi.com
 FEED_SERVICE_UPSTREAM_URL=https://sd6n8kcmp8bgiaakgorig.apigateway-cn-shanghai-inner.volceapi.com
 ```
@@ -144,23 +154,25 @@ Source:
 - `LLM_MODE`: current production `.env.deploy`
 - `LLM_API_KEY`: current LLM provider key
 - `LLM_BASE_URL`, `LLM_MODEL`, `LLM_FAST_MODEL`: active LLM provider configuration from `.env.deploy`
+- `PIPELINE_TIMEOUT_S`: current ai-engine pipeline timeout from `.env.deploy`
 
 ```bash
 PORT=8000
 LLM_MODE=real
 LLM_API_KEY=...
-LLM_BASE_URL=https://api.minimaxi.com
+LLM_BASE_URL=https://api.minimaxi.com/v1
 LLM_MODEL=MiniMax-M2.5
 LLM_FAST_MODEL=MiniMax-M2.5
+PIPELINE_TIMEOUT_S=600
 ```
 
 ## 3. Deploy steps
 
-Run all commands from `d:\Project\gamevallies\gamevallies-backend`.
+Run all commands from the repository root.
 
 ### 3.1 Load environment
 
-This step loads deployment values from `backend/.env.deploy` into the current shell.
+This step loads deployment values from `.env.deploy` into the current shell.
 
 PowerShell:
 
@@ -182,8 +194,16 @@ set +a
 
 ### 3.2 Login to VCR
 
+PowerShell:
+
+```powershell
+$env:VOLCENGINE_REGISTRY_PASSWORD | docker login $env:VOLCENGINE_REGISTRY -u $env:VOLCENGINE_REGISTRY_USERNAME --password-stdin
+```
+
+Bash:
+
 ```bash
-echo 'Gamevallies@2026' | docker login gamevallies-repo-cn-shanghai.cr.volces.com -u '6448手机用户#UeaqaB@2112970785' --password-stdin
+echo "$VOLCENGINE_REGISTRY_PASSWORD" | docker login "$VOLCENGINE_REGISTRY" -u "$VOLCENGINE_REGISTRY_USERNAME" --password-stdin
 ```
 
 Important:

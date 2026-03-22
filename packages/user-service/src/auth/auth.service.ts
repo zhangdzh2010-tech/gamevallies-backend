@@ -1,4 +1,12 @@
-import { Injectable, UnauthorizedException, ConflictException, BadRequestException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  HttpException,
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
@@ -22,6 +30,7 @@ type WechatMiniappSession = {
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
   private redis: Redis;
 
   constructor(
@@ -206,18 +215,38 @@ export class AuthService {
   }
 
   async sendSmsCode(phone: string, type: VerificationPurpose): Promise<void> {
-    const cooldownKey = `sms:cd:${phone}`;
-    const isCooldown = await this.redis.exists(cooldownKey);
-    if (isCooldown) {
-      const ttl = await this.redis.ttl(cooldownKey);
-      throw new BadRequestException(`请等待 ${ttl} 秒后再重新获取验证码`);
-    }
-
-    const code = `${Math.floor(100000 + Math.random() * 900000)}`;
     const key = `sms:vcode:${phone}`;
-    await this.redis.setex(key, VERIFICATION_TTL_SECONDS, JSON.stringify({ code, type }));
-    await this.smsService.sendCode(phone, code, type);
-    await this.redis.setex(cooldownKey, SEND_INTERVAL_SECONDS, '1');
+    let verificationStored = false;
+
+    try {
+      const cooldownKey = `sms:cd:${phone}`;
+      const isCooldown = await this.redis.exists(cooldownKey);
+      if (isCooldown) {
+        const ttl = await this.redis.ttl(cooldownKey);
+        throw new BadRequestException(`请等待 ${ttl} 秒后再重新获取验证码`);
+      }
+
+      const code = `${Math.floor(100000 + Math.random() * 900000)}`;
+      await this.redis.setex(key, VERIFICATION_TTL_SECONDS, JSON.stringify({ code, type }));
+      verificationStored = true;
+
+      await this.smsService.sendCode(phone, code, type);
+      await this.redis.setex(cooldownKey, SEND_INTERVAL_SECONDS, '1');
+    } catch (error) {
+      if (verificationStored) {
+        await this.redis.del(key).catch(() => undefined);
+      }
+
+      if (error instanceof HttpException) {
+        throw error;
+      }
+
+      this.logger.error(
+        `Failed to send SMS code for ${phone}: ${error instanceof Error ? error.message : String(error)}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      throw new ServiceUnavailableException('验证码服务暂不可用，请稍后重试');
+    }
   }
 
   private async verifySmsCode(phone: string, code: string): Promise<void> {

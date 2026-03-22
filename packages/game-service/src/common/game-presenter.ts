@@ -68,6 +68,8 @@ export function presentGame(game: any) {
     forks: Number(game.forkCount || game.forks || 0),
     commentCount: Number(game.commentCount || 0),
     qualityScore: game.qualityScore ?? 0,
+    canPlay: game.canPlay ?? true,
+    requireSubscription: game.requireSubscription ?? false,
     authorId: game.authorId || game.author?.id || null,
     author: presentAuthor(game.author),
     createdAt: game.createdAt,

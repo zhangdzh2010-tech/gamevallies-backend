@@ -36,7 +36,7 @@ export class GameController {
   async expandPrompt(@Body() body: any) {
     try {
       const description = body.description || body.prompt || '';
-      const aiEngineUrl = this.gameService['aiEngineUrl'];
+      const aiEngineUrl = await this.gameService.getAiEngineBaseUrl(body.regionHint);
       const response = await require('axios').post(
         `${aiEngineUrl}/api/v1/ai/expand-prompt`,
         { description },
@@ -60,10 +60,13 @@ export class GameController {
       }
 
       const result = await this.gameService.create(userId, {
+        title: dto.title,
         description: dto.description || dto.prompt || '',
+        timeoutS: dto.timeoutS,
+        regionHint: dto.regionHint,
       });
 
-      return ok({ gameId: result.gameId });
+      return ok(result);
     } catch (error) {
       this.logger.error(`Error generating game: ${error.message}`);
       throw error;
@@ -130,6 +133,63 @@ export class GameController {
     }
   }
 
+  @Get(':id/generation-status')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getGenerationStatus(@Param('id') id: string, @Req() req: any) {
+    try {
+      const userId = req.user?.sub || req.user?.id;
+      if (!userId) {
+        throw new BadRequestException('Invalid token');
+      }
+
+      return ok(await this.gameService.getGenerationStatus(id, userId));
+    } catch (error) {
+      this.logger.error(`Error getting generation status: ${error.message}`);
+      throw error;
+    }
+  }
+
+  @Get('/tasks/:taskId')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getTask(@Param('taskId') taskId: string, @Req() req: any) {
+    const userId = req.user?.sub || req.user?.id;
+    if (!userId) {
+      throw new BadRequestException('Invalid token');
+    }
+
+    return ok(await this.gameService.getTask(taskId, userId));
+  }
+
+  @Get('/tasks/:taskId/events')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getTaskEvents(
+    @Param('taskId') taskId: string,
+    @Req() req: any,
+    @Query('limit') limit?: string,
+  ) {
+    const userId = req.user?.sub || req.user?.id;
+    if (!userId) {
+      throw new BadRequestException('Invalid token');
+    }
+
+    return ok(await this.gameService.getTaskEvents(taskId, userId, limit ? Number.parseInt(limit, 10) : undefined));
+  }
+
+  @Post('/tasks/:taskId/cancel')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async cancelTask(@Param('taskId') taskId: string, @Req() req: any) {
+    const userId = req.user?.sub || req.user?.id;
+    if (!userId) {
+      throw new BadRequestException('Invalid token');
+    }
+
+    return ok(await this.gameService.cancelTask(taskId, userId));
+  }
+
   @Get(':id')
   @HttpCode(HttpStatus.OK)
   async getGame(@Param('id') id: string) {
@@ -153,6 +213,23 @@ export class GameController {
       });
     } catch (error) {
       this.logger.error(`Error playing game: ${error.message}`);
+      throw error;
+    }
+  }
+
+  @Post(':id/unlock')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async unlockGame(@Param('id') id: string, @Req() req: any) {
+    try {
+      const userId = req.user?.sub || req.user?.id;
+      if (!userId) {
+        throw new BadRequestException('Invalid token');
+      }
+
+      return ok(await this.gameService.unlock(id, userId));
+    } catch (error) {
+      this.logger.error(`Error unlocking game: ${error.message}`);
       throw error;
     }
   }
@@ -196,8 +273,7 @@ export class GameController {
       const result = await this.gameService.iterate(id, userId, dto);
       return ok({
         iterationId: `${result.gameId}:v${result.version}`,
-        gameId: result.gameId,
-        version: result.version,
+        ...result,
       });
     } catch (error) {
       this.logger.error(`Error iterating game: ${error.message}`);

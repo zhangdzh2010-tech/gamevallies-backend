@@ -1,0 +1,557 @@
+"""Database-backed LLM gateway with per-step routing and request-scoped context."""
+
+from __future__ import annotations
+
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
+import json
+import logging
+import re
+import time
+from typing import Any, Optional
+from urllib.parse import unquote
+
+import httpx
+import pymysql
+
+from ..config.settings import settings
+
+logger = logging.getLogger(__name__)
+
+_request_context_var: ContextVar[dict[str, Optional[str]]] = ContextVar(
+    "llm_request_context",
+    default={"game_id": None, "user_id": None, "task_id": None},
+)
+
+
+@contextmanager
+def llm_request_context(
+    *,
+    game_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    task_id: Optional[str] = None,
+):
+    token = _request_context_var.set({
+        "game_id": game_id,
+        "user_id": user_id,
+        "task_id": task_id,
+    })
+    try:
+        yield
+    finally:
+        _request_context_var.reset(token)
+
+
+def get_request_context() -> dict[str, Optional[str]]:
+    return _request_context_var.get()
+
+
+def _parse_database_url(url: str) -> dict[str, Any]:
+    base = url.split("?")[0]
+    prefix = "mysql://"
+    if not base.startswith(prefix):
+        raise ValueError(f"Cannot parse DATABASE_URL (expected mysql:// prefix): {url!r}")
+    rest = base[len(prefix):]
+
+    match = re.search(r"@([^@]+):(\d+)/(.+)$", rest)
+    if not match:
+        raise ValueError(f"Cannot parse DATABASE_URL: {url!r}")
+
+    host = match.group(1)
+    port = int(match.group(2))
+    database = match.group(3)
+
+    creds = rest[: match.start()]
+    colon_idx = creds.find(":")
+    if colon_idx == -1:
+        raise ValueError(f"Cannot parse DATABASE_URL (missing user:password): {url!r}")
+
+    user = unquote(creds[:colon_idx])
+    password = unquote(creds[colon_idx + 1 :])
+
+    return {
+      "host": host,
+      "port": port,
+      "database": database,
+      "user": user,
+      "password": password,
+    }
+
+
+def _loads_json(value: Any, default: Any) -> Any:
+    if value is None:
+        return default
+    if isinstance(value, (list, dict)):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8")
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return default
+    return default
+
+
+@dataclass
+class ProviderRecord:
+    id: str
+    name: str
+    provider_type: str
+    region: str
+    base_url: str
+    api_key: str
+    model: str
+    fast_model: Optional[str]
+    request_timeout_s: int
+    connect_timeout_s: int
+    enabled: bool
+    priority: int
+    description: Optional[str]
+    extra_config: dict[str, Any]
+    updated_at: float
+
+
+@dataclass
+class RouteRecord:
+    id: str
+    step_key: str
+    region: str
+    provider_id: str
+    fallback_provider_ids: list[str]
+    model_override: Optional[str]
+    fast_model_override: Optional[str]
+    request_timeout_s: Optional[int]
+    connect_timeout_s: Optional[int]
+    enabled: bool
+    updated_at: float
+
+
+@dataclass
+class ResolvedRoute:
+    provider_id: Optional[str]
+    provider_name: str
+    provider_type: str
+    region: str
+    base_url: str
+    api_key: str
+    model: str
+    fast_model: Optional[str]
+    request_timeout_s: int
+    connect_timeout_s: int
+    step_key: str
+    config_version: int
+    route_snapshot: dict[str, Any]
+
+
+class LLMGateway:
+    def __init__(self) -> None:
+        self._providers: dict[str, ProviderRecord] = {}
+        self._routes: list[RouteRecord] = []
+        self._config_version = 0
+        self._loaded_at = 0.0
+
+    def _connect(self):
+        params = _parse_database_url(settings.DATABASE_URL)
+        return pymysql.connect(
+            host=params["host"],
+            port=params["port"],
+            user=params["user"],
+            password=params["password"],
+            database=params["database"],
+            charset="utf8mb4",
+            connect_timeout=5,
+            read_timeout=5,
+            cursorclass=pymysql.cursors.DictCursor,
+        )
+
+    def _load_from_db(self) -> tuple[dict[str, ProviderRecord], list[RouteRecord], int]:
+        conn = self._connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                      id, name, provider_type, region, base_url, api_key, model, fast_model,
+                      request_timeout_s, connect_timeout_s, enabled, priority, description,
+                      extra_config, updated_at
+                    FROM llm_gateway_providers
+                    WHERE enabled = 1
+                    ORDER BY priority ASC, updated_at DESC
+                    """
+                )
+                provider_rows = cur.fetchall()
+                cur.execute(
+                    """
+                    SELECT
+                      id, step_key, region, provider_id, fallback_provider_ids,
+                      model_override, fast_model_override, request_timeout_s,
+                      connect_timeout_s, enabled, updated_at
+                    FROM llm_step_routes
+                    WHERE enabled = 1
+                    ORDER BY updated_at DESC
+                    """
+                )
+                route_rows = cur.fetchall()
+        finally:
+            conn.close()
+
+        providers: dict[str, ProviderRecord] = {}
+        version_candidates: list[int] = []
+        for row in provider_rows:
+            updated_at = row.get("updated_at")
+            updated_ts = int(updated_at.timestamp()) if updated_at else int(time.time())
+            version_candidates.append(updated_ts)
+            providers[row["id"]] = ProviderRecord(
+                id=row["id"],
+                name=row["name"],
+                provider_type=row["provider_type"],
+                region=row.get("region") or "cn_shanghai",
+                base_url=row["base_url"],
+                api_key=row["api_key"],
+                model=row["model"],
+                fast_model=row.get("fast_model"),
+                request_timeout_s=int(row.get("request_timeout_s") or 600),
+                connect_timeout_s=int(row.get("connect_timeout_s") or 15),
+                enabled=bool(row.get("enabled", True)),
+                priority=int(row.get("priority") or 100),
+                description=row.get("description"),
+                extra_config=_loads_json(row.get("extra_config"), {}),
+                updated_at=float(updated_ts),
+            )
+
+        routes: list[RouteRecord] = []
+        for row in route_rows:
+            updated_at = row.get("updated_at")
+            updated_ts = int(updated_at.timestamp()) if updated_at else int(time.time())
+            version_candidates.append(updated_ts)
+            routes.append(RouteRecord(
+                id=row["id"],
+                step_key=row["step_key"],
+                region=row.get("region") or "cn_shanghai",
+                provider_id=row["provider_id"],
+                fallback_provider_ids=_loads_json(row.get("fallback_provider_ids"), []),
+                model_override=row.get("model_override"),
+                fast_model_override=row.get("fast_model_override"),
+                request_timeout_s=int(row["request_timeout_s"]) if row.get("request_timeout_s") is not None else None,
+                connect_timeout_s=int(row["connect_timeout_s"]) if row.get("connect_timeout_s") is not None else None,
+                enabled=bool(row.get("enabled", True)),
+                updated_at=float(updated_ts),
+            ))
+
+        return providers, routes, max(version_candidates or [0])
+
+    def refresh(self, *, raise_on_error: bool = False) -> int:
+        try:
+            providers, routes, config_version = self._load_from_db()
+            self._providers = providers
+            self._routes = routes
+            self._config_version = config_version
+            self._loaded_at = time.time()
+            logger.info(
+                "llm_gateway: loaded %d providers and %d routes",
+                len(providers),
+                len(routes),
+            )
+            return len(providers)
+        except Exception:
+            logger.warning("llm_gateway: failed to load providers from DB, using env fallback", exc_info=True)
+            self._loaded_at = time.time()
+            if raise_on_error:
+                raise
+            return len(self._providers)
+
+    def _ensure_loaded(self) -> None:
+        ttl = max(int(settings.LLM_GATEWAY_CACHE_TTL_S or 10), 1)
+        if not self._loaded_at or (time.time() - self._loaded_at) > ttl:
+            self.refresh()
+
+    def _fallback_route(
+        self,
+        *,
+        step_key: str,
+        prefer_fast: bool = False,
+        model_override: Optional[str] = None,
+    ) -> ResolvedRoute:
+        provider_type = "openai_compatible" if settings.LLM_API_KEY and settings.LLM_BASE_URL else "anthropic"
+        base_url = settings.LLM_BASE_URL if provider_type == "openai_compatible" else ""
+        api_key = settings.LLM_API_KEY if provider_type == "openai_compatible" else settings.ANTHROPIC_API_KEY
+        model = model_override or (
+            settings.LLM_FAST_MODEL if provider_type == "openai_compatible" and prefer_fast and settings.LLM_FAST_MODEL
+            else settings.LLM_MODEL if provider_type == "openai_compatible"
+            else settings.CLAUDE_FAST_MODEL if prefer_fast
+            else settings.CLAUDE_MODEL
+        )
+        fast_model = settings.LLM_FAST_MODEL if provider_type == "openai_compatible" else settings.CLAUDE_FAST_MODEL
+
+        return ResolvedRoute(
+            provider_id=None,
+            provider_name=f"env-{provider_type}",
+            provider_type=provider_type,
+            region=settings.SERVICE_REGION or "cn_shanghai",
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            fast_model=fast_model,
+            request_timeout_s=int(settings.PIPELINE_TIMEOUT_S or 600),
+            connect_timeout_s=15,
+            step_key=step_key,
+            config_version=self._config_version,
+            route_snapshot={
+                "step_key": step_key,
+                "source": "env",
+                "region": settings.SERVICE_REGION or "cn_shanghai",
+            },
+        )
+
+    def has_enabled_provider(self) -> bool:
+        self._ensure_loaded()
+        if self._providers:
+            return True
+        return bool(
+            (settings.LLM_API_KEY and settings.LLM_BASE_URL)
+            or settings.ANTHROPIC_API_KEY
+        )
+
+    def resolve(
+        self,
+        *,
+        step_key: str,
+        prefer_fast: bool = False,
+        model_override: Optional[str] = None,
+    ) -> ResolvedRoute:
+        self._ensure_loaded()
+        if not self._providers:
+            return self._fallback_route(step_key=step_key, prefer_fast=prefer_fast, model_override=model_override)
+
+        service_region = (settings.SERVICE_REGION or "cn_shanghai").strip() or "cn_shanghai"
+        route = None
+        for region in [service_region]:
+            route = next(
+                (candidate for candidate in self._routes if candidate.step_key == step_key and candidate.region == region),
+                None,
+            )
+            if route:
+                break
+
+        provider: Optional[ProviderRecord] = None
+        if route:
+            provider = self._providers.get(route.provider_id)
+            if provider is None:
+                for fallback_id in route.fallback_provider_ids:
+                    provider = self._providers.get(fallback_id)
+                    if provider:
+                        break
+
+        if provider is None:
+            for region in [service_region]:
+                provider = next(
+                    (candidate for candidate in self._providers.values() if candidate.region == region),
+                    None,
+                )
+                if provider:
+                    break
+
+        if provider is None:
+            return self._fallback_route(step_key=step_key, prefer_fast=prefer_fast, model_override=model_override)
+
+        if model_override:
+            resolved_model = model_override
+        elif prefer_fast and route and route.fast_model_override:
+            resolved_model = route.fast_model_override
+        elif route and route.model_override:
+            resolved_model = route.model_override
+        elif prefer_fast and provider.fast_model:
+            resolved_model = provider.fast_model
+        else:
+            resolved_model = provider.model
+
+        return ResolvedRoute(
+            provider_id=provider.id,
+            provider_name=provider.name,
+            provider_type=provider.provider_type,
+            region=provider.region,
+            base_url=provider.base_url,
+            api_key=provider.api_key,
+            model=resolved_model,
+            fast_model=provider.fast_model,
+            request_timeout_s=int(route.request_timeout_s if route and route.request_timeout_s is not None else provider.request_timeout_s),
+            connect_timeout_s=int(route.connect_timeout_s if route and route.connect_timeout_s is not None else provider.connect_timeout_s),
+            step_key=step_key,
+            config_version=self._config_version,
+            route_snapshot={
+                "step_key": step_key,
+                "region": provider.region,
+                "provider_id": provider.id,
+                "provider_name": provider.name,
+                "provider_type": provider.provider_type,
+                "route_id": route.id if route else None,
+                "prefer_fast": prefer_fast,
+            },
+        )
+
+    async def emit_llm_call_log(self, payload: dict[str, Any]) -> None:
+        base_url = settings.GAME_SERVICE_UPSTREAM_URL.rstrip("/")
+        context = get_request_context()
+        if not base_url or not context.get("game_id") or not context.get("user_id"):
+            return
+
+        body = {
+            "taskId": context.get("task_id"),
+            "gameId": context.get("game_id"),
+            "userId": context.get("user_id"),
+            **payload,
+        }
+        headers = {}
+        if settings.ADMIN_TOKEN:
+            headers["x-admin-token"] = settings.ADMIN_TOKEN
+
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                await client.post(
+                    f"{base_url}/api/v1/internal/generation/llm-call-log",
+                    json=body,
+                    headers=headers,
+                )
+        except Exception as exc:
+            logger.debug("Failed to relay llm call log to game-service: %s", exc)
+
+    async def emit_task_activity(self, payload: dict[str, Any]) -> None:
+        base_url = settings.GAME_SERVICE_UPSTREAM_URL.rstrip("/")
+        context = get_request_context()
+        if not base_url or not context.get("game_id") or not context.get("user_id"):
+            return
+
+        body = {
+            "taskId": context.get("task_id"),
+            "gameId": context.get("game_id"),
+            "userId": context.get("user_id"),
+            **payload,
+        }
+        headers = {}
+        if settings.ADMIN_TOKEN:
+            headers["x-admin-token"] = settings.ADMIN_TOKEN
+
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                await client.post(
+                    f"{base_url}/api/v1/internal/generation/task-activity",
+                    json=body,
+                    headers=headers,
+                )
+        except Exception as exc:
+            logger.debug("Failed to relay task activity to game-service: %s", exc)
+
+    async def test_provider(self, provider_id: str) -> dict[str, Any]:
+        self.refresh(raise_on_error=True)
+        provider = self._providers.get(provider_id)
+        if not provider:
+            raise ValueError("Provider not found")
+
+        route = ResolvedRoute(
+            provider_id=provider.id,
+            provider_name=provider.name,
+            provider_type=provider.provider_type,
+            region=provider.region,
+            base_url=provider.base_url,
+            api_key=provider.api_key,
+            model=provider.fast_model or provider.model,
+            fast_model=provider.fast_model,
+            request_timeout_s=provider.request_timeout_s,
+            connect_timeout_s=provider.connect_timeout_s,
+            step_key="admin.test",
+            config_version=self._config_version,
+            route_snapshot={"provider_id": provider.id, "provider_name": provider.name},
+        )
+
+        start = time.time()
+        success = False
+        http_status = None
+        error_message = None
+        try:
+            if route.provider_type == "anthropic":
+                from anthropic import Anthropic
+                client = Anthropic(api_key=route.api_key, base_url=route.base_url or None)
+                response = client.messages.create(
+                    model=route.model,
+                    max_tokens=32,
+                    messages=[{"role": "user", "content": "Reply with PONG"}],
+                )
+                success = True
+                output = ""
+                for block in response.content:
+                    text = getattr(block, "text", "")
+                    if text:
+                        output += text
+            else:
+                payload = {
+                    "model": route.model,
+                    "messages": [{"role": "user", "content": "Reply with PONG"}],
+                    "max_tokens": 32,
+                }
+                headers = {
+                    "Authorization": f"Bearer {route.api_key}",
+                    "Content-Type": "application/json",
+                }
+                endpoint = route.base_url.rstrip("/")
+                if not endpoint.endswith("/chat/completions"):
+                    endpoint = f"{endpoint}/chat/completions"
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(route.request_timeout_s, connect=route.connect_timeout_s)
+                ) as client:
+                    response = await client.post(endpoint, headers=headers, json=payload)
+                    http_status = response.status_code
+                    response.raise_for_status()
+                    success = True
+                    output = response.text[:200]
+        except Exception as exc:
+            error_message = str(exc)
+        latency_ms = int((time.time() - start) * 1000)
+
+        try:
+            conn = self._connect()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO llm_gateway_test_records (
+                          id, provider_id, success, region, resolved_endpoint, model,
+                          latency_ms, http_status, error_message, tested_at
+                        ) VALUES (
+                          REPLACE(UUID(), '-', ''), %s, %s, %s, %s, %s,
+                          %s, %s, %s, NOW(3)
+                        )
+                        """,
+                        (
+                            provider.id,
+                            1 if success else 0,
+                            provider.region,
+                            provider.base_url,
+                            route.model,
+                            latency_ms,
+                            http_status,
+                            error_message,
+                        ),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:
+            logger.debug("Failed to persist llm gateway test record", exc_info=True)
+
+        return {
+            "providerId": provider.id,
+            "providerName": provider.name,
+            "providerType": provider.provider_type,
+            "region": provider.region,
+            "resolvedEndpoint": provider.base_url,
+            "model": route.model,
+            "latencyMs": latency_ms,
+            "httpStatus": http_status,
+            "success": success,
+            "errorMessage": error_message,
+        }
+
+
+gateway = LLMGateway()

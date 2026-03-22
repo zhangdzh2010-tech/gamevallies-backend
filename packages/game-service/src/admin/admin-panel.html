@@ -214,6 +214,16 @@ tbody tr:hover{background:#f8fafc}
 .log-linkmeta{min-width:0;flex:1}
 .log-linkmeta .label{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#94a3b8;margin-bottom:5px}
 .log-linkmeta a{display:block;font-size:13px;line-height:1.6;word-break:break-all}
+.log-source-grid{display:flex;flex-direction:column;gap:14px}
+.log-source-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.log-source-summary{font-size:12px;color:#64748b}
+.log-source-block{border:1px solid #1e293b;border-radius:16px;overflow:hidden;background:#0f172a}
+.log-source-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;background:#111827;border-bottom:1px solid #1e293b}
+.log-source-meta{min-width:0}
+.log-source-name{font-size:13px;font-weight:700;color:#f8fafc}
+.log-source-size{font-size:11px;color:#94a3b8;margin-top:4px}
+.log-source-head .btn{flex-shrink:0}
+.log-empty{padding:14px 16px;border-radius:14px;border:1px dashed #cbd5e1;background:#f8fafc;color:#64748b;font-size:13px;line-height:1.6}
 .log-code{background:#0f172a;color:#dbeafe;border-radius:16px;padding:16px 18px;font-size:12px;line-height:1.6;overflow:auto;border:1px solid #1e293b;max-height:260px}
 
 @media (max-width: 900px){
@@ -279,8 +289,10 @@ tbody tr:hover{background:#f8fafc}
     <div class="tab" data-tab="games" onclick="switchTab('games')">游戏管理</div>
     <div class="tab" data-tab="create" onclick="switchTab('create')">添加游戏</div>
     <div class="tab" data-tab="logs" onclick="switchTab('logs')">生成记录</div>
+    <div class="tab" data-tab="tasks" onclick="switchTab('tasks')">异步任务</div>
     <div class="tab" data-tab="users" onclick="switchTab('users')">用户管理</div>
     <div class="tab" data-tab="prompts" onclick="switchTab('prompts')">Prompt 配置</div>
+    <div class="tab" data-tab="llm" onclick="switchTab('llm')">LLM 网关</div>
     <div class="tab" data-tab="settings" onclick="switchTab('settings')">系统配置</div>
   </div>
 
@@ -360,6 +372,32 @@ tbody tr:hover{background:#f8fafc}
         <button class="btn btn-secondary" onclick="logPage=1;loadLogs()">搜索</button>
       </div>
       <div id="logTableWrap"></div>
+    </div>
+
+    <!-- Async Tasks -->
+    <div id="page-tasks" class="page">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:12px;flex-wrap:wrap">
+        <div>
+          <h2 style="font-size:18px;font-weight:600;color:#1e293b">异步任务管理</h2>
+          <p style="font-size:12px;color:#94a3b8;margin-top:4px">查看持久化生成任务、阶段事件和 LLM 调用错误。</p>
+        </div>
+        <button class="btn btn-secondary" onclick="loadTasks()">刷新任务</button>
+      </div>
+      <div class="toolbar">
+        <input type="text" id="task-search" placeholder="搜索 taskId / gameId / 用户名..." onkeyup="if(event.key==='Enter'){taskPage=1;loadTasks()}">
+        <select id="task-status" onchange="taskPage=1;loadTasks()">
+          <option value="all">全部状态</option>
+          <option value="queued">queued</option>
+          <option value="running">running</option>
+          <option value="succeeded">succeeded</option>
+          <option value="failed">failed</option>
+          <option value="canceled">canceled</option>
+          <option value="timed_out">timed_out</option>
+        </select>
+        <button class="btn btn-secondary" onclick="taskPage=1;loadTasks()">搜索</button>
+      </div>
+      <div id="taskTableWrap"></div>
+      <div id="taskDetailWrap" style="margin-top:16px"></div>
     </div>
 
     <!-- User Management -->
@@ -453,6 +491,107 @@ tbody tr:hover{background:#f8fafc}
             </div>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- LLM Gateway -->
+    <div id="page-llm" class="page">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:12px;flex-wrap:wrap">
+        <div>
+          <h2 style="font-size:18px;font-weight:600;color:#1e293b">LLM 网关配置</h2>
+          <p style="font-size:12px;color:#94a3b8;margin-top:4px">管理 Provider 池、步骤路由，并支持在线测试与热刷新。</p>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-secondary" onclick="refreshGateway()">热刷新网关</button>
+          <button class="btn btn-secondary" onclick="loadLlmGateway()">刷新列表</button>
+        </div>
+      </div>
+      <div class="form-grid" style="align-items:start">
+        <div style="background:#fff;border-radius:10px;border:1px solid #e5e7eb;padding:20px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+            <h3 style="font-size:15px;font-weight:600;color:#1e293b">Provider</h3>
+            <button class="btn btn-secondary btn-sm" onclick="resetProviderForm()">新建 Provider</button>
+          </div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label>名称</label>
+              <input type="text" id="llm-provider-name" placeholder="如 MiniMax Shanghai">
+            </div>
+            <div class="form-group">
+              <label>Provider 类型</label>
+              <select id="llm-provider-type">
+                <option value="openai_compatible">openai_compatible</option>
+                <option value="anthropic">anthropic</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Region Target</label>
+              <select id="llm-provider-region-target"></select>
+            </div>
+            <div class="form-group">
+              <label>优先级</label>
+              <input type="number" id="llm-provider-priority" placeholder="100">
+            </div>
+            <div class="form-group full">
+              <label>Base URL</label>
+              <input type="text" id="llm-provider-base-url" placeholder="https://api.minimaxi.com/v1">
+            </div>
+            <div class="form-group full">
+              <label>API Key</label>
+              <input type="password" id="llm-provider-api-key" placeholder="留空表示更新时保留原值">
+            </div>
+            <div class="form-group">
+              <label>主模型</label>
+              <input type="text" id="llm-provider-model" placeholder="MiniMax-M2.5">
+            </div>
+            <div class="form-group">
+              <label>快模型</label>
+              <input type="text" id="llm-provider-fast-model" placeholder="MiniMax-M2.5">
+            </div>
+            <div class="form-group">
+              <label>请求超时（秒）</label>
+              <input type="number" id="llm-provider-timeout" placeholder="600">
+            </div>
+            <div class="form-group">
+              <label>连接超时（秒）</label>
+              <input type="number" id="llm-provider-connect-timeout" placeholder="15">
+            </div>
+            <div class="form-group full">
+              <label>描述</label>
+              <input type="text" id="llm-provider-description" placeholder="可选说明">
+            </div>
+            <div class="form-group full">
+              <label><input type="checkbox" id="llm-provider-enabled" checked style="width:auto;margin-right:8px"> 启用</label>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+            <button class="btn btn-secondary" onclick="resetProviderForm()">重置</button>
+            <button class="btn btn-primary" onclick="saveProvider()">保存 Provider</button>
+          </div>
+        </div>
+        <div style="background:#fff;border-radius:10px;border:1px solid #e5e7eb;padding:20px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+            <h3 style="font-size:15px;font-weight:600;color:#1e293b">固定步骤绑定</h3>
+            <div style="display:flex;align-items:center;gap:8px">
+              <label style="font-size:13px;color:#64748b">Execution Region</label>
+              <select id="llm-route-execution-region" onchange="handleExecutionRegionChange()">
+                <option value="cn_shanghai">cn_shanghai</option>
+                <option value="ap_southeast_johor">ap_southeast_johor</option>
+              </select>
+            </div>
+          </div>
+          <div style="font-size:13px;color:#64748b;line-height:1.6">
+            步骤为系统内置固定目录。请直接在下方列表中为每个步骤选择 Provider，Region 会随所选 Provider 自动确定。
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:16px" class="table-wrap">
+        <div style="padding:16px 18px;border-bottom:1px solid #e5e7eb;font-size:15px;font-weight:600;color:#1e293b">Provider 列表</div>
+        <div id="llmProviderTableWrap"></div>
+      </div>
+      <div style="margin-top:16px" class="table-wrap">
+        <div style="padding:16px 18px;border-bottom:1px solid #e5e7eb;font-size:15px;font-weight:600;color:#1e293b">固定步骤绑定列表</div>
+        <div id="llmRouteTableWrap"></div>
       </div>
     </div>
 
@@ -554,6 +693,15 @@ let token = localStorage.getItem('gv_admin_token') || '';
 let currentPage = 1;
 let totalPages = 1;
 let searchTimeout = null;
+let taskPage = 1;
+let llmProviders = [];
+let llmRoutes = [];
+let llmSteps = [];
+let llmRegionTargets = [];
+let currentExecutionRegion = 'cn_shanghai';
+let currentProviderId = null;
+let currentTaskDetailId = null;
+let taskDetailRefreshTimer = null;
 
 // ===================== Auth =====================
 function checkAuth() {
@@ -623,6 +771,71 @@ function toast(msg, type = 'success') {
   setTimeout(() => el.remove(), 3500);
 }
 
+const logSourceCache = {};
+
+function getLogSourceSections(bundle) {
+  return [
+    { key: 'html', label: 'HTML', code: bundle?.htmlCode || '' },
+    { key: 'css', label: 'CSS', code: bundle?.cssCode || '' },
+    { key: 'js', label: 'JavaScript', code: bundle?.jsCode || '' },
+  ].filter(section => section.code && section.code.trim());
+}
+
+function formatTextSize(text) {
+  const bytes = new TextEncoder().encode(text || '').length;
+  if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+  if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return bytes + ' B';
+}
+
+async function copyText(text, successMessage) {
+  if (!text || !String(text).trim()) {
+    toast('当前没有可复制的源码', 'error');
+    return;
+  }
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      document.execCommand('copy');
+      textarea.remove();
+    }
+    toast(successMessage || '已复制');
+  } catch (e) {
+    toast('复制失败，请手动复制', 'error');
+  }
+}
+
+function buildCombinedLogSource(gameId) {
+  const source = logSourceCache[gameId];
+  if (!source) return '';
+  const sections = [];
+  if (source.html && source.html.trim()) sections.push('<!-- HTML -->\n' + source.html);
+  if (source.css && source.css.trim()) sections.push('/* CSS */\n' + source.css);
+  if (source.js && source.js.trim()) sections.push('// JavaScript\n' + source.js);
+  return sections.join('\n\n');
+}
+
+function copyLogSourceSection(gameId, key) {
+  const source = logSourceCache[gameId];
+  if (!source) {
+    toast('源码缓存不存在，请重新打开详情', 'error');
+    return;
+  }
+  return copyText(source[key] || '', '已复制 ' + key.toUpperCase() + ' 源码');
+}
+
+function copyAllLogSource(gameId) {
+  return copyText(buildCombinedLogSource(gameId), '已复制全部源码');
+}
+
 // ===================== Confirm =====================
 function confirmDialog(title, msg) {
   return new Promise(resolve => {
@@ -637,13 +850,16 @@ function confirmDialog(title, msg) {
 
 // ===================== Tabs =====================
 function switchTab(tab) {
+  if (tab !== 'tasks') clearTaskDetailRefresh();
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
   document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === 'page-' + tab));
   if (tab === 'dashboard') loadStats();
   if (tab === 'games') { showGameList(); loadGames(); }
   if (tab === 'logs') loadLogs();
+  if (tab === 'tasks') loadTasks();
   if (tab === 'users') { showUserList(); loadUsers(); }
   if (tab === 'prompts') loadConfigs();
+  if (tab === 'llm') loadLlmGateway();
   if (tab === 'settings') {}  // settings has no async load
 }
 
@@ -1386,6 +1602,7 @@ function renderLogs(d) {
       '<td>' + time + '</td>' +
       '<td>' +
         '<a href="' + previewUrl + '" target="_blank" class="btn btn-sm btn-secondary" style="margin-right:4px">预览</a>' +
+        '<button class="btn btn-sm btn-secondary" style="margin-right:4px" onclick="showLogDetail(\'' + g.gameId + '\', \'source\')">源码</button>' +
         '<button class="btn btn-sm btn-secondary" onclick="showLogDetail(\'' + g.gameId + '\')">详情</button>' +
       '</td>' +
       '</tr>';
@@ -1404,10 +1621,16 @@ function renderLogs(d) {
   document.getElementById('logTableWrap').innerHTML = html;
 }
 
-async function showLogDetail(gameId) {
+async function showLogDetail(gameId, focusSection) {
   try {
     const g = await api('/games/' + gameId);
     const bundle = g.bundles && g.bundles[0];
+    logSourceCache[gameId] = {
+      html: bundle?.htmlCode || '',
+      css: bundle?.cssCode || '',
+      js: bundle?.jsCode || '',
+    };
+    const sourceSections = getLogSourceSections(bundle);
     const meta = Object.assign({}, (bundle && bundle.generationMeta) || {}, (bundle && bundle.metadata) || {});
     const spec = meta.gameSpec || bundle?.spec || null;
     const gameBaseUrl = window.location.origin;
@@ -1505,6 +1728,32 @@ async function showLogDetail(gameId) {
       detail += '</div>';
     }
 
+    detail += '<div class="log-card" data-log-source-card="true">';
+    detail += '<div class="log-card-title"><h4>游戏源码</h4><span class="log-card-sub">查看当前版本 bundle 保存的源码</span></div>';
+    if (sourceSections.length) {
+      detail += '<div class="log-source-actions">';
+      detail += '<div class="log-source-summary">当前版本 v' + (bundle?.version || 0) + '，共 ' + sourceSections.length + ' 段源码，可直接复制排查问题。</div>';
+      detail += '<button class="btn btn-sm btn-secondary" onclick="copyAllLogSource(\'' + gameId + '\')">复制全部源码</button>';
+      detail += '</div>';
+      detail += '<div class="log-source-grid">';
+      detail += sourceSections.map(section => {
+        return '<div class="log-source-block">' +
+          '<div class="log-source-head">' +
+            '<div class="log-source-meta">' +
+              '<div class="log-source-name">' + section.label + '</div>' +
+              '<div class="log-source-size">' + formatTextSize(section.code) + '</div>' +
+            '</div>' +
+            '<button class="btn btn-sm btn-secondary" onclick="copyLogSourceSection(\'' + gameId + '\', \'' + section.key + '\')">复制</button>' +
+          '</div>' +
+          '<pre class="log-code">' + escHtml(section.code) + '</pre>' +
+        '</div>';
+      }).join('');
+      detail += '</div>';
+    } else {
+      detail += '<div class="log-empty">当前版本没有保存可查看的 HTML、CSS 或 JavaScript 源码。</div>';
+    }
+    detail += '</div>';
+
     detail += '</div>';
     detail += '<div class="log-column">';
 
@@ -1551,6 +1800,12 @@ async function showLogDetail(gameId) {
     overlay.innerHTML = '<div class="modal" style="max-width:1120px"><div class="modal-header"><h3>生成记录详情</h3><button class="modal-close" onclick="this.closest(\'.modal-overlay\').remove()">&times;</button></div><div class="modal-body">' + detail + '</div></div>';
     document.body.appendChild(overlay);
     overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+    if (focusSection === 'source') {
+      const sourceCard = overlay.querySelector('[data-log-source-card="true"]');
+      if (sourceCard) {
+        requestAnimationFrame(() => sourceCard.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+      }
+    }
   } catch(e) {
     alert('加载详情失败: ' + e.message);
   }
@@ -1826,6 +2081,441 @@ document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape' && document.getElementById('promptModal').style.display === 'flex') closePromptModal();
 });
 
+// ===================== Async Tasks =====================
+async function loadTasks() {
+  const search = document.getElementById('task-search').value.trim();
+  const status = document.getElementById('task-status').value;
+  const params = new URLSearchParams({ page: taskPage, limit: 20, status });
+  if (search) params.set('search', search);
+
+  const wrap = document.getElementById('taskTableWrap');
+  wrap.innerHTML = '<div class="loading"><div class="spinner"></div><div style="margin-top:8px">加载中...</div></div>';
+  try {
+    const data = await api('/tasks?' + params.toString());
+    renderTaskTable(data);
+  } catch (e) {
+    wrap.innerHTML = `<div class="loading" style="color:#dc2626">加载失败: ${escHtml(e.message)}</div>`;
+  }
+}
+
+function renderTaskTable(data) {
+  const wrap = document.getElementById('taskTableWrap');
+  if (!data.items || !data.items.length) {
+    wrap.innerHTML = '<div class="loading">暂无任务数据</div>';
+    return;
+  }
+
+  let html = '<table><thead><tr><th>Task ID</th><th>游戏</th><th>用户</th><th>类型</th><th>状态</th><th>阶段</th><th>进度</th><th>更新时间</th><th>操作</th></tr></thead><tbody>';
+  for (const task of data.items) {
+    html += `<tr>
+      <td><code>${escHtml(task.id)}</code></td>
+      <td>${escHtml(task.game?.title || task.gameId)}</td>
+      <td>${escHtml(task.user?.displayName || task.user?.username || task.userId)}</td>
+      <td>${escHtml(task.taskType)}</td>
+      <td><span class="badge badge-${task.status === 'succeeded' ? 'published' : task.status === 'running' ? 'generating' : task.status === 'failed' || task.status === 'timed_out' ? 'failed' : 'draft'}">${escHtml(task.status)}</span></td>
+      <td>${escHtml(task.progressStage || task.failedStage || '-')}</td>
+      <td>${task.progressPct ?? '-'}%</td>
+      <td>${fmtDate(task.updatedAt)}</td>
+      <td><button class="abtn abtn-edit" onclick="showTaskDetail('${task.id}')">详情</button></td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  html += '<div class="pagination"><div class="info">共 ' + data.total + ' 条，第 ' + data.page + '/' + data.totalPages + ' 页</div><div class="pages">';
+  html += '<button ' + (data.page <= 1 ? 'disabled' : '') + ' onclick="taskPage=' + (data.page-1) + ';loadTasks()">上一页</button>';
+  for (let i = Math.max(1, data.page - 2); i <= Math.min(data.totalPages, data.page + 2); i++) {
+    html += '<button class="' + (i===data.page?'active':'') + '" onclick="taskPage=' + i + ';loadTasks()">' + i + '</button>';
+  }
+  html += '<button ' + (data.page >= data.totalPages ? 'disabled' : '') + ' onclick="taskPage=' + (data.page+1) + ';loadTasks()">下一页</button>';
+  html += '</div></div>';
+  wrap.innerHTML = html;
+}
+
+function clearTaskDetailRefresh() {
+  if (taskDetailRefreshTimer) {
+    clearTimeout(taskDetailRefreshTimer);
+    taskDetailRefreshTimer = null;
+  }
+}
+
+function scheduleTaskDetailRefresh(taskId, status) {
+  clearTaskDetailRefresh();
+  if (status === 'queued' || status === 'running') {
+    taskDetailRefreshTimer = setTimeout(() => showTaskDetail(taskId, { silent: true }), 10000);
+  }
+}
+
+function taskStatusBadge(status) {
+  if (status === 'succeeded') return 'badge-published';
+  if (status === 'running') return 'badge-generating';
+  if (status === 'failed' || status === 'timed_out' || status === 'canceled') return 'badge-failed';
+  return 'badge-draft';
+}
+
+function eventTypeLabel(type) {
+  const labels = { status: '状态', progress: '进度', llm_call: 'LLM', note: '说明', error: '错误' };
+  return labels[type] || type;
+}
+
+function renderTaskEventDetail(details) {
+  if (!details || (typeof details === 'object' && !Object.keys(details).length)) return '';
+  return `<pre class="log-code" style="max-height:180px;margin-top:10px">${escHtml(JSON.stringify(details, null, 2))}</pre>`;
+}
+
+function renderTaskEvents(events) {
+  if (!events || !events.length) return '<div class="log-empty">暂无阶段事件</div>';
+  return events.map(event => `
+    <div class="log-card" style="padding:14px 16px">
+      <div class="log-card-title" style="margin-bottom:8px">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span class="badge ${event.eventType === 'error' ? 'badge-failed' : event.eventType === 'llm_call' ? 'badge-generating' : 'badge-draft'}">${escHtml(eventTypeLabel(event.eventType))}</span>
+          <strong style="font-size:13px;color:#0f172a">${escHtml(event.stage || '-')}</strong>
+          <span class="log-card-sub">${escHtml(fmtDateTime(event.createdAt))}</span>
+        </div>
+        <span class="log-card-sub">${event.percentage ?? '-'}%</span>
+      </div>
+      <div class="log-textbox" style="margin:0">${escHtml(event.message || '')}</div>
+      ${renderTaskEventDetail(event.details)}
+    </div>
+  `).join('');
+}
+
+function renderLlmLogs(logs) {
+  if (!logs || !logs.length) return '<div class="log-empty">暂无 LLM 调用日志</div>';
+  return logs.map(log => `
+    <div class="log-card" style="padding:14px 16px">
+      <div class="log-card-title" style="margin-bottom:8px">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span class="badge ${log.success ? 'badge-published' : 'badge-failed'}">${log.success ? 'success' : 'failed'}</span>
+          <strong style="font-size:13px;color:#0f172a">${escHtml(log.stepKey)}</strong>
+          <span class="log-card-sub">${escHtml(fmtDateTime(log.createdAt))}</span>
+        </div>
+        <span class="log-card-sub">${escHtml(fmtDurationMs(log.latencyMs))}</span>
+      </div>
+      <div class="log-kv-grid">
+        <div class="log-kv"><div class="k">Provider</div><div class="v">${escHtml(log.providerName || log.providerType || '-')}</div></div>
+        <div class="log-kv"><div class="k">Model</div><div class="v"><code>${escHtml(log.model || '-')}</code></div></div>
+        <div class="log-kv"><div class="k">Region</div><div class="v">${escHtml(log.region || '-')}</div></div>
+        <div class="log-kv"><div class="k">Timeout</div><div class="v">${escHtml(String(log.requestTimeoutS || '-'))}s / connect ${escHtml(String(log.connectTimeoutS || '-'))}s</div></div>
+        <div class="log-kv"><div class="k">HTTP</div><div class="v">${log.httpStatus ?? '-'}</div></div>
+        <div class="log-kv"><div class="k">Request ID</div><div class="v"><code>${escHtml(log.upstreamRequestId || '-')}</code></div></div>
+      </div>
+      ${log.errorMessage ? `<div class="log-alert" style="margin-top:10px">${escHtml(log.errorMessage)}</div>` : ''}
+      ${log.errorBodyExcerpt ? `<pre class="log-code" style="max-height:180px;margin-top:10px">${escHtml(log.errorBodyExcerpt)}</pre>` : ''}
+      ${log.routeSnapshot ? `<pre class="log-code" style="max-height:180px;margin-top:10px">${escHtml(JSON.stringify(log.routeSnapshot, null, 2))}</pre>` : ''}
+    </div>
+  `).join('');
+}
+
+async function showTaskDetail(taskId, options = {}) {
+  currentTaskDetailId = taskId;
+  const wrap = document.getElementById('taskDetailWrap');
+  if (!options.silent) {
+    wrap.innerHTML = '<div class="loading"><div class="spinner"></div><div style="margin-top:8px">加载详情...</div></div>';
+  }
+  try {
+    const task = await api('/tasks/' + taskId);
+    if (currentTaskDetailId !== taskId) return;
+
+    const events = renderTaskEvents(task.events || []);
+    const llmLogs = renderLlmLogs(task.llmCallLogs || []);
+    const durationMs = task.startedAt && task.completedAt
+      ? new Date(task.completedAt).getTime() - new Date(task.startedAt).getTime()
+      : null;
+    const routeSnapshot = task.routeSnapshot
+      ? `<pre class="log-code" style="max-height:180px">${escHtml(JSON.stringify(task.routeSnapshot, null, 2))}</pre>`
+      : '<div class="log-empty">暂无最近路由快照</div>';
+    const resultSummary = task.resultSummary
+      ? `<pre class="log-code" style="max-height:220px">${escHtml(JSON.stringify(task.resultSummary, null, 2))}</pre>`
+      : '<div class="log-empty">暂无结果摘要</div>';
+    const previewLink = task.previewUrl
+      ? `<div class="log-linkbox" style="margin-top:14px"><div class="log-linkicon">▶</div><div class="log-linkmeta"><div class="label">Preview</div><a href="${escAttr(task.previewUrl)}" target="_blank" rel="noopener noreferrer">${escHtml(task.previewUrl)}</a></div></div>`
+      : '';
+
+    wrap.innerHTML = `
+      <div class="log-card">
+        <div class="log-card-title">
+          <div>
+            <h4>任务详情</h4>
+            <div class="log-card-sub" style="margin-top:4px"><code>${escHtml(task.id)}</code></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span class="badge ${taskStatusBadge(task.status)}">${escHtml(task.status)}</span>
+            <button class="btn btn-secondary btn-sm" onclick="showTaskDetail('${task.id}')">刷新详情</button>
+          </div>
+        </div>
+        <div class="log-kv-grid">
+          <div class="log-kv"><div class="k">游戏</div><div class="v">${escHtml(task.game?.title || task.gameId || '-')}</div></div>
+          <div class="log-kv"><div class="k">用户</div><div class="v">${escHtml(task.user?.displayName || task.user?.username || task.userId || '-')}</div></div>
+          <div class="log-kv"><div class="k">类型</div><div class="v">${escHtml(task.taskType)}</div></div>
+          <div class="log-kv"><div class="k">阶段</div><div class="v">${escHtml(task.progressStage || task.failedStage || '-')}</div></div>
+          <div class="log-kv"><div class="k">进度</div><div class="v">${task.progressPct ?? '-'}%</div></div>
+          <div class="log-kv"><div class="k">当前消息</div><div class="v">${escHtml(task.progressMessage || '-')}</div></div>
+          <div class="log-kv"><div class="k">超时</div><div class="v">${escHtml(String(task.timeoutS || '-'))}s</div></div>
+          <div class="log-kv"><div class="k">耗时</div><div class="v">${escHtml(fmtDurationMs(durationMs))}</div></div>
+          <div class="log-kv"><div class="k">创建时间</div><div class="v">${escHtml(fmtDateTime(task.createdAt))}</div></div>
+          <div class="log-kv"><div class="k">开始时间</div><div class="v">${escHtml(fmtDateTime(task.startedAt))}</div></div>
+          <div class="log-kv"><div class="k">完成时间</div><div class="v">${escHtml(fmtDateTime(task.completedAt))}</div></div>
+          <div class="log-kv"><div class="k">配置版本</div><div class="v">${task.gatewayConfigVersion ?? '-'}</div></div>
+          <div class="log-kv"><div class="k">Fallback</div><div class="v">${escHtml(task.fallback || '-')}</div></div>
+          <div class="log-kv"><div class="k">错误</div><div class="v">${escHtml(task.errorMessage || '-')}</div></div>
+        </div>
+        ${previewLink}
+        <div class="section-title">结果摘要</div>
+        ${resultSummary}
+        <div class="section-title">最近路由快照</div>
+        ${routeSnapshot}
+        <div class="section-title">阶段时间线</div>
+        <div style="display:flex;flex-direction:column;gap:12px">${events}</div>
+        <div class="section-title">LLM 调用明细</div>
+        <div style="display:flex;flex-direction:column;gap:12px">${llmLogs}</div>
+      </div>
+    `;
+    scheduleTaskDetailRefresh(task.id, task.status);
+  } catch (e) {
+    if (options.silent) return;
+    clearTaskDetailRefresh();
+    wrap.innerHTML = `<div class="loading" style="color:#dc2626">详情加载失败: ${escHtml(e.message)}</div>`;
+  }
+}
+
+// ===================== LLM Gateway =====================
+async function loadLlmGateway() {
+  document.getElementById('llmProviderTableWrap').innerHTML = '<div class="loading"><div class="spinner"></div><div style="margin-top:8px">加载中...</div></div>';
+  document.getElementById('llmRouteTableWrap').innerHTML = '<div class="loading"><div class="spinner"></div><div style="margin-top:8px">加载中...</div></div>';
+  try {
+    currentExecutionRegion = document.getElementById('llm-route-execution-region')?.value || currentExecutionRegion || 'cn_shanghai';
+    const [providers, routes, steps, regionTargets] = await Promise.all([
+      api('/llm/providers'),
+      api('/llm/routes?executionRegion=' + encodeURIComponent(currentExecutionRegion)),
+      api('/llm/steps'),
+      api('/cloud/ai-engine-region-targets?providerSelectableOnly=true'),
+    ]);
+    llmProviders = providers || [];
+    llmRoutes = routes || [];
+    llmSteps = steps || [];
+    llmRegionTargets = regionTargets || [];
+    renderProviderTable();
+    renderRouteTable();
+    renderProviderRegionTargetOptions();
+    if (!currentProviderId) resetProviderForm();
+  } catch (e) {
+    toast('加载 LLM 网关失败: ' + e.message, 'error');
+  }
+}
+
+function renderProviderRegionTargetOptions() {
+  const select = document.getElementById('llm-provider-region-target');
+  if (!select) return;
+  const previousValue = select.value;
+  if (!llmRegionTargets.length) {
+    select.innerHTML = '<option value="">暂无可用 Region Target</option>';
+    return;
+  }
+  select.innerHTML = llmRegionTargets.map(target => (
+    `<option value="${escAttr(target.id)}">${escHtml(target.displayName || target.executionRegion)} · ${escHtml(target.cloudRegionCode || '')}</option>`
+  )).join('');
+  if (previousValue && Array.from(select.options).some(option => option.value === previousValue)) {
+    select.value = previousValue;
+  }
+}
+
+function handleExecutionRegionChange() {
+  currentExecutionRegion = document.getElementById('llm-route-execution-region')?.value || 'cn_shanghai';
+  loadLlmGateway();
+}
+
+function renderProviderTable() {
+  const wrap = document.getElementById('llmProviderTableWrap');
+  if (!llmProviders.length) {
+    wrap.innerHTML = '<div class="loading">暂无 Provider</div>';
+    return;
+  }
+  let html = '<table><thead><tr><th>名称</th><th>类型</th><th>Region</th><th>模型</th><th>超时</th><th>优先级</th><th>状态</th><th>操作</th></tr></thead><tbody>';
+  for (const provider of llmProviders) {
+    html += `<tr>
+      <td>${escHtml(provider.name)}<div style="font-size:11px;color:#94a3b8;margin-top:2px">${escHtml(provider.apiKeyMasked || '')}</div></td>
+      <td>${escHtml(provider.providerType)}</td>
+      <td>${escHtml(provider.regionDisplayName || provider.region)}<div style="font-size:11px;color:#94a3b8;margin-top:2px">${escHtml(provider.cloudRegionCode || '')}</div></td>
+      <td>${escHtml(provider.model)}${provider.fastModel ? `<div style="font-size:11px;color:#94a3b8;margin-top:2px">fast: ${escHtml(provider.fastModel)}</div>` : ''}</td>
+      <td>${provider.requestTimeoutS}s / ${provider.connectTimeoutS}s</td>
+      <td>${provider.priority}</td>
+      <td>${provider.enabled ? '启用' : '停用'}</td>
+      <td>
+        <button class="abtn abtn-edit" onclick="editProvider('${provider.id}')">编辑</button>
+        <button class="abtn abtn-preview" onclick="testProvider('${provider.id}')">测试</button>
+        <button class="abtn abtn-delete" onclick="deleteProvider('${provider.id}')">删除</button>
+      </td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+}
+
+function renderRouteTable() {
+  const wrap = document.getElementById('llmRouteTableWrap');
+  if (!llmRoutes.length) {
+    wrap.innerHTML = '<div class="loading">暂无步骤绑定</div>';
+    return;
+  }
+  const regionProviders = llmProviders.filter(provider => provider.region === currentExecutionRegion);
+  let html = '<table><thead><tr><th>步骤</th><th>Execution Region</th><th>Provider</th><th>模型</th><th>状态</th><th>操作</th></tr></thead><tbody>';
+  for (const route of llmRoutes) {
+    const domKey = route.stepKey.replace(/[^a-zA-Z0-9_-]/g, '-');
+    const stepTitle = route.displayName
+      ? `${route.displayName} · ${route.stepKey}`
+      : route.stepKey;
+    const stepHint = route.stageLabel || '';
+    const providerOptions = regionProviders.map(provider => (
+      `<option value="${escAttr(provider.id)}" ${provider.id === route.providerId ? 'selected' : ''}>${escHtml(provider.name)} (${escHtml(provider.regionDisplayName || provider.region)}) · ${escHtml(provider.model)}${provider.fastModel ? ' / fast ' + escHtml(provider.fastModel) : ''}</option>`
+    )).join('');
+    html += `<tr>
+      <td>
+        <div style="font-weight:600;color:#0f172a">${escHtml(stepTitle)}</div>
+        ${stepHint ? `<div style="font-size:11px;color:#94a3b8;margin-top:2px">${escHtml(stepHint)}</div>` : ''}
+      </td>
+      <td>${escHtml(route.executionRegion)}</td>
+      <td>
+        <select id="llm-route-binding-provider-${escAttr(domKey)}">
+          ${providerOptions || '<option value="">暂无可用 Provider</option>'}
+        </select>
+      </td>
+      <td>${escHtml(route.modelDefault || '-')} ${route.modelFast ? `<div style="font-size:11px;color:#94a3b8;margin-top:2px">fast: ${escHtml(route.modelFast)}</div>` : ''}</td>
+      <td><label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="llm-route-binding-enabled-${escAttr(domKey)}" ${route.enabled ? 'checked' : ''}> 启用</label></td>
+      <td>
+        <button class="abtn abtn-preview" onclick="saveRouteBinding('${escAttr(route.stepKey)}')">保存</button>
+      </td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+}
+
+async function saveRouteBinding(stepKey) {
+  const route = llmRoutes.find(item => item.stepKey === stepKey);
+  if (!route) {
+    toast('未找到步骤绑定', 'error');
+    return;
+  }
+  const domKey = stepKey.replace(/[^a-zA-Z0-9_-]/g, '-');
+  const providerId = document.getElementById(`llm-route-binding-provider-${domKey}`)?.value || '';
+  const enabled = document.getElementById(`llm-route-binding-enabled-${domKey}`)?.checked !== false;
+  if (!providerId) {
+    toast('请先选择 Provider', 'error');
+    return;
+  }
+  try {
+    await api(route.id ? '/llm/routes/' + route.id : '/llm/routes', {
+      method: route.id ? 'PUT' : 'POST',
+      body: {
+        stepKey: route.stepKey,
+        executionRegion: route.executionRegion || currentExecutionRegion,
+        providerId,
+        enabled,
+      },
+    });
+    toast('步骤绑定已保存');
+    loadLlmGateway();
+  } catch (e) {
+    toast('保存步骤绑定失败: ' + e.message, 'error');
+  }
+}
+
+function resetProviderForm() {
+  currentProviderId = null;
+  document.getElementById('llm-provider-name').value = '';
+  document.getElementById('llm-provider-type').value = 'openai_compatible';
+  renderProviderRegionTargetOptions();
+  document.getElementById('llm-provider-region-target').value = llmRegionTargets[0]?.id || '';
+  document.getElementById('llm-provider-priority').value = '100';
+  document.getElementById('llm-provider-base-url').value = '';
+  document.getElementById('llm-provider-api-key').value = '';
+  document.getElementById('llm-provider-model').value = '';
+  document.getElementById('llm-provider-fast-model').value = '';
+  document.getElementById('llm-provider-timeout').value = '600';
+  document.getElementById('llm-provider-connect-timeout').value = '15';
+  document.getElementById('llm-provider-description').value = '';
+  document.getElementById('llm-provider-enabled').checked = true;
+}
+
+function editProvider(id) {
+  const provider = llmProviders.find(item => item.id === id);
+  if (!provider) return;
+  currentProviderId = id;
+  document.getElementById('llm-provider-name').value = provider.name || '';
+  document.getElementById('llm-provider-type').value = provider.providerType || 'openai_compatible';
+  renderProviderRegionTargetOptions();
+  document.getElementById('llm-provider-region-target').value = provider.regionTargetId || '';
+  document.getElementById('llm-provider-priority').value = provider.priority ?? 100;
+  document.getElementById('llm-provider-base-url').value = provider.baseUrl || '';
+  document.getElementById('llm-provider-api-key').value = '';
+  document.getElementById('llm-provider-model').value = provider.model || '';
+  document.getElementById('llm-provider-fast-model').value = provider.fastModel || '';
+  document.getElementById('llm-provider-timeout').value = provider.requestTimeoutS ?? 600;
+  document.getElementById('llm-provider-connect-timeout').value = provider.connectTimeoutS ?? 15;
+  document.getElementById('llm-provider-description').value = provider.description || '';
+  document.getElementById('llm-provider-enabled').checked = provider.enabled !== false;
+}
+
+async function saveProvider() {
+  const body = {
+    name: document.getElementById('llm-provider-name').value.trim(),
+    providerType: document.getElementById('llm-provider-type').value,
+    regionTargetId: document.getElementById('llm-provider-region-target').value,
+    priority: Number(document.getElementById('llm-provider-priority').value || 100),
+    baseUrl: document.getElementById('llm-provider-base-url').value.trim(),
+    apiKey: document.getElementById('llm-provider-api-key').value.trim(),
+    model: document.getElementById('llm-provider-model').value.trim(),
+    fastModel: document.getElementById('llm-provider-fast-model').value.trim(),
+    requestTimeoutS: Number(document.getElementById('llm-provider-timeout').value || 600),
+    connectTimeoutS: Number(document.getElementById('llm-provider-connect-timeout').value || 15),
+    description: document.getElementById('llm-provider-description').value.trim(),
+    enabled: document.getElementById('llm-provider-enabled').checked,
+  };
+  try {
+    await api(currentProviderId ? '/llm/providers/' + currentProviderId : '/llm/providers', {
+      method: currentProviderId ? 'PUT' : 'POST',
+      body,
+    });
+    toast('Provider 已保存');
+    resetProviderForm();
+    loadLlmGateway();
+  } catch (e) {
+    toast('保存 Provider 失败: ' + e.message, 'error');
+  }
+}
+
+async function testProvider(id) {
+  try {
+    const result = await api('/llm/providers/' + id + '/test', { method: 'POST' });
+    toast(result.success ? `测试成功，耗时 ${result.latencyMs}ms` : `测试失败: ${result.errorMessage}`, result.success ? 'success' : 'error');
+  } catch (e) {
+    toast('测试 Provider 失败: ' + e.message, 'error');
+  }
+}
+
+async function deleteProvider(id) {
+  const yes = await confirmDialog('确认删除', '确定删除这个 Provider 吗？');
+  if (!yes) return;
+  try {
+    await api('/llm/providers/' + id, { method: 'DELETE' });
+    toast('Provider 已删除');
+    resetProviderForm();
+    loadLlmGateway();
+  } catch (e) {
+    toast('删除 Provider 失败: ' + e.message, 'error');
+  }
+}
+
+async function refreshGateway() {
+  try {
+    await api('/llm/refresh', { method: 'POST' });
+    toast('LLM 网关已热刷新');
+    loadLlmGateway();
+  } catch (e) {
+    toast('热刷新失败: ' + e.message, 'error');
+  }
+}
+
 // ===================== Admin Token =====================
 async function changeToken() {
   const current = document.getElementById('set-current-token').value;
@@ -1864,6 +2554,28 @@ function fmtDate(s) {
   if (!s) return '-';
   const d = new Date(s);
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+function fmtDateTime(s) {
+  if (!s) return '-';
+  const d = new Date(s);
+  return d.getFullYear() + '-'
+    + String(d.getMonth() + 1).padStart(2, '0') + '-'
+    + String(d.getDate()).padStart(2, '0') + ' '
+    + String(d.getHours()).padStart(2, '0') + ':'
+    + String(d.getMinutes()).padStart(2, '0') + ':'
+    + String(d.getSeconds()).padStart(2, '0');
+}
+
+function fmtDurationMs(ms) {
+  if (ms === null || ms === undefined || Number.isNaN(Number(ms))) return '-';
+  const total = Math.max(0, Number(ms));
+  if (total < 1000) return total + 'ms';
+  const seconds = Math.floor(total / 1000);
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  if (mins <= 0) return seconds + 's';
+  return mins + 'm ' + secs + 's';
 }
 
 function statusLabel(s) {

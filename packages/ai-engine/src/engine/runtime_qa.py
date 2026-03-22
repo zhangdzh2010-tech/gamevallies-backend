@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import logging
 import time
 from typing import List
@@ -104,8 +105,10 @@ async def run_runtime_qa(html_code: str, timeout_s: float = 6.0) -> RuntimeQARes
 
     js_errors: List[str] = []
     start = time.time()
+    browser = None
 
-    try:
+    async def _execute() -> RuntimeQAResult:
+        nonlocal browser
         async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True,
@@ -129,7 +132,7 @@ async def run_runtime_qa(html_code: str, timeout_s: float = 6.0) -> RuntimeQARes
             await page.set_content(html_code, wait_until="domcontentloaded")
 
             # Wait for game to start rendering
-            await asyncio.sleep(3.0)
+            await asyncio.sleep(min(3.0, max(timeout_s - 1.0, 0.1)))
 
             # Collect results
             canvas_renders = await page.evaluate(_CANVAS_CHECK_JS)
@@ -142,24 +145,28 @@ async def run_runtime_qa(html_code: str, timeout_s: float = 6.0) -> RuntimeQARes
 
             load_time_ms = int((time.time() - start) * 1000)
 
-            await browser.close()
+            logger.info(
+                f"Runtime QA: canvas_renders={canvas_renders}, fps={fps:.1f}, "
+                f"js_errors={len(js_errors)}, load_ms={load_time_ms}"
+            )
+            return RuntimeQAResult(
+                ran=True,
+                canvas_renders=bool(canvas_renders),
+                js_errors=js_errors[:10],   # cap at 10
+                fps=fps,
+                load_time_ms=load_time_ms,
+                game_over_triggered=game_over_triggered,
+            )
 
-        logger.info(
-            f"Runtime QA: canvas_renders={canvas_renders}, fps={fps:.1f}, "
-            f"js_errors={len(js_errors)}, load_ms={load_time_ms}"
-        )
-        return RuntimeQAResult(
-            ran=True,
-            canvas_renders=bool(canvas_renders),
-            js_errors=js_errors[:10],   # cap at 10
-            fps=fps,
-            load_time_ms=load_time_ms,
-            game_over_triggered=game_over_triggered,
-        )
-
+    try:
+        return await asyncio.wait_for(_execute(), timeout=max(timeout_s, 0.1))
     except asyncio.TimeoutError:
         logger.warning("Runtime QA timed out")
         return RuntimeQAResult(ran=False)
     except Exception as exc:
         logger.warning(f"Runtime QA failed: {exc}")
         return RuntimeQAResult(ran=False)
+    finally:
+        if browser is not None:
+            with contextlib.suppress(Exception):
+                await browser.close()

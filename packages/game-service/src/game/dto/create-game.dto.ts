@@ -1,4 +1,15 @@
-import { IsString, IsNotEmpty, IsOptional, MinLength, MaxLength, ValidateIf } from 'class-validator';
+import { Type } from 'class-transformer';
+import {
+  IsString,
+  IsNotEmpty,
+  IsOptional,
+  MinLength,
+  MaxLength,
+  ValidateIf,
+  IsInt,
+  Min,
+  Max,
+} from 'class-validator';
 
 export class CreateGameDto {
   @ValidateIf((dto) => !dto.prompt)
@@ -18,4 +29,15 @@ export class CreateGameDto {
   @IsOptional()
   @MaxLength(50)
   title?: string;
+
+  @IsOptional()
+  @IsString()
+  regionHint?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(30)
+  @Max(3600)
+  timeoutS?: number;
 }
