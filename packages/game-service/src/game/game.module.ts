@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { GameService } from './game.service';
 import { GameController } from './game.controller';
 import { GameContentController } from './game-content.controller';
+import { GameShellController } from './game-shell.controller';
 import { GameSchemaBootstrapService } from './game-schema-bootstrap.service';
 import { InternalGenerationController } from './internal-generation.controller';
 import { CreatorReputationService } from './creator-reputation.service';
@@ -28,7 +29,7 @@ import { WebSocketModule } from '../websocket/websocket.module';
     }),
   ],
   providers: [GameService, CreatorReputationService, GameSchemaBootstrapService, GenerationTaskService],
-  controllers: [GameController, GameContentController, InternalGenerationController],
+  controllers: [GameController, GameContentController, GameShellController, InternalGenerationController],
   exports: [GameService, CreatorReputationService],
 })
 export class GameModule {}

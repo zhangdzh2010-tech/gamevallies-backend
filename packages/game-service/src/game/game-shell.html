@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>游戏播放</title>
+  <script src="https://res.wx.qq.com/open/js/jweixin-1.6.0.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    
+    #game-container { position: relative; width: 100%; height: 100%; }
+    #game-iframe { width: 100%; height: 100%; border: none; display: block; }
+    
+    #overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 1000; }
+    
+    #author-info { position: absolute; left: 12px; bottom: calc(env(safe-area-inset-bottom) + 20px); display: flex; align-items: center; gap: 8px; pointer-events: auto; }
+    #author-avatar { width: 40px; height: 40px; border-radius: 50%; border: 2px solid #fff; }
+    #author-name { color: #fff; font-size: 14px; text-shadow: 0 1px 3px rgba(0,0,0,0.5); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #follow-btn { padding: 6px 16px; background: #ff4757; color: #fff; border: none; border-radius: 20px; font-size: 13px; cursor: pointer; }
+    #follow-btn.following { background: #ddd; color: #666; }
+    
+    #action-bar { position: absolute; right: 12px; bottom: calc(env(safe-area-inset-bottom) + 20px); display: flex; flex-direction: column; gap: 20px; pointer-events: auto; }
+    .action-btn { display: flex; flex-direction: column; align-items: center; gap: 4px; background: rgba(0,0,0,0.3); border-radius: 50%; width: 50px; height: 50px; justify-content: center; cursor: pointer; border: none; }
+    .action-btn svg { width: 24px; height: 24px; fill: #fff; }
+    .action-btn span { color: #fff; font-size: 11px; text-shadow: 0 1px 2px rgba(0,0,0,0.5); }
+    .action-btn.active svg { fill: #ff4757; }
+    
+    #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #666; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div id="game-container">
+    <div id="loading">加载中...</div>
+    <iframe id="game-iframe" style="display:none;"></iframe>
+    
+    <div id="overlay">
+      <div id="author-info" style="display:none;">
+        <img id="author-avatar" src="" alt="">
+        <span id="author-name"></span>
+        <button id="follow-btn">关注</button>
+      </div>
+      
+      <div id="action-bar">
+        <button class="action-btn" id="like-btn">
+          <svg viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+          <span id="like-count">0</span>
+        </button>
+        <button class="action-btn" id="bookmark-btn">
+          <svg viewBox="0 0 24 24"><path d="M17 3H7c-1.1 0-2 .9-2 2v16l7-3 7 3V5c0-1.1-.9-2-2-2z"/></svg>
+          <span>收藏</span>
+        </button>
+        <button class="action-btn" id="comment-btn">
+          <svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>
+          <span id="comment-count">0</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const gameId = params.get('gameId') || params.get('id');
+    const gameSrc = params.get('src');
+    const gameTitle = params.get('title') || '';
+    
+    let token = '';
+    let userId = '';
+    let gameData = null;
+    let isLiked = false;
+    let isBookmarked = false;
+    let isFollowing = false;
+
+    // 从 hash 中提取 token（临时方案）
+    const hash = window.location.hash;
+    if (hash) {
+      const hashParams = new URLSearchParams(hash.substring(1));
+      token = hashParams.get('token') || '';
+      // 清理 URL
+      if (token) {
+        window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      }
+    }
+
+    const API_BASE = window.location.origin + '/api/v1';
+
+    async function fetchAPI(url, options = {}) {
+      const headers = { 'Content-Type': 'application/json', ...options.headers };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      
+      const res = await fetch(API_BASE + url, { ...options, headers });
+      if (!res.ok) throw new Error(`API Error: ${res.status}`);
+      return res.json();
+    }
+
+    async function loadGame() {
+      try {
+        if (!gameId) throw new Error('缺少游戏ID');
+        
+        // 加载游戏数据
+        const gameRes = await fetchAPI(`/games/${gameId}`);
+        gameData = gameRes.data;
+        
+        // 加载用户信息
+        if (token) {
+          try {
+            const userRes = await fetchAPI('/users/me');
+            userId = userRes.data?.id || userRes.data?.userId;
+          } catch (e) {
+            console.warn('获取用户信息失败:', e);
+          }
+        }
+        
+        // 加载社交状态
+        if (userId && gameData.authorId) {
+          try {
+            const [likeRes, followRes] = await Promise.all([
+              fetchAPI(`/social/like-status/game/${gameId}`).catch(() => ({ data: { isLiked: false } })),
+              fetchAPI(`/social/follow-status/${gameData.authorId}`).catch(() => ({ data: { isFollowing: false } }))
+            ]);
+            isLiked = likeRes.data?.isLiked || false;
+            isFollowing = followRes.data?.isFollowing || false;
+          } catch (e) {
+            console.warn('获取社交状态失败:', e);
+          }
+        }
+        
+        // 加载本地收藏状态
+        const bookmarks = JSON.parse(localStorage.getItem('bookmarkedGames') || '[]');
+        isBookmarked = bookmarks.includes(gameId);
+        
+        renderUI();
+        loadGameIframe();
+      } catch (error) {
+        document.getElementById('loading').textContent = '加载失败: ' + error.message;
+      }
+    }
+
+    function renderUI() {
+      if (gameData) {
+        // 作者信息
+        const authorInfo = document.getElementById('author-info');
+        document.getElementById('author-avatar').src = gameData.authorAvatar || 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"%3E%3Cpath fill="%23999" d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/%3E%3C/svg%3E';
+        document.getElementById('author-name').textContent = gameData.authorName || '匿名';
+        authorInfo.style.display = 'flex';
+        
+        // 关注按钮
+        const followBtn = document.getElementById('follow-btn');
+        followBtn.textContent = isFollowing ? '已关注' : '关注';
+        followBtn.className = isFollowing ? 'following' : '';
+        
+        // 点赞
+        const likeBtn = document.getElementById('like-btn');
+        if (isLiked) likeBtn.classList.add('active');
+        document.getElementById('like-count').textContent = gameData.likeCount || 0;
+        
+        // 收藏
+        const bookmarkBtn = document.getElementById('bookmark-btn');
+        if (isBookmarked) bookmarkBtn.classList.add('active');
+        
+        // 评论
+        document.getElementById('comment-count').textContent = gameData.commentCount || 0;
+      }
+    }
+
+    function loadGameIframe() {
+      const iframe = document.getElementById('game-iframe');
+      const loading = document.getElementById('loading');
+      
+      let src = gameSrc || `/games/${gameId}/index.html`;
+      if (!src.startsWith('http')) {
+        src = window.location.origin + src;
+      }
+      
+      iframe.onload = () => {
+        loading.style.display = 'none';
+        iframe.style.display = 'block';
+      };
+      
+      iframe.src = src;
+    }
+
+    // 关注
+    document.getElementById('follow-btn').onclick = async () => {
+      if (!token) return alert('请先登录');
+      if (!gameData?.authorId) return;
+      
+      try {
+        if (isFollowing) {
+          await fetchAPI(`/social/follow/${gameData.authorId}`, { method: 'DELETE' });
+          isFollowing = false;
+        } else {
+          await fetchAPI('/social/follow', { 
+            method: 'POST', 
+            body: JSON.stringify({ targetUserId: gameData.authorId }) 
+          });
+          isFollowing = true;
+        }
+        renderUI();
+      } catch (e) {
+        alert('操作失败');
+      }
+    };
+
+    // 点赞
+    document.getElementById('like-btn').onclick = async () => {
+      if (!token) return alert('请先登录');
+      
+      try {
+        await fetchAPI('/social/like', {
+          method: 'POST',
+          body: JSON.stringify({ targetType: 'game', targetId: gameId })
+        });
+        isLiked = !isLiked;
+        if (gameData) {
+          gameData.likeCount = (gameData.likeCount || 0) + (isLiked ? 1 : -1);
+        }
+        renderUI();
+      } catch (e) {
+        alert('操作失败');
+      }
+    };
+
+    // 收藏
+    document.getElementById('bookmark-btn').onclick = () => {
+      const bookmarks = JSON.parse(localStorage.getItem('bookmarkedGames') || '[]');
+      if (isBookmarked) {
+        const index = bookmarks.indexOf(gameId);
+        if (index > -1) bookmarks.splice(index, 1);
+      } else {
+        bookmarks.push(gameId);
+      }
+      localStorage.setItem('bookmarkedGames', JSON.stringify(bookmarks));
+      isBookmarked = !isBookmarked;
+      renderUI();
+    };
+
+    // 评论
+    document.getElementById('comment-btn').onclick = () => {
+      if (typeof wx !== 'undefined' && wx.miniProgram) {
+        wx.miniProgram.navigateTo({ url: `/pages/game/detail?id=${gameId}&tab=comments` });
+      } else {
+        alert('请在小程序中使用评论功能');
+      }
+    };
+
+    loadGame();
+  </script>
+</body>
+</html>
