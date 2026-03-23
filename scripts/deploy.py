@@ -35,6 +35,27 @@ import volcenginesdkcore
 from volcenginesdkapig20221112.api import APIG20221112Api
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_ENV_FILE = os.path.join(ROOT_DIR, ".env.deploy")
+
+
+def load_env_file(path: str) -> None:
+    """Load .env-style values as UTF-8 without overwriting existing env vars."""
+    if not os.path.exists(path):
+        return
+
+    with open(path, "r", encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            name, value = line.split("=", 1)
+            name = name.strip()
+            value = value.strip().strip('"').strip("'")
+            if name and name not in os.environ:
+                os.environ[name] = value
+
+
+load_env_file(DEFAULT_ENV_FILE)
 
 # svc key → function name in VeFaaS console (须与控制台函数名一致)
 # type="python" 表示 AI 引擎（独立 Dockerfile，不同构建参数）
@@ -181,6 +202,34 @@ def _desired_route_timeout(svc: dict) -> int | None:
     if desired_request_timeout is None:
         return None
     return desired_request_timeout * APIG_TIMEOUT_MS_PER_SECOND
+
+
+def _service_env_prefix(svc: dict) -> str:
+    return svc["svc"].upper().replace("-", "_")
+
+
+def _optional_non_negative_int(env_key: str) -> int | None:
+    raw = (os.environ.get(env_key) or "").strip()
+    if not raw:
+        return None
+    value = _safe_int(raw, -1)
+    if value < 0:
+        raise ValueError(f"{env_key} must be a non-negative integer")
+    return value
+
+
+def _desired_function_resource_config(svc: dict) -> dict[str, int]:
+    prefix = _service_env_prefix(svc)
+    desired: dict[str, int] = {}
+    for field, suffix in (
+        ("min_instance", "MIN_INSTANCE"),
+        ("max_instance", "MAX_INSTANCE"),
+        ("reserved_frozen_instance", "RESERVED_FROZEN_INSTANCE"),
+    ):
+        value = _optional_non_negative_int(f"VEFAAS_{prefix}_{suffix}")
+        if value is not None:
+            desired[field] = value
+    return desired
 
 
 def _normalize_execution_region(value: str | None) -> str:
@@ -541,6 +590,84 @@ def ensure_function_request_timeout(
         return False
 
 
+def ensure_function_instance_limits(
+    api: volcenginesdkvefaas.VEFAASApi,
+    func_id: str,
+    svc: dict,
+) -> bool:
+    try:
+        desired = _desired_function_resource_config(svc)
+    except ValueError as exc:
+        print(f"  Failed to parse desired function instance limits: {exc}")
+        return False
+
+    if not desired:
+        return True
+
+    try:
+        resource = api.get_function_resource(
+            volcenginesdkvefaas.GetFunctionResourceRequest(function_id=func_id)
+        )
+    except Exception as e:
+        print(f"  Skipping function instance limit sync because resource lookup failed: {e}")
+        return True
+
+    current = getattr(resource, "function_resource", None)
+    current_values = {
+        "min_instance": getattr(current, "min_instance", None),
+        "max_instance": getattr(current, "max_instance", None),
+        "reserved_frozen_instance": getattr(current, "reserved_frozen_instance", None),
+    }
+    next_values = {**current_values, **desired}
+
+    min_instance = next_values.get("min_instance")
+    max_instance = next_values.get("max_instance")
+    if (
+        min_instance is not None
+        and max_instance is not None
+        and min_instance > max_instance
+    ):
+        print(
+            "  Invalid function instance limits: "
+            f"min_instance ({min_instance}) cannot exceed max_instance ({max_instance})"
+        )
+        return False
+
+    changed_fields = {
+        key: value
+        for key, value in desired.items()
+        if current_values.get(key) != value
+    }
+    if not changed_fields:
+        print(
+            "  Function instance limits already match desired values: "
+            f"min={current_values.get('min_instance')}, "
+            f"max={current_values.get('max_instance')}, "
+            f"reserved={current_values.get('reserved_frozen_instance')}"
+        )
+        return True
+
+    try:
+        api.update_function_resource(
+            volcenginesdkvefaas.UpdateFunctionResourceRequest(
+                function_id=func_id,
+                min_instance=next_values.get("min_instance"),
+                max_instance=next_values.get("max_instance"),
+                reserved_frozen_instance=next_values.get("reserved_frozen_instance"),
+            )
+        )
+        print(
+            "  Updated function instance limits: "
+            f"min={next_values.get('min_instance')}, "
+            f"max={next_values.get('max_instance')}, "
+            f"reserved={next_values.get('reserved_frozen_instance')}"
+        )
+        return True
+    except Exception as e:
+        print(f"  Failed to update function instance limits: {e}")
+        return False
+
+
 def _env_vars(port: int, svc: dict | None = None) -> dict:
     """NestJS 服务公共环境变量"""
     svc_name = svc["svc"] if svc else ""
@@ -694,6 +821,24 @@ def validate_env(target_services: list[dict]) -> None:
 
     for svc in target_services:
         missing.update(_missing_env(SERVICE_REQUIRED_ENV_KEYS.get(svc["svc"], [])))
+        try:
+            desired_limits = _desired_function_resource_config(svc)
+        except ValueError as exc:
+            print(f"鉂?閮ㄧ讲鍓嶇幆澧冨彉閲忔牎楠屽け璐? {exc}")
+            sys.exit(1)
+        if (
+            desired_limits.get("min_instance") is not None
+            and desired_limits.get("max_instance") is not None
+            and desired_limits["min_instance"] > desired_limits["max_instance"]
+        ):
+            print(
+                "鉂?閮ㄧ讲鍓嶇幆澧冨彉閲忔牎楠屽け璐ワ細"
+                f"VEFAAS_{_service_env_prefix(svc)}_MIN_INSTANCE "
+                f"({desired_limits['min_instance']}) cannot exceed "
+                f"VEFAAS_{_service_env_prefix(svc)}_MAX_INSTANCE "
+                f"({desired_limits['max_instance']})"
+            )
+            sys.exit(1)
         if svc["svc"] == "user-service":
             wechat_pay_mode = os.environ.get("WECHAT_PAY_MODE", "mock").strip().lower()
             if wechat_pay_mode == "real":
@@ -904,6 +1049,9 @@ def deploy_service(api: volcenginesdkvefaas.VEFAASApi, svc: dict) -> bool:
     # 5. 等待镜像缓存就绪
     print(f"  ⏳ 等待镜像缓存就绪...")
     if not wait_image_sync(api, func_id, image):
+        return False
+
+    if not ensure_function_instance_limits(api, func_id, svc):
         return False
 
     # 6. 发布新版本（revision_number=0 = 当前最新草稿）

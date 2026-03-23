@@ -118,6 +118,7 @@ Source:
 - `ALIYUN_ACCESS_KEY_ID`, `ALIYUN_ACCESS_KEY_SECRET`: Aliyun RAM / AccessKey console
 - `ALIYUN_SMS_REGION_ID`, `ALIYUN_SMS_SIGN_NAME`, `ALIYUN_SMS_TPL_REGISTER`, `ALIYUN_SMS_TPL_LOGIN`: Aliyun SMS console
 - `VERIFY_CODE_SEND_INTERVAL_SECONDS`: current production `.env.deploy`
+- `VEFAAS_USER_SERVICE_MIN_INSTANCE`, `VEFAAS_USER_SERVICE_MAX_INSTANCE`, `VEFAAS_USER_SERVICE_RESERVED_FROZEN_INSTANCE`: optional VeFaaS function resource limits consumed by `scripts/deploy.py`
 
 ```bash
 PORT=3001
@@ -130,6 +131,9 @@ ALIYUN_SMS_SIGN_NAME=智了科技
 ALIYUN_SMS_TPL_REGISTER=SMS_503430059
 ALIYUN_SMS_TPL_LOGIN=SMS_503470064
 VERIFY_CODE_SEND_INTERVAL_SECONDS=60
+VEFAAS_USER_SERVICE_MIN_INSTANCE=0
+VEFAAS_USER_SERVICE_MAX_INSTANCE=20
+# VEFAAS_USER_SERVICE_RESERVED_FROZEN_INSTANCE=1
 ```
 
 ### 2.4 game-service and feed-service ports
@@ -177,7 +181,7 @@ This step loads deployment values from `.env.deploy` into the current shell.
 PowerShell:
 
 ```powershell
-Get-Content .env.deploy | ForEach-Object {
+Get-Content -Encoding utf8 .env.deploy | ForEach-Object {
   if ($_ -match '^\s*#' -or $_ -match '^\s*$') { return }
   $name, $value = $_ -split '=', 2
   [System.Environment]::SetEnvironmentVariable($name, $value.Trim('\"'), 'Process')
@@ -313,3 +317,24 @@ Do not use the old names:
 - `ALIYUN_REGION_ID`
 - `ALIYUN_ENDPOINT`
 - `ALIYUN_SMS_TEMPLATE_CODE`
+
+### 5.4 VeFaaS reached max replica limit
+
+If deployment or runtime returns:
+
+```text
+error_code: reached_max_replica_limit
+error_message: Function has reached its max replica limit.
+```
+
+Check:
+
+- the function resource in VeFaaS; `max_instance` is the hard ceiling
+- whether the current instance count is already close to or equal to that ceiling
+- whether `.env.deploy` sets `VEFAAS_USER_SERVICE_MAX_INSTANCE` high enough for `gv-user-service`
+
+Recommended fix:
+
+- increase `VEFAAS_USER_SERVICE_MAX_INSTANCE` in `.env.deploy`
+- optionally set `VEFAAS_USER_SERVICE_RESERVED_FROZEN_INSTANCE` for burst traffic or cold-start control
+- redeploy with `python scripts/deploy.py user-service`
