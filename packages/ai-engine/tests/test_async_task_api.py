@@ -5,15 +5,118 @@ import os
 import sys
 import time
 import unittest
+from contextlib import ExitStack, contextmanager
 from unittest.mock import AsyncMock, patch
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.api.models import AsyncTaskStatus, AsyncTaskType, GameSpec, RunPipelineResponse
+from src.api.models import (
+    AsyncTaskStatus,
+    AsyncTaskType,
+    GameSpec,
+    IterateResponse,
+    IterateV2Request,
+    RunPipelineResponse,
+    RunPipelineV2Request,
+)
+from src.api.endpoints import generate as generate_api
+from src.engine.pipeline_orchestrator import PipelineExecutionError
 from src.main import app
 from src.services.async_task_manager import AsyncTaskManager, task_manager
+
+TEST_V2_PROMPT_BUNDLE_SNAPSHOT = {
+    "bundle_id": "runtime-v2-default",
+    "bundle_version": 1,
+    "resolved_at": "2026-03-24T00:00:00+00:00",
+    "layers": {
+        "entrypoint": "test",
+        "source": "unit-test",
+    },
+}
+
+TEST_V2_RUNTIME_CONTRACT = {
+    "version": "1.0",
+    "runtime_profile": "portrait_arcade",
+    "canvas": {
+        "requires_canvas_2d": True,
+        "must_render_within_ms": 1500,
+        "orientation": "portrait_first",
+        "ui_scale_mode": "short_edge",
+        "target_fps": 60,
+    },
+    "input": {
+        "required_modes": ["pointer", "touch"],
+        "gestures": ["tap"],
+    },
+    "state": {
+        "required_states": ["boot", "ready", "playing", "game_over"],
+        "restartable": True,
+    },
+    "mobile_layout": {
+        "orientation": "portrait_first",
+        "ui_scale_mode": "short_edge",
+        "font_clamp": {
+            "hud_min": 14,
+            "hud_max": 20,
+            "title_min": 28,
+            "title_max": 36,
+        },
+    },
+    "safety": {
+        "forbidden_apis": ["eval", "Function", "fetch", "XMLHttpRequest"],
+    },
+    "gameplay": {},
+    "metadata": {
+        "source": "unit-test",
+    },
+}
+
+
+def _resolve_test_prompt_bundle(snapshot, runtime_profile=None):
+    layers = dict(snapshot.layers or {})
+    layers["profile_few_shot"] = runtime_profile or "portrait_arcade"
+    layers["resolved_prompts"] = {
+        "locked_contract": {"key": "bundle.runtime.locked_contract", "content": "LOCKED CONTRACT"},
+        "product_policy": {"key": "bundle.product.policy", "content": "PRODUCT POLICY"},
+        "intent_parse": {"key": "bundle.product.intent_parse", "content": "INTENT PARSE"},
+        "logic_generate": {"key": "bundle.product.logic_generate", "content": "LOGIC GENERATE"},
+        "profile_few_shot": {
+            "key": f"bundle.runtime.profile.{runtime_profile or 'portrait_arcade'}",
+            "content": "PROFILE FEW SHOT",
+        },
+        "repair_input_contract": {"key": "bundle.repair.input_contract", "content": "REPAIR INPUT"},
+        "repair_terminal_state": {"key": "bundle.repair.terminal_state", "content": "REPAIR TERMINAL"},
+        "repair_mobile_layout": {"key": "bundle.repair.mobile_layout", "content": "REPAIR MOBILE"},
+        "repair_forbidden_api": {"key": "bundle.repair.forbidden_api", "content": "REPAIR FORBIDDEN"},
+    }
+    return snapshot.model_copy(update={"resolved_at": snapshot.resolved_at or TEST_V2_PROMPT_BUNDLE_SNAPSHOT["resolved_at"], "layers": layers})
+
+
+@contextmanager
+def patch_v2_prompt_defaults():
+    with ExitStack() as stack:
+        stack.enter_context(
+            patch(
+                "src.api.endpoints.generate._default_v2_prompt_bundle_snapshot",
+                return_value=TEST_V2_PROMPT_BUNDLE_SNAPSHOT,
+            )
+        )
+        stack.enter_context(
+            patch(
+                "src.api.endpoints.generate._default_v2_runtime_contract",
+                return_value=TEST_V2_RUNTIME_CONTRACT,
+            )
+        )
+        stack.enter_context(
+            patch(
+                "src.api.endpoints.generate.resolve_prompt_bundle_snapshot",
+                side_effect=_resolve_test_prompt_bundle,
+            )
+        )
+        yield
 
 
 class TestAsyncTaskManager(unittest.TestCase):
@@ -88,6 +191,47 @@ class TestAsyncTaskApi(unittest.TestCase):
     def tearDown(self):
         asyncio.run(task_manager.clear())
 
+    def test_make_progress_cb_fanout_is_ordered(self):
+        async def scenario():
+            task_progress: list[tuple[str, int]] = []
+            ws_progress: list[tuple[str, int]] = []
+            relayed_progress: list[tuple[str, int]] = []
+
+            async def fake_update_progress(_task_id, *, stage, pct, message, details=None):
+                if stage == "stage-one":
+                    await asyncio.sleep(0.02)
+                task_progress.append((stage, details["progressSeq"]))
+
+            async def fake_send_progress(_game_id, stage, pct, message, details=None):
+                ws_progress.append((stage, details["progressSeq"]))
+
+            async def fake_relay_progress(**kwargs):
+                relayed_progress.append((kwargs["stage"], kwargs["details"]["progressSeq"]))
+
+            with patch.object(generate_api.task_manager, "update_progress", new=AsyncMock(side_effect=fake_update_progress)), patch.object(
+                generate_api.manager,
+                "send_progress",
+                new=AsyncMock(side_effect=fake_send_progress),
+            ), patch.object(
+                generate_api,
+                "_relay_progress_to_game_service",
+                new=AsyncMock(side_effect=fake_relay_progress),
+            ):
+                callback = generate_api._make_progress_cb(
+                    game_id="game-progress",
+                    user_id="user-progress",
+                    task_id="task-progress",
+                )
+                callback("stage-one", 10, "first")
+                callback("stage-two", 20, "second")
+                await asyncio.sleep(0.08)
+
+            self.assertEqual(task_progress, [("stage-one", 1), ("stage-two", 2)])
+            self.assertEqual(ws_progress, [("stage-one", 1), ("stage-two", 2)])
+            self.assertEqual(relayed_progress, [("stage-one", 1), ("stage-two", 2)])
+
+        asyncio.run(scenario())
+
     def test_run_pipeline_async_returns_task_handle_and_result(self):
         fake_result = RunPipelineResponse(
             game_id="game-async",
@@ -100,10 +244,12 @@ class TestAsyncTaskApi(unittest.TestCase):
             code_size_bytes=42,
             quality_score=8.8,
             quality_breakdown={"qa_penalty": 0},
+            pipeline_version="v2",
+            primary_artifact_id="artifact-success-async",
         )
 
-        with patch(
-            "src.api.endpoints.generate._run_pipeline_internal",
+        with patch_v2_prompt_defaults(), patch(
+            "src.api.endpoints.generate._run_pipeline_v2_internal",
             new=AsyncMock(return_value=fake_result),
         ) as mock_run:
             with TestClient(app) as client:
@@ -130,8 +276,12 @@ class TestAsyncTaskApi(unittest.TestCase):
         payload = task_response.json()
         self.assertEqual(payload["status"], "succeeded")
         self.assertEqual(payload["result"]["game_id"], "game-async")
+        self.assertEqual(payload["result"]["pipeline_version"], "v2")
+        self.assertEqual(payload["result"]["primary_artifact_id"], "artifact-success-async")
         self.assertIsNotNone(mock_run.await_args)
         self.assertEqual(mock_run.await_args.kwargs["task_id"], handle["task_id"])
+        self.assertEqual(mock_run.await_args.args[0].raw_user_input, "make a runner game")
+        self.assertEqual(mock_run.await_args.args[0].request_context.entrypoint, "create")
 
     def test_sync_pipeline_run_accepts_timeout_override(self):
         fake_result = RunPipelineResponse(
@@ -145,10 +295,12 @@ class TestAsyncTaskApi(unittest.TestCase):
             code_size_bytes=42,
             quality_score=8.8,
             quality_breakdown={"qa_penalty": 0},
+            pipeline_version="v2",
+            primary_artifact_id="artifact-success-sync",
         )
 
-        with patch(
-            "src.api.endpoints.generate._run_pipeline_internal",
+        with patch_v2_prompt_defaults(), patch(
+            "src.api.endpoints.generate._run_pipeline_v2_internal",
             new=AsyncMock(return_value=fake_result),
         ) as mock_run:
             with TestClient(app) as client:
@@ -164,7 +316,302 @@ class TestAsyncTaskApi(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["game_id"], "game-sync")
+        self.assertEqual(response.json()["pipeline_version"], "v2")
+        self.assertEqual(response.json()["primary_artifact_id"], "artifact-success-sync")
         self.assertEqual(mock_run.await_args.args[0].timeout_s, 150)
+        self.assertEqual(mock_run.await_args.args[0].raw_user_input, "make a runner game")
+        self.assertEqual(mock_run.await_args.args[0].request_context.entrypoint, "create")
+
+    def test_pipeline_iterate_upgrades_legacy_request_to_v2(self):
+        fake_result = IterateResponse(
+            html_code="<!DOCTYPE html><html></html>",
+            changes=["Applied: make it faster"],
+            iteration_type="element_change",
+            generation_time_ms=432,
+            qa_retries=0,
+            iteration_retries=0,
+            pipeline_version="v2",
+            primary_artifact_id="artifact-iter-1",
+        )
+
+        with patch_v2_prompt_defaults(), patch(
+            "src.api.endpoints.generate._run_iteration_v2_internal",
+            new=AsyncMock(return_value=fake_result),
+        ) as mock_run:
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/v1/ai/pipeline/iterate",
+                    json={
+                        "game_id": "game-iter",
+                        "feedback": "make it faster",
+                        "user_id": "user-iter",
+                        "conversation": [{"role": "user", "content": "make it faster"}],
+                        "current_code": "<html>old</html>",
+                        "timeout_s": 180,
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["pipeline_version"], "v2")
+        self.assertEqual(response.json()["primary_artifact_id"], "artifact-iter-1")
+        self.assertEqual(mock_run.await_args.args[0].iteration_intent.feedback, "make it faster")
+        self.assertEqual(mock_run.await_args.args[0].current_code, "<html>old</html>")
+        self.assertEqual(mock_run.await_args.args[0].request_context.entrypoint, "iterate")
+
+    def test_generate_code_legacy_routes_through_v2_internal(self):
+        fake_result = RunPipelineResponse(
+            game_id="game-legacy",
+            html_code="<!DOCTYPE html><html></html>",
+            game_spec=GameSpec(game_type="runner"),
+            strategy="llm",
+            qa_passed=True,
+            qa_retries=0,
+            generation_time_ms=567,
+            code_size_bytes=84,
+            quality_score=9.2,
+            quality_breakdown={"qa_penalty": 0},
+            pipeline_version="v2",
+            primary_artifact_id="artifact-legacy-1",
+        )
+
+        with patch_v2_prompt_defaults(), patch(
+            "src.api.endpoints.generate._run_pipeline_v2_internal",
+            new=AsyncMock(return_value=fake_result),
+        ) as mock_run:
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/v1/ai/generate-code",
+                    json={
+                        "game_id": "game-legacy",
+                        "description": "make a runner game",
+                        "platform": "wechat_webview",
+                        "timeout_s": 200,
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["strategy"], "llm")
+        self.assertEqual(mock_run.await_args.args[0].raw_user_input, "make a runner game")
+        self.assertEqual(mock_run.await_args.args[0].request_context.source, "generate_code_legacy")
+
+    def test_run_pipeline_can_bypass_v2_upgrade_when_disabled(self):
+        fake_result = RunPipelineResponse(
+            game_id="game-v1",
+            html_code="<!DOCTYPE html><html></html>",
+            game_spec=GameSpec(game_type="runner"),
+            strategy="llm",
+            qa_passed=True,
+            qa_retries=0,
+            generation_time_ms=321,
+            code_size_bytes=42,
+            quality_score=8.0,
+            quality_breakdown={"qa_penalty": 0},
+        )
+
+        with patch("src.api.endpoints.generate.settings.PIPELINE_UPGRADE_LEGACY_ENDPOINTS_TO_V2", False):
+            with patch(
+                "src.api.endpoints.generate._run_pipeline_internal",
+                new=AsyncMock(return_value=fake_result),
+            ) as mock_v1:
+                with patch(
+                    "src.api.endpoints.generate._run_pipeline_v2_internal",
+                    new=AsyncMock(),
+                ) as mock_v2:
+                    with TestClient(app) as client:
+                        response = client.post(
+                            "/api/v1/ai/pipeline/run",
+                            json={
+                                "game_id": "game-v1",
+                                "description": "make a runner game",
+                                "user_id": "user-v1",
+                                "timeout_s": 90,
+                            },
+                        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["game_id"], "game-v1")
+        self.assertIsNotNone(mock_v1.await_args)
+        self.assertIsNone(mock_v2.await_args)
+
+    def test_async_pipeline_failure_preserves_failure_family_and_primary_artifact(self):
+        failure = HTTPException(
+            status_code=500,
+            detail={
+                "message": "Contract QA failed",
+                "failed_stage": "qa_checking",
+                "retry_count": 2,
+                "failure_family": "contract_qa",
+                "primary_artifact_id": "artifact-failure-1",
+            },
+        )
+
+        with patch_v2_prompt_defaults(), patch(
+            "src.api.endpoints.generate._run_pipeline_v2_internal",
+            new=AsyncMock(side_effect=failure),
+        ):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/v1/ai/pipeline/run/async",
+                    json={
+                        "game_id": "game-fail",
+                        "description": "make a broken game",
+                        "user_id": "user-fail",
+                        "timeout_s": 120,
+                    },
+                )
+
+                self.assertEqual(response.status_code, 202)
+                handle = response.json()
+                time.sleep(0.05)
+                task_response = client.get(handle["poll_url"])
+
+        self.assertEqual(task_response.status_code, 200)
+        payload = task_response.json()
+        self.assertEqual(payload["status"], "failed")
+        self.assertEqual(payload["error"]["failed_stage"], "qa_checking")
+        self.assertEqual(payload["error"]["failure_family"], "contract_qa")
+        self.assertEqual(payload["error"]["primary_artifact_id"], "artifact-failure-1")
+
+    def test_v2_failure_persists_runner_artifacts_and_promotes_candidate_as_primary(self):
+        request = RunPipelineV2Request(
+            game_id="game-v2-failure-artifacts",
+            user_id="user-v2-failure-artifacts",
+            raw_user_input="make a tiny tap game",
+        )
+        failure = PipelineExecutionError(
+            "Generated code failed runtime QA: Runtime QA detected no registered user input handlers",
+            stage="runtime_simulation_qa",
+            failure_family="runtime_qa",
+            artifacts=[
+                {
+                    "artifact_type": "failed_runtime_candidate",
+                    "content_type": "text/html",
+                    "payload": "<!DOCTYPE html><html><body>candidate</body></html>",
+                    "metadata": {"stage": "runtime_simulation_qa"},
+                },
+                {
+                    "artifact_type": "runtime_qa_report",
+                    "content_type": "application/json",
+                    "payload": {"errors": [{"message": "missing input handlers"}]},
+                    "metadata": {"stage": "runtime_simulation_qa"},
+                },
+            ],
+        )
+
+        relay_artifact = AsyncMock(
+            side_effect=[
+                "artifact-failed-candidate",
+                "artifact-runtime-report",
+                "artifact-task-failure",
+            ]
+        )
+
+        with patch_v2_prompt_defaults(), patch(
+            "src.api.endpoints.generate._persist_v2_request_artifacts",
+            new=AsyncMock(return_value=[]),
+        ), patch(
+            "src.api.endpoints.generate._relay_stage_summary_to_game_service",
+            new=AsyncMock(),
+        ), patch(
+            "src.api.endpoints.generate._relay_task_failure_to_game_service",
+            new=AsyncMock(),
+        ), patch(
+            "src.api.endpoints.generate._relay_artifact_to_game_service",
+            new=relay_artifact,
+        ), patch(
+            "src.api.endpoints.generate._v2_runner.run",
+            new=AsyncMock(side_effect=failure),
+        ):
+            with self.assertRaises(PipelineExecutionError) as ctx:
+                asyncio.run(
+                    generate_api._run_pipeline_v2_internal(
+                        request,
+                        task_id="task-v2-failure-artifacts",
+                    )
+                )
+
+        self.assertEqual(ctx.exception.failure_family, "runtime_qa")
+        self.assertEqual(ctx.exception.primary_artifact_id, "artifact-failed-candidate")
+        await_args = relay_artifact.await_args_list
+        self.assertEqual(await_args[0].kwargs["artifact_type"], "failed_runtime_candidate")
+        self.assertEqual(await_args[1].kwargs["artifact_type"], "runtime_qa_report")
+        self.assertEqual(await_args[2].kwargs["artifact_type"], "task_failure")
+
+    def test_v2_internal_uses_runner_instead_of_legacy_internal(self):
+        request = RunPipelineV2Request(
+            game_id="game-v2-internal",
+            user_id="user-v2-internal",
+            raw_user_input="make a runner game",
+        )
+        fake_result = RunPipelineResponse(
+            game_id="game-v2-internal",
+            html_code="<!DOCTYPE html><html></html>",
+            game_spec=GameSpec(game_type="runner"),
+            strategy="llm",
+            qa_passed=True,
+            qa_retries=1,
+            generation_time_ms=789,
+            code_size_bytes=64,
+            quality_score=8.9,
+            quality_breakdown={"qa_penalty": 0},
+            runtime_profile="lane_runner",
+            contract_version="1.0",
+        )
+
+        with patch_v2_prompt_defaults(), patch(
+            "src.api.endpoints.generate._v2_runner.run",
+            new=AsyncMock(return_value=fake_result),
+        ) as mock_runner:
+            with patch(
+                "src.api.endpoints.generate._run_pipeline_internal",
+                new=AsyncMock(side_effect=AssertionError("legacy v1 runner should not be used")),
+            ) as mock_legacy:
+                response = asyncio.run(
+                    generate_api._run_pipeline_v2_internal(request, task_id="task-v2-internal")
+                )
+
+        self.assertEqual(response.pipeline_version, "v2")
+        self.assertEqual(response.runtime_profile, "lane_runner")
+        self.assertIsNotNone(mock_runner.await_args)
+        self.assertIsNone(mock_legacy.await_args)
+
+    def test_v2_iteration_internal_uses_runner_instead_of_legacy_internal(self):
+        request = IterateV2Request(
+            game_id="game-v2-iter-internal",
+            user_id="user-v2-iter-internal",
+            current_code="<!DOCTYPE html><html><body>old</body></html>",
+            iteration_intent={
+                "feedback": "make it faster",
+                "conversation": [],
+            },
+        )
+        fake_result = IterateResponse(
+            html_code="<!DOCTYPE html><html><body>new</body></html>",
+            changes=["Applied: make it faster"],
+            iteration_type="element_change",
+            generation_time_ms=456,
+            qa_retries=1,
+            iteration_retries=0,
+            runtime_profile="lane_runner",
+            contract_version="1.0",
+        )
+
+        with patch_v2_prompt_defaults(), patch(
+            "src.api.endpoints.generate._v2_runner.iterate",
+            new=AsyncMock(return_value=fake_result),
+        ) as mock_runner:
+            with patch(
+                "src.api.endpoints.generate._run_iteration_internal",
+                new=AsyncMock(side_effect=AssertionError("legacy v1 runner should not be used")),
+            ) as mock_legacy:
+                response = asyncio.run(
+                    generate_api._run_iteration_v2_internal(request, task_id="task-v2-iter-internal")
+                )
+
+        self.assertEqual(response.pipeline_version, "v2")
+        self.assertEqual(response.runtime_profile, "lane_runner")
+        self.assertIsNotNone(mock_runner.await_args)
+        self.assertIsNone(mock_legacy.await_args)
 
 
 if __name__ == "__main__":

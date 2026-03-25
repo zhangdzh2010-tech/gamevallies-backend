@@ -27,6 +27,7 @@ export class SearchService {
 
     const whereConditions: any = {
       status: 'published' as const,
+      visibility: 'public',
     };
 
     // MySQL collation (utf8mb4_unicode_ci) is case-insensitive by default
@@ -35,6 +36,8 @@ export class SearchService {
       whereConditions.OR = [
         { title: { contains: query } },
         { description: { contains: query } },
+        { author: { username: { contains: query } } },
+        { author: { displayName: { contains: query } } },
       ];
     }
 
@@ -60,6 +63,7 @@ export class SearchService {
           author: {
             select: {
               id: true,
+              username: true,
               displayName: true,
               avatarUrl: true,
             },

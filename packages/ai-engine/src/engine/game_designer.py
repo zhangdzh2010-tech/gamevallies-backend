@@ -88,6 +88,16 @@ GAME_TYPE_NUMERICS: Dict[str, Dict[str, Any]] = {
     },
 }
 
+DEFAULT_NUMERICS: Dict[str, Any] = {
+    "player_speed": 5.0,
+    "base_obstacle_speed": 2.5,
+    "speed_formula": "base + base * 0.01 * elapsed_s",
+    "spawn_interval_ms": 1000,
+    "score_per_second": 1,
+    "score_per_collect": 10,
+    "expected_survival_s": 75,
+}
+
 DIFFICULTY_MULTIPLIERS = {
     "easy": 0.7,
     "medium": 1.0,
@@ -133,7 +143,7 @@ class GameDesigner:
             ui_layout=ui_layout,
             input_map=input_map,
             state_machine=state_machine,
-            raw_description=spec.visual_style.theme,
+            raw_description=self._compose_raw_description(spec),
         )
 
     # ------------------------------------------------------------------
@@ -143,15 +153,25 @@ class GameDesigner:
     def _build_canvas(self, spec: GameSpec) -> CanvasConfig:
         platform = spec.platform_constraints.platform
         if platform == "wechat_webview":
-            return CanvasConfig(width=420, height=600, dpr_adaptive=True, target_fps=60)
-        return CanvasConfig(width=480, height=640, dpr_adaptive=True, target_fps=60)
+            return CanvasConfig(width=360, height=640, dpr_adaptive=True, target_fps=60)
+        return CanvasConfig(width=390, height=693, dpr_adaptive=True, target_fps=60)
+
+    @staticmethod
+    def _compose_raw_description(spec: GameSpec) -> str:
+        parts = [
+            spec.source_description.strip(),
+            spec.intent_summary.strip(),
+            "; ".join(spec.special_rules).strip() if spec.special_rules else "",
+            f"Reference game: {spec.reference_game.strip()}" if spec.reference_game else "",
+        ]
+        return "\n".join(part for part in parts if part)
 
     # ------------------------------------------------------------------
     # Numerical balance
     # ------------------------------------------------------------------
 
     def _derive_numerics(self, spec: GameSpec) -> NumericsConfig:
-        base = GAME_TYPE_NUMERICS.get(spec.game_type, GAME_TYPE_NUMERICS["dodge"]).copy()
+        base = GAME_TYPE_NUMERICS.get(spec.game_type, DEFAULT_NUMERICS).copy()
 
         diff_mult = DIFFICULTY_MULTIPLIERS.get(spec.difficulty_curve, 1.0)
 
@@ -211,12 +231,12 @@ class GameDesigner:
 
     def _build_ui_layout(self, canvas: CanvasConfig) -> Dict[str, Any]:
         return {
-            "score": {"x": 16, "y": 36, "font": "bold 18px Arial", "align": "left"},
-            "lives": {"x": canvas.width - 16, "y": 36, "font": "bold 18px Arial", "align": "right"},
+            "score": {"x": 16, "y": 32, "font": "bold 16px Arial", "align": "left"},
+            "lives": {"x": canvas.width - 16, "y": 32, "font": "bold 16px Arial", "align": "right"},
             "game_over_overlay": {
-                "title": {"x": canvas.width // 2, "y": canvas.height // 2 - 40, "font": "bold 42px Arial"},
-                "score": {"x": canvas.width // 2, "y": canvas.height // 2 + 20, "font": "24px Arial"},
-                "restart": {"x": canvas.width // 2, "y": canvas.height // 2 + 70, "font": "20px Arial"},
+                "title": {"x": canvas.width // 2, "y": canvas.height // 2 - 36, "font": "bold 32px Arial"},
+                "score": {"x": canvas.width // 2, "y": canvas.height // 2 + 14, "font": "18px Arial"},
+                "restart": {"x": canvas.width // 2, "y": canvas.height // 2 + 52, "font": "16px Arial"},
             },
         }
 

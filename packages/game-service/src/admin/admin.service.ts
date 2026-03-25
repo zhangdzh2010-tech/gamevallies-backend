@@ -1,16 +1,26 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
-import { Prisma } from '@prisma/client';
+import { GameStatus, GenerationTaskStatus, Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import * as bcrypt from 'bcryptjs';
 import axios from 'axios';
+import { GameService } from '../game/game.service';
+import promptCatalog from '../game/catalogs/prompt-catalog.json';
+import { TIMEOUT_CONFIG_CATALOG, TIMEOUT_CONFIG_CATALOG_BY_KEY } from '../game/catalogs/timeout-catalog';
+
+interface LegacyPreviewBackfillOptions {
+  limit?: number;
+  dryRun?: boolean | string;
+  gameIds?: string[] | string;
+}
 
 @Injectable()
 export class AdminService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
+    private readonly gameService: GameService,
   ) {}
 
   private getFallbackAiEngineAdminBaseUrl(): string {
@@ -106,7 +116,71 @@ export class AdminService {
   }
 
   private getAdminToken(): string {
-    return process.env.ADMIN_TOKEN || 'admin123';
+    const token = (process.env.ADMIN_TOKEN || '').trim();
+    if (!token) {
+      throw new BadRequestException('ADMIN_TOKEN is not configured');
+    }
+    return token;
+  }
+
+  private getOptionalAdminToken(): string | null {
+    const token = (process.env.ADMIN_TOKEN || '').trim();
+    return token || null;
+  }
+
+  private async invalidateFeedCache(): Promise<void> {
+    const adminToken = this.getOptionalAdminToken();
+    if (!adminToken) {
+      console.warn('[ADMIN] Skipping feed cache invalidation because ADMIN_TOKEN is not configured');
+      return;
+    }
+
+    const baseUrl = (
+      this.configService.get<string>('FEED_SERVICE_UPSTREAM_URL')
+      || this.configService.get<string>('FEED_SERVICE_URL')
+      || this.configService.get<string>('PUBLIC_API_BASE_URL', 'http://localhost:3002')
+    ).replace(/\/$/, '');
+
+    try {
+      await axios.post(
+        `${baseUrl}/api/v1/feed/internal/cache/invalidate`,
+        {},
+        {
+          timeout: 5000,
+          headers: {
+            'x-admin-token': adminToken,
+          },
+        },
+      );
+    } catch (error: any) {
+      // Mutations should not fail just because cache eviction missed.
+      console.warn('[ADMIN] Failed to invalidate feed cache:', error?.message || error);
+    }
+  }
+
+  private normalizeLegacyPreviewBackfillLimit(rawValue?: unknown): number {
+    const parsed = Number.parseInt(String(rawValue ?? '200'), 10);
+    if (!Number.isFinite(parsed)) {
+      return 200;
+    }
+    return Math.min(Math.max(parsed, 1), 2000);
+  }
+
+  private parseLegacyPreviewBackfillDryRun(rawValue?: boolean | string): boolean {
+    return String(rawValue ?? 'false').trim().toLowerCase() === 'true';
+  }
+
+  private parseLegacyPreviewBackfillGameIds(rawValue?: string[] | string): string[] {
+    if (Array.isArray(rawValue)) {
+      return rawValue
+        .map((value) => String(value || '').trim())
+        .filter(Boolean);
+    }
+
+    return String(rawValue || '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean);
   }
 
   async listGames(
@@ -155,7 +229,10 @@ export class AdminService {
     ]);
 
     return {
-      items: games,
+      items: games.map((game: any) => ({
+        ...game,
+        ...this.gameService.buildAdminPreviewUrls(game.id),
+      })),
       total,
       page,
       limit,
@@ -184,7 +261,10 @@ export class AdminService {
       throw new NotFoundException('Game not found');
     }
 
-    return game;
+    return {
+      ...game,
+      ...this.gameService.buildAdminPreviewUrls(game.id),
+    };
   }
 
   async createGame(data: {
@@ -268,6 +348,7 @@ export class AdminService {
       },
     });
 
+    await this.invalidateFeedCache();
     return this.getGame(game.id);
   }
 
@@ -294,6 +375,12 @@ export class AdminService {
 
     if (!existing) {
       throw new NotFoundException('Game not found');
+    }
+
+    if (data.status === 'banned') {
+      await this.gameService.terminateActiveTasksForGame(id, {
+        reason: 'Task canceled because the game was banned by admin',
+      });
     }
 
     // Update game metadata
@@ -343,6 +430,7 @@ export class AdminService {
       });
     }
 
+    await this.invalidateFeedCache();
     return this.getGame(id);
   }
 
@@ -352,9 +440,14 @@ export class AdminService {
       throw new NotFoundException('Game not found');
     }
 
+    await this.gameService.terminateActiveTasksForGame(id, {
+      reason: 'Task canceled because the game was deleted by admin',
+    });
+
     // Delete bundles first (cascade should handle this, but be explicit)
     await this.prisma.gameBundle.deleteMany({ where: { gameId: id } });
     await this.prisma.game.delete({ where: { id } });
+    await this.invalidateFeedCache();
 
     return { deleted: true };
   }
@@ -363,6 +456,12 @@ export class AdminService {
     const game = await this.prisma.game.findUnique({ where: { id } });
     if (!game) {
       throw new NotFoundException('Game not found');
+    }
+
+    if (status === 'banned') {
+      await this.gameService.terminateActiveTasksForGame(id, {
+        reason: 'Task canceled because the game was banned by admin',
+      });
     }
 
     const updateData: any = { status };
@@ -375,7 +474,165 @@ export class AdminService {
       data: updateData,
     });
 
+    await this.invalidateFeedCache();
+
     return this.getGame(id);
+  }
+
+  async backfillLegacyPreviewGames(options: LegacyPreviewBackfillOptions = {}) {
+    const limit = this.normalizeLegacyPreviewBackfillLimit(options.limit);
+    const dryRun = this.parseLegacyPreviewBackfillDryRun(options.dryRun);
+    const gameIds = this.parseLegacyPreviewBackfillGameIds(options.gameIds);
+    const where: Prisma.GameWhereInput = {
+      status: {
+        in: [GameStatus.draft, GameStatus.review, GameStatus.published],
+      },
+      visibility: {
+        notIn: ['public', 'unlisted'],
+      },
+      generationTasks: {
+        some: {
+          status: 'succeeded',
+        },
+      },
+      bundles: {
+        some: {},
+      },
+      ...(gameIds.length > 0
+        ? {
+            id: {
+              in: gameIds,
+            },
+          }
+        : {}),
+    };
+
+    const candidates = await this.prisma.game.findMany({
+      where,
+      select: {
+        id: true,
+        title: true,
+        status: true,
+        visibility: true,
+        version: true,
+        codeBundleId: true,
+        createdAt: true,
+        publishedAt: true,
+        bundles: {
+          select: {
+            id: true,
+            version: true,
+            htmlCode: true,
+          },
+          orderBy: {
+            version: 'desc',
+          },
+          take: 1,
+        },
+        generationTasks: {
+          where: {
+            status: 'succeeded',
+          },
+          select: {
+            id: true,
+            previewUrl: true,
+            createdAt: true,
+          },
+          orderBy: {
+            createdAt: 'desc',
+          },
+          take: 1,
+        },
+      },
+      orderBy: {
+        createdAt: 'asc',
+      },
+      take: limit,
+    });
+
+    const eligibleGames = candidates.reduce<Array<{
+      id: string;
+      title: string;
+      previousStatus: GameStatus;
+      previousVisibility: string;
+      previousVersion: number;
+      previousCodeBundleId: string | null;
+      createdAt: Date;
+      publishedAt: Date | null;
+      latestBundleId: string;
+      latestBundleVersion: number;
+      sourceTaskId: string;
+      sourcePreviewUrl: string | null;
+    }>>((items, game) => {
+        const latestBundle = game.bundles[0];
+        const latestSucceededTask = game.generationTasks[0];
+        const previewUrl = latestSucceededTask?.previewUrl || '';
+        const isLegacyTask = !previewUrl || !previewUrl.includes('previewToken=');
+        const hasPlayableBundle = typeof latestBundle?.htmlCode === 'string' && latestBundle.htmlCode.trim().length > 0;
+
+        if (!latestBundle || !latestSucceededTask || !isLegacyTask || !hasPlayableBundle) {
+          return items;
+        }
+
+        items.push({
+          id: game.id,
+          title: game.title,
+          previousStatus: game.status,
+          previousVisibility: game.visibility || 'private',
+          previousVersion: game.version,
+          previousCodeBundleId: game.codeBundleId,
+          createdAt: game.createdAt,
+          publishedAt: game.publishedAt,
+          latestBundleId: latestBundle.id,
+          latestBundleVersion: latestBundle.version,
+          sourceTaskId: latestSucceededTask.id,
+          sourcePreviewUrl: latestSucceededTask.previewUrl,
+        });
+        return items;
+      }, []);
+
+    if (!dryRun) {
+      for (const game of eligibleGames) {
+        await this.prisma.game.update({
+          where: {
+            id: game.id,
+          },
+          data: {
+            status: GameStatus.published,
+            visibility: 'unlisted',
+            publishedAt: game.publishedAt || game.createdAt,
+            version: Math.max(game.previousVersion || 0, game.latestBundleVersion || 1),
+            codeBundleId: game.latestBundleId,
+          },
+        });
+      }
+
+      if (eligibleGames.length > 0) {
+        await this.invalidateFeedCache();
+      }
+    }
+
+    return {
+      dryRun,
+      scanned: candidates.length,
+      eligible: eligibleGames.length,
+      updated: dryRun ? 0 : eligibleGames.length,
+      filters: {
+        limit,
+        gameIds: gameIds.length > 0 ? gameIds : null,
+      },
+      items: eligibleGames.map((game) => ({
+        id: game.id,
+        title: game.title,
+        sourceTaskId: game.sourceTaskId,
+        sourcePreviewUrl: game.sourcePreviewUrl,
+        previousStatus: game.previousStatus,
+        previousVisibility: game.previousVisibility,
+        latestBundleVersion: game.latestBundleVersion,
+        targetStatus: GameStatus.published,
+        targetVisibility: 'unlisted',
+      })),
+    };
   }
 
   // ===================== User Management =====================
@@ -494,7 +751,7 @@ export class AdminService {
   // ===================== Admin Token Management =====================
 
   async changeAdminToken(currentToken: string, newToken: string) {
-    const envToken = process.env.ADMIN_TOKEN || 'admin123';
+    const envToken = this.getAdminToken();
     if (currentToken !== envToken) {
       throw new BadRequestException('Current token is incorrect');
     }
@@ -508,6 +765,115 @@ export class AdminService {
 
   // ===================== Generation Logs =====================
 
+  private asPlainObject(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
+  }
+
+  private pickFirstString(...values: unknown[]): string | null {
+    for (const value of values) {
+      if (typeof value === 'string' && value.trim()) {
+        return value.trim();
+      }
+    }
+    return null;
+  }
+
+  private pickFirstNumber(...values: unknown[]): number | null {
+    for (const value of values) {
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  private pickFirstBoolean(...values: unknown[]): boolean | null {
+    for (const value of values) {
+      if (typeof value === 'boolean') {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  private deriveGenerationLogStatus(
+    gameStatus: GameStatus,
+    taskStatus?: GenerationTaskStatus | null,
+  ): GameStatus {
+    if (gameStatus === GameStatus.banned) {
+      return GameStatus.banned;
+    }
+
+    if (taskStatus === GenerationTaskStatus.queued || taskStatus === GenerationTaskStatus.running) {
+      return GameStatus.generating;
+    }
+
+    if (
+      taskStatus === GenerationTaskStatus.failed
+      || taskStatus === GenerationTaskStatus.timed_out
+      || taskStatus === GenerationTaskStatus.canceled
+    ) {
+      return GameStatus.failed;
+    }
+
+    if (taskStatus === GenerationTaskStatus.succeeded) {
+      if (gameStatus === GameStatus.published || gameStatus === GameStatus.review) {
+        return gameStatus;
+      }
+      return GameStatus.draft;
+    }
+
+    return gameStatus;
+  }
+
+  private buildGenerationLogItem(game: any) {
+    const bundle = game.bundles?.[0] || null;
+    const task = game.generationTasks?.[0] || null;
+    const summary = this.asPlainObject(task?.resultSummary);
+    const bundleMeta = this.asPlainObject(bundle?.metadata);
+    const previewUrls = this.gameService.buildAdminPreviewUrls(game.id);
+    const taskHasError = task
+      && (
+        task.status === GenerationTaskStatus.failed
+        || task.status === GenerationTaskStatus.timed_out
+        || task.status === GenerationTaskStatus.canceled
+      );
+
+    return {
+      gameId: game.id,
+      taskId: task?.id ?? null,
+      taskStatus: task?.status ?? null,
+      title: game.title,
+      description: game.description,
+      status: this.deriveGenerationLogStatus(game.status, task?.status),
+      failedStage: task ? (task.failedStage || null) : (game.failedStage || null),
+      failedReason: task ? (task.errorMessage || null) : (game.failedReason || null),
+      retryCount: task ? (task.retryCount ?? 0) : game.retryCount,
+      lastErrorAt: task ? (taskHasError ? (task.completedAt || null) : null) : (game.lastErrorAt || null),
+      gameType: this.pickFirstString(summary.gameType, bundleMeta.gameType, game.gameType),
+      createdAt: task?.createdAt || bundle?.createdAt || game.createdAt,
+      updatedAt: task?.updatedAt || game.updatedAt,
+      author: game.author,
+      strategy: this.pickFirstString(summary.strategy, bundleMeta.strategy),
+      qaPassed: this.pickFirstBoolean(summary.qaPassed, bundleMeta.qaPassed),
+      qaRetries: this.pickFirstNumber(summary.qaRetries, bundleMeta.qaRetries),
+      iterationRetries: this.pickFirstNumber(summary.iterationRetries, bundleMeta.iterationRetries),
+      genTimeMs: this.pickFirstNumber(
+        summary.generationTimeMs,
+        summary.genTimeMs,
+        bundleMeta.generationTimeMs,
+        bundleMeta.genTimeMs,
+      ),
+      codeSizeBytes: this.pickFirstNumber(summary.codeSizeBytes, bundle?.codeSizeBytes),
+      qualityScore: this.pickFirstNumber(summary.qualityScore, bundleMeta.qualityScore),
+      version: this.pickFirstNumber(summary.version, bundle?.version, game.version) || 0,
+      previewUrl: previewUrls.previewUrl,
+      gameUrl: previewUrls.gameUrl,
+    };
+  }
+
   async listGenerationLogs(page: number, limit: number, status?: string, search?: string) {
     const filters: Prisma.GameWhereInput[] = [];
 
@@ -518,6 +884,34 @@ export class AdminService {
             { status: 'failed' as any },
             { failedStage: { not: null } },
             { failedReason: { not: null } },
+            {
+              generationTasks: {
+                some: {
+                  status: {
+                    in: [
+                      GenerationTaskStatus.failed,
+                      GenerationTaskStatus.timed_out,
+                      GenerationTaskStatus.canceled,
+                    ],
+                  },
+                },
+              },
+            },
+          ],
+        });
+      } else if (status === 'generating') {
+        filters.push({
+          OR: [
+            { status: status as any },
+            {
+              generationTasks: {
+                some: {
+                  status: {
+                    in: [GenerationTaskStatus.queued, GenerationTaskStatus.running],
+                  },
+                },
+              },
+            },
           ],
         });
       } else {
@@ -527,9 +921,18 @@ export class AdminService {
     if (search) {
       filters.push({
         OR: [
+          { id: { contains: search } },
           { title: { contains: search } },
           { description: { contains: search } },
           { author: { username: { contains: search } } },
+          { author: { displayName: { contains: search } } },
+          {
+            generationTasks: {
+              some: {
+                id: { contains: search },
+              },
+            },
+          },
         ],
       });
     }
@@ -556,6 +959,22 @@ export class AdminService {
             orderBy: { version: 'desc' },
             take: 1,
           },
+          generationTasks: {
+            select: {
+              id: true,
+              status: true,
+              failedStage: true,
+              errorMessage: true,
+              retryCount: true,
+              resultSummary: true,
+              previewUrl: true,
+              createdAt: true,
+              updatedAt: true,
+              completedAt: true,
+            },
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+          },
         },
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
@@ -564,32 +983,7 @@ export class AdminService {
       this.prisma.game.count({ where }),
     ]);
 
-    const items = games.map(g => {
-      const bundle = g.bundles[0];
-      const meta = (bundle?.metadata as any) || {};
-      return {
-        gameId: g.id,
-        title: g.title,
-        description: g.description,
-        status: g.status,
-        failedStage: g.failedStage,
-        failedReason: g.failedReason,
-        retryCount: g.retryCount,
-        lastErrorAt: g.lastErrorAt,
-        gameType: g.gameType,
-        createdAt: g.createdAt,
-        updatedAt: g.updatedAt,
-        author: g.author,
-        strategy: meta.strategy || null,
-        qaPassed: meta.qaPassed ?? null,
-        qaRetries: meta.qaRetries ?? null,
-        iterationRetries: meta.iterationRetries ?? null,
-        genTimeMs: meta.genTimeMs || null,
-        codeSizeBytes: bundle?.codeSizeBytes || null,
-        qualityScore: meta.qualityScore || null,
-        version: bundle?.version || 0,
-      };
-    });
+    const items = games.map((game) => this.buildGenerationLogItem(game));
 
     return { items, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
@@ -605,6 +999,7 @@ export class AdminService {
         { id: { contains: search } },
         { gameId: { contains: search } },
         { user: { username: { contains: search } } },
+        { user: { displayName: { contains: search } } },
         { game: { title: { contains: search } } },
       ];
     }
@@ -623,14 +1018,53 @@ export class AdminService {
       this.prisma.generationTask.count({ where }),
     ]);
 
-    return { items: tasks, total, page, limit, totalPages: Math.ceil(total / limit) };
+    const resolvedTasks = await Promise.all(tasks.map(async (task: any) => {
+      const reconciled = await this.gameService.reconcileGenerationTask(task);
+      const gameId = String(reconciled?.gameId || task.gameId || '').trim();
+      return {
+        ...task,
+        ...(reconciled || {}),
+        game: reconciled?.game || task.game,
+        user: task.user,
+        ...(gameId ? this.gameService.buildAdminPreviewUrls(gameId) : {}),
+      };
+    }));
+
+    return { items: resolvedTasks, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
   async getGenerationTask(taskId: string) {
     const task = await this.prisma.generationTask.findUnique({
       where: { id: taskId },
       include: {
-        game: { select: { id: true, title: true, status: true } },
+        game: {
+          select: {
+            id: true,
+            title: true,
+            status: true,
+            description: true,
+            createdAt: true,
+            updatedAt: true,
+            publishedAt: true,
+            failedStage: true,
+            failedReason: true,
+            bundles: {
+              select: {
+                id: true,
+                version: true,
+                htmlCode: true,
+                cssCode: true,
+                jsCode: true,
+                metadata: true,
+                generationMeta: true,
+                codeSizeBytes: true,
+                createdAt: true,
+              },
+              orderBy: { version: 'desc' },
+              take: 1,
+            },
+          },
+        },
         user: { select: { id: true, username: true, displayName: true } },
         events: {
           orderBy: { createdAt: 'asc' },
@@ -647,7 +1081,89 @@ export class AdminService {
       throw new NotFoundException('Generation task not found');
     }
 
-    return task;
+    const reconciled = await this.gameService.reconcileGenerationTask(task);
+    if (reconciled && (
+      reconciled.status !== task.status
+      || reconciled.progressStage !== task.progressStage
+      || reconciled.failedStage !== task.failedStage
+    )) {
+      const refreshed = await this.prisma.generationTask.findUnique({
+        where: { id: taskId },
+        include: {
+          game: {
+            select: {
+              id: true,
+              title: true,
+              status: true,
+              description: true,
+              createdAt: true,
+              updatedAt: true,
+              publishedAt: true,
+              failedStage: true,
+              failedReason: true,
+              bundles: {
+                select: {
+                  id: true,
+                  version: true,
+                  htmlCode: true,
+                  cssCode: true,
+                  jsCode: true,
+                  metadata: true,
+                  generationMeta: true,
+                  codeSizeBytes: true,
+                  createdAt: true,
+                },
+                orderBy: { version: 'desc' },
+                take: 1,
+              },
+            },
+          },
+          user: { select: { id: true, username: true, displayName: true } },
+          events: {
+            orderBy: { createdAt: 'asc' },
+            take: 300,
+          },
+          llmCallLogs: {
+            orderBy: { createdAt: 'asc' },
+            take: 300,
+          },
+        },
+      });
+      if (refreshed) {
+        const mergedGame = refreshed.game;
+        return {
+          ...refreshed,
+          inputPrompt: mergedGame?.description || null,
+          sourceBundle: mergedGame?.bundles?.[0] || null,
+          ...this.gameService.buildAdminPreviewUrls(refreshed.gameId),
+        };
+      }
+    }
+
+    const gameId = String((reconciled || task).gameId || '').trim();
+    const mergedGame = {
+      ...(task.game || {}),
+      ...(reconciled?.game || {}),
+    } as any;
+
+    return {
+      ...task,
+      ...(reconciled || {}),
+      game: mergedGame,
+      user: task.user,
+      events: task.events,
+      llmCallLogs: task.llmCallLogs,
+      inputPrompt: mergedGame?.description || null,
+      sourceBundle: mergedGame?.bundles?.[0] || null,
+      ...(gameId ? this.gameService.buildAdminPreviewUrls(gameId) : {}),
+    };
+  }
+
+  async terminateGenerationTask(taskId: string, reason?: string) {
+    return this.gameService.terminateTask(taskId, {
+      admin: true,
+      reason: reason || 'Task terminated by admin',
+    });
   }
 
   async listGenerationTaskEvents(taskId: string, limit = 100) {
@@ -664,6 +1180,25 @@ export class AdminService {
       items: await this.prisma.generationTaskEvent.findMany({
         where: { taskId },
         orderBy: { createdAt: 'asc' },
+        take: Math.max(1, Math.min(limit, 500)),
+      }),
+    };
+  }
+
+  async listGenerationTaskArtifacts(taskId: string, limit = 100) {
+    const task = await this.prisma.generationTask.findUnique({
+      where: { id: taskId },
+      select: { id: true },
+    });
+
+    if (!task) {
+      throw new NotFoundException('Generation task not found');
+    }
+
+    return {
+      items: await this.prisma.generationArtifact.findMany({
+        where: { taskId },
+        orderBy: { createdAt: 'desc' },
         take: Math.max(1, Math.min(limit, 500)),
       }),
     };
@@ -1319,32 +1854,32 @@ export class AdminService {
 
     const failedStageMap: Record<string, number> = {};
     const retryBuckets: Record<string, number> = {
-      '0次': 0,
-      '1次': 0,
-      '2次': 0,
-      '3次及以上': 0,
+      '0 retries': 0,
+      '1 retry': 0,
+      '2 retries': 0,
+      '3+ retries': 0,
     };
     const qualityBuckets: Record<string, number> = {
-      '90分以上': 0,
-      '80-89分': 0,
-      '70-79分': 0,
-      '70分以下': 0,
+      '90+': 0,
+      '80-89': 0,
+      '70-79': 0,
+      '<70': 0,
     };
     const failureReasonMap = new Map<string, { stage: string; reason: string; count: number }>();
 
     for (const game of gameMetrics) {
       const retries = Number(game.retryCount || 0);
-      if (retries <= 0) retryBuckets['0次'] += 1;
-      else if (retries === 1) retryBuckets['1次'] += 1;
-      else if (retries === 2) retryBuckets['2次'] += 1;
-      else retryBuckets['3次及以上'] += 1;
+      if (retries <= 0) retryBuckets['0 retries'] += 1;
+      else if (retries === 1) retryBuckets['1 retry'] += 1;
+      else if (retries === 2) retryBuckets['2 retries'] += 1;
+      else retryBuckets['3+ retries'] += 1;
 
       if (game.qualityScore !== null && game.qualityScore !== undefined) {
         const score = Number(game.qualityScore);
-        if (score >= 90) qualityBuckets['90分以上'] += 1;
-        else if (score >= 80) qualityBuckets['80-89分'] += 1;
-        else if (score >= 70) qualityBuckets['70-79分'] += 1;
-        else qualityBuckets['70分以下'] += 1;
+        if (score >= 90) qualityBuckets['90+'] += 1;
+        else if (score >= 80) qualityBuckets['80-89'] += 1;
+        else if (score >= 70) qualityBuckets['70-79'] += 1;
+        else qualityBuckets['<70'] += 1;
       }
 
       if (!game.failedStage && !game.failedReason) {
@@ -1392,216 +1927,147 @@ export class AdminService {
 
   // ===================== System Config =====================
 
+  private mergeCatalogConfigs(category: string | undefined, configs: any[]) {
+    if (category !== 'timeout') {
+      return configs;
+    }
+
+    const existingMap = new Map(configs.map((config) => [config.configKey, config]));
+    const merged = TIMEOUT_CONFIG_CATALOG.map((entry) => {
+      const existing = existingMap.get(entry.key);
+      return {
+        id: existing?.id || `catalog:${entry.key}`,
+        configKey: entry.key,
+        configValue: existing?.configValue ?? entry.defaultValue,
+        description: existing?.description ?? entry.description,
+        category: 'timeout',
+        createdAt: existing?.createdAt ?? null,
+        updatedAt: existing?.updatedAt ?? null,
+        defaultValue: entry.defaultValue,
+        unit: entry.unit,
+        valueType: entry.valueType,
+        service: entry.service,
+        group: entry.group,
+        source: existing ? 'db' : 'catalog',
+        isDefault: !existing,
+      };
+    });
+
+    const extras = configs
+      .filter((config) => !TIMEOUT_CONFIG_CATALOG_BY_KEY.has(config.configKey))
+      .map((config) => ({
+        ...config,
+        defaultValue: null,
+        unit: null,
+        valueType: 'int',
+        service: 'game-service',
+        group: 'custom',
+        source: 'db',
+        isDefault: false,
+      }));
+
+    return [...merged, ...extras];
+  }
+
+  private async resolveTimeoutConfigValue(
+    key: string,
+    options?: {
+      min?: number;
+      max?: number;
+    },
+  ): Promise<number> {
+    const catalogEntry = TIMEOUT_CONFIG_CATALOG_BY_KEY.get(key);
+    if (!catalogEntry) {
+      throw new Error(`Unknown timeout config key: ${key}`);
+    }
+
+    const row = await this.prisma.systemConfig.findUnique({
+      where: { configKey: key },
+      select: { configValue: true },
+    });
+    const rawValue = row?.configValue ?? catalogEntry.defaultValue;
+    const parsed = catalogEntry.valueType === 'float'
+      ? Number.parseFloat(String(rawValue))
+      : Number.parseInt(String(rawValue), 10);
+    const fallback = catalogEntry.valueType === 'float'
+      ? Number.parseFloat(catalogEntry.defaultValue)
+      : Number.parseInt(catalogEntry.defaultValue, 10);
+    const value = Number.isFinite(parsed) ? parsed : fallback;
+    const min = options?.min ?? Number.NEGATIVE_INFINITY;
+    const max = options?.max ?? Number.POSITIVE_INFINITY;
+    return Math.min(max, Math.max(min, value));
+  }
+
   async listConfigs(category?: string) {
     const where: any = {};
     if (category) where.category = category;
-    return this.prisma.systemConfig.findMany({
+    const configs = await this.prisma.systemConfig.findMany({
       where,
       orderBy: [{ category: 'asc' }, { configKey: 'asc' }],
     });
+    return this.mergeCatalogConfigs(category, configs);
   }
 
   async getConfig(key: string) {
     const config = await this.prisma.systemConfig.findUnique({
       where: { configKey: key },
     });
-    if (!config) throw new NotFoundException(`Config '${key}' not found`);
+    if (!config) {
+      const timeoutCatalog = TIMEOUT_CONFIG_CATALOG_BY_KEY.get(key);
+      if (timeoutCatalog) {
+        return {
+          id: `catalog:${timeoutCatalog.key}`,
+          configKey: timeoutCatalog.key,
+          configValue: timeoutCatalog.defaultValue,
+          description: timeoutCatalog.description,
+          category: 'timeout',
+          createdAt: null,
+          updatedAt: null,
+          defaultValue: timeoutCatalog.defaultValue,
+          unit: timeoutCatalog.unit,
+          valueType: timeoutCatalog.valueType,
+          service: timeoutCatalog.service,
+          group: timeoutCatalog.group,
+          source: 'catalog',
+          isDefault: true,
+        };
+      }
+      throw new NotFoundException(`Config '${key}' not found`);
+    }
     return config;
   }
 
   async upsertConfig(key: string, data: { value: string; description?: string; category?: string }) {
-    return this.prisma.systemConfig.upsert({
+    const timeoutCatalog = TIMEOUT_CONFIG_CATALOG_BY_KEY.get(key);
+    const category = data.category || (timeoutCatalog ? 'timeout' : 'prompt');
+    const description = data.description ?? timeoutCatalog?.description ?? null;
+    const config = await this.prisma.systemConfig.upsert({
       where: { configKey: key },
       update: {
         configValue: data.value,
-        ...(data.description !== undefined && { description: data.description }),
-        ...(data.category !== undefined && { category: data.category }),
+        description,
+        category,
       },
       create: {
         id: randomUUID(),
         configKey: key,
         configValue: data.value,
-        description: data.description || null,
-        category: data.category || 'prompt',
+        description,
+        category,
       },
     });
+    if (category === 'timeout') {
+      const refreshResult = await this.refreshTimeoutConfigs();
+      return {
+        ...config,
+        refreshResult,
+      };
+    }
+    return config;
   }
 
   async initDefaultPrompts() {
-    const defaults = [
-      {
-        key: 'prompt.slot_extraction_system',
-        description: 'Stage 1-2: 槽位提取系统提示词',
-        value: `You are PlayForge's Slot Filling agent. Extract game design information from the user conversation and return a JSON object with exactly these keys (use null for missing/uncertain values):
-
-{
-  "game_type": null,         // one of: dodge, platformer, runner, shooter, puzzle, rhythm, tower_defense, sandbox, card, rpg, idle, racing
-  "core_mechanic": null,     // concise Chinese description of the primary gameplay loop
-  "theme": null,             // e.g. 太空, 海底, 森林, 西部, 未来
-  "input_method": null,      // one of: touch, tap, swipe, tilt
-  "win_condition": null,     // e.g. 存活60秒, 到达终点, 消灭所有敌人
-  "difficulty": null,        // one of: easy, medium, hard, progressive
-  "visual_style": null,      // one of: pixel, geometric, emoji, neon
-  "audio_style": null,       // one of: chiptune, ambient, none
-  "special_rules": null,     // array of strings, e.g. ["分裂机制"]
-  "reference_game": null     // e.g. "Flappy Bird"
-}
-
-Return ONLY the JSON object with no extra text. Keep existing non-null values unchanged unless the user explicitly corrects them.`,
-      },
-      {
-        key: 'prompt.dialogue_system',
-        description: 'Stage 1: 对话引擎系统提示词',
-        value: `You are PlayForge's friendly game creation assistant. You help users describe their game idea in 2-4 conversational turns.
-
-Current slot fill state: {slot_summary}
-Missing required info: {missing_slots}
-
-Your job:
-- If state is "greeting": Welcome the user and invite them to describe their game idea
-- If state is "describing": Acknowledge what they said, extract info, ask about the most important missing slot in a natural way (one question at a time)
-- If state is "clarifying": Confirm what you understood, ask about remaining missing slots
-- If state is "confirmed": Summarize the complete game design and ask for confirmation
-
-Rules:
-- Be concise, friendly, and enthusiastic
-- Ask at most ONE clarifying question per turn
-- Respond in the same language the user uses (Chinese or English)
-- Never mention "slots" or "JSON" to the user`,
-      },
-      {
-        key: 'prompt.code_gen_system',
-        description: 'Stage 5: 代码生成主系统提示词',
-        value: `You are PlayForge GameEngine, an expert HTML5 game developer.
-
-OUTPUT FORMAT:
-- Return ONLY a single complete HTML file (<!DOCTYPE html> ... </html>)
-- No markdown code fences, no explanations, no extra text
-- Inline all CSS and JavaScript inside the HTML
-
-HARD RULES:
-- Single self-contained file, zero external dependencies
-- Use Canvas 2D API (no WebGL, no libraries)
-- Touch-friendly: implement touchstart/touchmove/touchend events
-- Target 60fps with requestAnimationFrame game loop
-- Maximum 500 lines of code
-- ES2017 syntax only
-- FORBIDDEN APIs: eval, Function(), import, require, fetch, XMLHttpRequest, WebSocket, localStorage, document.cookie, document.write`,
-      },
-      {
-        key: 'prompt.game_design_template',
-        description: 'Stage 5: GDD 转代码提示词模板',
-        value: `GAME DESIGN DOCUMENT:
-
-Game Type: {game_type}
-Theme: {theme} | Art Style: {art_style}
-Color Palette: {palette}
-
-Canvas: {canvas_w}×{canvas_h}px, DPR adaptive, target 60fps
-
-Player: speed={player_speed}px/frame, hitbox={hitbox_ratio}x
-Obstacle/Spawn: base_speed={obstacle_speed}, interval={spawn_interval}ms
-Difficulty: {speed_formula}
-Score: +{score_per_second}/s, +{score_per_collect} per collectible
-Lives: {lives} | Expected survival: {expected_s}s
-
-Win condition: {win_condition}
-Lose condition: {lose_condition}
-
-Entities:
-{entities_desc}
-
-Input mapping:
-{input_map}
-
-Game states: init → playing → [paused | game_over] → init
-
-UI:
-- Score: top-left at (16, 36)
-- Lives: top-right
-- Game Over overlay: centered, show score + "Tap to restart"
-
-Implement the complete, playable game following every detail above.`,
-      },
-      {
-        key: 'prompt.platform_standard',
-        description: 'Stage 5: 标准 H5 平台约束提示词',
-        value: `PLATFORM: Standard H5 Mobile Browser
-- Max file size: 500 KB
-- Input: touch + mouse fallback
-- Canvas: single canvas element, id="gameCanvas" `,
-      },
-      {
-        key: 'prompt.iterate_classify',
-        description: 'Stage 7: 用户反馈分类提示词',
-        value: `Classify this user feedback into one category. Return ONLY the category name.
-
-Categories:
-- param_adjust: change a numeric value (speed, color, size, lives, score)
-- element_change: add or remove a game element (new entity, background effect, UI element)
-- mechanic_change: change how the game works (new ability, different win condition, gameplay rule)
-- major_overhaul: fundamentally different game type or complete redesign
-
-Feedback: "{feedback}"
-
-Category:`,
-      },
-      {
-        key: 'prompt.param_adjust',
-        description: 'Stage 7: 参数调整提示词',
-        value: `You are editing HTML5 game code. The user wants to change a parameter.
-Apply ONLY the requested parameter change. Keep everything else identical.
-
-User feedback: {feedback}
-
-Current code:
-{code}
-
-Return ONLY the complete updated HTML file with no extra text.`,
-      },
-      {
-        key: 'prompt.element_change',
-        description: 'Stage 7: 元素修改提示词',
-        value: `You are editing HTML5 game code. Add or remove one game element as requested.
-Make the minimal change needed. Keep the rest of the code identical.
-
-User feedback: {feedback}
-
-Current code:
-{code}
-
-Return ONLY the complete updated HTML file with no extra text.`,
-      },
-      {
-        key: 'prompt.mechanic_change',
-        description: 'Stage 7: 机制修改提示词',
-        value: `You are editing HTML5 game code. Modify the game mechanics as requested.
-You may rewrite the relevant section(s) of the code. Keep the rest unchanged.
-
-User feedback: {feedback}
-Conversation history: {history}
-
-Current code:
-{code}
-
-Return ONLY the complete updated HTML file with no extra text.`,
-      },
-      {
-        key: 'prompt.qa_fix',
-        description: 'Stage 6: QA 自动修复提示词',
-        value: `You are fixing a HTML5 game. The code has the following issues that MUST be fixed:
-
-{error_list}
-
-Game type: {game_type}
-
-Fix ONLY the listed issues. Do not change the game logic or visual design.
-Return ONLY the complete fixed HTML file with no extra text.
-
-Current code:
-{code}`,
-      },
-    ];
+    const defaults = Array.isArray(promptCatalog) ? promptCatalog : [];
 
     let created = 0;
     let skipped = 0;
@@ -1625,6 +2091,107 @@ Current code:
       created++;
     }
     return { created, skipped, total: defaults.length };
+  }
+
+  async initDefaultTimeouts() {
+    let created = 0;
+    let skipped = 0;
+    for (const entry of TIMEOUT_CONFIG_CATALOG) {
+      const existing = await this.prisma.systemConfig.findUnique({
+        where: { configKey: entry.key },
+      });
+      if (existing) {
+        skipped++;
+        continue;
+      }
+      await this.prisma.systemConfig.create({
+        data: {
+          id: randomUUID(),
+          configKey: entry.key,
+          configValue: entry.defaultValue,
+          description: entry.description,
+          category: 'timeout',
+        },
+      });
+      created++;
+    }
+    await this.refreshTimeoutConfigs();
+    return { created, skipped, total: TIMEOUT_CONFIG_CATALOG.length };
+  }
+
+  async refreshTimeoutConfigs() {
+    await this.gameService.refreshTimeoutConfigCache();
+    const urls = await this.getAiEngineAdminBaseUrls();
+    const adminToken = this.getAdminToken();
+    const requestTimeoutMs = await this.resolveTimeoutConfigValue(
+      'timeout.game_service.admin_refresh_timeout_ms',
+      { min: 1000 },
+    );
+    const settledResults = await Promise.allSettled(
+      urls.map(async (baseUrl) => {
+        const response = await axios.post(
+          `${baseUrl}/api/v1/ai/config/timeouts/refresh`,
+          {},
+          {
+            headers: {
+              'x-admin-token': adminToken,
+            },
+            timeout: requestTimeoutMs,
+          },
+        );
+        return {
+          baseUrl,
+          data: response.data,
+        };
+      }),
+    );
+    const aiEngine = settledResults.map((result, index) => {
+      const baseUrl = urls[index];
+      if (result.status === 'fulfilled') {
+        return {
+          baseUrl,
+          status: 'ok',
+          data: result.value.data,
+        };
+      }
+      return {
+        baseUrl,
+        status: 'error',
+        errorMessage: result.reason?.message || String(result.reason || 'unknown error'),
+      };
+    });
+    const successCount = aiEngine.filter((item) => item.status === 'ok').length;
+    const failureCount = aiEngine.length - successCount;
+
+    return {
+      refreshed: successCount + 1,
+      failed: failureCount,
+      partialFailure: failureCount > 0,
+      gameService: { status: 'ok' },
+      aiEngine,
+    };
+  }
+
+  async listPromptBundles(status?: string) {
+    const where: Prisma.PromptBundleWhereInput = {};
+    if (status) {
+      where.status = status;
+    }
+    return this.prisma.promptBundle.findMany({
+      where,
+      orderBy: [{ id: 'asc' }, { version: 'desc' }],
+    });
+  }
+
+  async listRuntimeProfiles(enabledOnly = false) {
+    const where: Prisma.RuntimeProfileCatalogWhereInput = {};
+    if (enabledOnly) {
+      where.enabled = true;
+    }
+    return this.prisma.runtimeProfileCatalog.findMany({
+      where,
+      orderBy: [{ enabled: 'desc' }, { id: 'asc' }],
+    });
   }
 
   // ===================== Migration =====================

@@ -1,4 +1,5 @@
-import { Injectable, Inject } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import Redis from 'ioredis';
 
@@ -37,8 +38,63 @@ export class FeedService {
     try { await this.redis.setex(key, ttl, value); } catch { /* cache miss is acceptable */ }
   }
 
-  async getTrendingFeed(page: number = 1, limit: number = 20) {
-    const cacheKey = `feed:trending:${page}:${limit}`;
+  private buildPublishedWhere(query?: string, extra: Prisma.GameWhereInput = {}): Prisma.GameWhereInput {
+    const where: Prisma.GameWhereInput = {
+      status: 'published' as const,
+      visibility: 'public',
+      ...extra,
+    };
+
+    if (query && query.trim()) {
+      const q = query.trim();
+      where.AND = [
+        ...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []),
+        {
+          OR: [
+            { title: { contains: q } },
+            { description: { contains: q } },
+            { author: { username: { contains: q } } },
+            { author: { displayName: { contains: q } } },
+          ],
+        },
+      ];
+    }
+
+    return where;
+  }
+
+  private async deleteCachePattern(pattern: string): Promise<number> {
+    let cursor = '0';
+    let deleted = 0;
+
+    do {
+      let nextCursor = '0';
+      let keys: string[] = [];
+      try {
+        const result = await this.redis.scan(cursor, 'MATCH', pattern, 'COUNT', 200);
+        nextCursor = result[0];
+        keys = result[1];
+      } catch {
+        return deleted;
+      }
+      cursor = nextCursor;
+      if (keys.length > 0) {
+        await this.redis.del(...keys).catch(() => 0);
+        deleted += keys.length;
+      }
+    } while (cursor !== '0');
+
+    return deleted;
+  }
+
+  async invalidateGameFeedCache() {
+    const deleted = await this.deleteCachePattern('feed:*');
+    return { deleted };
+  }
+
+  async getTrendingFeed(page: number = 1, limit: number = 20, query?: string) {
+    const normalizedQuery = (query || '').trim().toLowerCase();
+    const cacheKey = `feed:trending:${page}:${limit}:${normalizedQuery || '*'}`;
     const cached = await this.cacheGet(cacheKey);
 
     if (cached) {
@@ -46,11 +102,12 @@ export class FeedService {
     }
 
     const games = await this.prisma.game.findMany({
-      where: { status: 'published' as const },
+      where: this.buildPublishedWhere(query),
       include: {
         author: {
           select: {
             id: true,
+            username: true,
             displayName: true,
             avatarUrl: true,
           },
@@ -89,18 +146,19 @@ export class FeedService {
     return result;
   }
 
-  async getLatestFeed(page: number = 1, limit: number = 20) {
+  async getLatestFeed(page: number = 1, limit: number = 20, query?: string) {
     const skip = (page - 1) * limit;
 
     const [games, total] = await Promise.all([
       this.prisma.game.findMany({
-        where: { status: 'published' as const },
+        where: this.buildPublishedWhere(query),
         skip,
         take: limit,
         include: {
           author: {
             select: {
               id: true,
+              username: true,
               displayName: true,
               avatarUrl: true,
             },
@@ -109,7 +167,7 @@ export class FeedService {
         orderBy: { publishedAt: 'desc' },
       }),
       this.prisma.game.count({
-        where: { status: 'published' as const },
+        where: this.buildPublishedWhere(query),
       }),
     ]);
 
@@ -124,18 +182,19 @@ export class FeedService {
     };
   }
 
-  async getFeaturedFeed(page: number = 1, limit: number = 20) {
+  async getFeaturedFeed(page: number = 1, limit: number = 20, query?: string) {
     const skip = (page - 1) * limit;
 
     const [games, total] = await Promise.all([
       this.prisma.game.findMany({
-        where: { status: 'published' as const },
+        where: this.buildPublishedWhere(query),
         skip,
         take: limit,
         include: {
           author: {
             select: {
               id: true,
+              username: true,
               displayName: true,
               avatarUrl: true,
             },
@@ -149,7 +208,7 @@ export class FeedService {
         ],
       }),
       this.prisma.game.count({
-        where: { status: 'published' as const },
+        where: this.buildPublishedWhere(query),
       }),
     ]);
 
@@ -164,7 +223,7 @@ export class FeedService {
     };
   }
 
-  async getFollowingFeed(userId: string, page: number = 1, limit: number = 20) {
+  async getFollowingFeed(userId: string, page: number = 1, limit: number = 20, query?: string) {
     const skip = (page - 1) * limit;
 
     const followedAuthors = await this.prisma.userFollow.findMany({
@@ -192,18 +251,18 @@ export class FeedService {
 
     const [games, total] = await Promise.all([
       this.prisma.game.findMany({
-        where: {
-          status: 'published' as const,
+        where: this.buildPublishedWhere(query, {
           authorId: {
             in: followedAuthorIds,
           },
-        },
+        }),
         skip,
         take: limit,
         include: {
           author: {
             select: {
               id: true,
+              username: true,
               displayName: true,
               avatarUrl: true,
             },
@@ -212,12 +271,11 @@ export class FeedService {
         orderBy: { publishedAt: 'desc' },
       }),
       this.prisma.game.count({
-        where: {
-          status: 'published' as const,
+        where: this.buildPublishedWhere(query, {
           authorId: {
             in: followedAuthorIds,
           },
-        },
+        }),
       }),
     ]);
 
@@ -232,21 +290,21 @@ export class FeedService {
     };
   }
 
-  async getFeedByType(gameType: string, page: number = 1, limit: number = 20) {
+  async getFeedByType(gameType: string, page: number = 1, limit: number = 20, query?: string) {
     const skip = (page - 1) * limit;
 
     const [games, total] = await Promise.all([
       this.prisma.game.findMany({
-        where: {
-          status: 'published' as const,
+        where: this.buildPublishedWhere(query, {
           gameType,
-        },
+        }),
         skip,
         take: limit,
         include: {
           author: {
             select: {
               id: true,
+              username: true,
               displayName: true,
               avatarUrl: true,
             },
@@ -255,10 +313,9 @@ export class FeedService {
         orderBy: { publishedAt: 'desc' },
       }),
       this.prisma.game.count({
-        where: {
-          status: 'published' as const,
+        where: this.buildPublishedWhere(query, {
           gameType,
-        },
+        }),
       }),
     ]);
 

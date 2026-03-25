@@ -2,11 +2,11 @@ import pytest
 
 
 class CodeGenerator:
-    """Main code generator that combines intent parsing and template generation"""
+    """Main code generator that combines intent parsing and fixture-based code generation"""
 
     def __init__(self):
         self.intent_parser = IntentParser()
-        self.template_engine = TemplateEngine()
+        self.fixture_code_source = FixtureCodeSource()
         self.qa_pipeline = QAPipeline()
 
     def generate(self, description: str, title: str) -> dict:
@@ -16,10 +16,10 @@ class CodeGenerator:
         game_type = intent["game_type"]
 
         # Generate code
-        code = self.template_engine.generate(game_type, title)
+        code = self.fixture_code_source.generate(game_type, title)
 
         if not code:
-            return {"success": False, "error": "No template for game type"}
+            return {"success": False, "error": "No fixture for game type"}
 
         # Validate
         validation = self.qa_pipeline.validate_all(code)
@@ -111,7 +111,7 @@ class IntentParser:
         return {"game_type": "dodge", "confidence": 0.8}
 
 
-class TemplateEngine:
+class FixtureCodeSource:
     def generate(self, game_type: str, title: str) -> str:
         if game_type == "dodge":
             return f"""

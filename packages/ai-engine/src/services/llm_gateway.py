@@ -16,6 +16,7 @@ import httpx
 import pymysql
 
 from ..config.settings import settings
+from ..config.timeout_store import get_float as get_timeout_float, get_int as get_timeout_int
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,33 @@ def _loads_json(value: Any, default: Any) -> Any:
     return default
 
 
+def _is_anthropic_protocol_mismatch_response(response: httpx.Response) -> bool:
+    if response.status_code != 400:
+        return False
+    body = (response.text or "").casefold()
+    return (
+        "anthropic-compatible" in body
+        and "/v1/chat/completions" in body
+    )
+
+
+def _build_anthropic_base_url(base_url: Optional[str]) -> Optional[str]:
+    normalized = (base_url or "").strip().rstrip("/")
+    if not normalized:
+        return None
+
+    parsed = httpx.URL(normalized)
+    path = parsed.path.rstrip("/")
+
+    if path.endswith("/messages"):
+        path = path[: -len("/messages")]
+    if path.endswith("/v1"):
+        path = path[: -len("/v1")]
+
+    normalized_url = str(parsed.copy_with(path=path or "/")).rstrip("/")
+    return normalized_url or None
+
+
 @dataclass
 class ProviderRecord:
     id: str
@@ -161,8 +189,16 @@ class LLMGateway:
             password=params["password"],
             database=params["database"],
             charset="utf8mb4",
-            connect_timeout=5,
-            read_timeout=5,
+            connect_timeout=get_timeout_int(
+                "timeout.ai_engine.gateway_db_connect_s",
+                5,
+                min_value=1,
+            ),
+            read_timeout=get_timeout_int(
+                "timeout.ai_engine.gateway_db_read_s",
+                5,
+                min_value=1,
+            ),
             cursorclass=pymysql.cursors.DictCursor,
         )
 
@@ -263,7 +299,11 @@ class LLMGateway:
             return len(self._providers)
 
     def _ensure_loaded(self) -> None:
-        ttl = max(int(settings.LLM_GATEWAY_CACHE_TTL_S or 10), 1)
+        ttl = get_timeout_int(
+            "timeout.ai_engine.llm_gateway_cache_ttl_s",
+            10,
+            min_value=1,
+        )
         if not self._loaded_at or (time.time() - self._loaded_at) > ttl:
             self.refresh()
 
@@ -294,8 +334,16 @@ class LLMGateway:
             api_key=api_key,
             model=model,
             fast_model=fast_model,
-            request_timeout_s=int(settings.PIPELINE_TIMEOUT_S or 600),
-            connect_timeout_s=15,
+            request_timeout_s=get_timeout_int(
+                "timeout.pipeline.default_s",
+                1200,
+                min_value=30,
+            ),
+            connect_timeout_s=get_timeout_int(
+                "timeout.ai_engine.llm_fallback_connect_s",
+                15,
+                min_value=1,
+            ),
             step_key=step_key,
             config_version=self._config_version,
             route_snapshot={
@@ -305,57 +353,57 @@ class LLMGateway:
             },
         )
 
-    def has_enabled_provider(self) -> bool:
-        self._ensure_loaded()
-        if self._providers:
-            return True
-        return bool(
-            (settings.LLM_API_KEY and settings.LLM_BASE_URL)
-            or settings.ANTHROPIC_API_KEY
+    def _find_route_for_step(self, *, step_key: str, region: str) -> Optional[RouteRecord]:
+        return next(
+            (
+                candidate
+                for candidate in self._routes
+                if candidate.step_key == step_key and candidate.region == region
+            ),
+            None,
         )
 
-    def resolve(
+    def _ordered_provider_candidates(
         self,
         *,
+        route: Optional[RouteRecord],
+        service_region: str,
+    ) -> list[ProviderRecord]:
+        ordered: list[ProviderRecord] = []
+        seen: set[str] = set()
+
+        def add_provider(provider_id: Optional[str]) -> None:
+            if not provider_id or provider_id in seen:
+                return
+            provider = self._providers.get(provider_id)
+            if provider is None:
+                return
+            seen.add(provider_id)
+            ordered.append(provider)
+
+        if route:
+            add_provider(route.provider_id)
+            for fallback_id in route.fallback_provider_ids:
+                add_provider(fallback_id)
+
+        for provider in self._providers.values():
+            if provider.region == service_region:
+                add_provider(provider.id)
+
+        for provider in self._providers.values():
+            add_provider(provider.id)
+
+        return ordered
+
+    def _build_resolved_route(
+        self,
+        *,
+        provider: ProviderRecord,
+        route: Optional[RouteRecord],
         step_key: str,
         prefer_fast: bool = False,
         model_override: Optional[str] = None,
     ) -> ResolvedRoute:
-        self._ensure_loaded()
-        if not self._providers:
-            return self._fallback_route(step_key=step_key, prefer_fast=prefer_fast, model_override=model_override)
-
-        service_region = (settings.SERVICE_REGION or "cn_shanghai").strip() or "cn_shanghai"
-        route = None
-        for region in [service_region]:
-            route = next(
-                (candidate for candidate in self._routes if candidate.step_key == step_key and candidate.region == region),
-                None,
-            )
-            if route:
-                break
-
-        provider: Optional[ProviderRecord] = None
-        if route:
-            provider = self._providers.get(route.provider_id)
-            if provider is None:
-                for fallback_id in route.fallback_provider_ids:
-                    provider = self._providers.get(fallback_id)
-                    if provider:
-                        break
-
-        if provider is None:
-            for region in [service_region]:
-                provider = next(
-                    (candidate for candidate in self._providers.values() if candidate.region == region),
-                    None,
-                )
-                if provider:
-                    break
-
-        if provider is None:
-            return self._fallback_route(step_key=step_key, prefer_fast=prefer_fast, model_override=model_override)
-
         if model_override:
             resolved_model = model_override
         elif prefer_fast and route and route.fast_model_override:
@@ -388,8 +436,59 @@ class LLMGateway:
                 "provider_type": provider.provider_type,
                 "route_id": route.id if route else None,
                 "prefer_fast": prefer_fast,
+                "fallback_provider_ids": list(route.fallback_provider_ids) if route else [],
             },
         )
+
+    def has_enabled_provider(self) -> bool:
+        self._ensure_loaded()
+        if self._providers:
+            return True
+        return bool(
+            (settings.LLM_API_KEY and settings.LLM_BASE_URL)
+            or settings.ANTHROPIC_API_KEY
+        )
+
+    def resolve(
+        self,
+        *,
+        step_key: str,
+        prefer_fast: bool = False,
+        model_override: Optional[str] = None,
+    ) -> ResolvedRoute:
+        return self.resolve_candidates(
+            step_key=step_key,
+            prefer_fast=prefer_fast,
+            model_override=model_override,
+        )[0]
+
+    def resolve_candidates(
+        self,
+        *,
+        step_key: str,
+        prefer_fast: bool = False,
+        model_override: Optional[str] = None,
+    ) -> list[ResolvedRoute]:
+        self._ensure_loaded()
+        if not self._providers:
+            return [self._fallback_route(step_key=step_key, prefer_fast=prefer_fast, model_override=model_override)]
+
+        service_region = (settings.SERVICE_REGION or "cn_shanghai").strip() or "cn_shanghai"
+        route = self._find_route_for_step(step_key=step_key, region=service_region)
+        providers = self._ordered_provider_candidates(route=route, service_region=service_region)
+        if not providers:
+            return [self._fallback_route(step_key=step_key, prefer_fast=prefer_fast, model_override=model_override)]
+
+        return [
+            self._build_resolved_route(
+                provider=provider,
+                route=route,
+                step_key=step_key,
+                prefer_fast=prefer_fast,
+                model_override=model_override,
+            )
+            for provider in providers
+        ]
 
     async def emit_llm_call_log(self, payload: dict[str, Any]) -> None:
         base_url = settings.GAME_SERVICE_UPSTREAM_URL.rstrip("/")
@@ -408,7 +507,13 @@ class LLMGateway:
             headers["x-admin-token"] = settings.ADMIN_TOKEN
 
         try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
+            async with httpx.AsyncClient(
+                timeout=get_timeout_float(
+                    "timeout.ai_engine.llm_call_log_relay_s",
+                    3.0,
+                    min_value=0.1,
+                )
+            ) as client:
                 await client.post(
                     f"{base_url}/api/v1/internal/generation/llm-call-log",
                     json=body,
@@ -434,7 +539,13 @@ class LLMGateway:
             headers["x-admin-token"] = settings.ADMIN_TOKEN
 
         try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
+            async with httpx.AsyncClient(
+                timeout=get_timeout_float(
+                    "timeout.ai_engine.task_activity_relay_s",
+                    3.0,
+                    min_value=0.1,
+                )
+            ) as client:
                 await client.post(
                     f"{base_url}/api/v1/internal/generation/task-activity",
                     json=body,
@@ -472,7 +583,7 @@ class LLMGateway:
         try:
             if route.provider_type == "anthropic":
                 from anthropic import Anthropic
-                client = Anthropic(api_key=route.api_key, base_url=route.base_url or None)
+                client = Anthropic(api_key=route.api_key, base_url=_build_anthropic_base_url(route.base_url))
                 response = client.messages.create(
                     model=route.model,
                     max_tokens=32,
@@ -502,9 +613,25 @@ class LLMGateway:
                 ) as client:
                     response = await client.post(endpoint, headers=headers, json=payload)
                     http_status = response.status_code
-                    response.raise_for_status()
-                    success = True
-                    output = response.text[:200]
+                    if _is_anthropic_protocol_mismatch_response(response):
+                        from anthropic import Anthropic
+                        client = Anthropic(api_key=route.api_key, base_url=_build_anthropic_base_url(route.base_url))
+                        anth_response = client.messages.create(
+                            model=route.model,
+                            max_tokens=32,
+                            messages=[{"role": "user", "content": "Reply with PONG"}],
+                        )
+                        success = True
+                        http_status = 200
+                        output = ""
+                        for block in anth_response.content:
+                            text = getattr(block, "text", "")
+                            if text:
+                                output += text
+                    else:
+                        response.raise_for_status()
+                        success = True
+                        output = response.text[:200]
         except Exception as exc:
             error_message = str(exc)
         latency_ms = int((time.time() - start) * 1000)

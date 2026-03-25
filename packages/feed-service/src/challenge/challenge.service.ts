@@ -33,6 +33,7 @@ export class ChallengeService {
     const publishedGames = await this.prisma.game.findMany({
       where: {
         status: 'published',
+        visibility: 'public',
         publishedAt: {
           gte: startDate,
           lt: endDate,
@@ -74,6 +75,7 @@ export class ChallengeService {
 
     const where = {
       status: 'published' as const,
+      visibility: 'public' as const,
       publishedAt: {
         gte: startDate,
         lt: endDate,
@@ -102,7 +104,7 @@ export class ChallengeService {
     if (total === 0) {
       [games, total] = await Promise.all([
         this.prisma.game.findMany({
-          where: { status: 'published' as const },
+          where: { status: 'published' as const, visibility: 'public' as const },
           skip,
           take: limit,
           include: {
@@ -116,7 +118,7 @@ export class ChallengeService {
           },
           orderBy: [{ publishedAt: 'desc' }],
         }),
-        this.prisma.game.count({ where: { status: 'published' as const } }),
+        this.prisma.game.count({ where: { status: 'published' as const, visibility: 'public' as const } }),
       ]);
     }
 

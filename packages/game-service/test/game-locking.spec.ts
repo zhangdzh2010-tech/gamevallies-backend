@@ -1,4 +1,6 @@
+import { NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
 import { GameService } from '../src/game/game.service';
 
 describe('Game locking behavior', () => {
@@ -8,6 +10,7 @@ describe('Game locking behavior', () => {
   let statsService: any;
   let wsGateway: any;
   let configService: ConfigService;
+  let jwtService: JwtService;
   let generationTaskService: any;
 
   beforeEach(() => {
@@ -40,11 +43,15 @@ describe('Game locking behavior', () => {
       requestCancel: jest.fn(),
       toTaskSummary: jest.fn(),
     };
+    jwtService = {
+      sign: jest.fn((payload: any) => Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')),
+      verify: jest.fn((token: string) => JSON.parse(Buffer.from(token, 'base64url').toString('utf8'))),
+    } as unknown as JwtService;
     configService = {
       get: jest.fn((key: string, defaultValue?: string) => {
         const values: Record<string, string> = {
           AI_ENGINE_URL: 'http://ai-engine.test',
-          PUBLIC_API_BASE_URL: 'https://www.gamevallies.com',
+          PUBLIC_API_BASE_URL: 'https://gamevallies.com',
         };
         return values[key] ?? defaultValue;
       }),
@@ -55,24 +62,25 @@ describe('Game locking behavior', () => {
       bundleService,
       statsService,
       configService,
+      jwtService,
       wsGateway,
       generationTaskService,
     );
   });
 
-  it('still serves game content for locked games so non-authors are not blocked', async () => {
+  it('does not expose draft game content through the public preview route', async () => {
     prisma.game.findUnique.mockResolvedValue({
-      id: 'game-locked',
-      canPlay: false,
+      id: 'game-draft',
+      status: 'draft',
+      visibility: 'public',
+      canPlay: true,
     });
     bundleService.getLatestBundle.mockResolvedValue({
-      htmlCode: '<html><body>playable for public viewers</body></html>',
+      htmlCode: '<html><body>draft preview</body></html>',
     });
     statsService.incrementPlayCount.mockResolvedValue(undefined);
 
-    const result = await service.getPlayData('game-locked');
-
-    expect(result).toContain('playable for public viewers');
-    expect(statsService.incrementPlayCount).toHaveBeenCalledWith('game-locked');
+    await expect(service.getPlayData('game-draft')).rejects.toBeInstanceOf(NotFoundException);
+    expect(statsService.incrementPlayCount).not.toHaveBeenCalled();
   });
 });

@@ -5,10 +5,12 @@ import {
   GenerationTaskType,
   Prisma,
 } from '@prisma/client';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 
 type JsonMap = Record<string, unknown>;
+
+type ArtifactStorageType = 'inline_json' | 'inline_text' | 'external' | 'omitted';
 
 type CreateGenerationTaskParams = {
   gameId: string;
@@ -17,6 +19,11 @@ type CreateGenerationTaskParams = {
   region: string;
   timeoutS: number;
   version?: number;
+  pipelineVersion?: string | null;
+  promptBundleId?: string | null;
+  promptBundleVersion?: number | null;
+  runtimeProfile?: string | null;
+  contractVersion?: string | null;
   metadata?: JsonMap;
   client?: PrismaService | Prisma.TransactionClient;
 };
@@ -49,12 +56,37 @@ type FailureParams = {
   retryCount?: number;
   fallback?: string | null;
   timedOut?: boolean;
+  failureFamily?: string | null;
+  primaryArtifactId?: string | null;
+  details?: JsonMap;
 };
 
 type SuccessParams = {
   taskId: string;
   previewUrl?: string | null;
   resultSummary?: JsonMap;
+  primaryArtifactId?: string | null;
+};
+
+type ArtifactParams = {
+  taskId?: string | null;
+  gameId: string;
+  userId: string;
+  artifactType: string;
+  contentType: string;
+  payload: unknown;
+  expiresAt?: Date | null;
+  metadata?: JsonMap;
+};
+
+type StageSummaryParams = {
+  taskId: string;
+  stage: string;
+  message: string;
+  percentage?: number | null;
+  conclusionType?: 'summary' | 'warning' | 'failure';
+  details?: JsonMap;
+  artifactIds?: string[];
 };
 
 type LlmCallLogParams = {
@@ -81,9 +113,68 @@ type LlmCallLogParams = {
   routeSnapshot?: JsonMap | null;
 };
 
+const MAX_INLINE_JSON_BYTES = 20 * 1024;
+const MAX_INLINE_TEXT_BYTES = 200 * 1024;
+const SUPPRESSED_TASK_ACTIVITY_STATES = new Set(['started', 'heartbeat', 'completed']);
+const SLOW_LLM_CALL_THRESHOLD_MS = 30_000;
+const DISPLAY_PIPELINE_STAGES = [
+  { key: 'submitting', label: '提交创作请求', pct: 5 },
+  { key: 'spec_build', label: '构建游戏规格', pct: 15 },
+  { key: 'runtime_profile_select', label: '选择运行时模板', pct: 30 },
+  { key: 'contract_compose', label: '组装运行时约束', pct: 40 },
+  { key: 'logic_generate', label: '生成游戏逻辑', pct: 60 },
+  { key: 'contract_qa', label: '合约校验与修复', pct: 76 },
+  { key: 'runtime_simulation_qa', label: '运行时模拟校验', pct: 92 },
+  { key: 'completed', label: '生成完成', pct: 100 },
+] as const;
+const DISPLAY_PIPELINE_STAGE_INDEX = new Map(
+  DISPLAY_PIPELINE_STAGES.map((stage, index) => [stage.key, index]),
+);
+const DISPLAY_STAGE_ALIASES: Record<string, string> = {
+  queued: 'submitting',
+  running: 'submitting',
+  started: 'submitting',
+  submitting: 'submitting',
+  request_normalized: 'submitting',
+  'dialogue.slot_extract': 'spec_build',
+  dialogue_slot_extract: 'spec_build',
+  'dialogue.reply': 'spec_build',
+  dialogue_reply: 'spec_build',
+  intent_parse: 'spec_build',
+  intent_parsing: 'spec_build',
+  spec_build: 'spec_build',
+  runtime_profile_select: 'runtime_profile_select',
+  template_match: 'runtime_profile_select',
+  template_matching: 'runtime_profile_select',
+  designing: 'contract_compose',
+  contract_compose: 'contract_compose',
+  code_generate: 'logic_generate',
+  code_generating: 'logic_generate',
+  'code_generate.full': 'logic_generate',
+  logic_generate: 'logic_generate',
+  qa_fix: 'contract_qa',
+  qa_checking: 'contract_qa',
+  contract_qa: 'contract_qa',
+  targeted_remediation: 'contract_qa',
+  runtime_qa: 'runtime_simulation_qa',
+  runtime_qa_unavailable: 'runtime_simulation_qa',
+  runtime_simulation_qa: 'runtime_simulation_qa',
+  code_review: 'runtime_simulation_qa',
+  publishing: 'completed',
+  completed: 'completed',
+  succeeded: 'completed',
+};
+
 @Injectable()
 export class GenerationTaskService {
   constructor(private readonly prisma: PrismaService) {}
+
+  private isFinalStatus(status?: GenerationTaskStatus | null): boolean {
+    return status === GenerationTaskStatus.succeeded
+      || status === GenerationTaskStatus.failed
+      || status === GenerationTaskStatus.canceled
+      || status === GenerationTaskStatus.timed_out;
+  }
 
   async createTask(params: CreateGenerationTaskParams) {
     const client = params.client || this.prisma;
@@ -98,6 +189,11 @@ export class GenerationTaskService {
         status: GenerationTaskStatus.queued,
         timeoutS: params.timeoutS,
         version: params.version,
+        pipelineVersion: params.pipelineVersion ?? undefined,
+        promptBundleId: params.promptBundleId ?? undefined,
+        promptBundleVersion: params.promptBundleVersion ?? undefined,
+        runtimeProfile: params.runtimeProfile ?? undefined,
+        contractVersion: params.contractVersion ?? undefined,
         wsChannel: `game:${params.gameId}`,
         metadata: (params.metadata || undefined) as Prisma.InputJsonValue | undefined,
       },
@@ -115,6 +211,11 @@ export class GenerationTaskService {
         region: task.region,
         timeoutS: task.timeoutS,
         version: task.version,
+        pipelineVersion: task.pipelineVersion,
+        promptBundleId: task.promptBundleId,
+        promptBundleVersion: task.promptBundleVersion,
+        runtimeProfile: task.runtimeProfile,
+        contractVersion: task.contractVersion,
       },
     }, client);
 
@@ -122,50 +223,57 @@ export class GenerationTaskService {
   }
 
   async markRunning(taskId: string) {
-    const task = await this.prisma.generationTask.update({
+    const existing = await this.prisma.generationTask.findUnique({
       where: { id: taskId },
-      data: {
-        status: GenerationTaskStatus.running,
-        startedAt: new Date(),
-      },
     });
 
-    await this.appendEvent(task.id, {
-      gameId: task.gameId,
-      userId: task.userId,
-      eventType: GenerationTaskEventType.status,
-      stage: 'running',
-      percentage: 0,
-      message: '任务开始执行',
-    });
+    if (!existing || this.isFinalStatus(existing.status)) {
+      return existing;
+    }
 
+    const { task } = await this.ensureTaskRunning(existing);
     return task;
   }
 
   async recordProgress(params: ProgressParams) {
     const task = await this.findTaskForProgress(params);
-    if (!task) {
+    if (!task || this.isFinalStatus(task.status)) {
       return null;
     }
 
+    const { task: runningTask } = await this.ensureTaskRunning(task);
+    if (!runningTask || this.isFinalStatus(runningTask.status)) {
+      return null;
+    }
+
+    const nextMessage = this.normalizeTaskMessage(params.message);
+    const snapshotChanged = this.hasTaskSnapshotChanged(
+      runningTask,
+      params.stage,
+      params.percentage,
+      nextMessage,
+    );
+
+    if (!snapshotChanged) {
+      return runningTask;
+    }
+
     const updated = await this.prisma.generationTask.update({
-      where: { id: task.id },
+      where: { id: runningTask.id },
       data: {
-        status: task.status === GenerationTaskStatus.queued ? GenerationTaskStatus.running : task.status,
-        startedAt: task.startedAt ?? new Date(),
         progressStage: params.stage,
         progressPct: params.percentage,
-        progressMessage: params.message,
+        progressMessage: nextMessage,
       },
     });
 
-    await this.appendEvent(task.id, {
-      gameId: task.gameId,
-      userId: task.userId,
+    await this.appendEvent(runningTask.id, {
+      gameId: runningTask.gameId,
+      userId: runningTask.userId,
       eventType: GenerationTaskEventType.progress,
       stage: params.stage,
       percentage: params.percentage,
-      message: params.message,
+      message: nextMessage,
       details: params.details,
     });
 
@@ -182,29 +290,48 @@ export class GenerationTaskService {
       message: params.message,
       details: params.details,
     });
-    if (!task) {
+    if (!task || this.isFinalStatus(task.status)) {
       return null;
     }
 
-    const nextPercentage = params.percentage ?? task.progressPct ?? 0;
+    if (this.shouldSuppressTaskActivity(params.details)) {
+      return task;
+    }
+
+    const { task: runningTask } = await this.ensureTaskRunning(task);
+    if (!runningTask || this.isFinalStatus(runningTask.status)) {
+      return null;
+    }
+
+    const nextPercentage = params.percentage ?? runningTask.progressPct ?? 0;
+    const nextMessage = this.normalizeTaskMessage(params.message);
+    const snapshotChanged = this.hasTaskSnapshotChanged(
+      runningTask,
+      params.stage,
+      nextPercentage,
+      nextMessage,
+    );
+
+    if (!snapshotChanged) {
+      return runningTask;
+    }
+
     const updated = await this.prisma.generationTask.update({
-      where: { id: task.id },
+      where: { id: runningTask.id },
       data: {
-        status: task.status === GenerationTaskStatus.queued ? GenerationTaskStatus.running : task.status,
-        startedAt: task.startedAt ?? new Date(),
         progressStage: params.stage,
         progressPct: nextPercentage,
-        progressMessage: params.message.slice(0, 255),
+        progressMessage: nextMessage,
       },
     });
 
-    await this.appendEvent(task.id, {
-      gameId: task.gameId,
-      userId: task.userId,
+    await this.appendEvent(runningTask.id, {
+      gameId: runningTask.gameId,
+      userId: runningTask.userId,
       eventType: GenerationTaskEventType.note,
       stage: params.stage,
       percentage: nextPercentage,
-      message: params.message,
+      message: nextMessage,
       details: {
         stepKey: params.stepKey ?? null,
         ...(params.details || {}),
@@ -215,6 +342,14 @@ export class GenerationTaskService {
   }
 
   async markSucceeded(params: SuccessParams) {
+    const existing = await this.prisma.generationTask.findUnique({
+      where: { id: params.taskId },
+    });
+
+    if (!existing || this.isFinalStatus(existing.status)) {
+      return existing;
+    }
+
     const task = await this.prisma.generationTask.update({
       where: { id: params.taskId },
       data: {
@@ -225,8 +360,10 @@ export class GenerationTaskService {
         progressMessage: '任务执行完成',
         previewUrl: params.previewUrl ?? undefined,
         resultSummary: (params.resultSummary || undefined) as Prisma.InputJsonValue | undefined,
+        primaryArtifactId: params.primaryArtifactId ?? undefined,
         errorMessage: null,
         failedStage: null,
+        failureFamily: null,
       },
     });
 
@@ -244,6 +381,14 @@ export class GenerationTaskService {
   }
 
   async markFailed(params: FailureParams) {
+    const existing = await this.prisma.generationTask.findUnique({
+      where: { id: params.taskId },
+    });
+
+    if (!existing || this.isFinalStatus(existing.status)) {
+      return existing;
+    }
+
     const task = await this.prisma.generationTask.update({
       where: { id: params.taskId },
       data: {
@@ -253,6 +398,8 @@ export class GenerationTaskService {
         errorMessage: params.errorMessage,
         retryCount: params.retryCount ?? 0,
         fallback: params.fallback ?? undefined,
+        failureFamily: params.failureFamily ?? undefined,
+        primaryArtifactId: params.primaryArtifactId ?? undefined,
         progressStage: params.failedStage,
         progressMessage: params.errorMessage.slice(0, 255),
       },
@@ -269,6 +416,9 @@ export class GenerationTaskService {
         retryCount: params.retryCount ?? 0,
         fallback: params.fallback ?? null,
         timedOut: params.timedOut ?? false,
+        failureFamily: params.failureFamily ?? null,
+        primaryArtifactId: params.primaryArtifactId ?? null,
+        ...(params.details || {}),
       },
     });
 
@@ -329,6 +479,10 @@ export class GenerationTaskService {
   }
 
   async ingestLlmCallLog(params: LlmCallLogParams) {
+    return this.persistLlmCallLog(params);
+  }
+
+  async persistLlmCallLog(params: LlmCallLogParams) {
     const taskId = params.taskId || null;
 
     const created = await this.prisma.llmCallLog.create({
@@ -367,29 +521,93 @@ export class GenerationTaskService {
         },
       }).catch(() => undefined);
 
-      await this.appendEvent(taskId, {
-        gameId: params.gameId,
-        userId: params.userId,
-        eventType: GenerationTaskEventType.llm_call,
-        stage: params.stage,
-        percentage: null,
-        message: params.success
-          ? `${params.stepKey} 调用 ${params.providerName || params.providerType || 'LLM'} 成功`
-          : `${params.stepKey} 调用失败: ${(params.errorMessage || params.errorCode || 'unknown error').slice(0, 200)}`,
-        details: {
-          stepKey: params.stepKey,
-          providerName: params.providerName,
-          providerType: params.providerType,
-          model: params.model,
-          latencyMs: params.latencyMs,
-          httpStatus: params.httpStatus,
-          success: params.success ?? false,
-          errorCode: params.errorCode ?? null,
-        },
-      }).catch(() => undefined);
+      await this.appendLlmCallTimelineEvent(taskId, params).catch(() => undefined);
     }
 
     return created;
+  }
+
+  async createArtifact(params: ArtifactParams) {
+    const normalized = this.normalizeArtifactPayload(params.payload);
+    const metadata: JsonMap = {
+      ...(params.metadata || {}),
+      storageType: normalized.storageType,
+      truncated: normalized.truncated,
+      normalizedContentType: params.contentType,
+    };
+
+    return this.prisma.generationArtifact.create({
+      data: {
+        id: randomUUID(),
+        taskId: params.taskId ?? undefined,
+        gameId: params.gameId,
+        userId: params.userId,
+        artifactType: params.artifactType,
+        contentType: params.contentType,
+        storageType: normalized.storageType,
+        payloadJson: normalized.payloadJson,
+        payloadText: normalized.payloadText,
+        payloadUrl: normalized.payloadUrl,
+        sha256: normalized.sha256 ?? undefined,
+        sizeBytes: normalized.sizeBytes ?? undefined,
+        compression: normalized.compression ?? undefined,
+        expiresAt: params.expiresAt ?? undefined,
+        metadata: metadata as Prisma.InputJsonValue,
+      },
+    });
+  }
+
+  async listArtifactsForTask(taskId: string, userId: string, limit = 50) {
+    await this.getTaskForUser(taskId, userId);
+
+    return this.prisma.generationArtifact.findMany({
+      where: { taskId, userId },
+      orderBy: { createdAt: 'desc' },
+      take: Math.min(Math.max(limit, 1), 200),
+    });
+  }
+
+  async recordStageSummary(params: StageSummaryParams) {
+    const task = await this.prisma.generationTask.findUnique({
+      where: { id: params.taskId },
+    });
+    if (!task || this.isFinalStatus(task.status)) {
+      return task;
+    }
+
+    const nextPercentage = params.percentage ?? task.progressPct ?? 0;
+    const details: JsonMap = {
+      conclusionType: params.conclusionType ?? 'summary',
+      artifactIds: params.artifactIds ?? [],
+      ...(params.details || {}),
+    };
+
+    const updated = await this.prisma.generationTask.update({
+      where: { id: params.taskId },
+      data: {
+        progressStage: params.stage,
+        progressPct: nextPercentage,
+        progressMessage: params.message.slice(0, 255),
+      },
+    });
+
+    await this.appendEvent(task.id, {
+      gameId: task.gameId,
+      userId: task.userId,
+      eventType: params.conclusionType === 'failure'
+        ? GenerationTaskEventType.error
+        : GenerationTaskEventType.note,
+      stage: params.stage,
+      percentage: nextPercentage,
+      message: params.message,
+      details,
+    });
+
+    return updated;
+  }
+
+  async recordTaskFailure(params: FailureParams) {
+    return this.markFailed(params);
   }
 
   async getTaskForUser(taskId: string, userId: string) {
@@ -424,7 +642,39 @@ export class GenerationTaskService {
     });
   }
 
+  private getDisplayStage(task: {
+    status?: string | null;
+    progressStage?: string | null;
+    failedStage?: string | null;
+    progressPct?: number | null;
+  }) {
+    const progressPct = Number(task.progressPct ?? 0) || 0;
+    const rawStage = String(
+      task.failedStage
+      || task.progressStage
+      || (task.status === GenerationTaskStatus.succeeded ? 'completed' : task.status || 'submitting'),
+    ).trim();
+
+    let displayStageKey = DISPLAY_STAGE_ALIASES[rawStage] || 'submitting';
+
+    if (rawStage === 'targeted_remediation') {
+      displayStageKey = progressPct >= 90 ? 'runtime_simulation_qa' : 'contract_qa';
+    }
+
+    const stage = DISPLAY_PIPELINE_STAGES.find((item) => item.key === displayStageKey) || DISPLAY_PIPELINE_STAGES[0];
+
+    return {
+      displayStageKey: stage.key,
+      displayStageLabel: stage.label,
+      displayStageIndex: DISPLAY_PIPELINE_STAGE_INDEX.get(stage.key) ?? 0,
+      displayStagePct: stage.pct,
+      rawStage,
+    };
+  }
+
   toTaskSummary(task: any) {
+    const displayStage = this.getDisplayStage(task);
+
     return {
       taskId: task.id,
       taskType: task.taskType,
@@ -434,12 +684,25 @@ export class GenerationTaskService {
       wsChannel: task.wsChannel,
       pollUrl: `/api/v1/games/tasks/${task.id}`,
       eventsUrl: `/api/v1/games/tasks/${task.id}/events`,
+      artifactsUrl: `/api/v1/games/tasks/${task.id}/artifacts`,
       cancelUrl: `/api/v1/games/tasks/${task.id}/cancel`,
       gameId: task.gameId,
       version: task.version ?? null,
+      pipelineVersion: task.pipelineVersion ?? null,
+      promptBundleId: task.promptBundleId ?? null,
+      promptBundleVersion: task.promptBundleVersion ?? null,
+      runtimeProfile: task.runtimeProfile ?? null,
+      contractVersion: task.contractVersion ?? null,
+      failureFamily: task.failureFamily ?? null,
+      primaryArtifactId: task.primaryArtifactId ?? null,
       progressStage: task.progressStage,
       progressPct: task.progressPct,
       progressMessage: task.progressMessage,
+      displayStageKey: displayStage.displayStageKey,
+      displayStageLabel: displayStage.displayStageLabel,
+      displayStageIndex: displayStage.displayStageIndex,
+      displayStagePct: displayStage.displayStagePct,
+      rawStage: displayStage.rawStage,
       failedStage: task.failedStage,
       errorMessage: task.errorMessage,
       retryCount: task.retryCount,
@@ -482,6 +745,237 @@ export class GenerationTaskService {
         details: (params.details || undefined) as Prisma.InputJsonValue | undefined,
       },
     });
+  }
+
+  private normalizeTaskMessage(message: string): string {
+    return message.slice(0, 255);
+  }
+
+  private shouldSuppressTaskActivity(details?: JsonMap | null): boolean {
+    const activityState = typeof details?.activityState === 'string' ? details.activityState : '';
+    return SUPPRESSED_TASK_ACTIVITY_STATES.has(activityState);
+  }
+
+  private hasTaskSnapshotChanged(
+    task: {
+      progressStage?: string | null;
+      progressPct?: number | null;
+      progressMessage?: string | null;
+    },
+    stage: string,
+    percentage: number,
+    message: string,
+  ): boolean {
+    return task.progressStage !== stage
+      || (task.progressPct ?? null) !== percentage
+      || (task.progressMessage || '') !== message;
+  }
+
+  private async ensureTaskRunning(task: {
+    id: string;
+    gameId: string;
+    userId: string;
+    status: GenerationTaskStatus;
+    startedAt?: Date | null;
+    progressStage?: string | null;
+    progressPct?: number | null;
+    progressMessage?: string | null;
+  }) {
+    if (this.isFinalStatus(task.status)) {
+      return { task, transitioned: false };
+    }
+
+    if (task.status === GenerationTaskStatus.queued) {
+      const startedAt = new Date();
+      const transitioned = await this.prisma.generationTask.updateMany({
+        where: {
+          id: task.id,
+          status: GenerationTaskStatus.queued,
+        },
+        data: {
+          status: GenerationTaskStatus.running,
+          startedAt,
+        },
+      });
+
+      if (transitioned.count > 0) {
+        const refreshed = await this.prisma.generationTask.findUnique({
+          where: { id: task.id },
+        });
+        const runningTask = refreshed || {
+          ...task,
+          status: GenerationTaskStatus.running,
+          startedAt,
+        };
+
+        await this.appendEvent(runningTask.id, {
+          gameId: runningTask.gameId,
+          userId: runningTask.userId,
+          eventType: GenerationTaskEventType.status,
+          stage: 'running',
+          percentage: 0,
+          message: '任务开始执行',
+        });
+
+        return {
+          task: runningTask,
+          transitioned: true,
+        };
+      }
+
+      const refreshed = await this.prisma.generationTask.findUnique({
+        where: { id: task.id },
+      });
+      if (refreshed) {
+        task = refreshed;
+      }
+    }
+
+    if (task.status === GenerationTaskStatus.running && !task.startedAt) {
+      const updated = await this.prisma.generationTask.update({
+        where: { id: task.id },
+        data: {
+          startedAt: new Date(),
+        },
+      });
+
+      return {
+        task: updated,
+        transitioned: false,
+      };
+    }
+
+    return { task, transitioned: false };
+  }
+
+  private async appendLlmCallTimelineEvent(taskId: string, params: LlmCallLogParams) {
+    const summary = this.buildLlmCallTimelineSummary(params);
+    if (!summary) {
+      return;
+    }
+
+    await this.appendEvent(taskId, {
+      gameId: params.gameId,
+      userId: params.userId,
+      eventType: GenerationTaskEventType.llm_call,
+      stage: params.stage,
+      percentage: null,
+      message: summary.message,
+      details: summary.details,
+    });
+  }
+
+  private buildLlmCallTimelineSummary(params: LlmCallLogParams): { message: string; details: JsonMap } | null {
+    const providerLabel = params.providerName || params.providerType || 'LLM';
+    const httpStatus = typeof params.httpStatus === 'number' ? params.httpStatus : null;
+    const latencyMs = typeof params.latencyMs === 'number' ? params.latencyMs : null;
+    const isFailure = params.success === false
+      || !!params.errorCode
+      || !!params.errorMessage
+      || (httpStatus !== null && httpStatus >= 400);
+
+    if (isFailure) {
+      const reason = (params.errorMessage || params.errorCode || (httpStatus !== null ? `HTTP ${httpStatus}` : 'unknown error'))
+        .slice(0, 180);
+      return {
+        message: `${params.stepKey} 调用 ${providerLabel} 失败: ${reason}`,
+        details: {
+          summaryType: 'failure',
+          stepKey: params.stepKey,
+          providerName: params.providerName ?? null,
+          providerType: params.providerType ?? null,
+          model: params.model ?? null,
+          latencyMs,
+          httpStatus,
+          errorCode: params.errorCode ?? null,
+          success: params.success ?? false,
+        },
+      };
+    }
+
+    if (latencyMs !== null && latencyMs >= SLOW_LLM_CALL_THRESHOLD_MS) {
+      const durationLabel = latencyMs >= 100_000
+        ? `${Math.round(latencyMs / 1000)}s`
+        : `${(latencyMs / 1000).toFixed(1)}s`;
+      return {
+        message: `${params.stepKey} 调用 ${providerLabel} 较慢（${durationLabel}）`,
+        details: {
+          summaryType: 'slow_call',
+          stepKey: params.stepKey,
+          providerName: params.providerName ?? null,
+          providerType: params.providerType ?? null,
+          model: params.model ?? null,
+          latencyMs,
+          httpStatus,
+          success: params.success ?? true,
+        },
+      };
+    }
+
+    return null;
+  }
+
+  private normalizeArtifactPayload(payload: unknown): {
+    storageType: ArtifactStorageType;
+    payloadJson?: Prisma.InputJsonValue;
+    payloadText?: string;
+    payloadUrl?: string;
+    sha256?: string;
+    sizeBytes?: number;
+    compression?: string;
+    truncated: boolean;
+  } {
+    if (typeof payload === 'string') {
+      const sizeBytes = Buffer.byteLength(payload, 'utf8');
+      const sha256 = createHash('sha256').update(payload).digest('hex');
+      if (sizeBytes <= MAX_INLINE_TEXT_BYTES) {
+        return {
+          storageType: 'inline_text',
+          payloadText: payload,
+          sha256,
+          sizeBytes,
+          truncated: false,
+        };
+      }
+      return {
+        storageType: 'omitted',
+        payloadText: payload.slice(0, MAX_INLINE_TEXT_BYTES),
+        sha256,
+        sizeBytes,
+        truncated: true,
+      };
+    }
+
+    const serialized = JSON.stringify(payload ?? null);
+    const sizeBytes = Buffer.byteLength(serialized, 'utf8');
+    const sha256 = createHash('sha256').update(serialized).digest('hex');
+    if (sizeBytes <= MAX_INLINE_JSON_BYTES) {
+      return {
+        storageType: 'inline_json',
+        payloadJson: (payload ?? null) as Prisma.InputJsonValue,
+        sha256,
+        sizeBytes,
+        truncated: false,
+      };
+    }
+
+    if (sizeBytes <= MAX_INLINE_TEXT_BYTES) {
+      return {
+        storageType: 'inline_text',
+        payloadText: serialized,
+        sha256,
+        sizeBytes,
+        truncated: false,
+      };
+    }
+
+    return {
+      storageType: 'omitted',
+      payloadText: serialized.slice(0, MAX_INLINE_TEXT_BYTES),
+      sha256,
+      sizeBytes,
+      truncated: true,
+    };
   }
 
   private async findTaskForProgress(params: ProgressParams) {

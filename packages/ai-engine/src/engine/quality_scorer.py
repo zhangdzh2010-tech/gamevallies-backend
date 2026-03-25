@@ -2,7 +2,7 @@
 
 Score components:
   - Static QA (L1-L6): penalties for errors and warnings
-  - Generation strategy: template > hybrid > llm (reliability)
+  - Generation strategy: current pipeline uses llm generation
   - Code size heuristic: very small = minimal, very large = feature-rich
   - QA retries: each retry means first attempt was bad
   - Runtime QA (optional): bonus for clean runtime
@@ -21,7 +21,7 @@ class QAStaticResult:
     error_count: int
     warning_count: int
     retries: int
-    strategy: str           # "template" | "hybrid" | "llm" | "mock"
+    strategy: str           # "llm"
     code_size_bytes: int
 
 
@@ -33,6 +33,13 @@ class RuntimeQAResult:
     fps: float = 0.0
     load_time_ms: int = 0
     game_over_triggered: bool = False
+    registered_input_handlers: List[str] = field(default_factory=list)
+    direct_input_handlers: List[str] = field(default_factory=list)
+    triggered_input_handlers: List[str] = field(default_factory=list)
+    interaction_performed: bool = False
+    canvas_changed_after_input: bool = False
+    dom_changed_after_input: bool = False
+    unavailable_reason: Optional[str] = None
 
 
 @dataclass
@@ -66,10 +73,7 @@ class QualityScorer:
     WARNING_PENALTY = 0.3      # per static QA warning
     RETRY_PENALTY = 0.5        # per QA auto-fix retry
     STRATEGY_BONUS = {
-        "template": 0.5,
-        "hybrid": 0.2,
         "llm": 0.0,
-        "mock": -1.0,
     }
 
     def compute(

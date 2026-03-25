@@ -8,45 +8,24 @@ import {
   Param,
   Body,
   Res,
-  Req,
   Headers,
   HttpException,
   HttpStatus,
 } from '@nestjs/common';
-import { Response, Request } from 'express';
+import { Response } from 'express';
 import { AdminService } from './admin.service';
 import { ok } from '../common/api-response';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// Simple in-memory rate limiter: max 20 admin requests per IP per minute
-const _adminRateMap = new Map<string, { count: number; resetAt: number }>();
-const ADMIN_RATE_LIMIT = 20;
-const ADMIN_RATE_WINDOW_MS = 60_000;
-
-function checkAdminToken(token: string | undefined, req?: Request, action?: string): void {
-  const ip = req?.ip || 'unknown';
-  const now = Date.now();
-
-  // Rate limit check
-  let bucket = _adminRateMap.get(ip);
-  if (!bucket || bucket.resetAt < now) {
-    bucket = { count: 0, resetAt: now + ADMIN_RATE_WINDOW_MS };
-    _adminRateMap.set(ip, bucket);
+function checkAdminToken(token: string | undefined): void {
+  const adminToken = (process.env.ADMIN_TOKEN || '').trim();
+  if (!adminToken) {
+    throw new HttpException('Admin token is not configured', HttpStatus.SERVICE_UNAVAILABLE);
   }
-  bucket.count++;
-  if (bucket.count > ADMIN_RATE_LIMIT) {
-    console.warn(`[ADMIN] Rate limit exceeded for IP ${ip}`);
-    throw new HttpException('Too Many Requests', HttpStatus.TOO_MANY_REQUESTS);
-  }
-
-  const adminToken = process.env.ADMIN_TOKEN || 'admin123';
   if (!token || token !== adminToken) {
-    console.warn(`[ADMIN] Unauthorized access attempt from IP ${ip}, action=${action ?? 'unknown'}`);
     throw new HttpException('Unauthorized: Invalid admin token', HttpStatus.UNAUTHORIZED);
   }
-
-  console.log(`[ADMIN] Authorized action="${action ?? 'unknown'}" from IP ${ip} at ${new Date().toISOString()}`);
 }
 
 @Controller()
@@ -134,6 +113,19 @@ export class AdminController {
     return ok(game, 'Status updated successfully');
   }
 
+  @Post('admin/games/repair-legacy-preview-links')
+  async repairLegacyPreviewLinks(
+    @Headers('x-admin-token') token: string,
+    @Body() body: any,
+  ) {
+    checkAdminToken(token);
+    const result = await this.adminService.backfillLegacyPreviewGames(body || {});
+    return ok(
+      result,
+      body?.dryRun ? 'Legacy preview link dry run completed' : 'Legacy preview links repaired successfully',
+    );
+  }
+
   @Get('admin/stats')
   async getStats(@Headers('x-admin-token') token: string) {
     checkAdminToken(token);
@@ -178,6 +170,19 @@ export class AdminController {
     return ok(await this.adminService.getGenerationTask(id));
   }
 
+  @Post('admin/tasks/:id/terminate')
+  async terminateGenerationTask(
+    @Headers('x-admin-token') token: string,
+    @Param('id') id: string,
+    @Body() body: any,
+  ) {
+    checkAdminToken(token);
+    return ok(
+      await this.adminService.terminateGenerationTask(id, body?.reason),
+      'Task terminated successfully',
+    );
+  }
+
   @Get('admin/tasks/:id/events')
   async getGenerationTaskEvents(
     @Headers('x-admin-token') token: string,
@@ -187,6 +192,17 @@ export class AdminController {
     checkAdminToken(token);
     const l = Math.min(Math.max(parseInt(limit || '100', 10), 1), 500);
     return ok(await this.adminService.listGenerationTaskEvents(id, l));
+  }
+
+  @Get('admin/tasks/:id/artifacts')
+  async getGenerationTaskArtifacts(
+    @Headers('x-admin-token') token: string,
+    @Param('id') id: string,
+    @Query('limit') limit?: string,
+  ) {
+    checkAdminToken(token);
+    const l = Math.min(Math.max(parseInt(limit || '100', 10), 1), 500);
+    return ok(await this.adminService.listGenerationTaskArtifacts(id, l));
   }
 
   @Get('admin/llm/providers')
@@ -409,6 +425,36 @@ export class AdminController {
   async initPrompts(@Headers('x-admin-token') token: string) {
     checkAdminToken(token);
     return ok(await this.adminService.initDefaultPrompts(), 'Prompts initialized');
+  }
+
+  @Post('admin/configs/init-timeouts')
+  async initTimeouts(@Headers('x-admin-token') token: string) {
+    checkAdminToken(token);
+    return ok(await this.adminService.initDefaultTimeouts(), 'Timeout configs initialized');
+  }
+
+  @Post('admin/configs/refresh-timeouts')
+  async refreshTimeouts(@Headers('x-admin-token') token: string) {
+    checkAdminToken(token);
+    return ok(await this.adminService.refreshTimeoutConfigs(), 'Timeout configs refreshed');
+  }
+
+  @Get('admin/prompt-bundles')
+  async listPromptBundles(
+    @Headers('x-admin-token') token: string,
+    @Query('status') status?: string,
+  ) {
+    checkAdminToken(token);
+    return ok(await this.adminService.listPromptBundles(status));
+  }
+
+  @Get('admin/runtime-profiles')
+  async listRuntimeProfiles(
+    @Headers('x-admin-token') token: string,
+    @Query('enabledOnly') enabledOnly?: string,
+  ) {
+    checkAdminToken(token);
+    return ok(await this.adminService.listRuntimeProfiles(enabledOnly === 'true'));
   }
 
   @Post('admin/migrate')

@@ -140,6 +140,15 @@ export class GameWebSocketGateway implements OnGatewayConnection, OnGatewayDisco
   emitGenerationComplete(userId: string, gameId: string, previewUrl: string): void {
     try {
       const event = 'gen:complete';
+      let gameUrl = previewUrl.replace(/\/preview$/, '/index.html');
+      try {
+        const parsed = new URL(previewUrl);
+        parsed.pathname = parsed.pathname.replace(/\/preview$/, '/index.html');
+        gameUrl = parsed.toString();
+      } catch {
+        // Keep the fallback string replacement for non-URL inputs.
+      }
+
       const data = {
         type: event,
         gameId,
@@ -147,7 +156,7 @@ export class GameWebSocketGateway implements OnGatewayConnection, OnGatewayDisco
           success: true,
           game: {
             id: gameId,
-            gameUrl: previewUrl.replace(/\/preview$/, '/index.html'),
+            gameUrl,
             previewUrl,
             status: 'ready',
           },

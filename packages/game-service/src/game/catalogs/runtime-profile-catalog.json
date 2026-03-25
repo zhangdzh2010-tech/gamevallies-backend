@@ -1,0 +1,153 @@
+[
+  {
+    "id": "portrait_arcade",
+    "displayName": "Portrait Arcade",
+    "skeletonVersion": "v1",
+    "contractSchema": {
+      "runtimeProfile": "portrait_arcade",
+      "inputContract": {
+        "requiredModes": ["pointer", "touch"],
+        "allowMouseFallback": true,
+        "target": "canvas_or_document"
+      },
+      "stateContract": {
+        "requiredStates": ["boot", "ready", "playing", "game_over"],
+        "restartable": true
+      },
+      "renderContract": {
+        "requiresCanvas2D": true,
+        "mustRenderWithinMs": 1500
+      },
+      "mobileLayoutContract": {
+        "orientation": "portrait_first",
+        "uiScaleMode": "short_edge",
+        "fontClamp": {
+          "hudMin": 14,
+          "hudMax": 20,
+          "titleMin": 28,
+          "titleMax": 36
+        }
+      },
+      "safetyContract": {
+        "forbiddenApis": ["localStorage", "sessionStorage", "fetch", "XMLHttpRequest", "WebSocket", "eval", "Function"]
+      }
+    },
+    "fewShotPrompt": "Use a centered portrait canvas, compact HUD, one obvious primary interaction, and a visible restart path. Render one obvious player, target, or playfield element before input. If a ready overlay exists, the same tap on the playfield should dismiss it and start play immediately.",
+    "metadata": {
+      "category": "arcade",
+      "default": true
+    }
+  },
+  {
+    "id": "lane_runner",
+    "displayName": "Lane Runner",
+    "skeletonVersion": "v1",
+    "contractSchema": {
+      "runtimeProfile": "lane_runner",
+      "inputContract": {
+        "requiredModes": ["pointer", "touch"],
+        "gestures": ["tap", "swipe"]
+      },
+      "stateContract": {
+        "requiredStates": ["boot", "ready", "playing", "game_over"],
+        "restartable": true
+      },
+      "renderContract": {
+        "requiresCanvas2D": true,
+        "mustRenderWithinMs": 1500
+      },
+      "mobileLayoutContract": {
+        "orientation": "portrait_first",
+        "uiScaleMode": "short_edge"
+      }
+    },
+    "fewShotPrompt": "Favor 2-4 lanes, instant lane-switch feedback, and readable forward motion on mobile. Render the runner, lanes, and HUD before input. The first swipe or tap should clear ready state and either shift lane or visibly kick off forward motion on the same frame or next animation frame. Reuse the same lane runner controls and update loop across the whole experience. If the request asks for collectibles, progress, or a boss finale, compress them into one obstacle loop plus at most one collectible/resource loop, and make any boss/finale a short end phase instead of a second combat system.",
+    "metadata": {
+      "category": "runner"
+    }
+  },
+  {
+    "id": "grid_puzzle",
+    "displayName": "Grid Puzzle",
+    "skeletonVersion": "v1",
+    "contractSchema": {
+      "runtimeProfile": "grid_puzzle",
+      "inputContract": {
+        "requiredModes": ["pointer", "touch"],
+        "gestures": ["tap", "drag"]
+      },
+      "stateContract": {
+        "requiredStates": ["boot", "ready", "playing", "game_over"],
+        "restartable": true
+      },
+      "renderContract": {
+        "requiresCanvas2D": true,
+        "mustRenderWithinMs": 1500
+      },
+      "mobileLayoutContract": {
+        "orientation": "portrait_first",
+        "uiScaleMode": "short_edge"
+      }
+    },
+    "fewShotPrompt": "Use a centered readable grid, generous hit targets, and immediate tap or drag feedback. Render the full board before input. The first tap or drag should visibly change tile highlight, selection, board state, or HUD state immediately.",
+    "metadata": {
+      "category": "puzzle"
+    }
+  },
+  {
+    "id": "topdown_action",
+    "displayName": "Topdown Action",
+    "skeletonVersion": "v1",
+    "contractSchema": {
+      "runtimeProfile": "topdown_action",
+      "inputContract": {
+        "requiredModes": ["pointer", "touch"],
+        "gestures": ["drag", "tap"]
+      },
+      "stateContract": {
+        "requiredStates": ["boot", "ready", "playing", "game_over"],
+        "restartable": true
+      },
+      "renderContract": {
+        "requiresCanvas2D": true,
+        "mustRenderWithinMs": 1500
+      },
+      "mobileLayoutContract": {
+        "orientation": "portrait_first",
+        "uiScaleMode": "short_edge"
+      }
+    },
+    "fewShotPrompt": "Keep the playfield centered, support drag movement, and prioritize clarity over dense effects. Render the player and arena before input. The first drag or tap should dismiss ready state and immediately move the player, fire, or trigger an obvious HUD change.",
+    "metadata": {
+      "category": "action"
+    }
+  },
+  {
+    "id": "tap_timing",
+    "displayName": "Tap Timing",
+    "skeletonVersion": "v1",
+    "contractSchema": {
+      "runtimeProfile": "tap_timing",
+      "inputContract": {
+        "requiredModes": ["pointer", "touch"],
+        "gestures": ["tap"]
+      },
+      "stateContract": {
+        "requiredStates": ["boot", "ready", "playing", "game_over"],
+        "restartable": true
+      },
+      "renderContract": {
+        "requiresCanvas2D": true,
+        "mustRenderWithinMs": 1500
+      },
+      "mobileLayoutContract": {
+        "orientation": "portrait_first",
+        "uiScaleMode": "short_edge"
+      }
+    },
+    "fewShotPrompt": "Build around a single rhythmic tap interaction, immediate score feedback, and a clear countdown or beat state. Render the timing lane or target before input. The first tap should visibly start the loop instead of only changing hidden state.",
+    "metadata": {
+      "category": "timing"
+    }
+  }
+]

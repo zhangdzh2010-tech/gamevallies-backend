@@ -1,158 +1,66 @@
-"""Stage 05: Code Generator – dual-path HTML5 game code generation.
-
-Path A (template fill): confidence >= 0.8 → load template + fill parameters (~1-3s)
-Path B (hybrid):        confidence 0.5-0.8 → template skeleton + LLM customisation
-Path C (full LLM):      confidence < 0.5  → Claude generates complete HTML from GDD
-
-Uses Claude Sonnet 4.5 for full generation and Claude Haiku for parameter filling.
-"""
+"""Stage 05: LLM-only HTML5 game code generation."""
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 import re
 import time
-from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from ..api.models import GDD, GameSpec, GenerateCodeResult, IterationType
+from ..api.models import GDD, GameRuntimeContract, GameSpec, GenerateCodeResult, IterationType
 from ..config.settings import settings
+from ..config.timeout_store import get_int as get_timeout_int
 from ..services.llm_client import LLMClient
-from .prompt_store import get_prompt
-from .template_engine import TemplateEngine
+from .prompt_store import get_active_prompt_bundle, require_prompt
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Three-layer prompt construction
-# ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT_LAYER1 = """You are PlayForge GameEngine, an expert HTML5 game developer.
+class _SafePromptFormatDict(dict):
+    """Preserve unknown placeholders instead of raising KeyError."""
 
-OUTPUT FORMAT:
-- Return ONLY a single complete HTML file (<!DOCTYPE html> ... </html>)
-- No markdown code fences, no explanations, no extra text
-- Inline all CSS and JavaScript inside the HTML
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
 
-HARD RULES:
-- Single self-contained file, zero external dependencies
-- Use Canvas 2D API (no WebGL, no libraries)
-- Touch-friendly: implement touchstart/touchmove/touchend events
-- Target 60fps with requestAnimationFrame game loop
-- Maximum 500 lines of code
-- ES2017 syntax only
-- FORBIDDEN APIs: eval, Function(), import, require, fetch, XMLHttpRequest, WebSocket, localStorage, document.cookie, document.write
+GAME_TYPE_CORE_MECHANIC_SUMMARY: Dict[str, str] = {
+    "dodge": "Move to avoid hazards and survive as long as possible.",
+    "platformer": "Jump across platforms, avoid gaps, and reach the goal.",
+    "runner": "Keep moving forward, dodge obstacles, and survive the run.",
+    "shooter": "Aim, shoot enemies, and stay alive under pressure.",
+    "puzzle": "Solve spatial or logical puzzles to clear the objective.",
+    "rhythm": "Tap in time with the beat to score points and maintain flow.",
+    "tower_defense": "Place defenses and stop incoming waves before they breach.",
+    "idle": "Accumulate resources automatically and upgrade progression.",
+    "rpg": "Explore, battle, and grow the character through encounters.",
+}
 
-MANDATORY UX RULES (MUST follow for every game):
-1. INSTRUCTIONS SCREEN: Before gameplay starts, show a brief instructions overlay explaining controls and objectives (e.g. "Tap to jump", "Swipe to move", "Collect stars, avoid obstacles"). Player taps to dismiss and start playing.
-2. NO PHYSICAL KEYBOARD: This runs on mobile phones with NO physical keyboard. ALL directional controls (up/down/left/right, WASD, arrow keys) MUST be replaced with on-screen virtual buttons or touch gestures:
-   - For directional movement: render semi-transparent on-screen D-pad (arrow buttons) at bottom of canvas
-   - For jump-only: use tap-anywhere or a visible jump button
-   - For swipe games: show swipe hint arrows on instructions screen
-   - Virtual buttons must be large enough for thumb tapping (min 48x48px touch target)
-   - Virtual controls should have 50% opacity so they don't block the game view
-3. The game must be fully playable using ONLY touch input on a mobile screen."""
-
-PLATFORM_PROMPT_WECHAT = """PLATFORM: WeChat WebView
-- Max file size: 300 KB
-- Input: touch events only (no keyboard)
-- Canvas: single canvas element, id="gameCanvas"
-- On game over, call: window.parent?.postMessage({type:'game_over',score:SCORE},'*')"""
-
-PLATFORM_PROMPT_STANDARD = """PLATFORM: Standard H5 Mobile Browser
-- Max file size: 500 KB
-- Input: touch + mouse fallback
-- Canvas: single canvas element, id="gameCanvas" """
-
-GAME_DESIGN_PROMPT_TEMPLATE = """GAME DESIGN DOCUMENT:
-
-Game Type: {game_type}
-Theme: {theme} | Art Style: {art_style}
-Color Palette: {palette}
-
-Canvas: {canvas_w}×{canvas_h}px, DPR adaptive, target 60fps
-
-Player: speed={player_speed}px/frame, hitbox={hitbox_ratio}x
-Obstacle/Spawn: base_speed={obstacle_speed}, interval={spawn_interval}ms
-Difficulty: {speed_formula}
-Score: +{score_per_second}/s, +{score_per_collect} per collectible
-Lives: {lives} | Expected survival: {expected_s}s
-
-Win condition: {win_condition}
-Lose condition: {lose_condition}
-
-Entities:
-{entities_desc}
-
-Input mapping:
-{input_map}
-
-Game states: init → playing → [paused | game_over] → init
-
-UI:
-- Score: top-left at (16, 36)
-- Lives: top-right
-- Game Over overlay: centered, show score + "Tap to restart"
-
-Implement the complete, playable game following every detail above."""
-
-ITERATE_CLASSIFY_PROMPT = """Classify this user feedback into one category. Return ONLY the category name.
-
-Categories:
-- param_adjust: change a numeric value (speed, color, size, lives, score)
-- element_change: add or remove a game element (new entity, background effect, UI element)
-- mechanic_change: change how the game works (new ability, different win condition, gameplay rule)
-- major_overhaul: fundamentally different game type or complete redesign
-
-Feedback: "{feedback}"
-
-Category:"""
-
-PARAM_ADJUST_PROMPT = """You are editing HTML5 game code. The user wants to change a parameter.
-Apply ONLY the requested parameter change. Keep everything else identical.
-
-User feedback: {feedback}
-
-Current code:
-{code}
-
-Return ONLY the complete updated HTML file with no extra text."""
-
-ELEMENT_CHANGE_PROMPT = """You are editing HTML5 game code. Add or remove one game element as requested.
-Make the minimal change needed. Keep the rest of the code identical.
-
-User feedback: {feedback}
-
-Current code:
-{code}
-
-Return ONLY the complete updated HTML file with no extra text."""
-
-MECHANIC_CHANGE_PROMPT = """You are editing HTML5 game code. Modify the game mechanics as requested.
-You may rewrite the relevant section(s) of the code. Keep the rest unchanged.
-
-User feedback: {feedback}
-Conversation history: {history}
-
-Current code:
-{code}
-
-Return ONLY the complete updated HTML file with no extra text."""
+PLAYER_SIZE_BY_GAME_TYPE: Dict[str, tuple[int, int]] = {
+    "dodge": (36, 36),
+    "platformer": (40, 40),
+    "runner": (40, 40),
+    "shooter": (42, 42),
+    "puzzle": (56, 56),
+    "rhythm": (48, 48),
+    "tower_defense": (44, 44),
+    "idle": (48, 48),
+    "rpg": (42, 42),
+}
 
 
 class CodeGenerator:
-    """Stage 05: Dual-path HTML5 game code generator."""
+    """Stage 05: LLM-only HTML5 game code generator."""
 
-    def __init__(self, llm_mode: str = "mock") -> None:
+    def __init__(self, llm_mode: str = "real") -> None:
         self.llm_mode = llm_mode
-        self.template_engine = TemplateEngine()
         self._client = LLMClient()
 
-    # ------------------------------------------------------------------
-    # Main generation entry point
-    # ------------------------------------------------------------------
+    @staticmethod
+    def _long_generation_timeout_s() -> int:
+        return get_timeout_int(
+            "timeout.ai_engine.llm_long_generation_s",
+            240,
+            min_value=30,
+        )
 
     async def generate(
         self,
@@ -162,152 +70,409 @@ class CodeGenerator:
         confidence: float = 0.0,
         description: str = "",
         allow_fallback: bool = True,
+        runtime_contract: Optional[GameRuntimeContract] = None,
+        runtime_profile: Optional[str] = None,
+        prompt_bundle_snapshot: Optional[Dict[str, Any]] = None,
     ) -> GenerateCodeResult:
+        del template_id, confidence, allow_fallback
+        if self.llm_mode != "real" or not self._client.is_enabled():
+            raise RuntimeError("Real LLM mode is required for game generation")
+
         start = time.time()
-
-        if self.llm_mode == "mock" or not self._client.is_enabled():
-            html = self._mock_generate(spec)
-            strategy = "mock"
-        elif confidence >= settings.TEMPLATE_CONFIDENCE_THRESHOLD and template_id:
-            html = self._template_fill(spec, gdd, template_id, allow_fallback=allow_fallback)
-            strategy = "template"
-        elif confidence >= settings.HYBRID_CONFIDENCE_THRESHOLD and template_id:
-            html = await self._hybrid_generate(spec, gdd, template_id, allow_fallback=allow_fallback)
-            strategy = "hybrid"
-        else:
-            html = await self._llm_generate(spec, gdd, description=description, allow_fallback=allow_fallback)
-            strategy = "llm"
-
+        html = await self._llm_generate(
+            spec,
+            gdd,
+            description=description,
+            runtime_contract=runtime_contract,
+            runtime_profile=runtime_profile,
+            prompt_bundle_snapshot=prompt_bundle_snapshot,
+        )
         elapsed = int((time.time() - start) * 1000)
         return GenerateCodeResult(
             html_code=html,
-            strategy=strategy,
-            template_id=template_id,
+            strategy="llm",
+            template_id=None,
             generation_time_ms=elapsed,
             code_size_bytes=len(html.encode("utf-8")),
         )
-
-    # ------------------------------------------------------------------
-    # Path A: Template fill
-    # ------------------------------------------------------------------
-
-    def _template_fill(
-        self,
-        spec: GameSpec,
-        gdd: GDD,
-        template_id: str,
-        allow_fallback: bool = True,
-    ) -> str:
-        try:
-            return self.template_engine.generate(spec, template_id)
-        except Exception as e:
-            if not allow_fallback:
-                raise
-            logger.warning(f"Template fill failed ({e}), falling back to mock")
-            return self._mock_generate(spec)
-
-    # ------------------------------------------------------------------
-    # Path B: Hybrid (template skeleton + LLM customisation)
-    # ------------------------------------------------------------------
-
-    async def _hybrid_generate(
-        self,
-        spec: GameSpec,
-        gdd: GDD,
-        template_id: str,
-        allow_fallback: bool = True,
-    ) -> str:
-        skeleton = self._template_fill(spec, gdd, template_id, allow_fallback=allow_fallback)
-
-        prompt = (
-            f"Here is a base game template:\n\n{skeleton}\n\n"
-            f"Customise it to match this additional game design:\n"
-            f"Theme: {spec.visual_style.theme}, Art: {spec.visual_style.art_style}\n"
-            f"Win condition: {spec.rules.win_condition}\n"
-            f"Entities: {[e.name for e in spec.entities]}\n"
-            f"Return ONLY the complete modified HTML file."
-        )
-        try:
-            text = await self._client.complete(
-                max_tokens=4096,
-                system=get_prompt("prompt.code_gen_system", SYSTEM_PROMPT_LAYER1),
-                messages=[{"role": "user", "content": prompt}],
-                step_key="code_generate.hybrid",
-                stage="code_generating",
-            )
-            return _extract_html(text)
-        except Exception as e:
-            if not allow_fallback:
-                raise
-            logger.warning(f"Hybrid LLM failed ({e}), using skeleton")
-            return skeleton
-
-    # ------------------------------------------------------------------
-    # Path C: Full LLM generation
-    # ------------------------------------------------------------------
 
     async def _llm_generate(
         self,
         spec: GameSpec,
         gdd: GDD,
         description: str = "",
-        allow_fallback: bool = True,
+        runtime_contract: Optional[GameRuntimeContract] = None,
+        runtime_profile: Optional[str] = None,
+        prompt_bundle_snapshot: Optional[Dict[str, Any]] = None,
     ) -> str:
-        # Use user's original description directly for better results
-        if description:
-            full_prompt = (
-                f"用户需求：{description}\n\n"
-                f"{get_prompt('prompt.platform_standard', PLATFORM_PROMPT_STANDARD)}\n\n"
-                f"请根据用户需求生成完整的 HTML5 游戏。游戏必须完整可玩、触屏操作、有计分系统。"
+        request_text = self._resolve_request_context(spec, gdd, description)
+        entities_desc = "\n".join(
+            f"  - {e.name} ({e.role}): shape={e.shape or 'auto'}, color={e.color or 'auto'}"
+            for e in spec.entities
+        )
+        input_map_str = "\n".join(
+            f"  {k} -> {v}" for k, v in gdd.input_map.items()
+        )
+        prompt_values = self._build_game_design_prompt_values(
+            spec=spec,
+            gdd=gdd,
+            description=request_text,
+            entities_desc=entities_desc,
+            input_map_str=input_map_str,
+        )
+        prompt_template = require_prompt("prompt.game_design_template")
+        structured_design = prompt_template.format_map(_SafePromptFormatDict(prompt_values))
+        request_context = (
+            require_prompt("prompt.generate_request_context_template").format(
+                request_text=request_text,
             )
-        else:
-            # Fallback to spec-based prompt
-            entities_desc = "\n".join(
-                f"  - {e.name} ({e.role}): shape={e.shape or 'auto'}, color={e.color or 'auto'}"
-                for e in spec.entities
-            )
-            input_map_str = "\n".join(
-                f"  {k} → {v}" for k, v in gdd.input_map.items()
-            )
-            full_prompt = get_prompt("prompt.game_design_template", GAME_DESIGN_PROMPT_TEMPLATE).format(
-                game_type=spec.game_type,
-                theme=spec.visual_style.theme,
-                art_style=spec.visual_style.art_style,
-                palette=", ".join(spec.visual_style.palette),
-                canvas_w=gdd.canvas.width, canvas_h=gdd.canvas.height,
-                player_speed=gdd.numerics.player_speed,
-                hitbox_ratio=gdd.collision.hitbox_ratio,
-                obstacle_speed=gdd.numerics.base_obstacle_speed,
-                spawn_interval=gdd.numerics.spawn_interval_ms,
-                speed_formula=gdd.numerics.speed_formula,
-                score_per_second=gdd.numerics.score_per_second,
-                score_per_collect=gdd.numerics.score_per_collect,
-                lives=spec.rules.lives,
-                expected_s=gdd.numerics.expected_survival_s,
-                win_condition=spec.rules.win_condition,
-                lose_condition=spec.rules.lose_condition,
-                entities_desc=entities_desc,
-                input_map=input_map_str,
-            ) + f"\n\n{get_prompt('prompt.platform_standard', PLATFORM_PROMPT_STANDARD)}"
+            if request_text
+            else ""
+        )
+        logic_generate_policy = self._resolved_bundle_prompt(prompt_bundle_snapshot, "logic_generate")
+        profile_few_shot = self._resolved_bundle_prompt(prompt_bundle_snapshot, "profile_few_shot")
+        full_prompt = "\n\n".join(
+            part
+            for part in [
+                request_context.strip(),
+                logic_generate_policy,
+                profile_few_shot,
+                structured_design,
+                self._build_critical_intent_block(spec, request_text),
+                self._build_runtime_contract_block(runtime_contract, runtime_profile, prompt_bundle_snapshot),
+                self._build_mobile_layout_guardrails(gdd),
+                require_prompt("prompt.platform_standard"),
+            ]
+            if part
+        )
+        if request_text:
+            full_prompt += "\n\n" + require_prompt("prompt.generate_alignment_reminder")
 
         try:
+            long_generation_timeout_s = self._long_generation_timeout_s()
             text = await self._client.complete(
-                max_tokens=8192,
-                system=get_prompt("prompt.code_gen_system", SYSTEM_PROMPT_LAYER1),
+                max_tokens=max(1024, int(settings.LLM_LONG_GENERATION_MAX_TOKENS or 6144)),
+                system=self._build_system_prompt(prompt_bundle_snapshot),
                 messages=[{"role": "user", "content": full_prompt}],
                 step_key="code_generate.full",
                 stage="code_generating",
+                request_timeout_s=long_generation_timeout_s,
+                overall_timeout_s=long_generation_timeout_s,
+                allow_provider_fallback=True,
             )
             return _extract_html(text)
-        except Exception as e:
-            if not allow_fallback:
-                raise
-            logger.error(f"Full LLM generation failed: {e}")
-            return self._mock_generate(spec)
+        except Exception as exc:
+            logger.error("Full LLM generation failed: %s", exc)
+            raise RuntimeError(f"Full LLM generation failed: {exc}") from exc
 
-    # ------------------------------------------------------------------
-    # Stage 07: Iteration
-    # ------------------------------------------------------------------
+    def _build_game_design_prompt_values(
+        self,
+        *,
+        spec: GameSpec,
+        gdd: GDD,
+        description: str,
+        entities_desc: str,
+        input_map_str: str,
+    ) -> Dict[str, Any]:
+        palette = spec.visual_style.palette or ["#0a0a2e", "#6366f1", "#22c55e", "#f43f5e", "#ffffff"]
+        player_entity = next((entity for entity in spec.entities if entity.role == "player"), None)
+        player_shape = (player_entity.shape or "circle") if player_entity else "circle"
+        player_color = (
+            player_entity.color
+            if player_entity and player_entity.color
+            else self._palette_value(palette, 1, "#6366f1")
+        )
+        player_w, player_h = PLAYER_SIZE_BY_GAME_TYPE.get(spec.game_type, (40, 40))
+        primary_mechanic = spec.core_mechanics[0] if spec.core_mechanics else None
+        core_mechanic = self._derive_core_mechanic_text(spec, description)
+        input_type = primary_mechanic.input if primary_mechanic and primary_mechanic.input else spec.platform_constraints.input_mode
+        spawn_interval = gdd.numerics.spawn_interval_ms
+        min_spawn_interval = max(200, int(spawn_interval * 0.45)) if spawn_interval > 0 else 0
+        max_speed = round(max(gdd.numerics.base_obstacle_speed * 2.5, gdd.numerics.player_speed * 1.5, 6.0), 1)
+        score_layout = gdd.ui_layout.get("score", {}) if isinstance(gdd.ui_layout, dict) else {}
+        score_font = str(score_layout.get("font", "bold 18px Arial"))
+        font_match = re.search(r"(\d+)", score_font)
+        ui_font_size = int(font_match.group(1)) if font_match else 18
+
+        return {
+            "game_type": spec.game_type,
+            "core_mechanic": core_mechanic,
+            "core_mechanics": core_mechanic,
+            "theme": spec.visual_style.theme,
+            "art_style": spec.visual_style.art_style,
+            "reference_game": spec.reference_game or "none",
+            "palette": ", ".join(palette),
+            "canvas_w": gdd.canvas.width,
+            "canvas_h": gdd.canvas.height,
+            "player_speed": gdd.numerics.player_speed,
+            "hitbox_ratio": gdd.collision.hitbox_ratio,
+            "obstacle_speed": gdd.numerics.base_obstacle_speed,
+            "spawn_interval": spawn_interval,
+            "speed_formula": gdd.numerics.speed_formula,
+            "score_per_second": gdd.numerics.score_per_second,
+            "score_per_collect": gdd.numerics.score_per_collect,
+            "lives": spec.rules.lives,
+            "expected_s": gdd.numerics.expected_survival_s,
+            "win_condition": spec.rules.win_condition,
+            "lose_condition": spec.rules.lose_condition,
+            "entities_desc": entities_desc,
+            "entities_yaml": self._format_entities_yaml(
+                [entity for entity in spec.entities if entity.role in ("obstacle", "enemy")],
+                fallback_speed=gdd.numerics.base_obstacle_speed,
+                fallback_spawn_interval=spawn_interval,
+            ),
+            "collectibles_yaml": self._format_entities_yaml(
+                [entity for entity in spec.entities if entity.role == "collectible"],
+                fallback_speed=0,
+                fallback_spawn_interval=max(spawn_interval + 400, 1200) if spawn_interval > 0 else 1500,
+            ),
+            "input_map": input_map_str,
+            "input_map_yaml": self._format_input_map_yaml(gdd.input_map),
+            "input_type": input_type,
+            "color_bg": self._palette_value(palette, 0, "#0a0a2e"),
+            "color_primary": self._palette_value(palette, 1, "#6366f1"),
+            "color_accent": self._palette_value(palette, 2, "#22c55e"),
+            "color_danger": self._palette_value(palette, 3, "#f43f5e"),
+            "color_text": self._palette_value(palette, 4, "#ffffff"),
+            "player_visual": f"{player_shape} avatar with {player_color} fill",
+            "player_draw_method": self._derive_player_draw_method(player_shape),
+            "player_w": player_w,
+            "player_h": player_h,
+            "player_init_pos": self._derive_player_init_pos(spec.game_type, gdd.canvas.width, gdd.canvas.height),
+            "difficulty_initial": spec.difficulty_curve,
+            "max_speed": max_speed,
+            "spawn_decay_formula": (
+                f"max({min_spawn_interval}, {spawn_interval} - elapsed_s * 8)"
+                if spawn_interval > 0
+                else "not_applicable"
+            ),
+            "min_spawn_interval": min_spawn_interval,
+            "combo_desc": "none",
+            "invincible_frames": 45 if spec.game_type not in ("puzzle", "rhythm") else 0,
+            "ui_score_x": score_layout.get("x", 16),
+            "ui_score_y": score_layout.get("y", 36),
+            "ui_font_size": ui_font_size,
+            "state_flow": self._format_state_flow(gdd.state_machine),
+            "special_rules_list": self._format_special_rules(spec),
+        }
+
+    def _derive_core_mechanic_text(self, spec: GameSpec, description: str) -> str:
+        if spec.intent_summary.strip():
+            return spec.intent_summary.strip()
+        if description.strip():
+            return re.sub(r"\s+", " ", description.strip())[:120]
+        if spec.source_description.strip():
+            return re.sub(r"\s+", " ", spec.source_description.strip())[:120]
+        if spec.core_mechanics:
+            mechanic = spec.core_mechanics[0]
+            return f"{mechanic.type} gameplay using {mechanic.input} controls."
+        if spec.game_type in GAME_TYPE_CORE_MECHANIC_SUMMARY:
+            return GAME_TYPE_CORE_MECHANIC_SUMMARY[spec.game_type]
+        return "Mobile-friendly gameplay loop with clear goals and responsive controls."
+
+    @staticmethod
+    def _resolve_request_context(spec: GameSpec, gdd: GDD, description: str) -> str:
+        candidates = [
+            description.strip(),
+            spec.source_description.strip(),
+            gdd.raw_description.strip(),
+        ]
+        for candidate in candidates:
+            if candidate:
+                return re.sub(r"\s+", " ", candidate)
+        return ""
+
+    def _build_critical_intent_block(self, spec: GameSpec, request_text: str) -> str:
+        reference_line = (
+            f"- Reference game: {spec.reference_game}"
+            if spec.reference_game
+            else "- Reference game: none"
+        )
+        special_rules_block = (
+            "- Must preserve these special rules:\n"
+            + "\n".join(f"  - {rule}" for rule in spec.special_rules)
+            if spec.special_rules
+            else "- Special rules: none"
+        )
+        return require_prompt("prompt.intent_detail_template").format(
+            core_mechanic=self._derive_core_mechanic_text(spec, request_text),
+            theme=spec.visual_style.theme,
+            win_condition=spec.rules.win_condition,
+            reference_line=reference_line,
+            special_rules_block=special_rules_block,
+        )
+
+    def _build_mobile_layout_guardrails(self, gdd: GDD) -> str:
+        score_layout = gdd.ui_layout.get("score", {}) if isinstance(gdd.ui_layout, dict) else {}
+        score_font = str(score_layout.get("font", "bold 16px Arial"))
+        match = re.search(r"(\d+)", score_font)
+        hud_font = int(match.group(1)) if match else 16
+        hud_font = max(14, min(hud_font, 18))
+        return require_prompt("prompt.mobile_layout_guardrails").format(
+            canvas_w=gdd.canvas.width,
+            canvas_h=gdd.canvas.height,
+            hud_font=hud_font,
+        )
+
+    @staticmethod
+    def _format_state_flow(state_machine: Dict[str, Any]) -> str:
+        states = state_machine.get("states") if isinstance(state_machine, dict) else None
+        if isinstance(states, list) and states:
+            return " -> ".join(str(state) for state in states)
+        return "boot -> ready -> playing -> game_over -> ready"
+
+    def _build_runtime_contract_block(
+        self,
+        runtime_contract: Optional[GameRuntimeContract],
+        runtime_profile: Optional[str],
+        prompt_bundle_snapshot: Optional[Dict[str, Any]],
+    ) -> str:
+        if not runtime_contract:
+            return require_prompt("prompt.runtime_contract_summary").format(
+                runtime_profile=runtime_profile or "standard_mobile_canvas",
+                contract_version="1.0",
+                bundle_id=(prompt_bundle_snapshot or {}).get("bundle_id") or "unknown",
+                layer_keys=", ".join(sorted((prompt_bundle_snapshot or {}).get("layers", {}).keys())) or "default",
+                required_states="boot, ready, playing, game_over",
+                input_modes="touch, pointer",
+                gestures="tap",
+                forbidden_apis="eval, Function, import, require",
+                orientation="portrait_first",
+                ui_scale_mode="short_edge",
+                hud_min=14,
+                hud_max=20,
+                title_min=28,
+                title_max=36,
+            )
+
+        bundle_id = (prompt_bundle_snapshot or {}).get("bundle_id")
+        if not bundle_id:
+            active_bundle = get_active_prompt_bundle()
+            bundle_id = str(active_bundle.get("id")) if isinstance(active_bundle, dict) and active_bundle.get("id") else "unresolved_bundle"
+        layer_keys = sorted((prompt_bundle_snapshot or {}).get("layers", {}).keys())
+        gestures = ", ".join(runtime_contract.input.gestures) if runtime_contract.input.gestures else "tap"
+        forbidden = ", ".join(runtime_contract.safety.forbidden_apis)
+        required_states = ", ".join(runtime_contract.state.required_states)
+        return require_prompt("prompt.runtime_contract_summary").format(
+            runtime_profile=runtime_profile or runtime_contract.runtime_profile,
+            contract_version=runtime_contract.version,
+            bundle_id=bundle_id,
+            layer_keys=", ".join(layer_keys) if layer_keys else "default",
+            required_states=required_states,
+            input_modes=", ".join(runtime_contract.input.required_modes),
+            gestures=gestures,
+            forbidden_apis=forbidden,
+            orientation=runtime_contract.mobile_layout.orientation,
+            ui_scale_mode=runtime_contract.mobile_layout.ui_scale_mode,
+            hud_min=runtime_contract.mobile_layout.font_clamp.hud_min,
+            hud_max=runtime_contract.mobile_layout.font_clamp.hud_max,
+            title_min=runtime_contract.mobile_layout.font_clamp.title_min,
+            title_max=runtime_contract.mobile_layout.font_clamp.title_max,
+        )
+
+    @staticmethod
+    def _resolved_bundle_prompt(
+        prompt_bundle_snapshot: Optional[Dict[str, Any]],
+        slot: str,
+    ) -> str:
+        resolved_prompts = ((prompt_bundle_snapshot or {}).get("layers") or {}).get("resolved_prompts")
+        if not isinstance(resolved_prompts, dict):
+            return ""
+
+        entry = resolved_prompts.get(slot)
+        if isinstance(entry, dict):
+            return str(entry.get("content") or "").strip()
+        if isinstance(entry, str):
+            return entry.strip()
+        return ""
+
+    def _build_system_prompt(self, prompt_bundle_snapshot: Optional[Dict[str, Any]]) -> str:
+        sections = [
+            self._resolved_bundle_prompt(prompt_bundle_snapshot, "locked_contract"),
+            self._resolved_bundle_prompt(prompt_bundle_snapshot, "product_policy"),
+            require_prompt("prompt.code_gen_system"),
+        ]
+
+        deduped: List[str] = []
+        seen: set[str] = set()
+        for section in sections:
+            normalized = (section or "").strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped.append(normalized)
+        return "\n\n".join(deduped)
+
+    @staticmethod
+    def _palette_value(palette: List[str], index: int, fallback: str) -> str:
+        if 0 <= index < len(palette) and palette[index]:
+            return palette[index]
+        return fallback
+
+    @staticmethod
+    def _derive_player_draw_method(shape: str) -> str:
+        shape_key = (shape or "").lower()
+        if shape_key == "triangle":
+            return "Canvas path triangle with filled color and subtle outline"
+        if shape_key in {"square", "rectangle"}:
+            return "Filled rounded rectangle drawn with Canvas 2D primitives"
+        if shape_key == "diamond":
+            return "Rotated square diamond drawn with Canvas path commands"
+        return "Filled circle or simple geometric sprite drawn with Canvas 2D primitives"
+
+    @staticmethod
+    def _derive_player_init_pos(game_type: str, canvas_w: int, canvas_h: int) -> str:
+        if game_type in {"dodge", "runner", "shooter"}:
+            return f"bottom-center ({canvas_w // 2}, {canvas_h - 72})"
+        if game_type == "platformer":
+            return f"lower-left quarter ({canvas_w // 4}, {canvas_h - 96})"
+        return f"center ({canvas_w // 2}, {canvas_h // 2})"
+
+    def _format_entities_yaml(
+        self,
+        entities: List[Any],
+        *,
+        fallback_speed: float,
+        fallback_spawn_interval: int,
+    ) -> str:
+        if not entities:
+            return "  - none"
+
+        lines: List[str] = []
+        for entity in entities:
+            shape = entity.shape or "auto"
+            color = entity.color or "#ffffff"
+            spawn_interval = entity.spawn_rate or fallback_spawn_interval
+            lines.extend([
+                f"  - name: {entity.name}",
+                f"    visual: {shape} shape, color {color}",
+                "    size: 32-56px",
+                f"    speed: {fallback_speed} px/帧",
+                f"    spawn_interval: {spawn_interval} ms",
+                "    spawn_position: random edge or lane depending on game flow",
+                "    movement: straight with mild variance unless game rules require otherwise",
+                f"    collision_effect: {'扣命' if entity.role in ('obstacle', 'enemy') else '得分'}",
+            ])
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_input_map_yaml(input_map: Dict[str, str]) -> str:
+        if not input_map:
+            return "  touchstart: start or primary interaction"
+        return "\n".join(f"  {event}: {action}" for event, action in input_map.items())
+
+    @staticmethod
+    def _format_special_rules(spec: GameSpec) -> str:
+        rules: List[str] = []
+        if spec.special_rules:
+            rules.extend(f"- {rule}" for rule in spec.special_rules)
+        if spec.reference_game:
+            rules.append(f"- Reference game inspiration: {spec.reference_game}")
+        if spec.visual_style.effects:
+            rules.extend(f"- Visual effect: {effect}" for effect in spec.visual_style.effects)
+        if spec.platform_constraints.platform:
+            rules.append(f"- Target platform: {spec.platform_constraints.platform}")
+        return "\n".join(rules) if rules else "- none"
 
     async def iterate(
         self,
@@ -315,24 +480,30 @@ class CodeGenerator:
         feedback: str,
         conversation: List[dict],
         allow_fallback: bool = True,
+        runtime_contract: Optional[GameRuntimeContract] = None,
+        runtime_profile: Optional[str] = None,
+        prompt_bundle_snapshot: Optional[Dict[str, Any]] = None,
+        game_spec: Optional[GameSpec] = None,
     ) -> Tuple[str, IterationType]:
-        """Classify feedback and apply minimal incremental change."""
-        if self.llm_mode == "mock" or not self._client.is_enabled():
-            return self._mock_iterate(current_code, feedback), IterationType.param_adjust
+        del allow_fallback
+        if self.llm_mode != "real" or not self._client.is_enabled():
+            raise RuntimeError("Real LLM mode is required for game iteration")
 
         iter_type = await self._classify_iteration(feedback)
-
         if iter_type == IterationType.param_adjust:
             updated = self._param_adjust(current_code, feedback)
             if updated != current_code:
                 return updated, iter_type
 
         updated = await self._llm_iterate(
-            current_code,
-            feedback,
-            conversation,
-            iter_type,
-            allow_fallback=allow_fallback,
+            code=current_code,
+            feedback=feedback,
+            conversation=conversation,
+            iter_type=iter_type,
+            runtime_contract=runtime_contract,
+            runtime_profile=runtime_profile,
+            prompt_bundle_snapshot=prompt_bundle_snapshot,
+            game_spec=game_spec,
         )
         return updated, iter_type
 
@@ -342,52 +513,57 @@ class CodeGenerator:
                 max_tokens=512,
                 messages=[{
                     "role": "user",
-                    "content": get_prompt("prompt.iterate_classify", ITERATE_CLASSIFY_PROMPT).format(feedback=feedback),
+                    "content": require_prompt("prompt.iterate_classify").format(feedback=feedback),
                 }],
                 step_key="iterate.classify",
                 stage="code_generating",
                 prefer_fast=True,
             )
             label = text.strip().lower()
-            for it in IterationType:
-                if it.value in label:
-                    return it
+            for iter_type in IterationType:
+                if iter_type.value in label:
+                    return iter_type
         except Exception:
             pass
         return IterationType.element_change
 
     def _param_adjust(self, code: str, feedback: str) -> str:
-        """Zero-token regex parameter replacement."""
         fb = feedback.lower()
-
-        # Speed — match player.speed / player_speed / playerSpeed / SPEED constant
         speed_pattern = r"(player[._]?speed\s*[:=]\s*|const\s+SPEED\s*=\s*)(\d+\.?\d*)"
-        if "快" in fb or "faster" in fb or "速度快" in fb or "加速" in fb:
-            code = re.sub(speed_pattern,
-                          lambda m: m.group(1) + str(round(float(m.group(2)) * 1.5, 1)),
-                          code, flags=re.IGNORECASE)
-        if "慢" in fb or "slower" in fb or "速度慢" in fb or "减速" in fb:
-            code = re.sub(speed_pattern,
-                          lambda m: m.group(1) + str(round(float(m.group(2)) * 0.7, 1)),
-                          code, flags=re.IGNORECASE)
 
-        # Lives — match lives: 3 / lives = 3 / {lives: 3}
-        lm = re.search(r"(\d+)\s*(命|lives|生命)", fb)
-        if lm:
-            lives = lm.group(1)
-            code = re.sub(r"(lives\s*[:=]\s*)\d+",
-                          lambda _: _.group(1) + lives,
-                          code, flags=re.IGNORECASE)
+        if "faster" in fb or "加速" in fb or "更快" in fb:
+            code = re.sub(
+                speed_pattern,
+                lambda match: match.group(1) + str(round(float(match.group(2)) * 1.5, 1)),
+                code,
+                flags=re.IGNORECASE,
+            )
+        if "slower" in fb or "减速" in fb or "更慢" in fb:
+            code = re.sub(
+                speed_pattern,
+                lambda match: match.group(1) + str(round(float(match.group(2)) * 0.7, 1)),
+                code,
+                flags=re.IGNORECASE,
+            )
 
-        # Color: swap any primary accent color (not just #6366f1)
+        lives_match = re.search(r"(\d+)\s*(?:lives|生命|命)", fb)
+        if lives_match:
+            lives = lives_match.group(1)
+            code = re.sub(
+                r"(lives\s*[:=]\s*)\d+",
+                lambda match: match.group(1) + lives,
+                code,
+                flags=re.IGNORECASE,
+            )
+
         primary_colors = r"#(?:6366f1|6e56ff|4f46e5|7c3aed)"
-        if "红色" in fb or "red" in fb:
+        if "red" in fb or "红" in fb:
             code = re.sub(primary_colors, "#ef4444", code, flags=re.IGNORECASE)
-        if "绿色" in fb or "green" in fb:
+        if "green" in fb or "绿" in fb:
             code = re.sub(primary_colors, "#22c55e", code, flags=re.IGNORECASE)
-        if "蓝色" in fb or "blue" in fb:
+        if "blue" in fb or "蓝" in fb:
             code = re.sub(primary_colors, "#3b82f6", code, flags=re.IGNORECASE)
-        if "黄色" in fb or "yellow" in fb:
+        if "yellow" in fb or "黄" in fb:
             code = re.sub(primary_colors, "#eab308", code, flags=re.IGNORECASE)
 
         return code
@@ -398,246 +574,84 @@ class CodeGenerator:
         feedback: str,
         conversation: List[dict],
         iter_type: IterationType,
-        allow_fallback: bool = True,
+        runtime_contract: Optional[GameRuntimeContract] = None,
+        runtime_profile: Optional[str] = None,
+        prompt_bundle_snapshot: Optional[Dict[str, Any]] = None,
+        game_spec: Optional[GameSpec] = None,
     ) -> str:
         history_text = "\n".join(
-            f"{m.get('role','user')}: {m.get('content','')}" for m in conversation[-4:]
+            f"{item.get('role', 'user')}: {item.get('content', '')}"
+            for item in conversation[-4:]
         )
+        mobile_guardrails = require_prompt("prompt.iteration_mobile_layout_guardrails")
 
         if iter_type == IterationType.param_adjust:
-            prompt = get_prompt("prompt.param_adjust", PARAM_ADJUST_PROMPT).format(
+            prompt = require_prompt("prompt.param_adjust").format(
                 feedback=feedback,
                 code=code,
             )
+            step_key = "iterate.param_adjust"
         elif iter_type == IterationType.element_change:
-            prompt = get_prompt("prompt.element_change", ELEMENT_CHANGE_PROMPT).format(feedback=feedback, code=code)
-        else:
-            prompt = get_prompt("prompt.mechanic_change", MECHANIC_CHANGE_PROMPT).format(
-                feedback=feedback, history=history_text, code=code
+            prompt = require_prompt("prompt.element_change").format(
+                feedback=feedback,
+                code=code,
             )
+            step_key = "iterate.element_change"
+        else:
+            prompt = require_prompt("prompt.mechanic_change").format(
+                feedback=feedback,
+                history=history_text,
+                code=code,
+            )
+            step_key = "iterate.mechanic_change"
+        contract_block = self._build_runtime_contract_block(
+            runtime_contract,
+            runtime_profile,
+            prompt_bundle_snapshot,
+        )
+        spec_block = self._build_critical_intent_block(game_spec, feedback) if game_spec else ""
+        logic_generate_policy = self._resolved_bundle_prompt(prompt_bundle_snapshot, "logic_generate")
+        profile_few_shot = self._resolved_bundle_prompt(prompt_bundle_snapshot, "profile_few_shot")
+        prompt = "\n\n".join(
+            part
+            for part in [
+                logic_generate_policy,
+                profile_few_shot,
+                contract_block,
+                spec_block,
+                mobile_guardrails,
+                prompt,
+            ]
+            if part
+        )
 
         try:
-            if iter_type == IterationType.param_adjust:
-                step_key = "iterate.param_adjust"
-            elif iter_type == IterationType.element_change:
-                step_key = "iterate.element_change"
-            else:
-                step_key = "iterate.mechanic_change"
+            long_generation_timeout_s = self._long_generation_timeout_s()
             text = await self._client.complete(
-                max_tokens=8192,
-                system=get_prompt("prompt.code_gen_system", SYSTEM_PROMPT_LAYER1),
+                max_tokens=max(1024, int(settings.LLM_LONG_GENERATION_MAX_TOKENS or 6144)),
+                system=self._build_system_prompt(prompt_bundle_snapshot),
                 messages=[{"role": "user", "content": prompt}],
                 step_key=step_key,
                 stage="code_generating",
+                request_timeout_s=long_generation_timeout_s,
+                overall_timeout_s=long_generation_timeout_s,
+                allow_provider_fallback=True,
             )
             return _extract_html(text)
-        except Exception as e:
-            if not allow_fallback:
-                raise
-            logger.error(f"LLM iterate failed: {e}")
-            return code
+        except Exception as exc:
+            logger.error("LLM iterate failed: %s", exc)
+            raise RuntimeError(f"LLM iterate failed: {exc}") from exc
 
-    # ------------------------------------------------------------------
-    # Mock implementations
-    # ------------------------------------------------------------------
-
-    def _mock_generate(self, spec: GameSpec) -> str:
-        """Return a basic but functional game based on game_type."""
-        colors = spec.visual_style
-        bg = colors.palette[0] if colors.palette else "#08080d"
-        primary = colors.palette[1] if len(colors.palette) > 1 else "#6366f1"
-        secondary = colors.palette[3] if len(colors.palette) > 3 else "#f43f5e"
-        lives = spec.rules.lives
-
-        if spec.game_type == "dodge":
-            return _DODGE_TEMPLATE.format(bg=bg, primary=primary, secondary=secondary, lives=lives)
-        if spec.game_type in ("runner", "platformer"):
-            return _RUNNER_TEMPLATE.format(bg=bg, primary=primary, secondary=secondary, lives=lives)
-        # Fallback
-        return _DODGE_TEMPLATE.format(bg=bg, primary=primary, secondary=secondary, lives=lives)
-
-    def _mock_iterate(self, code: str, feedback: str) -> str:
-        return self._param_adjust(code, feedback)
-
-
-# ---------------------------------------------------------------------------
-# HTML extraction helper
-# ---------------------------------------------------------------------------
 
 def _extract_html(text: str) -> str:
-    """Extract clean HTML from LLM output (strip markdown fences and leading prose)."""
-    # Remove BOM
-    text = text.lstrip('\ufeff')
-    # Iteratively remove all ``` fences (handles nested/multiple blocks)
-    prev = None
-    while prev != text:
-        prev = text
+    """Extract clean HTML from LLM output."""
+    text = text.lstrip("\ufeff")
+    previous = None
+    while previous != text:
+        previous = text
         text = re.sub(r"```(?:html)?\s*", "", text, flags=re.IGNORECASE)
         text = re.sub(r"```\s*(?:$|\n)", "", text, flags=re.MULTILINE)
-    # Find first <!DOCTYPE or <html — skip any leading prose
-    m = re.search(r"(<!DOCTYPE\s+html|<html)", text, re.IGNORECASE)
-    if m:
-        text = text[m.start():]
+    match = re.search(r"(<!DOCTYPE\s+html|<html)", text, re.IGNORECASE)
+    if match:
+        text = text[match.start():]
     return text.strip()
-
-
-# ---------------------------------------------------------------------------
-# Minimal mock templates
-# ---------------------------------------------------------------------------
-
-_DODGE_TEMPLATE = """<!DOCTYPE html>
-<html lang="zh">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>PlayForge Game</title>
-<style>
-*{{margin:0;padding:0;box-sizing:border-box;}}
-body{{background:{bg};display:flex;justify-content:center;align-items:center;height:100vh;overflow:hidden;}}
-canvas{{display:block;touch-action:none;}}
-</style>
-</head>
-<body>
-<canvas id="gameCanvas"></canvas>
-<script>
-const canvas=document.getElementById('gameCanvas');
-const ctx=canvas.getContext('2d');
-canvas.width=Math.min(window.innerWidth,420);
-canvas.height=Math.min(window.innerHeight,600);
-const W=canvas.width,H=canvas.height;
-const C={{bg:'{bg}',p:'{primary}',s:'{secondary}',t:'#fff'}};
-const game={{score:0,lives:{lives},over:false,elapsed:0,lastTime:0}};
-const player={{x:W/2,y:H-80,w:36,h:36,vx:0,speed:8}};
-let obstacles=[],collectibles=[],frameId;
-class Obstacle{{
-  constructor(){{this.x=Math.random()*(W-28);this.y=-30;this.w=28;this.h=28;this.vy=3+Math.random()*2;}}
-  update(){{this.y+=this.vy+(game.elapsed*0.015);}}
-  draw(){{ctx.fillStyle=C.s;ctx.fillRect(this.x,this.y,this.w,this.h);}}
-}}
-class Collectible{{
-  constructor(){{this.x=Math.random()*(W-20);this.y=-20;this.r=10;this.vy=2;}}
-  update(){{this.y+=this.vy;}}
-  draw(){{ctx.fillStyle=C.p;ctx.beginPath();ctx.arc(this.x,this.y,this.r,0,Math.PI*2);ctx.fill();}}
-}}
-function hit(a,b){{return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;}}
-function hitCircle(r,b){{return r.x<b.x+b.r+r.w/2&&r.x+r.w>b.x-b.r&&r.y<b.y+b.r+r.h/2&&r.y+r.h>b.y-b.r;}}
-function restart(){{game.score=0;game.lives={lives};game.over=false;game.elapsed=0;obstacles=[];collectibles=[];player.x=W/2;player.vx=0;}}
-function update(ts){{
-  if(game.over)return;
-  const dt=(ts-game.lastTime)/1000;
-  game.lastTime=ts;
-  game.elapsed+=dt;
-  game.score+=dt;
-  player.x+=player.vx;
-  player.x=Math.max(0,Math.min(W-player.w,player.x));
-  if(Math.random()<0.025)obstacles.push(new Obstacle());
-  if(Math.random()<0.010)collectibles.push(new Collectible());
-  for(let i=obstacles.length-1;i>=0;i--){{
-    obstacles[i].update();
-    if(obstacles[i].y>H){{obstacles.splice(i,1);continue;}}
-    if(hit(player,obstacles[i])){{obstacles.splice(i,1);game.lives--;if(game.lives<=0){{game.over=true;window.parent?.postMessage({{type:'game_over',score:Math.floor(game.score)}},'*');}}}}
-  }}
-  for(let i=collectibles.length-1;i>=0;i--){{
-    collectibles[i].update();
-    if(collectibles[i].y>H){{collectibles.splice(i,1);continue;}}
-    if(hitCircle(player,collectibles[i])){{collectibles.splice(i,1);game.score+=10;}}
-  }}
-}}
-function draw(){{
-  ctx.fillStyle='#000';ctx.fillRect(0,0,W,H);
-  ctx.fillStyle=C.p;ctx.fillRect(player.x,player.y,player.w,player.h);
-  obstacles.forEach(o=>o.draw());
-  collectibles.forEach(c=>c.draw());
-  ctx.fillStyle=C.t;ctx.font='bold 18px Arial';
-  ctx.textAlign='left';ctx.fillText('Score: '+Math.floor(game.score),16,32);
-  ctx.textAlign='right';ctx.fillText('Lives: '+game.lives,W-16,32);
-  if(game.over){{
-    ctx.fillStyle='rgba(0,0,0,0.75)';ctx.fillRect(0,0,W,H);
-    ctx.fillStyle=C.s;ctx.textAlign='center';ctx.font='bold 42px Arial';
-    ctx.fillText('GAME OVER',W/2,H/2-40);
-    ctx.font='24px Arial';ctx.fillStyle=C.t;
-    ctx.fillText('Score: '+Math.floor(game.score),W/2,H/2+10);
-    ctx.fillText('Tap to restart',W/2,H/2+60);
-  }}
-}}
-function loop(ts){{update(ts);draw();frameId=requestAnimationFrame(loop);}}
-canvas.addEventListener('touchmove',e=>{{e.preventDefault();const t=e.touches[0];const r=canvas.getBoundingClientRect();const tx=t.clientX-r.left;player.vx=tx<player.x+player.w/2?-player.speed:player.speed;}},{{passive:false}});
-canvas.addEventListener('touchend',()=>{{player.vx=0;}});
-canvas.addEventListener('touchstart',e=>{{if(game.over)restart();}});
-canvas.addEventListener('click',()=>{{if(game.over)restart();}});
-game.lastTime=performance.now();
-requestAnimationFrame(loop);
-</script>
-</body>
-</html>"""
-
-_RUNNER_TEMPLATE = """<!DOCTYPE html>
-<html lang="zh">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>PlayForge Game</title>
-<style>
-*{{margin:0;padding:0;box-sizing:border-box;}}
-body{{background:{bg};display:flex;justify-content:center;align-items:center;height:100vh;overflow:hidden;}}
-canvas{{display:block;touch-action:none;}}
-</style>
-</head>
-<body>
-<canvas id="gameCanvas"></canvas>
-<script>
-const canvas=document.getElementById('gameCanvas');
-const ctx=canvas.getContext('2d');
-canvas.width=Math.min(window.innerWidth,420);
-canvas.height=Math.min(window.innerHeight,600);
-const W=canvas.width,H=canvas.height;
-const C={{bg:'{bg}',p:'{primary}',s:'{secondary}',t:'#fff'}};
-const GROUND=H-60;
-const game={{score:0,over:false,speed:4,elapsed:0,lastTime:0}};
-const player={{x:80,y:GROUND-40,w:32,h:40,vy:0,onGround:true,jumpPower:14,gravity:0.6}};
-let obstacles=[],frameId;
-class Block{{
-  constructor(){{this.x=W+20;this.y=GROUND-50;this.w=28+Math.random()*20;this.h=50+Math.random()*30;this.y=GROUND-this.h;}}
-  update(){{this.x-=game.speed;}}
-  draw(){{ctx.fillStyle=C.s;ctx.fillRect(this.x,this.y,this.w,this.h);}}
-}}
-function jump(){{if(player.onGround){{player.vy=-player.jumpPower;player.onGround=false;}}}}
-function restart(){{game.score=0;game.over=false;game.speed=4;game.elapsed=0;obstacles=[];player.y=GROUND-player.h;player.vy=0;player.onGround=true;}}
-function update(ts){{
-  if(game.over)return;
-  const dt=(ts-game.lastTime)/1000;game.lastTime=ts;game.elapsed+=dt;
-  game.score+=dt*10;game.speed=4+game.elapsed*0.02;
-  player.vy+=player.gravity;player.y+=player.vy;
-  if(player.y>=GROUND-player.h){{player.y=GROUND-player.h;player.vy=0;player.onGround=true;}}
-  if(Math.random()<0.018)obstacles.push(new Block());
-  for(let i=obstacles.length-1;i>=0;i--){{
-    obstacles[i].update();
-    if(obstacles[i].x+obstacles[i].w<0){{obstacles.splice(i,1);continue;}}
-    const o=obstacles[i];
-    if(player.x<o.x+o.w&&player.x+player.w>o.x&&player.y<o.y+o.h&&player.y+player.h>o.y){{game.over=true;window.parent?.postMessage({{type:'game_over',score:Math.floor(game.score)}},'*');}}
-  }}
-}}
-function draw(){{
-  ctx.fillStyle='#000';ctx.fillRect(0,0,W,H);
-  ctx.fillStyle='#333';ctx.fillRect(0,GROUND,W,H-GROUND);
-  ctx.fillStyle=C.p;ctx.fillRect(player.x,player.y,player.w,player.h);
-  obstacles.forEach(o=>o.draw());
-  ctx.fillStyle=C.t;ctx.font='bold 18px Arial';ctx.textAlign='left';
-  ctx.fillText('Score: '+Math.floor(game.score),16,32);
-  if(game.over){{
-    ctx.fillStyle='rgba(0,0,0,0.75)';ctx.fillRect(0,0,W,H);
-    ctx.fillStyle=C.s;ctx.textAlign='center';ctx.font='bold 42px Arial';
-    ctx.fillText('GAME OVER',W/2,H/2-40);
-    ctx.font='24px Arial';ctx.fillStyle=C.t;
-    ctx.fillText('Score: '+Math.floor(game.score),W/2,H/2+10);
-    ctx.fillText('Tap to restart',W/2,H/2+60);
-  }}
-}}
-function loop(ts){{update(ts);draw();frameId=requestAnimationFrame(loop);}}
-canvas.addEventListener('touchstart',e=>{{e.preventDefault();if(game.over)restart();else jump();}},{{passive:false}});
-canvas.addEventListener('click',()=>{{if(game.over)restart();else jump();}});
-game.lastTime=performance.now();
-requestAnimationFrame(loop);
-</script>
-</body>
-</html>"""

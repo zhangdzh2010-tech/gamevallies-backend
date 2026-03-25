@@ -18,6 +18,7 @@ from ..api.models import (
     AsyncTaskType,
     ListAsyncTasksResponse,
 )
+from ..config.timeout_store import get_int as get_timeout_int
 
 TaskRunner = Callable[[str], Awaitable[Any]]
 FINAL_TASK_STATUSES = {
@@ -36,11 +37,18 @@ class _TaskEntry:
 class AsyncTaskManager:
     """Tracks background AI generation jobs in memory."""
 
-    def __init__(self, *, completed_ttl_s: int = 24 * 60 * 60, max_tasks: int = 1000) -> None:
-        self._completed_ttl_s = completed_ttl_s
+    def __init__(self, *, completed_ttl_s: Optional[int] = None, max_tasks: int = 1000) -> None:
+        self._default_completed_ttl_s = int(completed_ttl_s or 24 * 60 * 60)
         self._max_tasks = max_tasks
         self._tasks: "OrderedDict[str, _TaskEntry]" = OrderedDict()
         self._lock = asyncio.Lock()
+
+    def _completed_ttl_s(self) -> int:
+        return get_timeout_int(
+            "timeout.ai_engine.async_task_completed_ttl_s",
+            self._default_completed_ttl_s,
+            min_value=60,
+        )
 
     async def create_task(
         self,
@@ -237,11 +245,29 @@ class AsyncTaskManager:
         if isinstance(exc, asyncio.TimeoutError):
             return AsyncTaskError(message="Task timed out")
 
+        detail = getattr(exc, "detail", None)
+        if isinstance(detail, dict):
+            return AsyncTaskError(
+                message=str(
+                    detail.get("message")
+                    or detail.get("error")
+                    or str(exc)
+                ),
+                failed_stage=detail.get("failed_stage") or detail.get("failedStage"),
+                retry_count=int(detail.get("retry_count") or detail.get("retryCount") or 0),
+                fallback=detail.get("fallback"),
+                failure_family=detail.get("failure_family") or detail.get("failureFamily"),
+                primary_artifact_id=detail.get("primary_artifact_id") or detail.get("primaryArtifactId"),
+            )
+
         return AsyncTaskError(
             message=str(exc),
             failed_stage=getattr(exc, "stage", None),
             retry_count=int(getattr(exc, "retry_count", 0) or 0),
             fallback=getattr(exc, "fallback", None),
+            failure_family=getattr(exc, "failure_family", None) or getattr(exc, "failureFamily", None),
+            primary_artifact_id=getattr(exc, "primary_artifact_id", None)
+            or getattr(exc, "primaryArtifactId", None),
         )
 
     def _prune_locked(self, now: float) -> None:
@@ -251,7 +277,7 @@ class AsyncTaskManager:
             if snapshot.status not in FINAL_TASK_STATUSES:
                 continue
             completed_at = snapshot.completed_at or snapshot.created_at
-            if now - completed_at > self._completed_ttl_s:
+            if now - completed_at > self._completed_ttl_s():
                 stale_ids.append(task_id)
 
         for task_id in stale_ids:
