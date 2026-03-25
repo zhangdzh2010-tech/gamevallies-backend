@@ -51,7 +51,7 @@ async def _timeout_after_stage_update(awaitable, timeout):
 
 
 class TestPipelineOrchestratorP0(unittest.TestCase):
-    def test_stage_design_retries_then_falls_back_to_default_gdd(self):
+    def test_stage_design_retries_then_fails_closed(self):
         import src.engine.pipeline_orchestrator as orchestrator_module
 
         orchestrator = PipelineOrchestrator()
@@ -66,22 +66,23 @@ class TestPipelineOrchestratorP0(unittest.TestCase):
             "sleep",
             new=_noop_sleep,
         ):
-            result = asyncio.run(
-                orchestrator._stage_design(make_spec(), "game-design", "user-design", callback)
-            )
+            with self.assertRaises(PipelineExecutionError) as ctx:
+                asyncio.run(
+                    orchestrator._stage_design(make_spec(), "game-design", "user-design", callback)
+                )
 
-        self.assertIsInstance(result, GDD)
+        self.assertIn("Game design failed after 3 attempts", str(ctx.exception))
         self.assertEqual(
             [event["message"] for event in events],
             [
                 "游戏数值设计失败，重试中（1/2）",
                 "游戏数值设计失败，重试中（2/2）",
-                "游戏数值设计失败，已切换默认参数继续生成",
+                "Game design failed, generation stopped",
             ],
         )
+        self.assertEqual(events[-1]["details"]["failedStage"], "designing")
 
-    def test_stage_intent_parse_retries_then_falls_back(self):
-        import src.engine.dialogue_engine as dialogue_engine_module
+    def test_stage_intent_parse_retries_then_fails_closed(self):
         import src.engine.pipeline_orchestrator as orchestrator_module
 
         orchestrator = PipelineOrchestrator()
@@ -101,16 +102,13 @@ class TestPipelineOrchestratorP0(unittest.TestCase):
             orchestrator_module.asyncio,
             "sleep",
             new=_noop_sleep,
-        ), patch.object(
-            dialogue_engine_module,
-            "_mock_parse",
-            return_value=GameSpec(game_type="fallback"),
         ):
-            result = asyncio.run(
-                orchestrator._stage_intent_parse("desc", "game-1", "user-1", callback)
-            )
+            with self.assertRaises(PipelineExecutionError) as ctx:
+                asyncio.run(
+                    orchestrator._stage_intent_parse("desc", "game-1", "user-1", callback)
+                )
 
-        self.assertEqual(result.game_type, "fallback")
+        self.assertIn("Intent parsing failed after 3 attempts", str(ctx.exception))
         self.assertEqual(attempts, [False, False, False])
         self.assertEqual(
             [event["message"] for event in events if "重试中" in event["message"]],
@@ -119,31 +117,25 @@ class TestPipelineOrchestratorP0(unittest.TestCase):
                 "意图解析失败，重试中（2/2）",
             ],
         )
-        self.assertEqual(events[-1]["message"], "意图解析失败，已切换默认解析继续生成")
-        self.assertEqual(events[-1]["details"]["fallback"], "mock_parse")
+        self.assertEqual(events[-1]["message"], "意图解析失败，生成已终止")
+        self.assertEqual(events[-1]["details"]["failedStage"], "intent_parsing")
 
-    def test_stage_match_template_retries_then_falls_back_to_llm(self):
+    def test_stage_match_template_forces_full_llm_path(self):
         orchestrator = PipelineOrchestrator()
         events, callback = make_progress_sink()
 
-        with patch.object(
-            orchestrator.template_engine,
-            "match",
-            side_effect=RuntimeError("template engine down"),
-        ):
-            result = orchestrator._stage_match_template(make_spec(), "game-2", "user-2", callback)
+        result = orchestrator._stage_match_template(make_spec(), "game-2", "user-2", callback)
 
         self.assertEqual(result.path, "llm")
         self.assertEqual(
             [event["message"] for event in events],
             [
-                "模板匹配失败，重试中（1/2）",
-                "模板匹配失败，重试中（2/2）",
+                "Full LLM generation only",
             ],
         )
         self.assertTrue(all(event["stage"] == "template_matching" for event in events))
 
-    def test_stage_generate_code_retries_three_times_and_allows_fallback_on_last_attempt(self):
+    def test_stage_generate_code_retries_three_times_without_fallback(self):
         import src.engine.pipeline_orchestrator as orchestrator_module
 
         orchestrator = PipelineOrchestrator()
@@ -184,7 +176,7 @@ class TestPipelineOrchestratorP0(unittest.TestCase):
             )
 
         self.assertEqual(result.html_code, "<html></html>")
-        self.assertEqual(allow_fallback_values, [False, False, True])
+        self.assertEqual(allow_fallback_values, [False, False, False])
         self.assertEqual(
             [event["message"] for event in events if "重试中" in event["message"]],
             [
@@ -244,6 +236,36 @@ class TestPipelineOrchestratorP0(unittest.TestCase):
 
         self.assertIn("Runtime QA unavailable", str(ctx.exception))
         self.assertEqual(events[-1]["message"], "运行时检查不可用，已中止发布")
+
+    def test_runtime_qa_missing_input_handlers_fails_closed(self):
+        orchestrator = PipelineOrchestrator()
+        qa_result = QAResult(success=True, code="<!DOCTYPE html><html><body></body></html>", retries=0)
+
+        with patch(
+            "src.engine.pipeline_orchestrator.run_runtime_qa",
+            new=AsyncMock(side_effect=[
+                RuntimeQAResult(ran=True, canvas_renders=True, js_errors=[], registered_input_handlers=[], direct_input_handlers=[]),
+                RuntimeQAResult(ran=True, canvas_renders=True, js_errors=[], registered_input_handlers=[], direct_input_handlers=[]),
+            ]),
+        ), patch.object(
+            orchestrator.qa_pipeline,
+            "repair_code",
+            new=AsyncMock(return_value="<!DOCTYPE html><html><body></body></html>"),
+        ), patch.object(
+            orchestrator.qa_pipeline,
+            "run_with_auto_fix",
+            new=AsyncMock(return_value=QAResult(success=True, code="<!DOCTYPE html><html><body></body></html>", retries=1)),
+        ):
+            with self.assertRaises(PipelineExecutionError) as ctx:
+                asyncio.run(
+                    orchestrator._repair_runtime_failures(
+                        qa_result,
+                        make_spec(),
+                        None,
+                    )
+                )
+
+        self.assertIn("No registered input handlers", str(ctx.exception))
 
     def test_stage_qa_emits_retry_progress(self):
         orchestrator = PipelineOrchestrator()
@@ -362,7 +384,7 @@ class TestPipelineOrchestratorP0(unittest.TestCase):
         self.assertEqual(result["iteration_type"], "element_change")
         self.assertEqual(result["qa_retries"], 1)
         self.assertEqual(result["iteration_retries"], 2)
-        self.assertEqual(allow_fallback_values, [False, False, True])
+        self.assertEqual(allow_fallback_values, [False, False, False])
         self.assertIn("代码修改失败，正在重试（1/2）", [event["message"] for event in events])
         self.assertIn("代码修改失败，正在重试（2/2）", [event["message"] for event in events])
         self.assertIn("修改后的质量检查未通过，正在修复（1/3）", [event["message"] for event in events])

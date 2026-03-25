@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import copy
 import logging
 import re
 import time
@@ -12,14 +13,12 @@ from urllib.parse import urlparse, urlunparse
 import httpx
 
 from ..config.settings import settings
+from ..config.timeout_store import get_int as get_timeout_int
 from .llm_gateway import gateway
 
 logger = logging.getLogger(__name__)
 
 Message = Dict[str, str]
-LLM_ACTIVITY_HEARTBEAT_S = 15
-
-
 def _build_openai_compatible_chat_url(base_url: str) -> str:
     normalized = base_url.strip().rstrip("/")
     if not normalized:
@@ -39,11 +38,65 @@ def _build_openai_compatible_chat_url(base_url: str) -> str:
     return f"{normalized.rstrip('/')}/chat/completions"
 
 
+def _build_anthropic_base_url(base_url: Optional[str]) -> Optional[str]:
+    normalized = (base_url or "").strip().rstrip("/")
+    if not normalized:
+        return None
+
+    parsed = urlparse(normalized)
+    path = parsed.path.rstrip("/")
+
+    if path.endswith("/messages"):
+        path = path[: -len("/messages")]
+    if path.endswith("/v1"):
+        path = path[: -len("/v1")]
+
+    normalized_url = urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
+    return normalized_url.rstrip("/") or None
+
+
 def _strip_think_tags(text: str) -> str:
     text = re.sub(r"<think(?:ing)?[^>]*>.*?</think(?:ing)?>", "", text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
     text = re.sub(r"\[thinking\].*?\[/thinking\]", "", text, flags=re.DOTALL | re.IGNORECASE)
     return text.strip()
+
+
+def _extract_openai_message_text(message: Any) -> str:
+    if not isinstance(message, dict):
+        return ""
+
+    content = message.get("content")
+    if isinstance(content, list):
+        text_parts = [
+            part.get("text", "")
+            for part in content
+            if isinstance(part, dict)
+        ]
+        text = "".join(text_parts).strip()
+        if text:
+            return _strip_think_tags(text)
+    elif content is not None:
+        text = str(content).strip()
+        if text:
+            return _strip_think_tags(text)
+
+    reasoning = message.get("reasoning_content")
+    if isinstance(reasoning, list):
+        reasoning_parts = [
+            part.get("text", "")
+            for part in reasoning
+            if isinstance(part, dict)
+        ]
+        reasoning_text = "".join(reasoning_parts).strip()
+        if reasoning_text:
+            return _strip_think_tags(reasoning_text)
+    elif reasoning is not None:
+        reasoning_text = str(reasoning).strip()
+        if reasoning_text:
+            return _strip_think_tags(reasoning_text)
+
+    return ""
 
 
 def _response_request_id(headers: httpx.Headers) -> Optional[str]:
@@ -54,8 +107,44 @@ def _response_request_id(headers: httpx.Headers) -> Optional[str]:
     return None
 
 
+def _is_anthropic_protocol_mismatch(exc: Exception) -> bool:
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return False
+    if exc.response.status_code != 400:
+        return False
+
+    body = (exc.response.text or "").casefold()
+    return (
+        "anthropic-compatible" in body
+        and "/v1/chat/completions" in body
+    )
+
+
 def _summarize_error_message(message: str, limit: int = 160) -> str:
     return re.sub(r"\s+", " ", (message or "")).strip()[:limit] or "unknown error"
+
+
+def _is_retryable_provider_error(exc: Exception) -> bool:
+    if isinstance(exc, (asyncio.TimeoutError, httpx.TimeoutException, httpx.RequestError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in {408, 409, 425, 429} or exc.response.status_code >= 500
+    return False
+
+
+def _apply_request_timeout_override(route: Any, request_timeout_s: Optional[int]) -> Any:
+    if request_timeout_s is None:
+        return route
+
+    overridden = copy(route)
+    desired_timeout = max(1, int(request_timeout_s))
+    current_timeout = getattr(route, "request_timeout_s", desired_timeout)
+    overridden.request_timeout_s = min(int(current_timeout), desired_timeout)
+    overridden.route_snapshot = {
+        **dict(getattr(route, "route_snapshot", {}) or {}),
+        "request_timeout_override_s": overridden.request_timeout_s,
+    }
+    return overridden
 
 
 class LLMClient:
@@ -134,9 +223,14 @@ class LLMClient:
         started_at: float,
         stop_event: asyncio.Event,
     ) -> None:
+        heartbeat_timeout_s = get_timeout_int(
+            "timeout.ai_engine.llm_activity_heartbeat_s",
+            15,
+            min_value=1,
+        )
         while True:
             try:
-                await asyncio.wait_for(stop_event.wait(), timeout=LLM_ACTIVITY_HEARTBEAT_S)
+                await asyncio.wait_for(stop_event.wait(), timeout=heartbeat_timeout_s)
                 break
             except asyncio.TimeoutError:
                 await self._emit_task_activity(
@@ -157,15 +251,95 @@ class LLMClient:
         step_key: str = "default",
         stage: str = "llm",
         prefer_fast: bool = False,
+        request_timeout_s: Optional[int] = None,
+        overall_timeout_s: Optional[int] = None,
+        allow_provider_fallback: bool = False,
     ) -> str:
         if not self.is_enabled():
             raise RuntimeError("Real LLM mode is not configured")
 
-        route = gateway.resolve(
-            step_key=step_key,
-            prefer_fast=prefer_fast,
-            model_override=model,
+        routes = (
+            gateway.resolve_candidates(
+                step_key=step_key,
+                prefer_fast=prefer_fast,
+                model_override=model,
+            )
+            if allow_provider_fallback and settings.LLM_PROVIDER_FAILOVER_ENABLED
+            else [gateway.resolve(
+                step_key=step_key,
+                prefer_fast=prefer_fast,
+                model_override=model,
+            )]
         )
+
+        last_exc: Optional[Exception] = None
+        previous_provider_id: Optional[str] = None
+        total_attempts = len(routes)
+        deadline = None
+        if overall_timeout_s is not None:
+            deadline = time.monotonic() + max(1, int(overall_timeout_s))
+        for attempt_index, resolved_route in enumerate(routes, start=1):
+            effective_request_timeout_s = request_timeout_s
+            if deadline is not None:
+                remaining_budget_s = int(deadline - time.monotonic())
+                if remaining_budget_s <= 0:
+                    raise asyncio.TimeoutError(
+                        f"LLM call {step_key} exhausted overall timeout budget of {int(overall_timeout_s)}s"
+                    )
+                effective_request_timeout_s = min(
+                    max(1, remaining_budget_s),
+                    effective_request_timeout_s if effective_request_timeout_s is not None else max(1, remaining_budget_s),
+                )
+
+            route = _apply_request_timeout_override(resolved_route, effective_request_timeout_s)
+            route.route_snapshot = {
+                **dict(getattr(route, "route_snapshot", {}) or {}),
+                "attempt": attempt_index,
+                "attempt_count": total_attempts,
+                "provider_fallback_from": previous_provider_id,
+                **(
+                    {"overall_timeout_s": int(overall_timeout_s)}
+                    if overall_timeout_s is not None
+                    else {}
+                ),
+            }
+            try:
+                return await self._complete_with_route(
+                    route=route,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    system=system,
+                    step_key=step_key,
+                    stage=stage,
+                )
+            except Exception as exc:
+                last_exc = exc
+                if attempt_index >= total_attempts or not _is_retryable_provider_error(exc):
+                    raise
+                logger.warning(
+                    "LLM call %s failed on provider %s (attempt %s/%s), trying fallback: %s",
+                    step_key,
+                    route.provider_name or route.provider_id or route.base_url,
+                    attempt_index,
+                    total_attempts,
+                    exc,
+                )
+                previous_provider_id = route.provider_id
+
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError(f"LLM call failed without attempts for step {step_key}")
+
+    async def _complete_with_route(
+        self,
+        *,
+        route: Any,
+        messages: List[Message],
+        max_tokens: int,
+        system: Optional[str],
+        step_key: str,
+        stage: str,
+    ) -> str:
         started_at = time.time()
         stop_event = asyncio.Event()
         await self._emit_task_activity(
@@ -186,6 +360,8 @@ class LLMClient:
         )
 
         try:
+            effective_provider_type = route.provider_type
+            route_snapshot = dict(route.route_snapshot or {})
             if route.provider_type == "anthropic":
                 text = await asyncio.get_event_loop().run_in_executor(
                     None,
@@ -197,12 +373,32 @@ class LLMClient:
                     ),
                 )
             elif route.provider_type == "openai_compatible":
-                text = await self._complete_openai_compatible(
-                    route=route,
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    system=system,
-                )
+                try:
+                    text = await self._complete_openai_compatible(
+                        route=route,
+                        messages=messages,
+                        max_tokens=max_tokens,
+                        system=system,
+                    )
+                except Exception as exc:
+                    if not _is_anthropic_protocol_mismatch(exc):
+                        raise
+
+                    logger.warning(
+                        "Provider %s rejected OpenAI-compatible chat/completions; retrying with Anthropic protocol",
+                        route.provider_name or route.provider_id or route.base_url,
+                    )
+                    effective_provider_type = "anthropic"
+                    route_snapshot["protocol_fallback"] = "anthropic"
+                    text = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: self._complete_anthropic(
+                            route=route,
+                            messages=messages,
+                            max_tokens=max_tokens,
+                            system=system,
+                        ),
+                    )
             else:
                 raise RuntimeError(f"Unsupported provider type: {route.provider_type}")
 
@@ -222,7 +418,7 @@ class LLMClient:
                 "stepKey": step_key,
                 "providerId": route.provider_id,
                 "providerName": route.provider_name,
-                "providerType": route.provider_type,
+                "providerType": effective_provider_type,
                 "region": route.region,
                 "model": route.model,
                 "requestTimeoutS": route.request_timeout_s,
@@ -230,7 +426,7 @@ class LLMClient:
                 "latencyMs": latency_ms,
                 "success": True,
                 "configVersion": route.config_version,
-                "routeSnapshot": route.route_snapshot,
+                "routeSnapshot": route_snapshot,
             })
             return text
         except Exception as exc:
@@ -283,7 +479,7 @@ class LLMClient:
         import anthropic
         return anthropic.Anthropic(
             api_key=api_key,
-            base_url=base_url or None,
+            base_url=_build_anthropic_base_url(base_url),
         )
 
     def _complete_anthropic(
@@ -346,17 +542,14 @@ class LLMClient:
             data = response.json()
 
         try:
-            content = data["choices"][0]["message"]["content"]
+            message = data["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as exc:
             logger.error("Unexpected OpenAI-compatible response: %s", data)
             raise ValueError("Unexpected LLM response payload") from exc
 
-        if isinstance(content, list):
-            text_parts = [
-                part.get("text", "")
-                for part in content
-                if isinstance(part, dict)
-            ]
-            return _strip_think_tags("".join(text_parts).strip())
+        text = _extract_openai_message_text(message)
+        if not text:
+            logger.error("OpenAI-compatible response contained no usable text: %s", data)
+            raise ValueError("OpenAI-compatible response contained no usable text")
 
-        return _strip_think_tags(str(content).strip())
+        return text

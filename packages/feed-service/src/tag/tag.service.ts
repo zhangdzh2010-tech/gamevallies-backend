@@ -13,6 +13,7 @@ export class TagService {
     const games = await this.prisma.game.findMany({
       where: {
         status: 'published' as const,
+        visibility: 'public' as const,
         publishedAt: { gte: thirtyDaysAgo },
       },
       select: { tags: true },
@@ -53,6 +54,7 @@ export class TagService {
     const games = await this.prisma.game.findMany({
       where: {
         status: 'published' as const,
+        visibility: 'public' as const,
       },
       select: { tags: true },
     });

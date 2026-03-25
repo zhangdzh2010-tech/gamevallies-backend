@@ -1,6 +1,8 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
+import promptBundleCatalog from './catalogs/prompt-bundle-catalog.json';
+import runtimeProfileCatalog from './catalogs/runtime-profile-catalog.json';
 
 type ColumnPatch = {
   table: string;
@@ -48,6 +50,41 @@ const TABLE_COLUMN_PATCHES: ColumnPatch[] = [
     table: 'generation_tasks',
     name: 'region',
     sql: "ALTER TABLE generation_tasks ADD COLUMN region VARCHAR(32) NOT NULL DEFAULT 'cn_shanghai' AFTER task_type",
+  },
+  {
+    table: 'generation_tasks',
+    name: 'pipeline_version',
+    sql: "ALTER TABLE generation_tasks ADD COLUMN pipeline_version VARCHAR(16) NULL AFTER version",
+  },
+  {
+    table: 'generation_tasks',
+    name: 'prompt_bundle_id',
+    sql: 'ALTER TABLE generation_tasks ADD COLUMN prompt_bundle_id VARCHAR(64) NULL AFTER pipeline_version',
+  },
+  {
+    table: 'generation_tasks',
+    name: 'prompt_bundle_version',
+    sql: 'ALTER TABLE generation_tasks ADD COLUMN prompt_bundle_version INT NULL AFTER prompt_bundle_id',
+  },
+  {
+    table: 'generation_tasks',
+    name: 'runtime_profile',
+    sql: 'ALTER TABLE generation_tasks ADD COLUMN runtime_profile VARCHAR(64) NULL AFTER prompt_bundle_version',
+  },
+  {
+    table: 'generation_tasks',
+    name: 'contract_version',
+    sql: 'ALTER TABLE generation_tasks ADD COLUMN contract_version VARCHAR(32) NULL AFTER runtime_profile',
+  },
+  {
+    table: 'generation_tasks',
+    name: 'failure_family',
+    sql: 'ALTER TABLE generation_tasks ADD COLUMN failure_family VARCHAR(64) NULL AFTER contract_version',
+  },
+  {
+    table: 'generation_tasks',
+    name: 'primary_artifact_id',
+    sql: 'ALTER TABLE generation_tasks ADD COLUMN primary_artifact_id VARCHAR(36) NULL AFTER failure_family',
   },
 ];
 
@@ -203,6 +240,13 @@ const GAME_SCHEMA_STATEMENTS = [
     status ENUM('queued', 'running', 'succeeded', 'failed', 'canceled', 'timed_out') NOT NULL DEFAULT 'queued',
     timeout_s INT NOT NULL,
     version INT NULL,
+    pipeline_version VARCHAR(16) NULL,
+    prompt_bundle_id VARCHAR(64) NULL,
+    prompt_bundle_version INT NULL,
+    runtime_profile VARCHAR(64) NULL,
+    contract_version VARCHAR(32) NULL,
+    failure_family VARCHAR(64) NULL,
+    primary_artifact_id VARCHAR(36) NULL,
     cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
     upstream_task_id VARCHAR(64) NULL,
     progress_stage VARCHAR(64) NULL,
@@ -227,6 +271,9 @@ const GAME_SCHEMA_STATEMENTS = [
     INDEX generation_tasks_region_status_updated_at_idx (region, status, updated_at),
     INDEX generation_tasks_user_id_status_created_at_idx (user_id, status, created_at),
     INDEX generation_tasks_status_updated_at_idx (status, updated_at),
+    INDEX generation_tasks_pipeline_version_status_updated_at_idx (pipeline_version, status, updated_at),
+    INDEX generation_tasks_runtime_profile_status_created_at_idx (runtime_profile, status, created_at),
+    INDEX generation_tasks_failure_family_created_at_idx (failure_family, created_at),
     CONSTRAINT generation_tasks_game_id_fkey FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT generation_tasks_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE
   ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
@@ -282,6 +329,58 @@ const GAME_SCHEMA_STATEMENTS = [
     CONSTRAINT llm_call_logs_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT llm_call_logs_provider_id_fkey FOREIGN KEY (provider_id) REFERENCES llm_gateway_providers(id) ON DELETE SET NULL ON UPDATE CASCADE
   ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+  `CREATE TABLE IF NOT EXISTS generation_artifacts (
+    id VARCHAR(36) NOT NULL,
+    task_id VARCHAR(36) NULL,
+    game_id VARCHAR(36) NOT NULL,
+    user_id VARCHAR(36) NOT NULL,
+    artifact_type VARCHAR(64) NOT NULL,
+    content_type VARCHAR(64) NOT NULL,
+    storage_type VARCHAR(32) NOT NULL,
+    payload_json JSON NULL,
+    payload_text LONGTEXT NULL,
+    payload_url VARCHAR(512) NULL,
+    sha256 VARCHAR(64) NULL,
+    size_bytes INT NULL,
+    compression VARCHAR(32) NULL,
+    expires_at DATETIME(3) NULL,
+    metadata JSON NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    INDEX generation_artifacts_task_id_artifact_type_created_at_idx (task_id, artifact_type, created_at),
+    INDEX generation_artifacts_game_id_artifact_type_created_at_idx (game_id, artifact_type, created_at),
+    INDEX generation_artifacts_user_id_artifact_type_created_at_idx (user_id, artifact_type, created_at),
+    CONSTRAINT generation_artifacts_task_id_fkey FOREIGN KEY (task_id) REFERENCES generation_tasks(id) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT generation_artifacts_game_id_fkey FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT generation_artifacts_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE
+  ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+  `CREATE TABLE IF NOT EXISTS prompt_bundles (
+    id VARCHAR(64) NOT NULL,
+    version INT NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'draft',
+    product_policy LONGTEXT NOT NULL,
+    locked_contract_override LONGTEXT NULL,
+    repair_playbook LONGTEXT NOT NULL,
+    profile_overrides JSON NULL,
+    metadata JSON NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id, version),
+    INDEX prompt_bundles_status_updated_at_idx (status, updated_at)
+  ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+  `CREATE TABLE IF NOT EXISTS runtime_profile_catalog (
+    id VARCHAR(64) NOT NULL,
+    display_name VARCHAR(128) NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    skeleton_version VARCHAR(32) NOT NULL,
+    contract_schema JSON NOT NULL,
+    few_shot_prompt LONGTEXT NULL,
+    metadata JSON NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    INDEX runtime_profile_catalog_enabled_updated_at_idx (enabled, updated_at)
+  ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
 ];
 
 const DEFAULT_LLM_STEP_CATALOG = [
@@ -308,14 +407,6 @@ const DEFAULT_LLM_STEP_CATALOG = [
     stageLabel: 'Stage 02',
     displayName: '意图解析',
     description: '将自然语言描述解析成 GameSpec',
-  },
-  {
-    id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411004',
-    stepKey: 'code_generate.hybrid',
-    stepOrder: 40,
-    stageLabel: 'Stage 05',
-    displayName: '代码生成（Hybrid）',
-    description: '使用模板混合 LLM 生成首版代码',
   },
   {
     id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411005',
@@ -406,6 +497,14 @@ const DEFAULT_CLOUD_REGION_CATALOG = [
     regionGroup: 'overseas',
   },
 ];
+
+const DEFAULT_PROMPT_BUNDLES = Array.isArray(promptBundleCatalog)
+  ? promptBundleCatalog
+  : [];
+
+const DEFAULT_RUNTIME_PROFILE_CATALOG = Array.isArray(runtimeProfileCatalog)
+  ? runtimeProfileCatalog
+  : [];
 
 @Injectable()
 export class GameSchemaBootstrapService implements OnModuleInit {
@@ -761,6 +860,52 @@ export class GameSchemaBootstrapService implements OnModuleInit {
           step.stageLabel,
           step.displayName,
           step.description,
+        );
+      }
+
+      for (const bundle of DEFAULT_PROMPT_BUNDLES) {
+        await this.prisma.$executeRawUnsafe(
+          `INSERT INTO prompt_bundles (
+             id, version, status, product_policy, locked_contract_override,
+             repair_playbook, profile_overrides, metadata
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             status = VALUES(status),
+             product_policy = VALUES(product_policy),
+             locked_contract_override = VALUES(locked_contract_override),
+             repair_playbook = VALUES(repair_playbook),
+             profile_overrides = VALUES(profile_overrides),
+             metadata = VALUES(metadata)`,
+          bundle.id,
+          bundle.version,
+          bundle.status,
+          bundle.productPolicy,
+          bundle.lockedContractOverride,
+          bundle.repairPlaybook,
+          JSON.stringify(bundle.profileOverrides),
+          JSON.stringify(bundle.metadata),
+        );
+      }
+
+      for (const profile of DEFAULT_RUNTIME_PROFILE_CATALOG) {
+        await this.prisma.$executeRawUnsafe(
+          `INSERT INTO runtime_profile_catalog (
+             id, display_name, enabled, skeleton_version, contract_schema,
+             few_shot_prompt, metadata
+           ) VALUES (?, ?, TRUE, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             display_name = VALUES(display_name),
+             enabled = VALUES(enabled),
+             skeleton_version = VALUES(skeleton_version),
+             contract_schema = VALUES(contract_schema),
+             few_shot_prompt = VALUES(few_shot_prompt),
+             metadata = VALUES(metadata)`,
+          profile.id,
+          profile.displayName,
+          profile.skeletonVersion,
+          JSON.stringify(profile.contractSchema),
+          profile.fewShotPrompt,
+          JSON.stringify(profile.metadata),
         );
       }
 

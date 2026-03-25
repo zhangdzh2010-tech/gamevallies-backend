@@ -21,6 +21,7 @@ from ..api.models import (
     TemplateMatchResult,
 )
 from ..config.settings import settings
+from ..config.timeout_store import get_int as get_timeout_int
 from .code_generator import CodeGenerator
 from .code_reviewer import CodeReviewer
 from .dialogue_engine import DialogueEngine
@@ -28,7 +29,6 @@ from .game_designer import GameDesigner
 from .qa_pipeline import QAPipeline
 from .quality_scorer import LLMReviewResult, QAStaticResult, QualityScorer, RuntimeQAResult
 from .runtime_qa import run_runtime_qa
-from .template_engine import TemplateEngine
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +47,15 @@ class PipelineExecutionError(RuntimeError):
         stage: str,
         retry_count: int = 0,
         fallback: Optional[str] = None,
+        failure_family: Optional[str] = None,
+        artifacts: Optional[list[dict[str, Any]]] = None,
     ) -> None:
         super().__init__(message)
         self.stage = stage
         self.retry_count = retry_count
         self.fallback = fallback
+        self.failure_family = failure_family
+        self.artifacts = artifacts or []
 
 
 class PipelineOrchestrator:
@@ -60,7 +64,6 @@ class PipelineOrchestrator:
     def __init__(self) -> None:
         self.dialogue_engine = DialogueEngine()
         self.game_designer = GameDesigner()
-        self.template_engine = TemplateEngine()
         self.code_generator = CodeGenerator(llm_mode=settings.LLM_MODE)
         self.qa_pipeline = QAPipeline()
         self.code_reviewer = CodeReviewer()
@@ -76,7 +79,12 @@ class PipelineOrchestrator:
         timeout_s: Optional[int] = None,
     ) -> RunPipelineResponse:
         stage_context: dict[str, str] = {"stage": PipelineStage.intent_parsing.value}
-        effective_timeout_s = timeout_s or settings.PIPELINE_TIMEOUT_S
+        effective_timeout_s = int(timeout_s) if timeout_s is not None else get_timeout_int(
+            "timeout.pipeline.default_s",
+            1200,
+            min_value=30,
+            max_value=3600,
+        )
         try:
             return await asyncio.wait_for(
                 self._run_stages(request, progress_cb, stage_context),
@@ -145,7 +153,7 @@ class PipelineOrchestrator:
             progress_cb,
             PipelineStage.template_matching,
             45,
-            "匹配游戏模板",
+            "Selecting generation path",
             {"gameId": request.game_id, "userId": request.user_id, "attempt": 1, "maxAttempts": DEFAULT_STAGE_TOTAL_ATTEMPTS},
         )
         match = self._stage_match_template(
@@ -282,10 +290,19 @@ class PipelineOrchestrator:
             QACheckError(type="runtime_qa", message=f"Runtime JS error: {message}", severity="error")
             for message in runtime_qa.js_errors[:3]
         ]
+        runtime_input_signals = sorted(
+            set(runtime_qa.registered_input_handlers) | set(runtime_qa.direct_input_handlers)
+        )
         if not runtime_qa.canvas_renders:
             runtime_errors.append(QACheckError(
                 type="runtime_qa",
                 message="Runtime QA detected that the canvas never rendered",
+                severity="error",
+            ))
+        if not runtime_input_signals:
+            runtime_errors.append(QACheckError(
+                type="runtime_qa",
+                message="Runtime QA detected no registered user input handlers",
                 severity="error",
             ))
 
@@ -322,10 +339,15 @@ class PipelineOrchestrator:
             )
 
         runtime_qa = await run_runtime_qa(repaired_result.code)
-        if runtime_qa.ran and (runtime_qa.js_errors or not runtime_qa.canvas_renders):
+        runtime_input_signals = sorted(
+            set(runtime_qa.registered_input_handlers) | set(runtime_qa.direct_input_handlers)
+        )
+        if runtime_qa.ran and (runtime_qa.js_errors or not runtime_qa.canvas_renders or not runtime_input_signals):
             runtime_messages = runtime_qa.js_errors[:3]
             if not runtime_qa.canvas_renders:
                 runtime_messages.append("Canvas never rendered during runtime QA")
+            if not runtime_input_signals:
+                runtime_messages.append("No registered input handlers detected during runtime QA")
             self._notify(
                 progress_cb,
                 PipelineStage.failed,
@@ -426,25 +448,26 @@ class PipelineOrchestrator:
                     )
                 await asyncio.sleep(0.5)
 
-        logger.error(f"Intent parse failed after retries, using defaults: {last_exc}")
+        logger.error(f"Intent parse failed after retries: {last_exc}")
         self._log_stage_failure(
             game_id=game_id,
             user_id=user_id,
             stage=PipelineStage.intent_parsing.value,
             error=self._error_message(last_exc),
             retry_count=max_attempts - 1,
-            fallback="mock_parse",
         )
         self._notify(
             progress_cb,
             PipelineStage.intent_parsing,
             18,
-            "意图解析失败，已切换默认解析继续生成",
-            {"gameId": game_id, "userId": user_id, "fallback": "mock_parse"},
+            "意图解析失败，生成已终止",
+            {"gameId": game_id, "userId": user_id, "failedStage": PipelineStage.intent_parsing.value},
         )
-        from .dialogue_engine import _mock_parse
-
-        return _mock_parse(description)
+        raise PipelineExecutionError(
+            f"Intent parsing failed after {max_attempts} attempts: {self._error_message(last_exc)}",
+            stage=PipelineStage.intent_parsing.value,
+            retry_count=max_attempts - 1,
+        )
 
     async def _stage_design(
         self,
@@ -479,16 +502,19 @@ class PipelineOrchestrator:
             stage=PipelineStage.designing.value,
             error=self._error_message(last_exc),
             retry_count=max_attempts - 1,
-            fallback="default_gdd",
         )
         self._notify(
             progress_cb,
             PipelineStage.designing,
             33,
-            "游戏数值设计失败，已切换默认参数继续生成",
-            {"gameId": game_id, "userId": user_id, "fallback": "default_gdd"},
+            "Game design failed, generation stopped",
+            {"gameId": game_id, "userId": user_id, "failedStage": PipelineStage.designing.value},
         )
-        return GDD()
+        raise PipelineExecutionError(
+            f"Game design failed after {max_attempts} attempts: {self._error_message(last_exc)}",
+            stage=PipelineStage.designing.value,
+            retry_count=max_attempts - 1,
+        )
 
     def _stage_match_template(
         self,
@@ -497,42 +523,15 @@ class PipelineOrchestrator:
         user_id: str,
         progress_cb: ProgressCallback,
     ) -> TemplateMatchResult:
-        """Stage 04: template matching."""
-        max_attempts = DEFAULT_STAGE_TOTAL_ATTEMPTS
-        last_exc: Exception | None = None
-        for attempt in range(1, max_attempts + 1):
-            try:
-                template_id, confidence = self.template_engine.match(spec)
-                path = (
-                    "template" if confidence >= settings.TEMPLATE_CONFIDENCE_THRESHOLD
-                    else "hybrid" if confidence >= settings.HYBRID_CONFIDENCE_THRESHOLD
-                    else "llm"
-                )
-                logger.info(f"Template match: {template_id} (confidence={confidence:.2f}, path={path})")
-                return TemplateMatchResult(
-                    template_id=template_id,
-                    confidence=confidence,
-                    path=path,
-                )
-            except Exception as exc:
-                last_exc = exc
-                logger.warning(f"Template match attempt {attempt} failed ({exc})")
-                if attempt < max_attempts:
-                    self._notify(
-                        progress_cb,
-                        PipelineStage.template_matching,
-                        45,
-                        f"模板匹配失败，重试中（{attempt}/{max_attempts - 1}）",
-                        self._retry_details(game_id, user_id, attempt, max_attempts, exc),
-                    )
-
-        self._log_stage_failure(
-            game_id=game_id,
-            user_id=user_id,
-            stage=PipelineStage.template_matching.value,
-            error=self._error_message(last_exc),
-            retry_count=max_attempts - 1,
-            fallback="llm_path",
+        """Stage 04: generation path selection."""
+        del spec
+        logger.info("Template generation disabled; forcing full LLM path")
+        self._notify(
+            progress_cb,
+            PipelineStage.template_matching,
+            48,
+            "Full LLM generation only",
+            {"gameId": game_id, "userId": user_id, "path": "llm"},
         )
         return TemplateMatchResult(path="llm")
 
@@ -560,7 +559,7 @@ class PipelineOrchestrator:
                     template_id=match.template_id,
                     confidence=match.confidence,
                     description=description,
-                    allow_fallback=attempt == max_attempts,
+                    allow_fallback=False,
                 )
                 logger.info(f"Code generated: strategy={result.strategy}, size={result.code_size_bytes}B")
                 return result
@@ -655,7 +654,12 @@ class PipelineOrchestrator:
         progress_cb: ProgressCallback = None,
         timeout_s: Optional[int] = None,
     ) -> dict:
-        effective_timeout_s = timeout_s or settings.PIPELINE_TIMEOUT_S
+        effective_timeout_s = int(timeout_s) if timeout_s is not None else get_timeout_int(
+            "timeout.pipeline.default_s",
+            1200,
+            min_value=30,
+            max_value=3600,
+        )
         stage_context: dict[str, str] = {"stage": PipelineStage.code_generating.value}
         try:
             return await asyncio.wait_for(
@@ -709,7 +713,7 @@ class PipelineOrchestrator:
                     current_code=current_code,
                     feedback=feedback,
                     conversation=conversation,
-                    allow_fallback=attempt == max_attempts,
+                    allow_fallback=False,
                 )
                 break
             except Exception as exc:

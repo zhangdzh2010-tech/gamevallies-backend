@@ -1,6 +1,6 @@
 # Gamevallies Backend Docs
 
-当前 `docs/` 已按用途收敛为 4 个目录，只保留仍在使用、职责明确的文档。
+当前 `docs/` 按用途收敛为 4 个目录，只保留仍在使用、职责明确的文档。
 
 ## 目录结构
 
@@ -20,8 +20,15 @@
 - [`integration/GENERATION_PIPELINE_IMPROVEMENT_PLAN.md`](./integration/GENERATION_PIPELINE_IMPROVEMENT_PLAN.md)
   游戏生成 8 阶段的重试、用户提示、失败日志与落库改造任务清单。
 - [`integration/LLM_GATEWAY_ASYNC_TASK_DESIGN.md`](./integration/LLM_GATEWAY_ASYNC_TASK_DESIGN.md)
-  LLM 网关、多 Region、最末端错误日志与异步任务管理的详细设计文档。
+  LLM 网关、多 Region、末端错误日志与异步任务管理的详细设计文档。
+- [`integration/DYNAMIC_CREATION_DIALOGUE_DESIGN.md`](./integration/DYNAMIC_CREATION_DIALOGUE_DESIGN.md)
+  创建页从前端固定补问改为后端按缺失槽位动态出题的设计方案，包含 API 契约、会话持久化与 Pipeline 改造。
 
+- [`integration/GAME_GENERATION_LOGIC_BREAKDOWN.md`](./integration/GAME_GENERATION_LOGIC_BREAKDOWN.md)
+  按当前真实代码复核游戏默认生成、对话补槽、迭代和 QA 修复链路，重点说明每个阶段的 prompt、输入、输出和跨服务接口。
+
+- [`integration/GAME_GENERATION_RUNTIME_REARCHITECTURE.md`](./integration/GAME_GENERATION_RUNTIME_REARCHITECTURE.md)
+  娓告垙鐢熸垚涓婚摼璺殑鏋舵瀯绾ч噸鏋勬柟妗堬紝鍥寸粫 Runtime Contract銆丳rompt Bundle銆丳ipeline 鍒嗗眰銆佸畾鍚戜慨澶嶅拰缁撹鍨嬫棩蹇?Artifact 璁捐銆?
 ### `testing/`
 
 - [`testing/TEST_SUITE.md`](./testing/TEST_SUITE.md)
@@ -41,7 +48,7 @@
 
 ## 已清理内容
 
-以下类型文档已经从 `docs/` 中移除：
+以下类型文档已从 `docs/` 中移除：
 
 - 重复的部署总览和 SOP
 - 旧的 Kubernetes / 多方案部署说明

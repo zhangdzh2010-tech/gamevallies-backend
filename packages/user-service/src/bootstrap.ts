@@ -13,8 +13,8 @@ const WECHAT_DOMAIN_VERIFICATIONS = [
     content: '5142b16983df09708831078604fbcfeb',
   },
   {
-    path: '/8e70db656271ec4f59fc23aecfecf727.txt',
-    content: 'b57d2fe8ec3015f6dac218e7f96401b033210a57',
+    path: '/9002299597e76e062cb56930926ed40c.txt',
+    content: '1f4c0e10a205fa9a13b66a4d87eab953ba98f63b',
   },
 ] as const;
 
@@ -77,7 +77,7 @@ export function configureApp(app: INestApplication): void {
         method: RequestMethod.GET,
       },
       {
-        path: '8e70db656271ec4f59fc23aecfecf727.txt',
+        path: '9002299597e76e062cb56930926ed40c.txt',
         method: RequestMethod.GET,
       },
     ],

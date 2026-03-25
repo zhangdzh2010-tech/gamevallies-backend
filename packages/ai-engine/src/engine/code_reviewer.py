@@ -19,30 +19,10 @@ import re
 from typing import Optional
 
 from ..services.llm_client import LLMClient
+from .prompt_store import require_prompt
 from .quality_scorer import LLMReviewResult
 
 logger = logging.getLogger(__name__)
-
-REVIEW_SYSTEM = """You are an expert HTML5 mobile game QA reviewer.
-Review the provided game code and assess its quality objectively.
-Return ONLY valid JSON. No markdown fences, no extra text."""
-
-REVIEW_PROMPT = """Review this HTML5 game code and return a JSON object with exactly these fields:
-
-{{
-  "is_complete_game": <bool>,        // true if it's a fully playable game, false if it's a stub/demo
-  "has_real_gameplay": <bool>,       // true if it has genuine mechanics (collision, scoring, progression)
-  "difficulty_balanced": <bool>,     // true if difficulty is neither impossibly hard nor trivially easy
-  "fun_score": <number 1-10>,        // estimated fun factor: 1=boring, 5=average, 10=very engaging
-  "issues": [<string>, ...]          // list specific problems (empty list if none)
-}}
-
-Important review rule:
-- The code preview may omit the middle of the file for length. Do NOT report truncation or incompleteness solely because the preview is shortened.
-
-Game code preview:
-{code_preview}"""
-
 
 def _build_code_preview(html_code: str, limit: int = 8000) -> str:
     """Build a stable review preview without hiding the file ending.
@@ -75,13 +55,13 @@ class CodeReviewer:
             return LLMReviewResult(ran=False)
 
         code_preview = _build_code_preview(html_code)
-
-        prompt = REVIEW_PROMPT.format(code_preview=code_preview)
+        prompt = require_prompt("prompt.code_review_template").format(code_preview=code_preview)
+        system = require_prompt("prompt.code_review_system")
 
         try:
             raw = await self._client.complete(
                 max_tokens=1024,
-                system=REVIEW_SYSTEM,
+                system=system,
                 messages=[{"role": "user", "content": prompt}],
                 step_key="code_review",
                 stage="qa_checking",

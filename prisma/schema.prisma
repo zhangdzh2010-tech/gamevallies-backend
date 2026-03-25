@@ -118,6 +118,7 @@ model User {
   generationTasks    GenerationTask[]    @relation("UserGenerationTasks")
   generationTaskEvents GenerationTaskEvent[] @relation("UserGenerationTaskEvents")
   llmCallLogs        LlmCallLog[]        @relation("UserLlmCallLogs")
+  generationArtifacts GenerationArtifact[] @relation("UserGenerationArtifacts")
 
   @@map("users")
 }
@@ -193,6 +194,7 @@ model Game {
   generationTasks    GenerationTask[]    @relation("GameGenerationTasks")
   generationTaskEvents GenerationTaskEvent[] @relation("GameGenerationTaskEvents")
   llmCallLogs        LlmCallLog[]        @relation("GameLlmCallLogs")
+  generationArtifacts GenerationArtifact[] @relation("GameGenerationArtifacts")
 
   @@index([authorId])
   @@index([gameType, qualityScore])
@@ -504,6 +506,13 @@ model GenerationTask {
   status               GenerationTaskStatus  @default(queued)
   timeoutS             Int                   @map("timeout_s")
   version              Int?
+  pipelineVersion      String?               @map("pipeline_version") @db.VarChar(16)
+  promptBundleId       String?               @map("prompt_bundle_id") @db.VarChar(64)
+  promptBundleVersion  Int?                  @map("prompt_bundle_version")
+  runtimeProfile       String?               @map("runtime_profile") @db.VarChar(64)
+  contractVersion      String?               @map("contract_version") @db.VarChar(32)
+  failureFamily        String?               @map("failure_family") @db.VarChar(64)
+  primaryArtifactId    String?               @map("primary_artifact_id") @db.VarChar(36)
   cancelRequested      Boolean               @default(false) @map("cancel_requested")
   upstreamTaskId       String?               @map("upstream_task_id") @db.VarChar(64)
   progressStage        String?               @map("progress_stage") @db.VarChar(64)
@@ -528,11 +537,15 @@ model GenerationTask {
   user                 User                  @relation("UserGenerationTasks", fields: [userId], references: [id], onDelete: Cascade)
   events               GenerationTaskEvent[]
   llmCallLogs          LlmCallLog[]
+  artifacts            GenerationArtifact[]  @relation("TaskGenerationArtifacts")
 
   @@index([gameId, createdAt])
   @@index([region, status, updatedAt])
   @@index([userId, status, createdAt])
   @@index([status, updatedAt])
+  @@index([pipelineVersion, status, updatedAt])
+  @@index([runtimeProfile, status, createdAt])
+  @@index([failureFamily, createdAt])
   @@map("generation_tasks")
 }
 
@@ -751,4 +764,64 @@ model SystemConfig {
 
   @@index([category])
   @@map("system_configs")
+}
+
+model GenerationArtifact {
+  id           String          @id @default(uuid()) @db.VarChar(36)
+  taskId       String?         @map("task_id") @db.VarChar(36)
+  gameId       String          @map("game_id") @db.VarChar(36)
+  userId       String          @map("user_id") @db.VarChar(36)
+  artifactType String          @map("artifact_type") @db.VarChar(64)
+  contentType  String          @map("content_type") @db.VarChar(64)
+  storageType  String          @map("storage_type") @db.VarChar(32)
+  payloadJson  Json?           @map("payload_json")
+  payloadText  String?         @map("payload_text") @db.LongText
+  payloadUrl   String?         @map("payload_url") @db.VarChar(512)
+  sha256       String?         @db.VarChar(64)
+  sizeBytes    Int?            @map("size_bytes")
+  compression  String?         @db.VarChar(32)
+  expiresAt    DateTime?       @map("expires_at") @db.DateTime(3)
+  metadata     Json?
+  createdAt    DateTime        @default(now()) @map("created_at") @db.DateTime(3)
+
+  task         GenerationTask? @relation("TaskGenerationArtifacts", fields: [taskId], references: [id], onDelete: SetNull)
+  game         Game            @relation("GameGenerationArtifacts", fields: [gameId], references: [id], onDelete: Cascade)
+  user         User            @relation("UserGenerationArtifacts", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, artifactType, createdAt])
+  @@index([gameId, artifactType, createdAt])
+  @@index([userId, artifactType, createdAt])
+  @@map("generation_artifacts")
+}
+
+model PromptBundle {
+  id                     String   @db.VarChar(64)
+  version                Int
+  status                 String   @default("draft") @db.VarChar(16)
+  productPolicy          String   @map("product_policy") @db.LongText
+  lockedContractOverride String?  @map("locked_contract_override") @db.LongText
+  repairPlaybook         String   @map("repair_playbook") @db.LongText
+  profileOverrides       Json?    @map("profile_overrides")
+  metadata               Json?
+  createdAt              DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt              DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  @@id([id, version])
+  @@index([status, updatedAt])
+  @@map("prompt_bundles")
+}
+
+model RuntimeProfileCatalog {
+  id              String   @id @db.VarChar(64)
+  displayName     String   @map("display_name") @db.VarChar(128)
+  enabled         Boolean  @default(true)
+  skeletonVersion String   @map("skeleton_version") @db.VarChar(32)
+  contractSchema  Json     @map("contract_schema")
+  fewShotPrompt   String?  @map("few_shot_prompt") @db.LongText
+  metadata        Json?
+  createdAt       DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  @@index([enabled, updatedAt])
+  @@map("runtime_profile_catalog")
 }

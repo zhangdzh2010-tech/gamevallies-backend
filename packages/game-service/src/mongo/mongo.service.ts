@@ -23,9 +23,7 @@ export class MongoService {
   }
 
   private normalizeStrategy(strategy?: string): string {
-    if (strategy === 'template' || strategy === 'hybrid') {
-      return strategy;
-    }
+    void strategy;
     return 'full_generation';
   }
 

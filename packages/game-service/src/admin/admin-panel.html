@@ -292,6 +292,7 @@ tbody tr:hover{background:#f8fafc}
     <div class="tab" data-tab="tasks" onclick="switchTab('tasks')">异步任务</div>
     <div class="tab" data-tab="users" onclick="switchTab('users')">用户管理</div>
     <div class="tab" data-tab="prompts" onclick="switchTab('prompts')">Prompt 配置</div>
+    <div class="tab" data-tab="timeouts" onclick="switchTab('timeouts')">超时配置</div>
     <div class="tab" data-tab="llm" onclick="switchTab('llm')">LLM 网关</div>
     <div class="tab" data-tab="settings" onclick="switchTab('settings')">系统配置</div>
   </div>
@@ -491,6 +492,24 @@ tbody tr:hover{background:#f8fafc}
             </div>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- Timeout Config -->
+    <div id="page-timeouts" class="page">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:12px;flex-wrap:wrap">
+        <div>
+          <h2 style="font-size:18px;font-weight:600;color:#1e293b">生成链路超时配置</h2>
+          <p style="font-size:12px;color:#94a3b8;margin-top:4px">统一管理 game-service 与 ai-engine 的生成超时、轮询与 relay 时长。</p>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-secondary" onclick="refreshTimeoutConfigs()">刷新服务缓存</button>
+          <button class="btn btn-secondary" onclick="initTimeoutConfigs()">初始化缺失项</button>
+          <button class="btn btn-secondary" onclick="loadTimeoutConfigs()">刷新列表</button>
+        </div>
+      </div>
+      <div id="timeoutConfigWrap">
+        <div style="color:#94a3b8;text-align:center;padding:40px">加载中...</div>
       </div>
     </div>
 
@@ -698,6 +717,7 @@ let llmProviders = [];
 let llmRoutes = [];
 let llmSteps = [];
 let llmRegionTargets = [];
+let timeoutConfigList = [];
 let currentExecutionRegion = 'cn_shanghai';
 let currentProviderId = null;
 let currentTaskDetailId = null;
@@ -836,6 +856,124 @@ function copyAllLogSource(gameId) {
   return copyText(buildCombinedLogSource(gameId), '已复制全部源码');
 }
 
+function getTaskSourceBundle(task) {
+  return task?.sourceBundle || task?.game?.bundles?.[0] || null;
+}
+
+function cacheTaskSource(task, cacheKey) {
+  const bundle = getTaskSourceBundle(task);
+  logSourceCache[cacheKey] = {
+    html: bundle?.htmlCode || '',
+    css: bundle?.cssCode || '',
+    js: bundle?.jsCode || '',
+  };
+  return bundle;
+}
+
+function renderTaskSourceSection(task, sourceCacheKey) {
+  const sourceBundle = cacheTaskSource(task, sourceCacheKey);
+  const sourceSections = getLogSourceSections(sourceBundle);
+  if (!sourceSections.length) {
+    return '<div data-task-source-card="true"><div class="log-empty">当前任务关联的最新 bundle 没有可查看的 HTML / CSS / JavaScript 源码。</div></div>';
+  }
+
+  return `
+    <div data-task-source-card="true">
+      <div class="log-source-actions">
+        <div class="log-source-summary">当前源码版本 v${escHtml(String(sourceBundle?.version || 0))}，共 ${sourceSections.length} 段源码，可直接复制排查问题。</div>
+        <button class="btn btn-sm btn-secondary" onclick="copyAllLogSource('${escAttr(sourceCacheKey)}')">复制全部源码</button>
+      </div>
+      <div class="log-source-grid">
+        ${sourceSections.map(section => `
+          <div class="log-source-block">
+            <div class="log-source-head">
+              <div class="log-source-meta">
+                <div class="log-source-name">${escHtml(section.label)}</div>
+                <div class="log-source-size">${escHtml(formatTextSize(section.code))}</div>
+              </div>
+              <button class="btn btn-sm btn-secondary" onclick="copyLogSourceSection('${escAttr(sourceCacheKey)}', '${escAttr(section.key)}')">复制</button>
+            </div>
+            <pre class="log-code">${escHtml(section.code)}</pre>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function buildTaskDetailMarkup(task, options = {}) {
+  const sourceCacheKey = options.sourceCacheKey || ('task:' + task.id);
+  const sourceSection = renderTaskSourceSection(task, sourceCacheKey);
+  const events = renderTaskEvents(task.events || []);
+  const llmLogs = renderLlmLogs(task.llmCallLogs || []);
+  const durationMs = task.startedAt && task.completedAt
+    ? new Date(task.completedAt).getTime() - new Date(task.startedAt).getTime()
+    : null;
+  const routeSnapshot = task.routeSnapshot
+    ? `<pre class="log-code" style="max-height:180px">${escHtml(JSON.stringify(task.routeSnapshot, null, 2))}</pre>`
+    : '<div class="log-empty">暂无最近路由快照</div>';
+  const resultSummary = task.resultSummary
+    ? `<pre class="log-code" style="max-height:220px">${escHtml(JSON.stringify(task.resultSummary, null, 2))}</pre>`
+    : '<div class="log-empty">暂无结果摘要</div>';
+  const previewLink = task.previewUrl
+    ? `<div class="log-linkbox" style="margin-top:14px"><div class="log-linkicon">▶</div><div class="log-linkmeta"><div class="label">Preview</div><a href="${escAttr(task.previewUrl)}" target="_blank" rel="noopener noreferrer">${escHtml(task.previewUrl)}</a></div></div>`
+    : '';
+  const gameLink = task.gameUrl
+    ? `<div class="log-linkbox" style="margin-top:10px"><div class="log-linkicon">↗</div><div class="log-linkmeta"><div class="label">Play</div><a href="${escAttr(task.gameUrl)}" target="_blank" rel="noopener noreferrer">${escHtml(task.gameUrl)}</a></div></div>`
+    : '';
+  const inputPrompt = task.inputPrompt || task.game?.description || '';
+  const gameStatus = task.game?.status || '-';
+
+  return `
+    <div class="log-card">
+      <div class="log-card-title">
+        <div>
+          <h4>${escHtml(options.title || '任务详情')}</h4>
+          <div class="log-card-sub" style="margin-top:4px"><code>${escHtml(task.id)}</code></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span class="badge ${taskStatusBadge(task.status)}">${escHtml(task.status)}</span>
+          ${options.showRefresh === false ? '' : `<button class="btn btn-secondary btn-sm" onclick="${escAttr(options.refreshAction || `showTaskDetail('${task.id}')`)}">刷新详情</button>`}
+          ${options.showTerminate === false || !canTerminateTask(task.status) ? '' : `<button class="btn btn-danger btn-sm" onclick="terminateTask('${task.id}')">结束任务</button>`}
+        </div>
+      </div>
+      <div class="log-kv-grid">
+        <div class="log-kv"><div class="k">游戏</div><div class="v">${escHtml(task.game?.title || task.gameId || '-')}</div></div>
+        <div class="log-kv"><div class="k">游戏状态</div><div class="v">${escHtml(statusLabel(gameStatus))}</div></div>
+        <div class="log-kv"><div class="k">用户</div><div class="v">${escHtml(task.user?.displayName || task.user?.username || task.userId || '-')}</div></div>
+        <div class="log-kv"><div class="k">类型</div><div class="v">${escHtml(task.taskType || '-')}</div></div>
+        <div class="log-kv"><div class="k">阶段</div><div class="v">${escHtml(task.progressStage || task.failedStage || '-')}</div></div>
+        <div class="log-kv"><div class="k">进度</div><div class="v">${task.progressPct ?? '-'}%</div></div>
+        <div class="log-kv"><div class="k">当前消息</div><div class="v">${escHtml(task.progressMessage || '-')}</div></div>
+        <div class="log-kv"><div class="k">版本</div><div class="v">v${escHtml(String(task.version || task.resultSummary?.version || getTaskSourceBundle(task)?.version || '-'))}</div></div>
+        <div class="log-kv"><div class="k">Region</div><div class="v">${escHtml(task.region || '-')}</div></div>
+        <div class="log-kv"><div class="k">超时</div><div class="v">${escHtml(String(task.timeoutS || '-'))}s</div></div>
+        <div class="log-kv"><div class="k">耗时</div><div class="v">${escHtml(fmtDurationMs(durationMs))}</div></div>
+        <div class="log-kv"><div class="k">创建时间</div><div class="v">${escHtml(fmtDateTime(task.createdAt))}</div></div>
+        <div class="log-kv"><div class="k">开始时间</div><div class="v">${escHtml(fmtDateTime(task.startedAt))}</div></div>
+        <div class="log-kv"><div class="k">完成时间</div><div class="v">${escHtml(fmtDateTime(task.completedAt))}</div></div>
+        <div class="log-kv"><div class="k">配置版本</div><div class="v">${task.gatewayConfigVersion ?? '-'}</div></div>
+        <div class="log-kv"><div class="k">Fallback</div><div class="v">${escHtml(task.fallback || '-')}</div></div>
+        <div class="log-kv"><div class="k">错误</div><div class="v">${escHtml(task.errorMessage || '-')}</div></div>
+      </div>
+      ${previewLink}
+      ${gameLink}
+      <div class="section-title">原始输入</div>
+      ${inputPrompt ? `<div class="log-textbox">${escHtml(inputPrompt)}</div>` : '<div class="log-empty">暂无原始输入</div>'}
+      <div class="section-title">结果摘要</div>
+      ${resultSummary}
+      <div class="section-title">最新源码</div>
+      ${sourceSection}
+      <div class="section-title">最近路由快照</div>
+      ${routeSnapshot}
+      <div class="section-title">阶段时间线</div>
+      <div style="display:flex;flex-direction:column;gap:12px">${events}</div>
+      <div class="section-title">LLM 调用明细</div>
+      <div style="display:flex;flex-direction:column;gap:12px">${llmLogs}</div>
+    </div>
+  `;
+}
+
 // ===================== Confirm =====================
 function confirmDialog(title, msg) {
   return new Promise(resolve => {
@@ -859,6 +997,7 @@ function switchTab(tab) {
   if (tab === 'tasks') loadTasks();
   if (tab === 'users') { showUserList(); loadUsers(); }
   if (tab === 'prompts') loadConfigs();
+  if (tab === 'timeouts') loadTimeoutConfigs();
   if (tab === 'llm') loadLlmGateway();
   if (tab === 'settings') {}  // settings has no async load
 }
@@ -969,8 +1108,8 @@ function renderGameTable(d) {
       <td>${Number(g.qualityScore || 0).toFixed(1)}</td>
       <td>${size}</td>
       <td><div class="action-cell">
-        <button class="abtn abtn-preview" onclick="event.stopPropagation();previewGame('${g.id}','${escAttr(g.title)}')">预览</button>
-        <button class="abtn abtn-play" onclick="event.stopPropagation();playGame('${g.id}','${escAttr(g.title)}')">试玩</button>
+        <button class="abtn abtn-preview" onclick="event.stopPropagation();previewGame('${g.id}','${escAttr(g.title)}','${escAttr(g.previewUrl || '')}')">预览</button>
+        <button class="abtn abtn-play" onclick="event.stopPropagation();playGame('${g.id}','${escAttr(g.title)}','${escAttr(g.previewUrl || '')}')">试玩</button>
         ${isPub
           ? `<button class="abtn abtn-unpublish" onclick="event.stopPropagation();quickToggle('${g.id}','draft')">下架</button>`
           : `<button class="abtn abtn-publish" onclick="event.stopPropagation();quickToggle('${g.id}','published')">上架</button>`
@@ -1020,10 +1159,16 @@ async function quickDelete(id, title) {
 
 // ===================== Preview & Play =====================
 let currentPlayGameId = null;
+let currentPlayPreviewUrl = null;
 
-function previewGame(id, title) {
+function resolvePreviewUrl(id, previewUrl) {
+  return previewUrl || (window.location.origin + '/games/' + id + '/preview');
+}
+
+function previewGame(id, title, previewUrl) {
   currentPlayGameId = id;
-  const url = window.location.origin + '/games/' + id + '/preview';
+  const url = resolvePreviewUrl(id, previewUrl);
+  currentPlayPreviewUrl = url;
   document.getElementById('previewTitle').textContent = '预览: ' + title;
   document.getElementById('previewFrame2').src = url;
   document.getElementById('previewOverlay').style.display = 'flex';
@@ -1033,18 +1178,20 @@ function previewGame(id, title) {
 function closePreview() {
   document.getElementById('previewOverlay').style.display = 'none';
   document.getElementById('previewFrame2').src = 'about:blank';
+  currentPlayPreviewUrl = null;
   document.body.style.overflow = '';
 }
 
 function openPreviewNewWindow() {
-  if (currentPlayGameId) {
-    window.open(window.location.origin + '/games/' + currentPlayGameId + '/preview', '_blank');
+  if (currentPlayPreviewUrl) {
+    window.open(currentPlayPreviewUrl, '_blank');
   }
 }
 
-function playGame(id, title) {
+function playGame(id, title, previewUrl) {
   currentPlayGameId = id;
-  const url = window.location.origin + '/games/' + id + '/preview';
+  const url = resolvePreviewUrl(id, previewUrl);
+  currentPlayPreviewUrl = url;
   document.getElementById('playTitle').textContent = '试玩: ' + title;
   document.getElementById('playFrame').src = url;
   document.getElementById('playOverlay').style.display = 'flex';
@@ -1054,12 +1201,13 @@ function playGame(id, title) {
 function closePlay() {
   document.getElementById('playOverlay').style.display = 'none';
   document.getElementById('playFrame').src = 'about:blank';
+  currentPlayPreviewUrl = null;
   document.body.style.overflow = '';
 }
 
 function openPlayNewWindow() {
-  if (currentPlayGameId) {
-    window.open(window.location.origin + '/games/' + currentPlayGameId + '/preview', '_blank');
+  if (currentPlayPreviewUrl) {
+    window.open(currentPlayPreviewUrl, '_blank');
   }
 }
 
@@ -1089,8 +1237,8 @@ function renderGameDetail(g) {
 
   let html = `<div class="back-btn" onclick="showGameList()">&#8592; 返回列表</div>`;
   html += `<div class="detail-header"><h2>${escHtml(g.title)}</h2><div style="display:flex;gap:8px;flex-wrap:wrap">`;
-  html += `<button class="btn btn-secondary btn-sm" onclick="previewGame('${g.id}','${escAttr(g.title)}')">预览</button>`;
-  html += `<button class="btn btn-success btn-sm" onclick="playGame('${g.id}','${escAttr(g.title)}')">试玩</button>`;
+  html += `<button class="btn btn-secondary btn-sm" onclick="previewGame('${g.id}','${escAttr(g.title)}','${escAttr(g.previewUrl || '')}')">预览</button>`;
+  html += `<button class="btn btn-success btn-sm" onclick="playGame('${g.id}','${escAttr(g.title)}','${escAttr(g.previewUrl || '')}')">试玩</button>`;
   if (g.status === 'published') {
     html += `<button class="btn btn-warning btn-sm" onclick="changeStatus('${g.id}','draft')">下架</button>`;
   } else {
@@ -1529,7 +1677,7 @@ const LOG_DETAIL_STAGES = [
   { id: 'started', label: '任务创建', desc: '创建游戏记录并初始化通知', icon: '1' },
   { id: 'intent_parsing', label: '意图解析', desc: '解析用户提示词为结构化规格', icon: '2' },
   { id: 'designing', label: '数值设计', desc: '生成 GDD 与关键玩法参数', icon: '3' },
-  { id: 'template_matching', label: '模板匹配', desc: '决定 template / hybrid / llm 路径', icon: '4' },
+  { id: 'template_matching', label: '生成路径', desc: '当前固定为 full LLM 生成', icon: '4' },
   { id: 'code_generating', label: '代码生成', desc: '生成或改写 HTML5 游戏代码', icon: '5' },
   { id: 'qa_checking', label: '质量检查', desc: '执行 QA、自修复与安全校验', icon: '6' },
   { id: 'publishing', label: '结果落库', desc: '保存 bundle、更新游戏状态与版本', icon: '7' },
@@ -1585,7 +1733,7 @@ function renderLogs(d) {
       ? qa + '<div style="font-size:11px;color:#64748b;margin-top:4px">' + retrySummaryParts.join(' / ') + '</div>'
       : qa;
     const time = new Date(g.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
-    const previewUrl = gameBaseUrl + '/games/' + g.gameId + '/preview';
+    const previewUrl = g.previewUrl || (gameBaseUrl + '/games/' + g.gameId + '/preview');
     const failureReason = g.failedReason ? (g.failedReason.length > 36 ? g.failedReason.slice(0, 36) + '...' : g.failedReason) : '-';
     const failureSummary = g.failedStage ? (`<div style="font-size:12px;color:#dc2626">${escHtml(g.failedStage)}</div><div style="font-size:11px;color:#64748b" title="${escAttr(g.failedReason || '')}">${escHtml(failureReason)}</div>`) : '-';
 
@@ -1634,7 +1782,7 @@ async function showLogDetail(gameId, focusSection) {
     const meta = Object.assign({}, (bundle && bundle.generationMeta) || {}, (bundle && bundle.metadata) || {});
     const spec = meta.gameSpec || bundle?.spec || null;
     const gameBaseUrl = window.location.origin;
-    const previewUrl = gameBaseUrl + '/games/' + gameId + '/preview';
+    const previewUrl = g.previewUrl || (gameBaseUrl + '/games/' + gameId + '/preview');
     const statusText = statusLabel(g.status);
     const author = g.author?.displayName || g.author?.username || '-';
     const finalStageRaw = g.failedStage || (g.status === 'draft' || g.status === 'published' ? 'completed' : g.status === 'generating' ? 'code_generating' : null);
@@ -1811,6 +1959,117 @@ async function showLogDetail(gameId, focusSection) {
   }
 }
 
+function showDetailOverlay(title, detailHtml, options = {}) {
+  if (options.overlayKey) {
+    document.querySelectorAll('.modal-overlay[data-overlay-key]').forEach(node => {
+      if (node.dataset.overlayKey === options.overlayKey) node.remove();
+    });
+  }
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  if (options.overlayKey) overlay.dataset.overlayKey = options.overlayKey;
+  overlay.innerHTML = '<div class="modal" style="max-width:' + escAttr(options.maxWidth || '1120px') + '"><div class="modal-header"><h3>' + escHtml(title) + '</h3><button class="modal-close" onclick="this.closest(\'.modal-overlay\').remove()">&times;</button></div><div class="modal-body">' + detailHtml + '</div></div>';
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  if (options.focusSelector) {
+    const target = overlay.querySelector(options.focusSelector);
+    if (target) requestAnimationFrame(() => target.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  }
+  return overlay;
+}
+
+async function showTaskDetailModal(taskId, options = {}) {
+  try {
+    const task = await api('/tasks/' + taskId);
+    const refreshAction = options.focusSection === 'source'
+      ? `showTaskDetailModal('${task.id}', { focusSection: 'source' })`
+      : `showTaskDetailModal('${task.id}')`;
+    const detail = buildTaskDetailMarkup(task, {
+      title: options.title || '生成记录详情',
+      refreshAction,
+    });
+    showDetailOverlay(options.title || '生成记录详情', detail, {
+      overlayKey: 'task-detail:' + task.id,
+      maxWidth: '1120px',
+      focusSelector: options.focusSection === 'source' ? '[data-task-source-card="true"]' : null,
+    });
+  } catch (e) {
+    alert('加载任务详情失败: ' + e.message);
+  }
+}
+
+function renderLogs(d) {
+  const statusLabels = { generating: '生成中', draft: '草稿', published: '已发布', failed: '失败', banned: '已封禁', review: '审核中' };
+  const statusColors = { generating: 'generating', draft: 'draft', published: 'published', failed: 'failed', banned: 'banned', review: 'review' };
+  const gameBaseUrl = window.location.origin;
+
+  let html = '<div class="table-wrap"><table><thead><tr>' +
+    '<th>用户</th><th>提示词</th><th>游戏标题</th><th>状态</th>' +
+    '<th>失败信息</th><th>策略</th><th>耗时</th><th>大小</th><th>QA</th><th>创建时间</th><th>操作</th>' +
+    '</tr></thead><tbody>';
+
+  if (!d.items.length) {
+    html += '<tr><td colspan="11" style="text-align:center;color:#94a3b8;padding:40px">暂无记录</td></tr>';
+  }
+
+  for (const g of d.items) {
+    const desc = g.description ? (g.description.length > 50 ? g.description.slice(0, 50) + '...' : g.description) : '-';
+    const author = g.author ? (g.author.displayName || g.author.username) : '-';
+    const st = statusLabels[g.status] || g.status;
+    const stCls = statusColors[g.status] || 'draft';
+    const strategy = g.strategy || '-';
+    const timeMs = g.genTimeMs ? (g.genTimeMs / 1000).toFixed(1) + 's' : '-';
+    const size = g.codeSizeBytes ? (g.codeSizeBytes / 1024).toFixed(1) + 'KB' : '-';
+    const qa = g.qaPassed === true ? '<span style="color:#16a34a">通过</span>' : g.qaPassed === false ? '<span style="color:#dc2626">失败</span>' : '-';
+    const retrySummaryParts = [];
+    if (g.retryCount) retrySummaryParts.push('总重试 ' + g.retryCount);
+    if (Number(g.qaRetries || 0) > 0) retrySummaryParts.push('QA ' + g.qaRetries);
+    if (Number(g.iterationRetries || 0) > 0) retrySummaryParts.push('迭代 ' + g.iterationRetries);
+    const qaSummary = retrySummaryParts.length
+      ? qa + '<div style="font-size:11px;color:#64748b;margin-top:4px">' + retrySummaryParts.join(' / ') + '</div>'
+      : qa;
+    const time = new Date(g.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const previewUrl = g.previewUrl || (gameBaseUrl + '/games/' + g.gameId + '/preview');
+    const failureReason = g.failedReason ? (g.failedReason.length > 36 ? g.failedReason.slice(0, 36) + '...' : g.failedReason) : '-';
+    const failureSummary = g.failedStage
+      ? (`<div style="font-size:12px;color:#dc2626">${escHtml(g.failedStage)}</div><div style="font-size:11px;color:#64748b" title="${escAttr(g.failedReason || '')}">${escHtml(failureReason)}</div>`)
+      : '-';
+    const sourceAction = g.taskId
+      ? `showTaskDetailModal('${g.taskId}', { focusSection: 'source' })`
+      : `showLogDetail('${g.gameId}', 'source')`;
+    const detailAction = g.taskId
+      ? `showTaskDetailModal('${g.taskId}')`
+      : `showLogDetail('${g.gameId}')`;
+
+    html += '<tr>' +
+      '<td><strong>' + escHtml(author) + '</strong></td>' +
+      '<td title="' + escAttr(g.description || '') + '">' + escHtml(desc) + '</td>' +
+      '<td>' + escHtml(g.title) + '</td>' +
+      '<td><span class="badge badge-' + stCls + '">' + st + '</span></td>' +
+      '<td>' + failureSummary + '</td>' +
+      '<td>' + strategy + '</td>' +
+      '<td>' + timeMs + '</td>' +
+      '<td>' + size + '</td>' +
+      '<td>' + qaSummary + '</td>' +
+      '<td>' + time + '</td>' +
+      '<td>' +
+        '<a href="' + previewUrl + '" target="_blank" class="btn btn-sm btn-secondary" style="margin-right:4px">预览</a>' +
+        '<button class="btn btn-sm btn-secondary" style="margin-right:4px" onclick="' + escAttr(sourceAction) + '">源码</button>' +
+        '<button class="btn btn-sm btn-secondary" onclick="' + escAttr(detailAction) + '">详情</button>' +
+      '</td>' +
+      '</tr>';
+  }
+  html += '</tbody></table></div>';
+  html += '<div class="pagination"><div class="info">共 ' + d.total + ' 条，第 ' + d.page + '/' + d.totalPages + ' 页</div><div class="pages">';
+  html += '<button ' + (d.page <= 1 ? 'disabled' : '') + ' onclick="logPage=' + (d.page-1) + ';loadLogs()">上一页</button>';
+  for (let i = Math.max(1, d.page-2); i <= Math.min(d.totalPages, d.page+2); i++) {
+    html += '<button class="' + (i===d.page?'active':'') + '" onclick="logPage=' + i + ';loadLogs()">' + i + '</button>';
+  }
+  html += '<button ' + (d.page >= d.totalPages ? 'disabled' : '') + ' onclick="logPage=' + (d.page+1) + ';loadLogs()">下一页</button>';
+  html += '</div></div>';
+  document.getElementById('logTableWrap').innerHTML = html;
+}
+
 // ===================== System Config (Prompts) =====================
 let configList = [];
 let modalCurrentKey = null;
@@ -1825,7 +2084,7 @@ const PIPELINE_STAGES = [
     bg: '#f5f3ff',
     border: '#ddd6fe',
     step: 'Stage 1',
-    keys: ['prompt.slot_extraction_system', 'prompt.dialogue_system'],
+    keys: ['prompt.intent_parse_system', 'prompt.slot_extraction_system', 'prompt.dialogue_system'],
   },
   {
     id: 'design',
@@ -1855,7 +2114,7 @@ const PIPELINE_STAGES = [
     bg: '#fffbeb',
     border: '#fde68a',
     step: 'Stage 4',
-    keys: ['prompt.qa_fix'],
+    keys: ['prompt.qa_fix', 'prompt.qa_fix_fast'],
   },
   {
     id: 'iterate',
@@ -1870,12 +2129,14 @@ const PIPELINE_STAGES = [
 ];
 
 const PROMPT_VARS = {
+  'prompt.intent_parse_system': [],
   'prompt.dialogue_system': ['{slot_summary}', '{missing_slots}'],
-  'prompt.game_design_template': ['{game_type}', '{theme}', '{art_style}', '{palette}', '{canvas_w}', '{canvas_h}', '{entities_desc}', '{input_map}'],
+  'prompt.game_design_template': ['{game_type}', '{core_mechanic}', '{theme}', '{art_style}', '{palette}', '{canvas_w}', '{canvas_h}', '{player_speed}', '{hitbox_ratio}', '{obstacle_speed}', '{spawn_interval}', '{speed_formula}', '{score_per_second}', '{score_per_collect}', '{lives}', '{expected_s}', '{win_condition}', '{lose_condition}', '{entities_desc}', '{entities_yaml}', '{collectibles_yaml}', '{input_map}', '{input_map_yaml}', '{input_type}', '{color_bg}', '{color_primary}', '{color_accent}', '{color_text}', '{color_danger}', '{player_visual}', '{player_draw_method}', '{player_w}', '{player_h}', '{player_init_pos}', '{difficulty_initial}', '{max_speed}', '{spawn_decay_formula}', '{min_spawn_interval}', '{combo_desc}', '{invincible_frames}', '{ui_score_x}', '{ui_score_y}', '{ui_font_size}', '{special_rules_list}'],
   'prompt.param_adjust': ['{feedback}', '{code}'],
   'prompt.element_change': ['{feedback}', '{code}'],
   'prompt.mechanic_change': ['{feedback}', '{history}', '{code}'],
   'prompt.qa_fix': ['{error_list}', '{game_type}', '{code}'],
+  'prompt.qa_fix_fast': ['{error_list}', '{targeted_instructions}', '{game_type}', '{code}'],
   'prompt.iterate_classify': ['{feedback}'],
 };
 
@@ -2081,6 +2342,176 @@ document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape' && document.getElementById('promptModal').style.display === 'flex') closePromptModal();
 });
 
+// ===================== Timeout Configs =====================
+function timeoutInputId(key) {
+  return 'timeout-' + String(key || '').replace(/[^a-zA-Z0-9_-]/g, '-');
+}
+
+function timeoutServiceLabel(service) {
+  return ({
+    'shared': '共享链路',
+    'game-service': 'game-service',
+    'ai-engine': 'ai-engine',
+  })[service] || service || '未分组';
+}
+
+function timeoutGroupLabel(group) {
+  return ({
+    pipeline: 'Pipeline',
+    tasking: 'Tasking',
+    routing: 'Routing',
+    http: 'HTTP',
+    relay: 'Relay',
+    llm: 'LLM',
+    qa: 'QA',
+    runtime_qa: 'Runtime QA',
+    config: 'Config IO',
+    custom: 'Custom',
+  })[group] || group || 'Other';
+}
+
+function timeoutUnitSuffix(entry) {
+  if (!entry || !entry.unit || entry.unit === 'ratio') return '';
+  return entry.unit;
+}
+
+async function loadTimeoutConfigs() {
+  const wrap = document.getElementById('timeoutConfigWrap');
+  wrap.innerHTML = '<div style="color:#94a3b8;text-align:center;padding:40px">加载中...</div>';
+  try {
+    timeoutConfigList = await api('/configs?category=timeout');
+    renderTimeoutConfigs();
+  } catch (e) {
+    wrap.innerHTML = `<div style="color:#dc2626;text-align:center;padding:40px">加载失败: ${escHtml(e.message)}</div>`;
+  }
+}
+
+function renderTimeoutConfigs() {
+  const wrap = document.getElementById('timeoutConfigWrap');
+  if (!timeoutConfigList.length) {
+    wrap.innerHTML = '<div style="color:#94a3b8;text-align:center;padding:40px;background:#fff;border:1px dashed #e5e7eb;border-radius:12px">暂无超时配置</div>';
+    return;
+  }
+
+  const serviceOrder = ['shared', 'game-service', 'ai-engine'];
+  const grouped = new Map();
+  timeoutConfigList.forEach((entry) => {
+    const service = entry.service || 'custom';
+    const group = entry.group || 'custom';
+    if (!grouped.has(service)) grouped.set(service, new Map());
+    const serviceMap = grouped.get(service);
+    if (!serviceMap.has(group)) serviceMap.set(group, []);
+    serviceMap.get(group).push(entry);
+  });
+
+  wrap.innerHTML = serviceOrder
+    .filter((service) => grouped.has(service))
+    .concat(Array.from(grouped.keys()).filter((service) => !serviceOrder.includes(service)))
+    .map((service) => {
+      const serviceGroups = grouped.get(service);
+      const groups = Array.from(serviceGroups.keys()).sort();
+      return `
+        <div style="margin-bottom:20px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+            <h3 style="font-size:16px;font-weight:700;color:#1e293b">${escHtml(timeoutServiceLabel(service))}</h3>
+            <span style="font-size:12px;color:#94a3b8">${groups.reduce((sum, group) => sum + serviceGroups.get(group).length, 0)} 项</span>
+          </div>
+          <div style="display:grid;gap:14px">
+            ${groups.map((group) => `
+              <div style="background:#fff;border-radius:12px;border:1px solid #e5e7eb;padding:18px 20px">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px">
+                  <div>
+                    <div style="font-size:14px;font-weight:700;color:#1e293b">${escHtml(timeoutGroupLabel(group))}</div>
+                    <div style="font-size:12px;color:#94a3b8;margin-top:4px">${serviceGroups.get(group).length} 项</div>
+                  </div>
+                </div>
+                <div style="display:grid;gap:12px">
+                  ${serviceGroups.get(group).map((entry) => `
+                    <div style="border:1px solid #eef2f7;border-radius:12px;padding:14px 16px;background:${entry.source === 'db' ? '#ffffff' : '#f8fafc'}">
+                      <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
+                        <div style="min-width:0;flex:1">
+                          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                            <code style="font-size:12px;font-weight:700;color:#1e293b;background:#f8fafc;border:1px solid #e2e8f0;padding:2px 8px;border-radius:6px">${escHtml(entry.configKey)}</code>
+                            <span class="badge ${entry.source === 'db' ? 'badge-published' : 'badge-draft'}">${escHtml(entry.source === 'db' ? 'DB' : 'Catalog')}</span>
+                            <span style="font-size:11px;color:#64748b">${escHtml(entry.valueType || 'int')} / ${escHtml(entry.unit || '-')}</span>
+                          </div>
+                          <div style="font-size:12px;color:#64748b;line-height:1.6;margin-top:8px">${escHtml(entry.description || '')}</div>
+                          <div style="font-size:11px;color:#94a3b8;margin-top:8px">默认值: ${escHtml(String(entry.defaultValue ?? '-'))}${escHtml(timeoutUnitSuffix(entry))}</div>
+                        </div>
+                        <div style="display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap">
+                          <div>
+                            <label style="display:block;font-size:11px;color:#94a3b8;margin-bottom:4px">当前值</label>
+                            <div style="display:flex;align-items:center;gap:6px">
+                              <input type="number" step="${entry.valueType === 'float' ? '0.01' : '1'}" id="${timeoutInputId(entry.configKey)}" value="${escAttr(String(entry.configValue ?? ''))}" style="width:140px;padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:13px">
+                              ${entry.unit && entry.unit !== 'ratio' ? `<span style="font-size:12px;color:#64748b">${escHtml(entry.unit)}</span>` : ''}
+                            </div>
+                          </div>
+                          <button class="btn btn-primary btn-sm" onclick="saveTimeoutConfig('${escAttr(entry.configKey)}')">保存</button>
+                        </div>
+                      </div>
+                    </div>
+                  `).join('')}
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    }).join('');
+}
+
+async function saveTimeoutConfig(key) {
+  const input = document.getElementById(timeoutInputId(key));
+  if (!input) return;
+  const value = String(input.value || '').trim();
+  if (!value) {
+    toast('请输入超时值', 'error');
+    return;
+  }
+  try {
+    const result = await api('/configs/' + encodeURIComponent(key), {
+      method: 'PUT',
+      body: { value, category: 'timeout' },
+    });
+    if (result && result.refreshResult && result.refreshResult.partialFailure) {
+      toast(`Timeout config saved, but ${result.refreshResult.failed} node(s) did not refresh`, 'error');
+    } else {
+      toast('Timeout config saved');
+    }
+    await loadTimeoutConfigs();
+    return;
+    toast('超时配置已保存');
+    await loadTimeoutConfigs();
+  } catch (e) {
+    toast('保存失败: ' + e.message, 'error');
+  }
+}
+
+async function initTimeoutConfigs() {
+  if (!confirm('将初始化缺失的超时配置项，已存在的项不会被覆盖，确认吗？')) return;
+  try {
+    const result = await api('/configs/init-timeouts', { method: 'POST' });
+    toast(`已初始化: 新增 ${result.created}，跳过 ${result.skipped}`);
+    await loadTimeoutConfigs();
+  } catch (e) {
+    toast('初始化失败: ' + e.message, 'error');
+  }
+}
+
+async function refreshTimeoutConfigs() {
+  try {
+    const result = await api('/configs/refresh-timeouts', { method: 'POST' });
+    if (result.partialFailure) {
+      toast(`已刷新 ${result.refreshed} 个服务缓存，${result.failed} 个节点刷新失败`, 'error');
+    } else {
+      toast(`已刷新 ${result.refreshed} 个服务缓存`);
+    }
+    await loadTimeoutConfigs();
+  } catch (e) {
+    toast('刷新失败: ' + e.message, 'error');
+  }
+}
+
 // ===================== Async Tasks =====================
 async function loadTasks() {
   const search = document.getElementById('task-search').value.trim();
@@ -2116,7 +2547,7 @@ function renderTaskTable(data) {
       <td>${escHtml(task.progressStage || task.failedStage || '-')}</td>
       <td>${task.progressPct ?? '-'}%</td>
       <td>${fmtDate(task.updatedAt)}</td>
-      <td><button class="abtn abtn-edit" onclick="showTaskDetail('${task.id}')">详情</button></td>
+      <td><button class="abtn abtn-edit" onclick="showTaskDetail('${task.id}')">详情</button>${canTerminateTask(task.status) ? ` <button class="abtn abtn-delete" onclick="event.stopPropagation();terminateTask('${task.id}')">结束</button>` : ''}</td>
     </tr>`;
   }
   html += '</tbody></table>';
@@ -2149,6 +2580,28 @@ function taskStatusBadge(status) {
   if (status === 'running') return 'badge-generating';
   if (status === 'failed' || status === 'timed_out' || status === 'canceled') return 'badge-failed';
   return 'badge-draft';
+}
+
+function canTerminateTask(status) {
+  return status === 'queued' || status === 'running';
+}
+
+async function terminateTask(taskId) {
+  const yes = await confirmDialog('结束任务', `确定结束任务 ${taskId} 吗？`);
+  if (!yes) return;
+  try {
+    await api('/tasks/' + taskId + '/terminate', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    toast('任务已结束');
+    await loadTasks();
+    if (currentTaskDetailId === taskId) {
+      await showTaskDetail(taskId);
+    }
+  } catch (e) {
+    toast('结束任务失败: ' + e.message, 'error');
+  }
 }
 
 function eventTypeLabel(type) {
@@ -2241,6 +2694,7 @@ async function showTaskDetail(taskId, options = {}) {
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             <span class="badge ${taskStatusBadge(task.status)}">${escHtml(task.status)}</span>
             <button class="btn btn-secondary btn-sm" onclick="showTaskDetail('${task.id}')">刷新详情</button>
+            ${canTerminateTask(task.status) ? `<button class="btn btn-danger btn-sm" onclick="terminateTask('${task.id}')">结束任务</button>` : ''}
           </div>
         </div>
         <div class="log-kv-grid">
@@ -2270,6 +2724,24 @@ async function showTaskDetail(taskId, options = {}) {
         <div style="display:flex;flex-direction:column;gap:12px">${llmLogs}</div>
       </div>
     `;
+    scheduleTaskDetailRefresh(task.id, task.status);
+  } catch (e) {
+    if (options.silent) return;
+    clearTaskDetailRefresh();
+    wrap.innerHTML = `<div class="loading" style="color:#dc2626">详情加载失败: ${escHtml(e.message)}</div>`;
+  }
+}
+
+async function showTaskDetail(taskId, options = {}) {
+  currentTaskDetailId = taskId;
+  const wrap = document.getElementById('taskDetailWrap');
+  if (!options.silent) {
+    wrap.innerHTML = '<div class="loading"><div class="spinner"></div><div style="margin-top:8px">加载详情...</div></div>';
+  }
+  try {
+    const task = await api('/tasks/' + taskId);
+    if (currentTaskDetailId !== taskId) return;
+    wrap.innerHTML = buildTaskDetailMarkup(task, { title: '任务详情' });
     scheduleTaskDetailRefresh(task.id, task.status);
   } catch (e) {
     if (options.silent) return;

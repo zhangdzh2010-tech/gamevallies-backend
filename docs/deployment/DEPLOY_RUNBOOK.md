@@ -7,7 +7,10 @@ Actions for this procedure.
 
 The production public domain is:
 
-`https://www.gamevallies.com`
+`https://gamevallies.com`
+
+Historical cutover notes for the `www` to apex migration remain in
+`docs/deployment/ENTRY_DOMAIN_CUTOVER.md`.
 
 ## 1. Preconditions
 
@@ -18,13 +21,15 @@ Before you deploy, make sure these files are up to date:
 - `.env.deploy`
 - `.env.deploy.example`
 - `docs/deployment/ENV_SYNC_GUIDE.md`
+- `docs/deployment/ENTRY_DOMAIN_CUTOVER.md` when the rollout window includes
+  an entry-domain change
 
 The authoritative values for the current production rollout are:
 
-- `PUBLIC_API_BASE_URL=https://www.gamevallies.com`
-- `USER_SERVICE_URL=https://www.gamevallies.com`
-- `GAME_SERVICE_URL=https://www.gamevallies.com`
-- `FEED_SERVICE_URL=https://www.gamevallies.com`
+- `PUBLIC_API_BASE_URL=https://gamevallies.com`
+- `USER_SERVICE_URL=https://gamevallies.com`
+- `GAME_SERVICE_URL=https://gamevallies.com`
+- `FEED_SERVICE_URL=https://gamevallies.com`
 - `AI_ENGINE_URL_CN_SHANGHAI=https://sd6vrn9api80atrf10evg.apigateway-cn-shanghai-inner.volceapi.com`
 - `GAME_SERVICE_UPSTREAM_URL=https://sd6n8j9fmqc3q4mg90pr0.apigateway-cn-shanghai-inner.volceapi.com`
 - `FEED_SERVICE_UPSTREAM_URL=https://sd6n8kcmp8bgiaakgorig.apigateway-cn-shanghai-inner.volceapi.com`
@@ -70,13 +75,18 @@ VOLCENGINE_SUBNET_ID=subnet-33guvcwoe43y86k70bqnvis8n
 VOLCENGINE_SECURITY_GROUP_ID=sg-7uh24dhusuf472200rliec4v
 VOLCENGINE_REGISTRY=gamevallies-repo-cn-shanghai.cr.volces.com
 VOLCENGINE_REGISTRY_NAMESPACE=gamevallies
-VOLCENGINE_REGISTRY_USERNAME="6448手机用户#UeaqaB@2112970785"
+VOLCENGINE_REGISTRY_USERNAME="6448手机用户#UeaqaB@21129707855"
 VOLCENGINE_REGISTRY_PASSWORD="Gamevallies@2026"
 VOLCENGINE_TOS_BUCKET=gamevallies-deploy
 IMAGE_TAG=<unique-tag>
-```
 
-### 2.2 Runtime env shared by backend services
+```
+### VOLCENGINE_REGISTRY_JOHOR
+VOLCENGINE_REGISTRY=gv-respo-johor-ap-southeast-1.cr.volces.com
+VOLCENGINE_REGISTRY_NAMESPACE=gamevallies
+VOLCENGINE_REGISTRY_USERNAME="6448手机用户#UeaqaB@21129707855"
+VOLCENGINE_REGISTRY_PASSWORD="Gamevallies@2026"
+
 
 Source:
 
@@ -97,10 +107,10 @@ DATABASE_URL=mysql://gamevallies:gamevallies@2026@mysql5f64263dff43.rds.ivolces.
 REDIS_URL=redis://:gamevallies2026@redis-shzlsq69qwdo5877a.redis.ivolces.com:6379
 JWT_SECRET=02e9621b10d223a2aa1bd18b25bb1023802238dcf3de0f55ce3059c4e34290d0
 JWT_REFRESH_SECRET=56154800a4084f1b89ba9459923bdd6bc2ae57f11bb4a0b5c7b6c58a20982f0a
-PUBLIC_API_BASE_URL=https://www.gamevallies.com
-USER_SERVICE_URL=https://www.gamevallies.com
-GAME_SERVICE_URL=https://www.gamevallies.com
-FEED_SERVICE_URL=https://www.gamevallies.com
+PUBLIC_API_BASE_URL=https://gamevallies.com
+USER_SERVICE_URL=https://gamevallies.com
+GAME_SERVICE_URL=https://gamevallies.com
+FEED_SERVICE_URL=https://gamevallies.com
 AI_ENGINE_URL=https://sd6vrn9api80atrf10evg.apigateway-cn-shanghai-inner.volceapi.com
 AI_ENGINE_URL_CN_SHANGHAI=https://sd6vrn9api80atrf10evg.apigateway-cn-shanghai-inner.volceapi.com
 AI_ENGINE_URL_AP_SOUTHEAST_JOHOR=
@@ -178,6 +188,14 @@ Run all commands from the repository root.
 
 This step loads deployment values from `.env.deploy` into the current shell.
 
+Current note:
+
+- `scripts/deploy.py` now self-configures UTF-8 stdio on Windows and switches the
+  console code page to `65001`.
+- Do not prepend manual `PYTHONIOENCODING=utf-8` or `chcp 65001` when you are
+  already using the current `scripts/deploy.py`; keep those only as fallback for
+  older revisions of the script.
+
 PowerShell:
 
 ```powershell
@@ -214,7 +232,12 @@ Important:
 
 - The username contains `#`
 - Keep quotes around `VOLCENGINE_REGISTRY_USERNAME` in `.env.deploy`
-- Do not reuse `latest`; use a unique tag such as a timestamp or git commit hash
+- Use dedicated VCR credentials here; do not substitute Volcengine AK/SK for
+  VeFaaS image pull credentials
+- Do not reuse `latest`; use a unique version tag
+- `scripts/deploy.py` now auto-increments image tags to `vN`
+  when `IMAGE_TAG` is omitted or set to `latest`
+- Docker `push` success does not prove VeFaaS can pull a fresh tag
 - If image sync later fails inside VeFaaS, re-check the exact same username and password first
 
 ### 3.3 Deploy one service
@@ -244,27 +267,36 @@ python scripts/deploy.py
 not deploy by mixing manual console edits with ad hoc local commands unless the
 runbook explicitly tells you to.
 
+If you deploy multiple services in one command, pass them explicitly:
+
+```bash
+python scripts/deploy.py game-service feed-service ai-engine-cn
+```
+
+The script now supports multiple service targets in one invocation and dedupes
+expanded targets such as `ai-engine`.
+
 ## 4. Post-deploy validation
 
 ### 4.1 Unified entry validation
 
 ```bash
-curl https://www.gamevallies.com/api/v1/health
-curl https://www.gamevallies.com/api/v1/games/explore/published?limit=1
-curl https://www.gamevallies.com/api/v1/feed/latest?limit=1
-curl https://www.gamevallies.com/games/<game-id>/preview
+curl https://gamevallies.com/api/v1/health
+curl https://gamevallies.com/api/v1/games/explore/published?limit=1
+curl https://gamevallies.com/api/v1/feed/latest?limit=1
+curl https://gamevallies.com/games/<game-id>/preview
 ```
 
 Check that:
 
 - `POST /api/v1/auth/wechat/miniapp-login` no longer returns `404`
-- `gameUrl`, `previewUrl`, and share URLs use `https://www.gamevallies.com`
+- `gameUrl`, `previewUrl`, and share URLs use `https://gamevallies.com`
 - `/games/<game-id>/preview` returns `200 text/html`
 
 ### 4.2 Domain verification file
 
 ```bash
-curl https://www.gamevallies.com/33zqDBay4T.txt
+curl https://gamevallies.com/33zqDBay4T.txt
 ```
 
 Expected body:
@@ -279,6 +311,32 @@ If this still returns `404`:
 - confirm the route in `packages/user-service/src/bootstrap.ts` is included in the deployed image
 - confirm the public domain is actually routed to the latest `gv-user-service`
 
+### 4.3 V2 generation smoke test
+
+When manually smoke-testing the v2 generation flow after deployment:
+
+- use a real create or iterate request against `https://gamevallies.com`
+- use `timeoutS=1200` for manual smoke tests
+- do not use `timeoutS=600` as the primary validation budget for v2
+
+Reason:
+
+- real production LLM latency plus QA remediation can exceed `600s`
+- a `600s` failure can be a false negative caused by budget exhaustion rather
+  than a broken deployment
+- if the task still fails at `1200s`, treat the remaining error as a real
+  pipeline or prompt issue, not just a timeout budget issue
+
+Additional interpretation notes:
+
+- if VeFaaS `release` succeeds but the final step `POST /api/v1/admin/cloud/ai-engine-region-targets/sync-deploy`
+  returns `500`, treat the function release as successful and the deploy-state
+  backfill as a separate non-blocking follow-up
+- if user-facing task status appears stuck on an early stage, check admin task
+  events before assuming the pipeline is frozen; current progress events can
+  arrive out of order, so `logic_generate` may already have started even if the
+  summary still shows `runtime_profile_select`
+
 ## 5. Failure checklist
 
 ### 5.1 VeFaaS image sync failed
@@ -289,18 +347,52 @@ Check:
 - `VOLCENGINE_REGISTRY_PASSWORD`
 - whether the username still includes the `#` suffix
 - whether the new image was actually pushed with the intended unique tag
+- whether `scripts/deploy.py` passed VCR credentials, not AK/SK, as
+  `source_access_config`
 
-### 5.2 Mini program web-view still blocked
+Operational notes from 2026-03-24:
+
+- VeFaaS fresh sync can fail even when `docker push` already succeeded locally
+- an old cached tag may still sync successfully while a new tag fails; that
+  points to a VeFaaS fresh-pull credential/path issue, not necessarily an image
+  build issue
+- if the error contains `invalid username/password` or `user ... not exist`,
+  treat it as a registry pull-credential problem first
+- verify the exact same VCR username/password in `.env.deploy`, local Docker
+  login, and CI secrets
+- if old cached tags succeed but fresh tags fail with the same credentials,
+  escalate to the cloud-side VeFaaS/VCR pull path instead of blaming the image
+  contents immediately
+- the current deployment AK/SK may not have `cr:GetAuthorizationToken`; if so,
+  the temporary-token workaround is unavailable until IAM grants that action
+
+### 5.2 Windows deploy output is garbled
 
 Check:
 
-- WeChat `web-view` business domain includes `https://www.gamevallies.com`
-- frontend build uses `TARO_APP_GAME_CONTENT_URL=https://www.gamevallies.com`
-- backend `PUBLIC_API_BASE_URL=https://www.gamevallies.com`
+- you are using the latest `scripts/deploy.py`
+- the script starts before any wrapper resets `PYTHONIOENCODING`
+- you are not re-running an older cached copy of the deploy script from another
+  working directory
+
+Operational note:
+
+- the current deploy script already forces UTF-8 stdio and Windows console code
+  page `65001`
+- if output is still garbled, verify that the script revision on disk includes
+  the UTF-8 bootstrap rather than reapplying shell-level workarounds by habit
+
+### 5.3 Mini program web-view still blocked
+
+Check:
+
+- WeChat `web-view` business domain includes `https://gamevallies.com`
+- frontend build uses `TARO_APP_GAME_CONTENT_URL=https://gamevallies.com`
+- backend `PUBLIC_API_BASE_URL=https://gamevallies.com`
 - if the domain was just configured or updated in WeChat, allow time for the business-domain change to propagate before changing backend routes
 - if the warning disappears later without any code change, treat the WeChat business-domain propagation delay as the primary cause, not the UUID path format
 
-### 5.3 SMS verification code not sent
+### 5.4 SMS verification code not sent
 
 Check:
 
@@ -318,7 +410,7 @@ Do not use the old names:
 - `ALIYUN_ENDPOINT`
 - `ALIYUN_SMS_TEMPLATE_CODE`
 
-### 5.4 VeFaaS reached max replica limit
+### 5.5 VeFaaS reached max replica limit
 
 If deployment or runtime returns:
 

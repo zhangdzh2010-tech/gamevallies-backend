@@ -12,6 +12,7 @@ import {
   HttpCode,
   HttpStatus,
   BadRequestException,
+  HttpException,
   Logger,
 } from '@nestjs/common';
 import { GameService } from './game.service';
@@ -34,18 +35,31 @@ export class GameController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async expandPrompt(@Body() body: any) {
+    const description = body.description || body.prompt || '';
+    if (!description) {
+      throw new BadRequestException('description is required');
+    }
+
     try {
-      const description = body.description || body.prompt || '';
       const aiEngineUrl = await this.gameService.getAiEngineBaseUrl(body.regionHint);
+      const timeoutMs = await this.gameService.getExpandPromptRequestTimeoutMs();
       const response = await require('axios').post(
         `${aiEngineUrl}/api/v1/ai/expand-prompt`,
         { description },
-        { timeout: 30000 },
+        { timeout: timeoutMs },
       );
       return ok(response.data);
     } catch (error) {
       this.logger.error(`Expand prompt failed: ${error.message}`);
-      return ok({ expanded_prompt: body.description || body.prompt || '' });
+      const status = error?.response?.status;
+      const detail = error?.response?.data?.detail
+        || error?.response?.data?.message
+        || error?.message
+        || 'Expand prompt failed';
+      if (typeof status === 'number') {
+        throw new HttpException(detail, status);
+      }
+      throw error;
     }
   }
 
@@ -117,12 +131,13 @@ export class GameController {
   async getPublishedGames(
     @Query('page') page: string = '1',
     @Query('limit') limit: string = '10',
+    @Query('search') search?: string,
   ) {
     try {
       const pageNum = Math.max(1, parseInt(page) || 1);
       const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 10));
 
-      const result = await this.gameService.getGamesByStatus('published', pageNum, limitNum);
+      const result = await this.gameService.getGamesByStatus('published', pageNum, limitNum, search);
       return ok(toPage({
         data: result.data.map((game: any) => presentGame(game)),
         pagination: result.pagination,
@@ -178,6 +193,22 @@ export class GameController {
     return ok(await this.gameService.getTaskEvents(taskId, userId, limit ? Number.parseInt(limit, 10) : undefined));
   }
 
+  @Get('/tasks/:taskId/artifacts')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getTaskArtifacts(
+    @Param('taskId') taskId: string,
+    @Req() req: any,
+    @Query('limit') limit?: string,
+  ) {
+    const userId = req.user?.sub || req.user?.id;
+    if (!userId) {
+      throw new BadRequestException('Invalid token');
+    }
+
+    return ok(await this.gameService.getTaskArtifacts(taskId, userId, limit ? Number.parseInt(limit, 10) : undefined));
+  }
+
   @Post('/tasks/:taskId/cancel')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
@@ -203,10 +234,15 @@ export class GameController {
   }
 
   @Get(':id/play')
+  @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async playGame(@Param('id') id: string) {
+  async playGame(@Param('id') id: string, @Req() req: any) {
     try {
-      const htmlCode = await this.gameService.getPlayData(id);
+      const userId = req.user?.sub || req.user?.id;
+      if (!userId) {
+        throw new BadRequestException('Invalid token');
+      }
+      const htmlCode = await this.gameService.getPlayableHtml(id, userId);
       return ok({
         htmlCode,
         gameId: id,

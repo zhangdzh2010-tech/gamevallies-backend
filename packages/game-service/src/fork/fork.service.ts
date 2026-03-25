@@ -19,6 +19,46 @@ export class ForkService {
     private statsService: StatsService,
   ) {}
 
+  private isPublicForkVisible(game: { status?: string | null; visibility?: string | null } | null | undefined): boolean {
+    return game?.status === 'published' && (game.visibility || 'public') === 'public';
+  }
+
+  private isBundlePlayable(bundle: { htmlCode?: string | null } | null | undefined): boolean {
+    return typeof bundle?.htmlCode === 'string' && bundle.htmlCode.trim().length > 0;
+  }
+
+  private async loadForkSourceBundle(game: { id: string; version?: number | null }) {
+    if (Number.isFinite(game.version) && Number(game.version) > 0) {
+      const liveBundle = await this.bundleService.getBundle(game.id, Number(game.version));
+      if (liveBundle) {
+        return liveBundle;
+      }
+    }
+
+    return this.bundleService.getLatestBundle(game.id);
+  }
+
+  private sanitizeForkBundleMetadata(originalBundle: any, gameId: string) {
+    const metadata = originalBundle?.metadata && typeof originalBundle.metadata === 'object'
+      ? { ...originalBundle.metadata }
+      : {};
+
+    delete (metadata as any).generationTaskId;
+    delete (metadata as any).routeSnapshot;
+    delete (metadata as any).previewUrl;
+    delete (metadata as any).pollUrl;
+    delete (metadata as any).cancelUrl;
+    delete (metadata as any).upstreamTaskId;
+
+    return {
+      ...metadata,
+      forkedFromGameId: gameId,
+      forkedFromBundleId: originalBundle?.id || null,
+      forkedFromVersion: originalBundle?.version ?? 1,
+      forkedAt: new Date().toISOString(),
+    };
+  }
+
   async forkGame(gameId: string, userId: string): Promise<any> {
     try {
       const originalGame = await this.prisma.game.findUnique({
@@ -31,6 +71,20 @@ export class ForkService {
 
       if (originalGame.authorId === userId) {
         throw new BadRequestException('Cannot fork your own game');
+      }
+      if (originalGame.status !== 'published') {
+        throw new BadRequestException('Only published games can be forked');
+      }
+      if ((originalGame.visibility || 'public') !== 'public') {
+        throw new BadRequestException('This game is not available for forking');
+      }
+      if (originalGame.allowFork === false) {
+        throw new BadRequestException('Forking is disabled for this game');
+      }
+
+      const originalBundle = await this.loadForkSourceBundle(originalGame);
+      if (!this.isBundlePlayable(originalBundle)) {
+        throw new BadRequestException('Source game is not ready to be forked');
       }
 
       const newGameId = randomUUID();
@@ -48,27 +102,33 @@ export class ForkService {
           forkedFrom: gameId,
           forkDepth: newForkDepth,
           commentCount: 0,
+          visibility: 'private',
+          allowComments: originalGame.allowComments ?? true,
+          allowFork: true,
+          canPlay: true,
+          requireSubscription: false,
         },
       });
 
-      const originalBundle = await this.bundleService.getLatestBundle(gameId);
-
-      if (originalBundle) {
+      try {
         await this.bundleService.saveBundle({
           gameId: newGameId,
           version: 1,
           htmlCode: originalBundle.htmlCode,
           cssCode: originalBundle.cssCode,
           jsCode: originalBundle.jsCode,
-          metadata: {
-            ...originalBundle.metadata,
-            forkedFromGameId: gameId,
-          },
-          previewUrl: originalBundle.previewUrl,
+          metadata: this.sanitizeForkBundleMetadata(originalBundle, gameId),
         });
+      } catch (error: any) {
+        await this.prisma.game.delete({ where: { id: newGameId } }).catch((cleanupError) => {
+          this.logger.warn(`Failed to rollback fork ${newGameId}: ${cleanupError.message}`);
+        });
+        throw new BadRequestException(`Failed to copy source bundle: ${error.message}`);
       }
 
-      await this.statsService.incrementForkCount(gameId);
+      await this.statsService.incrementForkCount(gameId).catch((error) => {
+        this.logger.warn(`Failed to increment fork count for ${gameId}: ${error.message}`);
+      });
 
       return await this.prisma.game.findUnique({
         where: { id: newGameId },
@@ -81,7 +141,7 @@ export class ForkService {
             },
           },
         },
-      });
+      }) || forkedGame;
     } catch (error) {
       this.logger.error(`Failed to fork game: ${error.message}`);
       throw error;
@@ -100,7 +160,8 @@ export class ForkService {
         this.prisma.game.findMany({
           where: {
             forkedFrom: gameId,
-            status: { not: 'banned' },
+            status: 'published',
+            visibility: 'public',
           },
           include: {
             author: {
@@ -120,7 +181,8 @@ export class ForkService {
         this.prisma.game.count({
           where: {
             forkedFrom: gameId,
-            status: { not: 'banned' },
+            status: 'published',
+            visibility: 'public',
           },
         }),
       ]);
@@ -155,7 +217,7 @@ export class ForkService {
         },
       });
 
-      if (!game) {
+      if (!game || !this.isPublicForkVisible(game)) {
         throw new NotFoundException('Game not found');
       }
 
@@ -173,12 +235,16 @@ export class ForkService {
             },
           },
         });
+        if (parent && !this.isPublicForkVisible(parent)) {
+          parent = null;
+        }
       }
 
       const children = await this.prisma.game.findMany({
         where: {
           forkedFrom: gameId,
-          status: { not: 'banned' },
+          status: 'published',
+          visibility: 'public',
         },
         include: {
           author: {
@@ -209,6 +275,7 @@ export class ForkService {
     try {
       const lineage = [];
       let currentGameId = gameId;
+      let isFirstLookup = true;
 
       while (currentGameId) {
         const game = await this.prisma.game.findUnique({
@@ -220,15 +287,27 @@ export class ForkService {
             forkDepth: true,
             authorId: true,
             createdAt: true,
+            status: true,
+            visibility: true,
           },
         });
 
         if (!game) {
+          if (isFirstLookup) {
+            throw new NotFoundException('Game not found');
+          }
+          break;
+        }
+        if (!this.isPublicForkVisible(game)) {
+          if (isFirstLookup) {
+            throw new NotFoundException('Game not found');
+          }
           break;
         }
 
         lineage.unshift(game);
         currentGameId = game.forkedFrom!;
+        isFirstLookup = false;
       }
 
       return lineage;

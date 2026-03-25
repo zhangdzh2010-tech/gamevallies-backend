@@ -10,7 +10,7 @@ function normalizePreviewUrl(gameId: string, previewUrl?: string) {
 
   try {
     const parsed = new URL(previewUrl);
-    return `${baseUrl}${parsed.pathname}`;
+    return `${baseUrl}${parsed.pathname}${parsed.search}`;
   } catch {
     if (previewUrl.startsWith('/')) {
       return `${baseUrl}${previewUrl}`;
@@ -21,7 +21,15 @@ function normalizePreviewUrl(gameId: string, previewUrl?: string) {
 }
 
 function buildIndexUrl(gameId: string, previewUrl?: string) {
-  return normalizePreviewUrl(gameId, previewUrl).replace(/\/preview$/, '/index.html');
+  const normalizedPreviewUrl = normalizePreviewUrl(gameId, previewUrl);
+
+  try {
+    const parsed = new URL(normalizedPreviewUrl);
+    parsed.pathname = parsed.pathname.replace(/\/preview$/, '/index.html');
+    return parsed.toString();
+  } catch {
+    return normalizedPreviewUrl.replace(/\/preview(\?.*)?$/, '/index.html$1');
+  }
 }
 
 function normalizeStatus(status?: string) {

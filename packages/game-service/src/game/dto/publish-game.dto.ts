@@ -1,4 +1,4 @@
-import { IsString, IsArray, IsOptional, MinLength } from 'class-validator';
+import { IsString, IsArray, IsOptional, MinLength, IsIn } from 'class-validator';
 
 export class PublishGameDto {
   @IsString()
@@ -18,4 +18,9 @@ export class PublishGameDto {
   @IsString()
   @IsOptional()
   gameType?: string;
+
+  @IsString()
+  @IsOptional()
+  @IsIn(['public', 'private'])
+  visibility?: 'public' | 'private';
 }

@@ -19,7 +19,7 @@ def make_static(**kwargs) -> QAStaticResult:
 
 class TestQualityScorer:
     def test_perfect_game_scores_high(self):
-        static = make_static(strategy="template", code_size_bytes=15_000)
+        static = make_static(strategy="llm", code_size_bytes=15_000)
         runtime = RuntimeQAResult(ran=True, canvas_renders=True, js_errors=[], fps=60)
         review = LLMReviewResult(ran=True, is_complete_game=True, has_real_gameplay=True,
                                  difficulty_balanced=True, fun_score=8.0)
@@ -27,7 +27,7 @@ class TestQualityScorer:
         assert bd.final_score >= 8.0
 
     def test_broken_game_scores_low(self):
-        static = make_static(error_count=5, warning_count=3, retries=3, strategy="mock",
+        static = make_static(error_count=5, warning_count=3, retries=3, strategy="llm",
                              code_size_bytes=500)
         runtime = RuntimeQAResult(ran=True, canvas_renders=False, js_errors=["Error: x"], fps=0)
         review = LLMReviewResult(ran=True, is_complete_game=False, has_real_gameplay=False,
@@ -37,24 +37,18 @@ class TestQualityScorer:
 
     def test_score_clamped_0_to_10(self):
         # Force extreme values
-        static = make_static(error_count=100, strategy="mock", code_size_bytes=100)
+        static = make_static(error_count=100, strategy="llm", code_size_bytes=100)
         bd = scorer.compute(static)
         assert 0.0 <= bd.final_score <= 10.0
 
     def test_no_runtime_still_scores(self):
-        static = make_static(strategy="hybrid", code_size_bytes=8_000)
+        static = make_static(strategy="llm", code_size_bytes=8_000)
         bd = scorer.compute(static)
         assert bd.final_score > 0
 
-    def test_template_strategy_bonus(self):
-        s_template = make_static(strategy="template")
-        s_llm = make_static(strategy="llm")
-        assert scorer.compute(s_template).final_score > scorer.compute(s_llm).final_score
-
-    def test_mock_strategy_penalty(self):
-        s_mock = make_static(strategy="mock")
-        s_llm = make_static(strategy="llm")
-        assert scorer.compute(s_mock).final_score < scorer.compute(s_llm).final_score
+    def test_llm_strategy_bonus_is_neutral(self):
+        breakdown = scorer.compute(make_static(strategy="llm"))
+        assert breakdown.strategy_bonus == 0.0
 
     def test_retries_penalty(self):
         s_no_retry = make_static(retries=0)
@@ -68,7 +62,7 @@ class TestQualityScorer:
         assert scorer.compute(static, rt_good).final_score > scorer.compute(static, rt_bad).final_score
 
     def test_breakdown_details_present(self):
-        static = make_static(strategy="template", code_size_bytes=12_000)
+        static = make_static(strategy="llm", code_size_bytes=12_000)
         bd = scorer.compute(static)
         assert "errors" in bd.details
         assert "strategy" in bd.details

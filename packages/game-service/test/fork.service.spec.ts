@@ -1,252 +1,202 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { NotFoundException } from '@nestjs/common';
-import { PrismaService } from '../src/prisma/prisma.service';
+import { BadRequestException } from '@nestjs/common';
+import { ForkService } from '../src/fork/fork.service';
 
 describe('ForkService', () => {
-  let service: any;
-  let prismaService: PrismaService;
+  let service: ForkService;
+  let prisma: any;
+  let bundleService: any;
+  let statsService: any;
 
-  const mockGame = {
-    id: 'game-123',
-    authorId: 'user-123',
+  const sourceGame = {
+    id: 'game-source',
+    authorId: 'user-source',
     title: 'Original Game',
     description: 'Original description',
+    tags: ['arcade'],
     gameType: 'dodge',
     status: 'published',
-    forkedFrom: null,
-    forkDepth: 0,
-    createdAt: new Date('2024-01-01'),
-    updatedAt: new Date('2024-01-01'),
-    playCount: BigInt(0),
-    likeCount: BigInt(0),
-    forkCount: BigInt(0),
-    commentCount: 0,
-    version: 1,
+    visibility: 'public',
+    allowFork: true,
+    allowComments: true,
+    forkDepth: 1,
+    version: 3,
   };
 
-  const mockMockPrismaService = {
-    game: {
-      findUnique: jest.fn(),
-      create: jest.fn(),
-      findMany: jest.fn(),
+  const sourceBundle = {
+    id: 'bundle-source',
+    version: 3,
+    htmlCode: '<!DOCTYPE html><html><body>source</body></html>',
+    cssCode: 'body { background: #000; }',
+    jsCode: 'console.log("source");',
+    previewUrl: 'https://legacy.example/games/game-source/preview',
+    metadata: {
+      strategy: 'full_generation',
+      customFlag: 'keep-me',
+      generationTaskId: 'task-source',
+      routeSnapshot: { region: 'cn_shanghai' },
     },
   };
 
-  beforeEach(async () => {
-    const ForkService = class {
-      constructor(private prisma: any) {}
-
-      async forkGame(sourceGameId: string, userId: string) {
-        const sourceGame = await this.prisma.game.findUnique({
-          where: { id: sourceGameId },
-        });
-
-        if (!sourceGame) {
-          throw new NotFoundException('Source game not found');
-        }
-
-        const newFork = {
-          id: 'game-' + Date.now(),
-          authorId: userId,
-          title: `${sourceGame.title} (Fork)`,
-          description: sourceGame.description,
-          gameType: sourceGame.gameType,
-          status: 'draft',
-          forkedFrom: sourceGameId,
-          forkDepth: (sourceGame.forkDepth || 0) + 1,
-          playCount: BigInt(0),
-          likeCount: BigInt(0),
-          forkCount: BigInt(0),
-          commentCount: 0,
-          version: 1,
-        };
-
-        return this.prisma.game.create({
-          data: newFork,
-        });
-      }
-
-      async getForks(gameId: string, limit = 10, offset = 0) {
-        return this.prisma.game.findMany({
-          where: {
-            forkedFrom: gameId,
-          },
-          take: limit,
-          skip: offset,
-          orderBy: { createdAt: 'desc' },
-        });
-      }
-
-      async getForkTree(gameId: string) {
-        const game = await this.prisma.game.findUnique({
-          where: { id: gameId },
-        });
-
-        if (!game) {
-          throw new NotFoundException('Game not found');
-        }
-
-        let current = game;
-        const lineage = [current];
-
-        while (current.forkedFrom) {
-          const parent = await this.prisma.game.findUnique({
-            where: { id: current.forkedFrom },
-          });
-
-          if (!parent) break;
-          lineage.unshift(parent);
-          current = parent;
-        }
-
-        return lineage;
-      }
+  beforeEach(() => {
+    prisma = {
+      game: {
+        findUnique: jest.fn(),
+        create: jest.fn(),
+        delete: jest.fn(),
+        findMany: jest.fn(),
+        count: jest.fn(),
+      },
     };
 
-    service = new ForkService(mockMockPrismaService as any);
-    prismaService = mockMockPrismaService as any;
+    bundleService = {
+      getBundle: jest.fn(),
+      getLatestBundle: jest.fn(),
+      saveBundle: jest.fn(),
+    };
 
-    jest.clearAllMocks();
+    statsService = {
+      incrementForkCount: jest.fn(),
+    };
+
+    service = new ForkService(prisma, bundleService, statsService);
   });
 
-  describe('forkGame', () => {
-    it('should successfully fork a game', async () => {
-      const forkedGame = {
-        id: 'game-fork-123',
-        authorId: 'user-456',
+  it('creates a private draft fork from a published public source game', async () => {
+    prisma.game.findUnique
+      .mockResolvedValueOnce(sourceGame)
+      .mockResolvedValueOnce({
+        id: 'game-forked',
         title: 'Original Game (Fork)',
-        forkedFrom: 'game-123',
-        forkDepth: 1,
+        author: {
+          id: 'user-target',
+          username: 'target',
+          avatarUrl: '',
+        },
+      });
+    prisma.game.create.mockResolvedValue({
+      id: 'game-forked',
+    });
+    bundleService.getBundle.mockResolvedValue(sourceBundle);
+    bundleService.saveBundle.mockResolvedValue({});
+    statsService.incrementForkCount.mockResolvedValue(undefined);
+
+    const result = await service.forkGame('game-source', 'user-target');
+
+    expect(prisma.game.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        authorId: 'user-target',
+        title: 'Original Game (Fork)',
         status: 'draft',
-      };
-
-      mockMockPrismaService.game.findUnique.mockResolvedValueOnce(mockGame);
-      mockMockPrismaService.game.create.mockResolvedValueOnce(forkedGame);
-
-      const result = await service.forkGame('game-123', 'user-456');
-
-      expect(result.forkedFrom).toBe('game-123');
-      expect(result.forkDepth).toBe(1);
-      expect(result.status).toBe('draft');
-      expect(mockMockPrismaService.game.create).toHaveBeenCalled();
+        visibility: 'private',
+        allowComments: true,
+        allowFork: true,
+        canPlay: true,
+        requireSubscription: false,
+        forkedFrom: 'game-source',
+        forkDepth: 2,
+      }),
     });
 
-    it('should throw NotFoundException when source game not found', async () => {
-      mockMockPrismaService.game.findUnique.mockResolvedValueOnce(null);
+    const savedBundle = bundleService.saveBundle.mock.calls[0][0];
+    expect(bundleService.getBundle).toHaveBeenCalledWith('game-source', 3);
+    expect(bundleService.getLatestBundle).not.toHaveBeenCalled();
+    expect(savedBundle.previewUrl).toBeUndefined();
+    expect(savedBundle.metadata).toEqual(expect.objectContaining({
+      customFlag: 'keep-me',
+      forkedFromGameId: 'game-source',
+      forkedFromBundleId: 'bundle-source',
+      forkedFromVersion: 3,
+    }));
+    expect(savedBundle.metadata.generationTaskId).toBeUndefined();
+    expect(savedBundle.metadata.routeSnapshot).toBeUndefined();
+    expect(result.id).toBe('game-forked');
+  });
 
-      await expect(service.forkGame('nonexistent', 'user-456')).rejects.toThrow(
-        NotFoundException
-      );
+  it('rejects forking games that are not published', async () => {
+    prisma.game.findUnique.mockResolvedValue({
+      ...sourceGame,
+      status: 'draft',
     });
 
-    it('should track fork depth correctly', async () => {
-      const parentGame = { ...mockGame, forkDepth: 2, forkedFrom: 'game-parent' };
-      const forkedGame = {
-        id: 'game-fork-456',
-        authorId: 'user-456',
-        forkDepth: 3,
-        forkedFrom: 'game-123',
-      };
+    await expect(service.forkGame('game-source', 'user-target')).rejects.toBeInstanceOf(BadRequestException);
+    expect(bundleService.getBundle).not.toHaveBeenCalled();
+    expect(bundleService.getLatestBundle).not.toHaveBeenCalled();
+    expect(prisma.game.create).not.toHaveBeenCalled();
+  });
 
-      mockMockPrismaService.game.findUnique.mockResolvedValueOnce(parentGame);
-      mockMockPrismaService.game.create.mockResolvedValueOnce(forkedGame);
+  it('rejects forking when the source game has forking disabled', async () => {
+    prisma.game.findUnique.mockResolvedValue({
+      ...sourceGame,
+      allowFork: false,
+    });
 
-      const result = await service.forkGame('game-123', 'user-456');
+    await expect(service.forkGame('game-source', 'user-target')).rejects.toBeInstanceOf(BadRequestException);
+    expect(bundleService.getBundle).not.toHaveBeenCalled();
+    expect(prisma.game.create).not.toHaveBeenCalled();
+  });
 
-      expect(result.forkDepth).toBe(3);
+  it('rolls back the forked game row when bundle copy fails', async () => {
+    prisma.game.findUnique.mockResolvedValueOnce(sourceGame);
+    prisma.game.create.mockResolvedValue({
+      id: 'game-forked',
+    });
+    prisma.game.delete.mockResolvedValue({});
+    bundleService.getBundle.mockResolvedValue(sourceBundle);
+    bundleService.saveBundle.mockRejectedValue(new Error('save failed'));
+
+    await expect(service.forkGame('game-source', 'user-target')).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.game.delete).toHaveBeenCalledWith({
+      where: { id: expect.any(String) },
     });
   });
 
-  describe('getForks', () => {
-    it('should return paginated forks of a game', async () => {
-      const forks = [
-        { id: 'fork-1', forkedFrom: 'game-123' },
-        { id: 'fork-2', forkedFrom: 'game-123' },
-      ];
-
-      mockMockPrismaService.game.findMany.mockResolvedValueOnce(forks);
-
-      const result = await service.getForks('game-123', 10, 0);
-
-      expect(result).toEqual(forks);
-      expect(mockMockPrismaService.game.findMany).toHaveBeenCalledWith({
-        where: { forkedFrom: 'game-123' },
-        take: 10,
-        skip: 0,
-        orderBy: { createdAt: 'desc' },
+  it('falls back to the latest bundle when the live version bundle is missing', async () => {
+    prisma.game.findUnique
+      .mockResolvedValueOnce(sourceGame)
+      .mockResolvedValueOnce({
+        id: 'game-forked',
+        title: 'Original Game (Fork)',
+        author: {
+          id: 'user-target',
+          username: 'target',
+          avatarUrl: '',
+        },
       });
+    prisma.game.create.mockResolvedValue({
+      id: 'game-forked',
     });
+    bundleService.getBundle.mockResolvedValue(null);
+    bundleService.getLatestBundle.mockResolvedValue(sourceBundle);
+    bundleService.saveBundle.mockResolvedValue({});
+    statsService.incrementForkCount.mockResolvedValue(undefined);
 
-    it('should return empty array when no forks exist', async () => {
-      mockMockPrismaService.game.findMany.mockResolvedValueOnce([]);
+    await service.forkGame('game-source', 'user-target');
 
-      const result = await service.getForks('game-123', 10, 0);
-
-      expect(result).toEqual([]);
-    });
-
-    it('should support pagination', async () => {
-      const forks = [{ id: 'fork-3', forkedFrom: 'game-123' }];
-
-      mockMockPrismaService.game.findMany.mockResolvedValueOnce(forks);
-
-      const result = await service.getForks('game-123', 5, 10);
-
-      expect(mockMockPrismaService.game.findMany).toHaveBeenCalledWith({
-        where: { forkedFrom: 'game-123' },
-        take: 5,
-        skip: 10,
-        orderBy: { createdAt: 'desc' },
-      });
-    });
+    expect(bundleService.getBundle).toHaveBeenCalledWith('game-source', 3);
+    expect(bundleService.getLatestBundle).toHaveBeenCalledWith('game-source');
   });
 
-  describe('getForkTree', () => {
-    it('should return recursive lineage of forked game', async () => {
-      const grandparentGame = {
-        id: 'game-original',
-        forkedFrom: null,
-        title: 'Original',
-      };
-      const parentGame = {
-        id: 'game-123',
-        forkedFrom: 'game-original',
-        title: 'First Fork',
-      };
-      const childGame = {
-        id: 'game-fork-456',
-        forkedFrom: 'game-123',
-        title: 'Second Fork',
-      };
+  it('only lists published public forks in fork listings', async () => {
+    prisma.game.findMany.mockResolvedValue([]);
+    prisma.game.count.mockResolvedValue(0);
 
-      mockMockPrismaService.game.findUnique
-        .mockResolvedValueOnce(childGame) // Initial lookup
-        .mockResolvedValueOnce(parentGame) // Parent lookup
-        .mockResolvedValueOnce(grandparentGame); // Grandparent lookup
+    await service.getForks('game-source', 2, 20);
 
-      const result = await service.getForkTree('game-fork-456');
-
-      expect(result).toHaveLength(3);
-      expect(result[0].id).toBe('game-original');
-      expect(result[1].id).toBe('game-123');
-      expect(result[2].id).toBe('game-fork-456');
-    });
-
-    it('should handle game with no parent', async () => {
-      mockMockPrismaService.game.findUnique.mockResolvedValueOnce(mockGame);
-
-      const result = await service.getForkTree('game-123');
-
-      expect(result).toHaveLength(1);
-      expect(result[0].id).toBe('game-123');
-    });
-
-    it('should throw NotFoundException when game not found', async () => {
-      mockMockPrismaService.game.findUnique.mockResolvedValueOnce(null);
-
-      await expect(service.getForkTree('nonexistent')).rejects.toThrow(
-        NotFoundException
-      );
+    expect(prisma.game.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        forkedFrom: 'game-source',
+        status: 'published',
+        visibility: 'public',
+      },
+      skip: 20,
+      take: 20,
+    }));
+    expect(prisma.game.count).toHaveBeenCalledWith({
+      where: {
+        forkedFrom: 'game-source',
+        status: 'published',
+        visibility: 'public',
+      },
     });
   });
 });

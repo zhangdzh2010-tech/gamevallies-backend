@@ -15,12 +15,13 @@
         VOLCENGINE_REGISTRY_NAMESPACE
   可选: VOLCENGINE_REGION             (默认 cn-shanghai)
         VOLCENGINE_REGISTRY           (默认 cr.volces.com)
-        IMAGE_TAG                     (默认 latest；CI 中传入 github.sha)
+        IMAGE_TAG                     (支持 auto/latest；CI 中也可传入固定版本)
         VOLCENGINE_VPC_ID, VOLCENGINE_SUBNET_ID, VOLCENGINE_SECURITY_GROUP_ID
 """
 
 import json
 import os
+import re
 import sys
 import time
 import subprocess
@@ -31,11 +32,40 @@ warnings.filterwarnings("ignore")
 
 import volcenginesdkvefaas
 import volcenginesdkapig20221112
+import volcenginesdkcr
 import volcenginesdkcore
 from volcenginesdkapig20221112.api import APIG20221112Api
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_ENV_FILE = os.path.join(ROOT_DIR, ".env.deploy")
+
+
+def configure_utf8_stdio() -> None:
+    """Force UTF-8 stdio on Windows so deploy logs do not depend on GBK shells."""
+    os.environ.setdefault("PYTHONUTF8", "1")
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            kernel32.SetConsoleCP(65001)
+            kernel32.SetConsoleOutputCP(65001)
+        except Exception:
+            pass
+
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None or not hasattr(stream, "reconfigure"):
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+        except Exception:
+            pass
+
+
+configure_utf8_stdio()
 
 
 def load_env_file(path: str) -> None:
@@ -75,7 +105,7 @@ SK                = os.environ.get("VOLCENGINE_SECRET_KEY",         "")
 REGION            = os.environ.get("VOLCENGINE_REGION",             "cn-shanghai")
 REGISTRY          = os.environ.get("VOLCENGINE_REGISTRY",           "gamevallies-repo-cn-shanghai.cr.volces.com")
 NAMESPACE         = os.environ.get("VOLCENGINE_REGISTRY_NAMESPACE",  "")
-IMAGE_TAG         = os.environ.get("IMAGE_TAG",                     "latest")
+IMAGE_TAG         = os.environ.get("IMAGE_TAG",                     "").strip()
 VCR_USERNAME      = os.environ.get("VOLCENGINE_REGISTRY_USERNAME",  "")
 VCR_PASSWORD      = os.environ.get("VOLCENGINE_REGISTRY_PASSWORD",  "")
 VPC_ID            = os.environ.get("VOLCENGINE_VPC_ID",             "")
@@ -172,6 +202,103 @@ def get_apig_api(region_override: str | None = None) -> APIG20221112Api:
     cfg.sk = SK
     cfg.region = region_override or REGION
     return APIG20221112Api(volcenginesdkcore.ApiClient(cfg))
+
+
+def get_cr_api(region_override: str | None = None) -> volcenginesdkcr.CRApi:
+    cfg = volcenginesdkcore.Configuration()
+    cfg.ak = AK
+    cfg.sk = SK
+    cfg.region = region_override or REGION
+    return volcenginesdkcr.CRApi(volcenginesdkcore.ApiClient(cfg))
+
+
+def _registry_instance_name(registry_host: str) -> str:
+    explicit = os.environ.get("VOLCENGINE_REGISTRY_INSTANCE", "").strip()
+    if explicit:
+        return explicit
+
+    host = (registry_host or "").strip().split(".", 1)[0]
+    for suffix in (
+        "-cn-shanghai",
+        "-ap-southeast-johor",
+        "-ap-southeast-1",
+    ):
+        if host.endswith(suffix):
+            return host[:-len(suffix)]
+    return host
+
+
+def _list_repository_tags(
+    api: volcenginesdkcr.CRApi,
+    *,
+    registry_instance: str,
+    namespace: str,
+    repository: str,
+) -> list[str]:
+    tags: list[str] = []
+    page_number = 1
+    page_size = 100
+
+    while True:
+        resp = api.list_tags(
+            volcenginesdkcr.ListTagsRequest(
+                registry=registry_instance,
+                namespace=namespace,
+                repository=repository,
+                page_number=page_number,
+                page_size=page_size,
+            )
+        )
+        items = getattr(resp, "items", None) or []
+        tags.extend(
+            item.name
+            for item in items
+            if getattr(item, "name", None)
+        )
+        total_count = int(getattr(resp, "total_count", 0) or 0)
+        if page_number * page_size >= total_count or not items:
+            break
+        page_number += 1
+
+    return tags
+
+
+def resolve_image_tag(target_services: list[dict]) -> str:
+    requested = (IMAGE_TAG or "").strip()
+    normalized_requested = requested.lower()
+    auto_aliases = {"", "latest", "auto", "vn"}
+
+    if requested and normalized_requested not in auto_aliases:
+        return requested
+
+    if normalized_requested in {"latest", "auto", "vn"}:
+        print(f"⚠️  检测到 IMAGE_TAG={requested}，已自动切换为递增版本号标签")
+
+    registry_instance = _registry_instance_name(REGISTRY)
+    api = get_cr_api()
+    max_version = 0
+
+    for svc in target_services:
+        repo = svc["name"]
+        try:
+            repo_tags = _list_repository_tags(
+                api,
+                registry_instance=registry_instance,
+                namespace=NAMESPACE,
+                repository=repo,
+            )
+        except Exception as exc:
+            print(f"⚠️  读取 {repo} 现有标签失败，跳过版本扫描: {exc}")
+            continue
+
+        for tag in repo_tags:
+            match = re.match(r"^v(\d+)(?:$|-)", tag)
+            if match:
+                max_version = max(max_version, int(match.group(1)))
+
+    next_tag = f"v{max_version + 1}"
+    print(f"🔖 自动分配镜像版本标签: {next_tag}")
+    return next_tag
 
 
 def get_function_id(api: volcenginesdkvefaas.VEFAASApi, name: str) -> str:
@@ -1077,6 +1204,8 @@ def deploy_service(api: volcenginesdkvefaas.VEFAASApi, svc: dict) -> bool:
 
 
 def main():
+    global IMAGE_TAG
+
     if not AK or not SK:
         print("❌ 请设置 VOLCENGINE_ACCESS_KEY 和 VOLCENGINE_SECRET_KEY")
         sys.exit(1)
@@ -1084,6 +1213,27 @@ def main():
         print("❌ 请设置 VOLCENGINE_REGISTRY_NAMESPACE（镜像仓库命名空间）")
         print("   控制台 → 容器镜像服务 → 命名空间 → 创建后填入此变量")
         sys.exit(1)
+
+    requested_targets = sys.argv[1:] if len(sys.argv) > 1 else ["all"]
+    services: list[dict] = []
+    seen_service_names: set[str] = set()
+    for target in requested_targets:
+        resolved = resolve_target_services(target)
+        if not resolved:
+            print(f"❌ 未知服务: {target}，可选: {[s['svc'] for s in SERVICES]} | ai-engine-cn | ai-engine-global | all")
+            sys.exit(1)
+        for svc in resolved:
+            if svc["name"] in seen_service_names:
+                continue
+            seen_service_names.add(svc["name"])
+            services.append(svc)
+
+    if not services:
+        print(f"❌ 未匹配到任何服务，可选: {[s['svc'] for s in SERVICES]} | ai-engine-cn | ai-engine-global | all")
+        sys.exit(1)
+
+    validate_env(services)
+    IMAGE_TAG = resolve_image_tag(services)
 
     print(f"📍 部署配置:")
     print(f"   地域:             {REGION}")
@@ -1098,15 +1248,6 @@ def main():
     print(f"   AI 默认执行 Region: {_normalize_execution_region(AI_ENGINE_DEFAULT_REGION)}")
     print(f"   AI 上海函数:      {AI_ENGINE_FUNCTION_NAME_CN_SHANGHAI} @ {VOLCENGINE_REGION_CN_SHANGHAI}")
     print(f"   AI 柔佛函数:      {AI_ENGINE_FUNCTION_NAME_AP_SOUTHEAST_JOHOR} @ {VOLCENGINE_REGION_AP_SOUTHEAST_JOHOR}")
-
-    target = sys.argv[1] if len(sys.argv) > 1 else "all"
-    services = resolve_target_services(target)
-
-    if not services:
-        print(f"❌ 未知服务: {target}，可选: {[s['svc'] for s in SERVICES]} | ai-engine-cn | ai-engine-global | all")
-        sys.exit(1)
-
-    validate_env(services)
 
     print(f"\n🚀 开始部署 {len(services)} 个服务...")
     failed = []

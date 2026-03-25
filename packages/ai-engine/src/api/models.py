@@ -116,12 +116,16 @@ class GameSpec(BaseModel):
     """Complete game specification – the core data contract of the Pipeline"""
     version: str = "1.0"
     game_type: str
+    source_description: str = ""
+    intent_summary: str = ""
     core_mechanics: List[CoreMechanic] = Field(default_factory=list)
     entities: List[GameEntity] = Field(default_factory=list)
     rules: GameRules = Field(default_factory=GameRules)
     visual_style: VisualStyle = Field(default_factory=VisualStyle)
     audio_style: str = "none"
     difficulty_curve: str = "progressive"
+    special_rules: List[str] = Field(default_factory=list)
+    reference_game: Optional[str] = None
     platform_constraints: PlatformConstraints = Field(default_factory=PlatformConstraints)
 
 
@@ -170,7 +174,7 @@ class GDD(BaseModel):
 class TemplateMatchResult(BaseModel):
     template_id: Optional[str] = None
     confidence: float = 0.0
-    path: str = "llm"  # template / hybrid / llm
+    path: str = "llm"
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +183,7 @@ class TemplateMatchResult(BaseModel):
 
 class GenerateCodeResult(BaseModel):
     html_code: str
-    strategy: str  # template / hybrid / llm
+    strategy: str
     template_id: Optional[str] = None
     generation_time_ms: int
     code_size_bytes: int
@@ -261,6 +265,8 @@ class AsyncTaskError(BaseModel):
     failed_stage: Optional[str] = None
     retry_count: int = 0
     fallback: Optional[str] = None
+    failure_family: Optional[str] = None
+    primary_artifact_id: Optional[str] = None
 
 
 class AsyncTaskHandleResponse(BaseModel):
@@ -316,6 +322,160 @@ class RunPipelineResponse(BaseModel):
     code_size_bytes: int
     quality_score: float = 0.0
     quality_breakdown: Optional[Dict[str, Any]] = None
+    pipeline_version: Optional[str] = None
+    prompt_bundle_id: Optional[str] = None
+    prompt_bundle_version: Optional[int] = None
+    runtime_profile: Optional[str] = None
+    contract_version: Optional[str] = None
+    primary_artifact_id: Optional[str] = None
+
+
+class FontClamp(BaseModel):
+    hud_min: int = 14
+    hud_max: int = 20
+    title_min: int = 28
+    title_max: int = 36
+
+
+class CanvasContract(BaseModel):
+    requires_canvas_2d: bool = True
+    must_render_within_ms: int = 1500
+    orientation: str = "portrait_first"
+    ui_scale_mode: str = "short_edge"
+    target_fps: int = 60
+
+
+class InputContract(BaseModel):
+    required_modes: List[str] = Field(default_factory=lambda: ["pointer", "touch"])
+    allow_mouse_fallback: bool = True
+    target: str = "canvas_or_document"
+    gestures: List[str] = Field(default_factory=list)
+
+
+class StateContract(BaseModel):
+    required_states: List[str] = Field(default_factory=lambda: ["boot", "ready", "playing", "game_over"])
+    restartable: bool = True
+    required_flags: List[str] = Field(default_factory=list)
+
+
+class MobileLayoutContract(BaseModel):
+    orientation: str = "portrait_first"
+    ui_scale_mode: str = "short_edge"
+    safe_area_aware: bool = True
+    font_clamp: FontClamp = Field(default_factory=FontClamp)
+
+
+class SafetyContract(BaseModel):
+    forbidden_apis: List[str] = Field(default_factory=lambda: [
+        "localStorage",
+        "sessionStorage",
+        "fetch",
+        "XMLHttpRequest",
+        "WebSocket",
+        "eval",
+        "Function",
+    ])
+
+
+class GameplayContract(BaseModel):
+    requires_player_entity: bool = True
+    requires_scoring: bool = True
+    requires_terminal_state: bool = True
+    requires_restart_entry: bool = True
+    primary_goal: str = "clear_feedback_loop"
+
+
+class GameRuntimeContract(BaseModel):
+    version: str = "1.0"
+    runtime_profile: str = "portrait_arcade"
+    canvas: CanvasContract = Field(default_factory=CanvasContract)
+    input: InputContract = Field(default_factory=InputContract)
+    state: StateContract = Field(default_factory=StateContract)
+    mobile_layout: MobileLayoutContract = Field(default_factory=MobileLayoutContract)
+    safety: SafetyContract = Field(default_factory=SafetyContract)
+    gameplay: GameplayContract = Field(default_factory=GameplayContract)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class PromptBundleSnapshot(BaseModel):
+    bundle_id: str = ""
+    bundle_version: int = 0
+    resolved_at: Optional[str] = None
+    layers: Dict[str, Any] = Field(default_factory=dict)
+
+
+class EntitlementSnapshot(BaseModel):
+    can_play: bool = True
+    require_subscription: bool = False
+    grant_source: str = "none"
+    grant_subscription_id: Optional[str] = None
+    quota_remaining: Optional[int] = None
+    refund_on_failure: bool = False
+
+
+class VisibilityModel(BaseModel):
+    public_preview_allowed: bool = False
+    author_play_allowed: bool = True
+    public_index_allowed: bool = False
+    published_visibility: str = "private"
+
+
+class RequestContextSnapshot(BaseModel):
+    source: str = "game-service"
+    entrypoint: str = "create"
+    region: str = "cn_shanghai"
+    pipeline_version: str = "v2"
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ExistingGameContext(BaseModel):
+    status: str = "draft"
+    visibility: str = "private"
+    live_bundle_version: Optional[int] = None
+    working_bundle_version: Optional[int] = None
+    can_play: bool = True
+    require_subscription: bool = False
+    forked_from: Optional[str] = None
+
+
+class IterationIntent(BaseModel):
+    feedback: str
+    conversation: List[Dict[str, str]] = Field(default_factory=list)
+
+
+class RunPipelineV2Request(BaseModel):
+    game_id: str
+    user_id: str
+    raw_user_input: str
+    title: Optional[str] = None
+    platform: str = "wechat_webview"
+    timeout_s: int = Field(default=600, ge=30, le=3600)
+    task_id: Optional[str] = None
+    request_context: RequestContextSnapshot = Field(default_factory=RequestContextSnapshot)
+    entitlement: EntitlementSnapshot = Field(default_factory=EntitlementSnapshot)
+    visibility_model: VisibilityModel = Field(default_factory=VisibilityModel)
+    prompt_bundle_snapshot: PromptBundleSnapshot = Field(default_factory=PromptBundleSnapshot)
+    runtime_contract: GameRuntimeContract = Field(default_factory=GameRuntimeContract)
+    normalized_request: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class IterateV2Request(BaseModel):
+    game_id: str
+    user_id: str
+    current_code: str
+    iteration_intent: IterationIntent
+    existing_game: ExistingGameContext = Field(default_factory=ExistingGameContext)
+    platform: str = "wechat_webview"
+    timeout_s: int = Field(default=600, ge=30, le=3600)
+    task_id: Optional[str] = None
+    request_context: RequestContextSnapshot = Field(default_factory=lambda: RequestContextSnapshot(entrypoint="iterate"))
+    entitlement: EntitlementSnapshot = Field(default_factory=EntitlementSnapshot)
+    visibility_model: VisibilityModel = Field(default_factory=VisibilityModel)
+    prompt_bundle_snapshot: PromptBundleSnapshot = Field(default_factory=PromptBundleSnapshot)
+    runtime_contract: GameRuntimeContract = Field(default_factory=GameRuntimeContract)
+    normalized_request: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -378,6 +538,12 @@ class IterateResponse(BaseModel):
     generation_time_ms: int
     qa_retries: int = 0
     iteration_retries: int = 0
+    pipeline_version: Optional[str] = None
+    prompt_bundle_id: Optional[str] = None
+    prompt_bundle_version: Optional[int] = None
+    runtime_profile: Optional[str] = None
+    contract_version: Optional[str] = None
+    primary_artifact_id: Optional[str] = None
 
 
 class QACheckRequest(BaseModel):
