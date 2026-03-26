@@ -6,7 +6,8 @@ import asyncio
 import pytest
 from unittest.mock import AsyncMock, patch
 from src.engine.qa_pipeline import QAPipeline
-from src.api.models import GameRuntimeContract, GameSpec, QACheckError
+from src.api.models import GameRuntimeContract, GameSpec, GameplayContract, InputContract, QACheckError, StateContract
+from src.services.llm_client import LLMResponseTruncatedError
 
 qa = QAPipeline()
 
@@ -75,6 +76,20 @@ function update() {
             errors = qa._check_l1_syntax(code)
         assert any("local static declarations" in e.message for e in errors)
 
+    def test_script_js_syntax_error_is_rejected_when_esprima_is_available(self):
+        code = VALID_GAME.replace("game.score += 1;", "if (true) {")
+
+        class _FakeEsprima:
+            @staticmethod
+            def parseScript(script_content, tolerant=False):
+                assert tolerant is False
+                if "if (true) {" in script_content:
+                    raise Exception("Unexpected end of input")
+
+        with patch("src.engine.qa_pipeline.esprima", _FakeEsprima()):
+            errors = qa._check_l1_syntax(code)
+        assert any("Unexpected end of input" in e.message for e in errors)
+
 
 class TestL2Security:
     def test_clean_passes(self):
@@ -131,6 +146,19 @@ class TestL3Startup:
         errors, _ = qa._check_l3_startup(code)
         assert any("width" in e.message.lower() or "0" in e.message for e in errors)
 
+    def test_canvas_alias_width_and_height_assignment_is_accepted(self):
+        code = (
+            VALID_GAME
+            .replace("const canvas = document.getElementById('gameCanvas');", "const C = document.getElementById('gameCanvas');")
+            .replace("const ctx = canvas.getContext('2d');", "const ctx = C.getContext('2d');")
+            .replace("canvas.width = 420;", "C.width = 420;")
+            .replace("canvas.height = 600;", "C.height = 600;")
+            .replace("canvas.addEventListener('touchstart', function(e) {", "C.addEventListener('touchstart', function(e) {")
+            .replace("ctx.clearRect(0, 0, canvas.width, canvas.height);", "ctx.clearRect(0, 0, C.width, C.height);")
+        )
+        errors, _ = qa._check_l3_startup(code)
+        assert not any("renders at 0×0" in e.message for e in errors)
+
     def test_no_game_loop_is_warning(self):
         code = VALID_GAME.replace("requestAnimationFrame", "//RAF")
         _, warnings = qa._check_l3_startup(code)
@@ -177,25 +205,37 @@ class TestL4Playability:
     def test_gameover_never_set_to_true(self):
         code = VALID_GAME.replace("game.gameOver = true;", "// not set")
         errors, _ = qa._check_l4_playability(code)
-        assert any("never set to true" in e.message for e in errors)
+        assert any("terminal or completion state" in e.message.lower() for e in errors)
 
     def test_state_machine_alternative_accepted(self):
         code = VALID_GAME.replace("game.gameOver = true;", "gameState = 'gameover';")
         errors, _ = qa._check_l4_playability(code)
-        assert not any("never set to true" in e.message for e in errors)
+        assert not any("terminal or completion state" in e.message.lower() for e in errors)
 
     def test_enum_style_terminal_state_is_accepted(self):
         code = VALID_GAME.replace("game.gameOver = true;", "currentState = GAME_STATES.GAME_OVER;")
         errors, _ = qa._check_l4_playability(code)
-        assert not any("never set to true" in e.message for e in errors)
+        assert not any("terminal or completion state" in e.message.lower() for e in errors)
+
+    def test_completion_state_constant_is_accepted(self):
+        code = VALID_GAME.replace(
+            "game.gameOver = true;",
+            "const STATE_WIN = 'win'; currentState = STATE_WIN;",
+        )
+        errors, _ = qa._check_l4_playability(code)
+        assert not any("terminal or completion state" in e.message.lower() for e in errors)
 
     def test_is_game_over_boolean_is_accepted(self):
         code = VALID_GAME.replace("game.gameOver = true;", "isGameOver = true;")
         errors, _ = qa._check_l4_playability(code)
-        assert not any("never set to true" in e.message for e in errors)
+        assert not any("terminal or completion state" in e.message.lower() for e in errors)
 
     def test_no_restart_is_warning(self):
-        code = VALID_GAME.replace("function restart()", "function doNothing()")
+        code = (
+            VALID_GAME
+            .replace("function restart() { game.score = 0; game.gameOver = false; }", "function doNothing() { return; }")
+            .replace("if (game.gameOver) restart();", "if (game.gameOver) doNothing();")
+        )
         _, warnings = qa._check_l4_playability(code)
         assert any("restart" in w.message.lower() for w in warnings)
 
@@ -380,7 +420,7 @@ def test_repair_code_supports_fix_round_prompt_variables():
     ), patch.object(
         pipeline._client,
         "complete",
-        new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
+        new=AsyncMock(return_value=VALID_GAME),
     ) as mock_complete:
         asyncio.run(
             pipeline.repair_code(
@@ -573,7 +613,53 @@ def test_l4_playability_accepts_named_game_over_state_transition_helpers():
 
     errors, _warnings = pipeline._check_l4_playability(code)
 
-    assert not any("Game-over state never set to true" in error.message for error in errors)
+    assert not any("terminal or completion state" in error.message.lower() for error in errors)
+
+
+def test_l4_playability_accepts_puzzle_completion_state_without_score_loop_warning():
+    pipeline = QAPipeline()
+    runtime_contract = GameRuntimeContract(
+        runtime_profile="grid_puzzle",
+        state=StateContract(required_states=["boot", "ready", "playing", "level_complete"]),
+        input=InputContract(required_modes=["touch"], gestures=["tap", "drag"]),
+        gameplay=GameplayContract(
+            requires_player_entity=False,
+            requires_scoring=False,
+            requires_terminal_state=True,
+            requires_restart_entry=True,
+            terminal_state_aliases=["level_complete", "completed", "solved", "success"],
+            primary_goal="grid_completion",
+        ),
+    )
+    code = """
+    <!DOCTYPE html>
+    <html>
+      <body>
+        <canvas id="gameCanvas"></canvas>
+        <script>
+          let state = 'ready';
+          let levelComplete = false;
+          function restartLevel() {
+            levelComplete = false;
+            state = 'ready';
+          }
+          function completeLevel() {
+            levelComplete = true;
+            state = 'level_complete';
+          }
+          const canvas = document.getElementById('gameCanvas');
+          canvas.addEventListener('touchstart', function handlePick() {});
+          canvas.addEventListener('touchmove', function handleDrag() {});
+          canvas.addEventListener('touchend', function handleDrop() {});
+        </script>
+      </body>
+    </html>
+    """
+
+    errors, warnings = pipeline._check_l4_playability(code, runtime_contract=runtime_contract)
+
+    assert not any("terminal or completion state" in error.message.lower() for error in errors)
+    assert not any("Score variable exists but is never incremented" in warning.message for warning in warnings)
 
 
 def disabled_test_repair_code_uses_fast_prompt_and_fast_route_for_known_single_issue():
@@ -836,7 +922,7 @@ def test_repair_code_uses_bundle_prompt_for_syntax_structural_family():
     ), patch.object(
         pipeline._client,
         "complete",
-        new=AsyncMock(return_value="<!DOCTYPE html><html><body>fixed</body></html>"),
+        new=AsyncMock(return_value=VALID_GAME),
     ) as mock_complete:
         asyncio.run(
             pipeline.repair_code(
@@ -920,3 +1006,195 @@ def test_run_with_auto_fix_breaks_after_repeated_single_issue():
     assert result.success is False
     assert result.retries == 2
     assert mock_repair.await_count == 2
+
+
+def test_repair_code_uses_simplified_rewrite_when_syntax_fix_stays_broken():
+    pipeline = QAPipeline()
+    broken_code = VALID_GAME.replace("game.score += 1;", "if (true) {")
+    errors = [
+        QACheckError(
+            type="L1_syntax",
+            message="JavaScript syntax error in <script>: Unexpected end of input",
+            severity="error",
+        ),
+    ]
+
+    class _FakeEsprima:
+        @staticmethod
+        def parseScript(script_content, tolerant=False):
+            assert tolerant is False
+            if "if (true) {" in script_content:
+                raise Exception("Unexpected end of input")
+
+    with patch(
+        "src.engine.qa_pipeline.esprima",
+        _FakeEsprima(),
+    ), patch.object(
+        pipeline._client,
+        "is_enabled",
+        return_value=True,
+    ), patch.object(
+        pipeline,
+        "_fix_with_llm",
+        new=AsyncMock(return_value=broken_code),
+    ) as mock_fix, patch.object(
+        pipeline,
+        "_rewrite_with_simplified_budget",
+        new=AsyncMock(return_value=VALID_GAME),
+    ) as mock_rewrite:
+        repaired = asyncio.run(
+            pipeline.repair_code(
+                broken_code,
+                errors,
+                GameSpec(game_type="runner"),
+            )
+        )
+
+    assert repaired == VALID_GAME
+    assert mock_fix.await_count == 1
+    assert mock_rewrite.await_count == 1
+
+
+def test_repair_code_rebuilds_from_spec_when_syntax_repair_keeps_truncating():
+    pipeline = QAPipeline()
+    broken_code = VALID_GAME.replace("game.score += 1;", "if (true) {")
+    errors = [
+        QACheckError(
+            type="L1_syntax",
+            message="JavaScript syntax error in <script>: Unexpected end of input",
+            severity="error",
+        ),
+    ]
+
+    class _FakeEsprima:
+        @staticmethod
+        def parseScript(script_content, tolerant=False):
+            assert tolerant is False
+            if "if (true) {" in script_content:
+                raise Exception("Unexpected end of input")
+
+    with patch(
+        "src.engine.qa_pipeline.esprima",
+        _FakeEsprima(),
+    ), patch.object(
+        pipeline._client,
+        "is_enabled",
+        return_value=True,
+    ), patch.object(
+        pipeline,
+        "_fix_with_llm",
+        new=AsyncMock(return_value=broken_code),
+    ) as mock_fix, patch.object(
+        pipeline,
+        "_rewrite_with_simplified_budget",
+        new=AsyncMock(return_value=broken_code),
+    ) as mock_rewrite, patch.object(
+        pipeline,
+        "_rebuild_from_spec_for_syntax_recovery",
+        new=AsyncMock(return_value=VALID_GAME),
+    ) as mock_rebuild:
+        repaired = asyncio.run(
+            pipeline.repair_code(
+                broken_code,
+                errors,
+                GameSpec(game_type="runner", source_description="课堂浮力小游戏"),
+                runtime_contract=GameRuntimeContract(),
+            )
+        )
+
+    assert repaired == VALID_GAME
+    assert mock_fix.await_count == 1
+    assert mock_rewrite.await_count == 1
+    assert mock_rebuild.await_count == 1
+
+
+def test_mixed_syntax_failures_do_not_force_generic_repair():
+    errors = [
+        QACheckError(
+            type="L1_syntax",
+            message="JavaScript syntax error in <script>: Unexpected end of input",
+            severity="error",
+        ),
+        QACheckError(
+            type="contract_input",
+            message="Runtime contract requires primary touch or pointer gameplay handlers",
+            severity="error",
+        ),
+    ]
+
+    assert QAPipeline._should_force_full_repair(errors) is False
+
+
+def test_repair_code_uses_larger_budget_for_truncation_prone_syntax_errors():
+    pipeline = QAPipeline()
+    broken_code = "<!DOCTYPE html><html><body><script>" + ("const value = 1;\n" * 500) + "ctx.fillText(score, REF_"
+    errors = [
+        QACheckError(
+            type="L1_syntax",
+            message="JavaScript syntax error in <script>: Unexpected end of input",
+            severity="error",
+        ),
+    ]
+
+    with patch.object(
+        pipeline._client,
+        "is_enabled",
+        return_value=True,
+    ), patch.object(
+        pipeline,
+        "_fix_with_llm",
+        new=AsyncMock(return_value="<!DOCTYPE html><html><body>fixed</body></html>"),
+    ) as mock_fix:
+        asyncio.run(
+            pipeline.repair_code(
+                broken_code,
+                errors,
+                GameSpec(game_type="runner"),
+            )
+        )
+
+    assert mock_fix.await_args.kwargs["repair_family"] == "syntax_structural"
+    assert mock_fix.await_args.kwargs["max_tokens"] >= 6144
+
+
+def test_fix_with_llm_retries_truncated_syntax_repair_with_larger_budget():
+    pipeline = QAPipeline()
+    errors = [
+        QACheckError(
+            type="L1_syntax",
+            message="JavaScript syntax error in <script>: Unexpected end of input",
+            severity="error",
+        ),
+    ]
+
+    with patch(
+        "src.engine.qa_pipeline.require_prompt",
+        return_value="FIX::{code}",
+    ), patch.object(
+        pipeline._client,
+        "complete",
+        new=AsyncMock(side_effect=[
+            LLMResponseTruncatedError(
+                "Anthropic response hit max_tokens and may be truncated",
+                response_excerpt="<html><body><script>function draw(){",
+                stop_reason="max_tokens",
+            ),
+            "<!DOCTYPE html><html><body>fixed</body></html>",
+        ]),
+    ) as mock_complete:
+        repaired = asyncio.run(
+            pipeline._fix_with_llm(
+                "<!DOCTYPE html><html><body><script>function draw(){</script></body></html>",
+                errors,
+                GameSpec(game_type="runner"),
+                runtime_contract=None,
+                max_tokens=4096,
+                repair_family="syntax_structural",
+            )
+        )
+
+    assert repaired == "<!DOCTYPE html><html><body>fixed</body></html>"
+    assert mock_complete.await_count == 2
+    first_max_tokens = mock_complete.await_args_list[0].kwargs["max_tokens"]
+    second_max_tokens = mock_complete.await_args_list[1].kwargs["max_tokens"]
+    assert second_max_tokens > first_max_tokens

@@ -23,13 +23,14 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import List
+from typing import Any, Awaitable, Callable, Dict, List, TypeVar
 
 from ..config.settings import settings
 from ..config.timeout_store import get_float as get_timeout_float, get_int as get_timeout_int
 from .quality_scorer import RuntimeQAResult
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 
 _INSTRUMENTATION_JS = """
@@ -418,6 +419,52 @@ def _dom_fingerprint_changed(before: object, after: object) -> bool:
     )
 
 
+class RuntimeQAPhaseTimeoutError(asyncio.TimeoutError):
+    def __init__(self, phase: str, timeout_s: float) -> None:
+        super().__init__(f"{phase} timed out after {timeout_s:.2f}s")
+        self.phase = phase
+        self.timeout_s = timeout_s
+
+
+def _phase_timeout_s(key: str, default: float, *, effective_timeout_s: float) -> float:
+    configured = max(get_timeout_float(key, default, min_value=0.05), 0.05)
+    return max(min(configured, effective_timeout_s), 0.05)
+
+
+def _overall_timeout_s(*, effective_timeout_s: float) -> float:
+    phase_budget_s = sum((
+        _phase_timeout_s(
+            "timeout.ai_engine.runtime_qa.phase_launch_s",
+            8.0,
+            effective_timeout_s=effective_timeout_s,
+        ),
+        _phase_timeout_s(
+            "timeout.ai_engine.runtime_qa.phase_content_load_s",
+            15.0,
+            effective_timeout_s=effective_timeout_s,
+        ),
+        _phase_timeout_s(
+            "timeout.ai_engine.runtime_qa.phase_interaction_s",
+            6.0,
+            effective_timeout_s=effective_timeout_s,
+        ),
+        _phase_timeout_s(
+            "timeout.ai_engine.runtime_qa.phase_collect_s",
+            5.0,
+            effective_timeout_s=effective_timeout_s,
+        ),
+    ))
+    headroom_s = max(
+        get_timeout_float(
+            "timeout.ai_engine.runtime_qa.phase_total_headroom_s",
+            3.0,
+            min_value=0.05,
+        ),
+        0.05,
+    )
+    return max(min(effective_timeout_s, phase_budget_s + headroom_s), 0.05)
+
+
 async def run_runtime_qa(html_code: str, timeout_s: float | None = None) -> RuntimeQAResult:
     """Run headless browser QA and a lightweight interaction smoke test."""
     effective_timeout_s = max(float(timeout_s if timeout_s is not None else get_timeout_float(
@@ -432,14 +479,44 @@ async def run_runtime_qa(html_code: str, timeout_s: float | None = None) -> Runt
         return RuntimeQAResult(
             ran=False,
             unavailable_reason=f"playwright_import_error: {exc}",
+            unavailable_kind="infra_unavailable",
+            unavailable_phase="bootstrap",
         )
 
     js_errors: List[str] = []
-    start = time.time()
+    start = time.perf_counter()
     browser = None
+    overall_timeout_s = _overall_timeout_s(effective_timeout_s=effective_timeout_s)
+    phase_metrics: Dict[str, Any] = {
+        "requested_timeout_s": effective_timeout_s,
+        "overall_timeout_s": overall_timeout_s,
+    }
 
     async def _execute() -> RuntimeQAResult:
         nonlocal browser
+
+        async def _run_phase(
+            phase: str,
+            operation: Callable[[], Awaitable[T]],
+            *,
+            timeout_key: str,
+            default_timeout_s: float,
+        ) -> T:
+            phase_start = time.perf_counter()
+            timeout_budget_s = _phase_timeout_s(
+                timeout_key,
+                default_timeout_s,
+                effective_timeout_s=effective_timeout_s,
+            )
+            phase_metrics[f"{phase}_timeout_s"] = timeout_budget_s
+            try:
+                result = await asyncio.wait_for(operation(), timeout=timeout_budget_s)
+            except asyncio.TimeoutError as exc:
+                phase_metrics[f"{phase}_elapsed_ms"] = int((time.perf_counter() - phase_start) * 1000)
+                raise RuntimeQAPhaseTimeoutError(phase, timeout_budget_s) from exc
+            phase_metrics[f"{phase}_elapsed_ms"] = int((time.perf_counter() - phase_start) * 1000)
+            return result
+
         async with async_playwright() as p:
             launch_kwargs = dict(
                 headless=True,
@@ -454,58 +531,99 @@ async def run_runtime_qa(html_code: str, timeout_s: float | None = None) -> Runt
             chromium_executable = _resolve_chromium_executable()
             if chromium_executable:
                 launch_kwargs["executable_path"] = chromium_executable
-            browser = await p.chromium.launch(**launch_kwargs)
-            context = await browser.new_context(
-                viewport={"width": 420, "height": 700},
+
+            async def _launch_phase():
+                nonlocal browser
+                browser = await p.chromium.launch(**launch_kwargs)
+                context = await browser.new_context(
+                    viewport={"width": 420, "height": 700},
+                )
+                return await context.new_page()
+
+            page = await _run_phase(
+                "launch",
+                _launch_phase,
+                timeout_key="timeout.ai_engine.runtime_qa.phase_launch_s",
+                default_timeout_s=8.0,
             )
-            page = await context.new_page()
 
             page.on("console", lambda msg: (
                 js_errors.append(msg.text) if msg.type == "error" else None
             ))
             page.on("pageerror", lambda exc: js_errors.append(str(exc)))
 
-            await page.add_init_script(_INSTRUMENTATION_JS)
-            await page.set_content(_inject_probe_script(html_code), wait_until="load")
-            with contextlib.suppress(Exception):
-                await page.wait_for_load_state(
-                    "load",
-                    timeout=max(
-                        get_timeout_int("timeout.ai_engine.runtime_qa.load_wait_min_ms", 250, min_value=1),
-                        int(
-                            effective_timeout_s * get_timeout_float(
-                                "timeout.ai_engine.runtime_qa.load_wait_factor_ms_per_s",
-                                250.0,
-                                min_value=1.0,
-                            )
-                        ),
+            async def _content_load_phase() -> None:
+                await page.add_init_script(_INSTRUMENTATION_JS)
+                await page.set_content(_inject_probe_script(html_code), wait_until="load")
+                load_wait_timeout_ms = max(
+                    get_timeout_int("timeout.ai_engine.runtime_qa.load_wait_min_ms", 250, min_value=1),
+                    int(
+                        effective_timeout_s * get_timeout_float(
+                            "timeout.ai_engine.runtime_qa.load_wait_factor_ms_per_s",
+                            250.0,
+                            min_value=1.0,
+                        )
                     ),
                 )
+                phase_metrics["load_wait_timeout_ms"] = load_wait_timeout_ms
+                with contextlib.suppress(Exception):
+                    await page.wait_for_load_state(
+                        "load",
+                        timeout=load_wait_timeout_ms,
+                    )
 
-            initial_wait_s = min(
-                get_timeout_float("timeout.ai_engine.runtime_qa.initial_wait_max_s", 2.0, min_value=0.01),
-                max(
-                    effective_timeout_s * get_timeout_float("timeout.ai_engine.runtime_qa.initial_wait_ratio", 0.25, min_value=0.0),
-                    get_timeout_float("timeout.ai_engine.runtime_qa.initial_wait_min_s", 0.35, min_value=0.0),
-                ),
-            )
-            await asyncio.sleep(initial_wait_s)
+                initial_wait_s = min(
+                    get_timeout_float("timeout.ai_engine.runtime_qa.initial_wait_max_s", 2.0, min_value=0.01),
+                    max(
+                        effective_timeout_s * get_timeout_float("timeout.ai_engine.runtime_qa.initial_wait_ratio", 0.25, min_value=0.0),
+                        get_timeout_float("timeout.ai_engine.runtime_qa.initial_wait_min_s", 0.35, min_value=0.0),
+                    ),
+                )
+                phase_metrics["initial_wait_s"] = initial_wait_s
+                await asyncio.sleep(initial_wait_s)
 
-            canvas_fingerprint_before = await page.evaluate(_CANVAS_FINGERPRINT_JS)
-            dom_fingerprint_before = await page.evaluate(_DOM_FINGERPRINT_JS)
-            canvas_renders = await page.evaluate(_CANVAS_CHECK_JS)
-            await page.evaluate(_INTERACTION_JS)
-            post_interaction_wait_s = min(
-                get_timeout_float("timeout.ai_engine.runtime_qa.post_wait_max_s", 0.8, min_value=0.01),
-                max(
-                    effective_timeout_s * get_timeout_float("timeout.ai_engine.runtime_qa.post_wait_ratio", 0.15, min_value=0.0),
-                    get_timeout_float("timeout.ai_engine.runtime_qa.post_wait_min_s", 0.15, min_value=0.0),
-                ),
+            await _run_phase(
+                "content_load",
+                _content_load_phase,
+                timeout_key="timeout.ai_engine.runtime_qa.phase_content_load_s",
+                default_timeout_s=15.0,
             )
-            await asyncio.sleep(post_interaction_wait_s)
-            canvas_fingerprint_after = await page.evaluate(_CANVAS_FINGERPRINT_JS)
-            dom_fingerprint_after = await page.evaluate(_DOM_FINGERPRINT_JS)
-            collected = await page.evaluate(_COLLECT_JS)
+
+            async def _interaction_phase() -> tuple[Any, Any, Any]:
+                canvas_fingerprint_before = await page.evaluate(_CANVAS_FINGERPRINT_JS)
+                dom_fingerprint_before = await page.evaluate(_DOM_FINGERPRINT_JS)
+                canvas_renders = await page.evaluate(_CANVAS_CHECK_JS)
+                await page.evaluate(_INTERACTION_JS)
+                post_interaction_wait_s = min(
+                    get_timeout_float("timeout.ai_engine.runtime_qa.post_wait_max_s", 0.8, min_value=0.01),
+                    max(
+                        effective_timeout_s * get_timeout_float("timeout.ai_engine.runtime_qa.post_wait_ratio", 0.15, min_value=0.0),
+                        get_timeout_float("timeout.ai_engine.runtime_qa.post_wait_min_s", 0.15, min_value=0.0),
+                    ),
+                )
+                phase_metrics["post_interaction_wait_s"] = post_interaction_wait_s
+                await asyncio.sleep(post_interaction_wait_s)
+                return canvas_fingerprint_before, dom_fingerprint_before, canvas_renders
+
+            canvas_fingerprint_before, dom_fingerprint_before, canvas_renders = await _run_phase(
+                "interaction",
+                _interaction_phase,
+                timeout_key="timeout.ai_engine.runtime_qa.phase_interaction_s",
+                default_timeout_s=6.0,
+            )
+
+            async def _collect_phase() -> tuple[Any, Any, Any]:
+                canvas_fingerprint_after = await page.evaluate(_CANVAS_FINGERPRINT_JS)
+                dom_fingerprint_after = await page.evaluate(_DOM_FINGERPRINT_JS)
+                collected = await page.evaluate(_COLLECT_JS)
+                return canvas_fingerprint_after, dom_fingerprint_after, collected
+
+            canvas_fingerprint_after, dom_fingerprint_after, collected = await _run_phase(
+                "collect",
+                _collect_phase,
+                timeout_key="timeout.ai_engine.runtime_qa.phase_collect_s",
+                default_timeout_s=5.0,
+            )
 
             fps = float(collected.get("fps", 0))
             game_over_triggered = bool(collected.get("gameOverReceived", False))
@@ -525,7 +643,8 @@ async def run_runtime_qa(html_code: str, timeout_s: float | None = None) -> Runt
                 dom_fingerprint_before,
                 dom_fingerprint_after,
             )
-            load_time_ms = int((time.time() - start) * 1000)
+            load_time_ms = int((time.perf_counter() - start) * 1000)
+            phase_metrics["total_elapsed_ms"] = load_time_ms
 
             logger.info(
                 "Runtime QA: canvas_renders=%s, fps=%.1f, js_errors=%s, input_signals=%s, load_ms=%s",
@@ -548,21 +667,40 @@ async def run_runtime_qa(html_code: str, timeout_s: float | None = None) -> Runt
                 interaction_performed=interaction_performed,
                 canvas_changed_after_input=canvas_changed_after_input,
                 dom_changed_after_input=dom_changed_after_input,
+                phase_metrics=dict(phase_metrics),
             )
 
     try:
-        return await asyncio.wait_for(_execute(), timeout=effective_timeout_s)
-    except asyncio.TimeoutError:
-        logger.warning("Runtime QA timed out")
+        return await asyncio.wait_for(_execute(), timeout=overall_timeout_s)
+    except RuntimeQAPhaseTimeoutError as exc:
+        logger.warning("Runtime QA timed out during phase %s", exc.phase)
+        phase_metrics["total_elapsed_ms"] = int((time.perf_counter() - start) * 1000)
         return RuntimeQAResult(
             ran=False,
-            unavailable_reason=f"runtime_qa_timeout:{effective_timeout_s:.2f}s",
+            unavailable_reason=f"runtime_qa_timeout:{exc.phase}:{exc.timeout_s:.2f}s",
+            unavailable_kind="timeout",
+            unavailable_phase=exc.phase,
+            phase_metrics=dict(phase_metrics),
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Runtime QA timed out")
+        phase_metrics["total_elapsed_ms"] = int((time.perf_counter() - start) * 1000)
+        return RuntimeQAResult(
+            ran=False,
+            unavailable_reason=f"runtime_qa_timeout:overall:{overall_timeout_s:.2f}s",
+            unavailable_kind="timeout",
+            unavailable_phase="overall",
+            phase_metrics=dict(phase_metrics),
         )
     except Exception as exc:
         logger.warning(f"Runtime QA failed: {exc}")
+        phase_metrics["total_elapsed_ms"] = int((time.perf_counter() - start) * 1000)
         return RuntimeQAResult(
             ran=False,
             unavailable_reason=f"runtime_qa_exception:{exc}",
+            unavailable_kind="infra_unavailable",
+            unavailable_phase="execution",
+            phase_metrics=dict(phase_metrics),
         )
     finally:
         if browser is not None:

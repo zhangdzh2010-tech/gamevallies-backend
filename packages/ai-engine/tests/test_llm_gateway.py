@@ -1,0 +1,102 @@
+import os
+import sys
+from unittest.mock import patch
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from src.services.llm_gateway import LLMGateway, ProviderRecord, RouteRecord
+
+
+def _provider(
+    provider_id: str,
+    name: str,
+    *,
+    updated_at: float = 100.0,
+) -> ProviderRecord:
+    return ProviderRecord(
+        id=provider_id,
+        name=name,
+        provider_type="openai_compatible",
+        region="cn_shanghai",
+        base_url=f"https://{provider_id}.example.com/v1",
+        api_key=f"secret-{provider_id}",
+        model=f"model-{provider_id}",
+        fast_model=f"fast-{provider_id}",
+        request_timeout_s=600,
+        connect_timeout_s=15,
+        enabled=True,
+        priority=100,
+        description=None,
+        extra_config={},
+        updated_at=updated_at,
+    )
+
+
+def _route(route_id: str, step_key: str, provider_id: str, *, updated_at: float = 100.0) -> RouteRecord:
+    return RouteRecord(
+        id=route_id,
+        step_key=step_key,
+        region="cn_shanghai",
+        provider_id=provider_id,
+        fallback_provider_ids=[],
+        model_override=None,
+        fast_model_override=None,
+        request_timeout_s=None,
+        connect_timeout_s=None,
+        enabled=True,
+        updated_at=updated_at,
+    )
+
+
+def _gateway(*, providers: list[ProviderRecord], routes: list[RouteRecord]) -> LLMGateway:
+    gateway = LLMGateway()
+    gateway._providers = {provider.id: provider for provider in providers}
+    gateway._routes = routes
+    gateway._config_version = 123
+    gateway._loaded_at = 1e12
+    return gateway
+
+
+def test_resolve_candidates_falls_back_to_parent_route_for_dynamic_step():
+    minimax = _provider("provider-minimax", "MiniMax Shanghai")
+    deepseek = _provider("provider-deepseek", "DeepSeek Shanghai", updated_at=90.0)
+    gateway = _gateway(
+        providers=[minimax, deepseek],
+        routes=[_route("route-qa-fix", "qa_fix", minimax.id)],
+    )
+
+    with patch("src.services.llm_gateway.settings.SERVICE_REGION", "cn_shanghai"), patch.object(
+        gateway,
+        "_ensure_loaded",
+        return_value=None,
+    ):
+        candidates = gateway.resolve_candidates(step_key="qa_fix.mobile_layout")
+
+    assert candidates[0].provider_id == minimax.id
+    assert candidates[0].route_snapshot["requested_step_key"] == "qa_fix.mobile_layout"
+    assert candidates[0].route_snapshot["matched_step_key"] == "qa_fix"
+    assert candidates[0].route_snapshot["route_match_strategy"] == "parent_step"
+
+
+def test_resolve_candidates_prefers_exact_route_over_parent_route():
+    minimax = _provider("provider-minimax", "MiniMax Shanghai")
+    deepseek = _provider("provider-deepseek", "DeepSeek Shanghai", updated_at=90.0)
+    gateway = _gateway(
+        providers=[minimax, deepseek],
+        routes=[
+            _route("route-qa-fix", "qa_fix", minimax.id),
+            _route("route-qa-fix-mobile", "qa_fix.mobile_layout", deepseek.id, updated_at=101.0),
+        ],
+    )
+
+    with patch("src.services.llm_gateway.settings.SERVICE_REGION", "cn_shanghai"), patch.object(
+        gateway,
+        "_ensure_loaded",
+        return_value=None,
+    ):
+        candidates = gateway.resolve_candidates(step_key="qa_fix.mobile_layout")
+
+    assert candidates[0].provider_id == deepseek.id
+    assert candidates[0].route_snapshot["requested_step_key"] == "qa_fix.mobile_layout"
+    assert candidates[0].route_snapshot["matched_step_key"] == "qa_fix.mobile_layout"
+    assert candidates[0].route_snapshot["route_match_strategy"] == "exact"

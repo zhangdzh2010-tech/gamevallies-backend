@@ -12,3 +12,4 @@ aiohttp==3.9.1
 anthropic==0.40.0
 pymysql==1.1.1
 playwright==1.43.0
+esprima==4.0.1

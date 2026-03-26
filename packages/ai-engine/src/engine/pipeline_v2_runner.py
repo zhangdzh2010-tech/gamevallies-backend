@@ -18,17 +18,20 @@ from ..api.models import (
     QAResult,
     RunPipelineResponse,
     RunPipelineV2Request,
+    SourceBundleContext,
 )
 from ..config.settings import settings
 from ..config.timeout_store import get_float as get_timeout_float, get_int as get_timeout_int
 from .code_generator import CodeGenerator
-from .dialogue_engine import DialogueEngine
+from .dialogue_engine import DialogueEngine, SlotExtractionFailure, _looks_like_educational_request
 from .game_designer import GameDesigner
 from .pipeline_orchestrator import PipelineExecutionError
 from .prompt_store import get_default_runtime_profile, require_prompt
 from .qa_pipeline import QAPipeline
 from .quality_scorer import LLMReviewResult, QAStaticResult, QualityScorer
+from .restart_entry import has_restart_entry
 from .runtime_qa import run_runtime_qa
+from .terminal_state import has_required_state_presence, has_terminal_state_transition
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +55,14 @@ PROFILE_BY_GAME_TYPE: dict[str, str] = {
     "rhythm": "tap_timing",
 }
 
+PROFILE_TO_GAME_TYPE_HINT: dict[str, str] = {
+    "portrait_arcade": "runner",
+    "lane_runner": "runner",
+    "grid_puzzle": "puzzle",
+    "topdown_action": "dodge",
+    "tap_timing": "rhythm",
+}
+
 
 def _default_runtime_profile_id() -> str:
     profile = get_default_runtime_profile()
@@ -67,6 +78,7 @@ STATE_SYNONYMS: dict[str, tuple[str, ...]] = {
     "ready": ("ready", "menu", "start", "idle"),
     "playing": ("playing", "play", "running", "active"),
     "game_over": ("game_over", "gameover", "game over", "lose", "lost"),
+    "level_complete": ("level_complete", "levelcomplete", "level complete", "completed", "solved", "success", "win", "cleared"),
 }
 
 INPUT_EVENT_PATTERNS: dict[str, tuple[str, ...]] = {
@@ -204,7 +216,7 @@ class V2PipelineRunner:
         stage_context["stage"] = "logic_generate"
         generated = await self._generate_create_code(request, spec, gdd, runtime_contract)
 
-        qa_result, runtime_qa, runtime_retries = await self._run_contract_and_runtime_flow(
+        qa_result, runtime_qa, runtime_retries, qa_warnings = await self._run_contract_and_runtime_flow(
             code=generated.html_code,
             spec=spec,
             runtime_contract=runtime_contract,
@@ -213,6 +225,7 @@ class V2PipelineRunner:
             game_id=request.game_id,
             user_id=request.user_id,
             stage_context=stage_context,
+            allow_runtime_qa_unavailable=False,
         )
 
         elapsed = int(time.time() * 1000) - start_ms
@@ -249,6 +262,8 @@ class V2PipelineRunner:
             quality_score=quality.final_score,
             runtime_profile=runtime_profile,
             contract_version=runtime_contract.version,
+            qa_warnings=qa_warnings,
+            runtime_qa_report=self._serialize_runtime_qa(runtime_qa, []),
             quality_breakdown=quality.details | {
                 "qa_penalty": quality.qa_penalty,
                 "strategy_bonus": quality.strategy_bonus,
@@ -304,7 +319,7 @@ class V2PipelineRunner:
         stage_context["stage"] = "logic_generate"
         updated_code, iteration_type = await self._generate_iteration_code(request, spec, runtime_contract)
 
-        qa_result, runtime_qa, runtime_retries = await self._run_contract_and_runtime_flow(
+        qa_result, runtime_qa, runtime_retries, qa_warnings = await self._run_contract_and_runtime_flow(
             code=updated_code,
             spec=spec,
             runtime_contract=runtime_contract,
@@ -313,6 +328,7 @@ class V2PipelineRunner:
             game_id=request.game_id,
             user_id=request.user_id,
             stage_context=stage_context,
+            allow_runtime_qa_unavailable=(request.existing_game.status or "").strip().lower() == "published",
         )
 
         elapsed = int(time.time() * 1000) - start_ms
@@ -327,14 +343,21 @@ class V2PipelineRunner:
             changes=[
                 f"Applied: {request.iteration_intent.feedback}",
                 f"Runtime profile: {runtime_profile}",
-                f"Runtime QA jsErrors={len(runtime_qa.js_errors)}",
+                (
+                    f"Runtime QA unavailable: {runtime_qa.unavailable_reason}"
+                    if qa_warnings
+                    else f"Runtime QA jsErrors={len(runtime_qa.js_errors)}"
+                ),
             ],
             iteration_type=iteration_type.value,
+            game_spec=spec,
             generation_time_ms=elapsed,
             qa_retries=qa_result.retries + runtime_retries,
             iteration_retries=0,
             runtime_profile=runtime_profile,
             contract_version=runtime_contract.version,
+            qa_warnings=qa_warnings,
+            runtime_qa_report=self._serialize_runtime_qa(runtime_qa, []),
         )
 
     async def _build_create_spec(self, request: RunPipelineV2Request) -> GameSpec:
@@ -348,6 +371,9 @@ class V2PipelineRunner:
             description=description,
             stage="spec_build",
             title=request.title,
+            preferred_game_type=PROFILE_TO_GAME_TYPE_HINT.get(
+                (request.runtime_contract.runtime_profile or "").strip(),
+            ),
         )
 
     async def _build_iteration_spec(self, request: IterateV2Request) -> GameSpec:
@@ -355,23 +381,54 @@ class V2PipelineRunner:
         if not feedback:
             raise PipelineExecutionError("iteration_intent.feedback is required", stage="spec_build")
 
+        base_spec = request.source_spec.model_copy(deep=True) if request.source_spec else None
         current_summary = self._summarize_current_code(request.current_code)
         conversation_text = " ".join(
             item.get("content", "")
             for item in request.iteration_intent.conversation[-3:]
             if isinstance(item, dict)
         ).strip()
+        source_spec_summary = self._summarize_source_spec(base_spec)
+        source_bundle_context_summary = self._summarize_source_bundle_context(request.source_bundle_context)
         spec_prompt = require_prompt("prompt.iteration_spec_context_template").format(
             current_summary=current_summary,
             status=request.existing_game.status,
             visibility=request.existing_game.visibility,
             feedback=feedback,
             conversation_text=conversation_text or "(none)",
+            source_spec_summary=source_spec_summary or "(none)",
+            source_bundle_context=source_bundle_context_summary or "(none)",
         )
-        return await self._parse_spec_with_retries(
-            description=spec_prompt,
-            stage="spec_build",
-            title=None,
+        title = (request.source_bundle_context.title or "").strip() or None
+        preferred_game_type = (
+            (base_spec.game_type or "").strip()
+            if base_spec and (base_spec.game_type or "").strip()
+            else PROFILE_TO_GAME_TYPE_HINT.get((request.runtime_contract.runtime_profile or "").strip())
+        )
+
+        try:
+            parsed_spec = await self._parse_spec_with_retries(
+                description=spec_prompt,
+                stage="spec_build",
+                title=title,
+                preferred_game_type=preferred_game_type,
+            )
+        except PipelineExecutionError as exc:
+            if base_spec and self._should_fallback_iteration_spec(exc):
+                return self._build_iteration_fallback_spec(
+                    base_spec=base_spec,
+                    feedback=feedback,
+                    title=title,
+                    source_bundle_context=request.source_bundle_context,
+                )
+            raise
+
+        return self._merge_iteration_spec(
+            base_spec=base_spec,
+            parsed_spec=parsed_spec,
+            feedback=feedback,
+            title=title,
+            source_bundle_context=request.source_bundle_context,
         )
 
     async def _parse_spec_with_retries(
@@ -380,16 +437,22 @@ class V2PipelineRunner:
         description: str,
         stage: str,
         title: Optional[str],
+        preferred_game_type: Optional[str] = None,
     ) -> GameSpec:
         last_exc: Exception | None = None
         for attempt in range(1, DEFAULT_STAGE_TOTAL_ATTEMPTS + 1):
             try:
                 spec = await self.dialogue_engine.parse_description_to_spec(
                     description,
-                    allow_fallback=False,
+                    allow_fallback=True,
+                    title=title,
+                    preferred_game_type=preferred_game_type,
                 )
                 spec.source_description = description
-                spec.intent_summary = title or spec.intent_summary or description[:160]
+                if title and spec.intent_summary:
+                    spec.intent_summary = f"{title}: {spec.intent_summary}"
+                else:
+                    spec.intent_summary = title or spec.intent_summary or description[:160]
                 return spec
             except Exception as exc:
                 last_exc = exc
@@ -401,7 +464,23 @@ class V2PipelineRunner:
             f"Spec build failed after {DEFAULT_STAGE_TOTAL_ATTEMPTS} attempts: {last_exc}",
             stage=stage,
             retry_count=DEFAULT_STAGE_TOTAL_ATTEMPTS - 1,
-        )
+            failure_family="spec_build",
+            artifacts=getattr(last_exc, "artifacts", None),
+        ) from last_exc
+
+    @staticmethod
+    def _should_fallback_iteration_spec(exc: PipelineExecutionError) -> bool:
+        if isinstance(exc.__cause__, SlotExtractionFailure):
+            return True
+
+        artifacts = getattr(exc, "artifacts", None) or []
+        if any(
+            isinstance(artifact, dict) and artifact.get("artifact_type") == "spec_build_diagnostics"
+            for artifact in artifacts
+        ):
+            return True
+
+        return "llm slot extraction returned no valid json" in str(exc).lower()
 
     def _select_runtime_profile(self, spec: GameSpec, requested_profile: Optional[str]) -> str:
         requested = (requested_profile or "").strip()
@@ -412,6 +491,12 @@ class V2PipelineRunner:
                 default_profile = requested
             if requested != default_profile:
                 return requested
+        if _looks_like_educational_request(
+            spec.source_description,
+            spec.intent_summary,
+            " ".join(spec.special_rules or []),
+        ):
+            return "grid_puzzle"
         normalized = re.sub(r"[^a-z0-9]+", " ", (spec.game_type or "").lower()).strip()
         if normalized in PROFILE_BY_GAME_TYPE:
             return PROFILE_BY_GAME_TYPE[normalized]
@@ -498,8 +583,8 @@ class V2PipelineRunner:
     def _profile_state_overrides(self, runtime_profile: str) -> dict[str, Any]:
         if runtime_profile == "grid_puzzle":
             return {
-                "required_states": ["boot", "ready", "playing", "game_over"],
-                "required_flags": ["score"],
+                "required_states": ["boot", "ready", "playing", "level_complete"],
+                "required_flags": ["levelComplete", "currentLevel", "showHint"],
                 "restartable": True,
             }
         return {
@@ -512,9 +597,18 @@ class V2PipelineRunner:
         if runtime_profile == "grid_puzzle":
             return {
                 "requires_player_entity": False,
-                "requires_scoring": True,
+                "requires_scoring": False,
                 "requires_terminal_state": True,
                 "requires_restart_entry": True,
+                "terminal_state_aliases": [
+                    "level_complete",
+                    "completed",
+                    "complete",
+                    "solved",
+                    "success",
+                    "win",
+                    "cleared",
+                ],
                 "primary_goal": "grid_completion",
             }
         if runtime_profile == "lane_runner":
@@ -523,6 +617,7 @@ class V2PipelineRunner:
                 "requires_scoring": True,
                 "requires_terminal_state": True,
                 "requires_restart_entry": True,
+                "terminal_state_aliases": ["game_over", "over", "ended", "lost", "failed"],
                 "primary_goal": "lane_survival",
             }
         return {
@@ -530,6 +625,7 @@ class V2PipelineRunner:
             "requires_scoring": True,
             "requires_terminal_state": True,
             "requires_restart_entry": True,
+            "terminal_state_aliases": ["game_over", "over", "ended", "lost", "failed"],
             "primary_goal": "clear_feedback_loop",
         }
 
@@ -613,6 +709,7 @@ class V2PipelineRunner:
                     runtime_profile=runtime_contract.runtime_profile,
                     prompt_bundle_snapshot=request.prompt_bundle_snapshot.model_dump(),
                     game_spec=spec,
+                    source_bundle_context=request.source_bundle_context,
                 )
             except Exception as exc:
                 last_exc = exc
@@ -637,7 +734,8 @@ class V2PipelineRunner:
         game_id: str,
         user_id: str,
         stage_context: dict[str, str],
-    ) -> tuple[QAResult, Any, int]:
+        allow_runtime_qa_unavailable: bool,
+    ) -> tuple[QAResult, Any, int, list[dict[str, Any]]]:
         stage_context["stage"] = "contract_qa"
         self._notify(progress_cb, "contract_qa", 76, "Running contract QA", {
             "gameId": game_id,
@@ -687,7 +785,7 @@ class V2PipelineRunner:
             "userId": user_id,
             "runtimeProfile": runtime_contract.runtime_profile,
         })
-        final_code, runtime_qa, runtime_retries = await self._run_runtime_qa_loop(
+        final_code, runtime_qa, runtime_retries, qa_warnings = await self._run_runtime_qa_loop(
             code=qa_result.code,
             spec=spec,
             runtime_contract=runtime_contract,
@@ -695,8 +793,9 @@ class V2PipelineRunner:
             progress_cb=progress_cb,
             game_id=game_id,
             user_id=user_id,
+            allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
         )
-        return QAResult(success=True, code=final_code, retries=qa_result.retries), runtime_qa, runtime_retries
+        return QAResult(success=True, code=final_code, retries=qa_result.retries), runtime_qa, runtime_retries, qa_warnings
 
     async def _run_contract_qa_loop(
         self,
@@ -753,16 +852,39 @@ class V2PipelineRunner:
         progress_cb: ProgressCallback,
         game_id: str,
         user_id: str,
-    ) -> tuple[str, Any, int]:
+        allow_runtime_qa_unavailable: bool = False,
+    ) -> tuple[str, Any, int, list[dict[str, Any]]]:
         current_code = code
         remediation_attempts = max(0, int(settings.RUNTIME_QA_REMEDIATION_MAX_RETRIES or 1))
         total_retries = 0
+        qa_warnings: list[dict[str, Any]] = []
 
         for attempt in range(remediation_attempts + 1):
             runtime_qa_timeout_s = self._resolve_runtime_qa_timeout(current_code, attempt=attempt)
             runtime_qa = await run_runtime_qa(current_code, timeout_s=runtime_qa_timeout_s)
             if not runtime_qa.ran:
                 unavailable_reason = getattr(runtime_qa, "unavailable_reason", None)
+                unavailable_kind = getattr(runtime_qa, "unavailable_kind", None)
+                unavailable_phase = getattr(runtime_qa, "unavailable_phase", None)
+                runtime_qa_report = self._serialize_runtime_qa(runtime_qa, [])
+                if allow_runtime_qa_unavailable and unavailable_kind in {"timeout", "infra_unavailable", "exception"}:
+                    qa_warning = self._build_runtime_qa_warning(runtime_qa)
+                    qa_warnings = [qa_warning]
+                    self._notify(
+                        progress_cb,
+                        "runtime_simulation_qa",
+                        98,
+                        qa_warning["message"],
+                        {
+                            "gameId": game_id,
+                            "userId": user_id,
+                            "warningType": qa_warning["type"],
+                            "unavailableKind": unavailable_kind,
+                            "unavailablePhase": unavailable_phase,
+                            "softFailed": True,
+                        },
+                    )
+                    return current_code, runtime_qa, total_retries, qa_warnings
                 if settings.RUNTIME_QA_REQUIRED or settings.ENVIRONMENT == "production":
                     raise PipelineExecutionError(
                         "Runtime QA unavailable: {}".format(
@@ -770,7 +892,7 @@ class V2PipelineRunner:
                         ),
                         stage="runtime_simulation_qa",
                         retry_count=total_retries,
-                        failure_family="runtime_qa",
+                        failure_family="qa_infra_unavailable",
                         artifacts=[
                             self._build_text_artifact(
                                 artifact_type="failed_runtime_candidate",
@@ -786,21 +908,20 @@ class V2PipelineRunner:
                             self._build_json_artifact(
                                 artifact_type="runtime_qa_report",
                                 payload={
-                                    "ran": False,
+                                    **runtime_qa_report,
                                     "retryCount": total_retries,
                                     "attempt": attempt,
                                     "timeoutS": runtime_qa_timeout_s,
-                                    "unavailableReason": unavailable_reason,
                                 },
                                 metadata={"stage": "runtime_simulation_qa"},
                             ),
                         ],
                     )
-                return current_code, runtime_qa, total_retries
+                return current_code, runtime_qa, total_retries, qa_warnings
 
             errors = self._runtime_qa_errors(runtime_qa, current_code)
             if not errors:
-                return current_code, runtime_qa, total_retries
+                return current_code, runtime_qa, total_retries, qa_warnings
 
             if attempt == remediation_attempts:
                 error_messages = "; ".join(error.message for error in errors[:5])
@@ -1002,8 +1123,10 @@ class V2PipelineRunner:
                 ))
 
         for required_state in runtime_contract.state.required_states:
-            synonyms = STATE_SYNONYMS.get(required_state, (required_state,))
-            if not any(token in lower for token in synonyms):
+            normalized_required_state = str(required_state or "").strip().lower()
+            if normalized_required_state in {"game_over", "level_complete"}:
+                continue
+            if not has_required_state_presence(code, required_state, runtime_contract):
                 errors.append(QACheckError(
                     type="contract_state",
                     message=f"Runtime contract requires state '{required_state}'",
@@ -1035,22 +1158,14 @@ class V2PipelineRunner:
                 severity="error",
             ))
 
-        if runtime_contract.gameplay.requires_terminal_state and not any(token in lower for token in (
-            "gameover",
-            "game_over",
-            "game over",
-        )):
+        if runtime_contract.gameplay.requires_terminal_state and not has_terminal_state_transition(code, runtime_contract):
             errors.append(QACheckError(
                 type="contract_gameplay",
-                message="Runtime contract requires an explicit terminal state",
+                message="Runtime contract requires an explicit terminal or completion state",
                 severity="error",
             ))
 
-        if runtime_contract.gameplay.requires_restart_entry and not re.search(
-            r"\brestart\b|\bresetgame\b|\bstartgame\b",
-            code,
-            re.IGNORECASE,
-        ):
+        if runtime_contract.gameplay.requires_restart_entry and not has_restart_entry(code):
             errors.append(QACheckError(
                 type="contract_gameplay",
                 message="Runtime contract requires a restart entry point",
@@ -1160,6 +1275,18 @@ class V2PipelineRunner:
             for error in errors
         ]
 
+    @staticmethod
+    def _build_runtime_qa_warning(runtime_qa: Any) -> dict[str, Any]:
+        unavailable_reason = getattr(runtime_qa, "unavailable_reason", None) or "runtime QA unavailable"
+        return {
+            "type": "runtime_qa_unavailable",
+            "severity": "warning",
+            "message": f"Runtime QA unavailable: {unavailable_reason}",
+            "kind": getattr(runtime_qa, "unavailable_kind", None),
+            "phase": getattr(runtime_qa, "unavailable_phase", None),
+            "softFailed": True,
+        }
+
     def _serialize_runtime_qa(
         self,
         runtime_qa: Any,
@@ -1178,6 +1305,9 @@ class V2PipelineRunner:
             "fps": float(getattr(runtime_qa, "fps", 0.0) or 0.0),
             "loadTimeMs": int(getattr(runtime_qa, "load_time_ms", 0) or 0),
             "unavailableReason": getattr(runtime_qa, "unavailable_reason", None),
+            "unavailableKind": getattr(runtime_qa, "unavailable_kind", None),
+            "unavailablePhase": getattr(runtime_qa, "unavailable_phase", None),
+            "phaseMetrics": dict(getattr(runtime_qa, "phase_metrics", {}) or {}),
             "errors": self._serialize_errors(errors),
         }
 
@@ -1199,6 +1329,190 @@ class V2PipelineRunner:
         if "grid" in lower:
             hints.append("grid interactions")
         return f"{title}; " + ", ".join(hints[:4]) if hints else title
+
+    @staticmethod
+    def _summarize_source_spec(source_spec: Optional[GameSpec]) -> str:
+        if not source_spec:
+            return ""
+
+        mechanic = source_spec.intent_summary or (
+            source_spec.core_mechanics[0].type if source_spec.core_mechanics else source_spec.game_type
+        )
+        return "; ".join(
+            part
+            for part in [
+                f"type={source_spec.game_type}",
+                f"theme={source_spec.visual_style.theme}",
+                f"mechanic={mechanic}",
+                f"win={source_spec.rules.win_condition}",
+                f"ui_language={source_spec.ui_language}",
+            ]
+            if part
+        )
+
+    @staticmethod
+    def _summarize_source_bundle_context(source_bundle_context: Optional[SourceBundleContext]) -> str:
+        if not source_bundle_context:
+            return ""
+
+        segments = [
+            f"title={source_bundle_context.title}" if source_bundle_context.title else "",
+            (
+                f"bundle_version={source_bundle_context.latest_bundle_version}"
+                if source_bundle_context.latest_bundle_version is not None
+                else ""
+            ),
+            f"game_type={source_bundle_context.latest_game_type}" if source_bundle_context.latest_game_type else "",
+            f"latest_feedback={source_bundle_context.latest_feedback}" if source_bundle_context.latest_feedback else "",
+            (
+                f"latest_iteration_type={source_bundle_context.latest_iteration_type}"
+                if source_bundle_context.latest_iteration_type
+                else ""
+            ),
+            source_bundle_context.summary or "",
+        ]
+        revision_lines = [
+            ", ".join(
+                item
+                for item in [
+                    f"v{revision.version}" if revision.version is not None else "",
+                    revision.feedback or "",
+                    revision.iteration_type or "",
+                    revision.summary or "",
+                ]
+                if item
+            )
+            for revision in (source_bundle_context.recent_revisions or [])[:4]
+        ]
+        if revision_lines:
+            segments.append("recent_revisions=" + " | ".join(line for line in revision_lines if line))
+        return "; ".join(segment for segment in segments if segment)
+
+    @staticmethod
+    def _feedback_mentions_any(feedback: str, markers: tuple[str, ...]) -> bool:
+        lowered = (feedback or "").lower()
+        return any(marker in lowered for marker in markers)
+
+    def _build_iteration_fallback_spec(
+        self,
+        *,
+        base_spec: GameSpec,
+        feedback: str,
+        title: Optional[str],
+        source_bundle_context: SourceBundleContext,
+    ) -> GameSpec:
+        fallback = base_spec.model_copy(deep=True)
+        fallback.source_description = feedback
+        fallback.intent_summary = self._build_iteration_intent_summary(base_spec, feedback, title)
+        fallback.special_rules = self._merge_special_rules(
+            base_spec.special_rules,
+            self._derive_feedback_rules(feedback, base_spec.ui_language),
+            [source_bundle_context.latest_feedback] if source_bundle_context.latest_feedback else [],
+        )
+        return fallback
+
+    def _merge_iteration_spec(
+        self,
+        *,
+        base_spec: Optional[GameSpec],
+        parsed_spec: GameSpec,
+        feedback: str,
+        title: Optional[str],
+        source_bundle_context: SourceBundleContext,
+    ) -> GameSpec:
+        if not base_spec:
+            parsed_spec.intent_summary = self._build_iteration_intent_summary(parsed_spec, feedback, title)
+            parsed_spec.special_rules = self._merge_special_rules(
+                parsed_spec.special_rules,
+                self._derive_feedback_rules(feedback, parsed_spec.ui_language),
+            )
+            return parsed_spec
+
+        merged = base_spec.model_copy(deep=True)
+        merged.source_description = feedback
+        merged.intent_summary = self._build_iteration_intent_summary(base_spec, feedback, title)
+        merged.reference_game = parsed_spec.reference_game or merged.reference_game
+        merged.ui_language = base_spec.ui_language or parsed_spec.ui_language
+        merged.difficulty_curve = parsed_spec.difficulty_curve or merged.difficulty_curve
+        merged.special_rules = self._merge_special_rules(
+            base_spec.special_rules,
+            parsed_spec.special_rules,
+            self._derive_feedback_rules(feedback, merged.ui_language),
+            [source_bundle_context.latest_feedback] if source_bundle_context.latest_feedback else [],
+        )
+
+        if parsed_spec.game_type != base_spec.game_type and self._feedback_mentions_any(
+            feedback,
+            ("redesign", "overhaul", "change genre", "different game", "改成", "换成", "重做", "大改"),
+        ):
+            merged.game_type = parsed_spec.game_type
+            merged.core_mechanics = parsed_spec.core_mechanics or merged.core_mechanics
+            merged.entities = parsed_spec.entities or merged.entities
+            merged.visual_style = parsed_spec.visual_style or merged.visual_style
+            merged.rules = parsed_spec.rules or merged.rules
+            merged.platform_constraints = parsed_spec.platform_constraints or merged.platform_constraints
+            return merged
+
+        if self._feedback_mentions_any(
+            feedback,
+            ("theme", "style", "visual", "art", "skin", "look", "界面", "主题", "风格", "美术", "视觉"),
+        ):
+            merged.visual_style = parsed_spec.visual_style or merged.visual_style
+
+        if self._feedback_mentions_any(
+            feedback,
+            ("control", "input", "tap", "swipe", "drag", "touch", "操作", "控制", "点击", "滑动", "拖拽"),
+        ):
+            merged.platform_constraints = parsed_spec.platform_constraints or merged.platform_constraints
+            merged.core_mechanics = parsed_spec.core_mechanics or merged.core_mechanics
+
+        if self._feedback_mentions_any(
+            feedback,
+            ("goal", "win", "lose", "score", "lives", "objective", "胜利", "失败", "得分", "生命", "目标"),
+        ):
+            merged.rules = parsed_spec.rules or merged.rules
+
+        if self._feedback_mentions_any(
+            feedback,
+            ("mechanic", "rule", "level", "stage", "enemy", "obstacle", "玩法", "规则", "关卡", "敌人", "障碍"),
+        ):
+            merged.core_mechanics = parsed_spec.core_mechanics or merged.core_mechanics
+
+        return merged
+
+    @staticmethod
+    def _build_iteration_intent_summary(base_spec: GameSpec, feedback: str, title: Optional[str]) -> str:
+        feedback_summary = re.sub(r"\s+", " ", (feedback or "").strip())
+        if title and feedback_summary:
+            return f"{title}: {feedback_summary[:160]}"
+        if feedback_summary:
+            return feedback_summary[:160]
+        return base_spec.intent_summary
+
+    @staticmethod
+    def _merge_special_rules(*groups: Optional[list[str]]) -> list[str]:
+        merged: list[str] = []
+        for group in groups:
+            for rule in group or []:
+                text = re.sub(r"\s+", " ", str(rule or "").strip())
+                if text and text not in merged:
+                    merged.append(text)
+        return merged
+
+    @staticmethod
+    def _derive_feedback_rules(feedback: str, ui_language: str) -> list[str]:
+        text = re.sub(r"\s+", " ", (feedback or "").strip())
+        if not text:
+            return []
+
+        rules: list[str] = []
+        level_match = re.search(r"(?<!\d)(\d{1,2})\s*(?:levels?|stages?)\b", text, re.IGNORECASE)
+        if not level_match:
+            level_match = re.search(r"(?<!\d)(\d{1,2})\s*(?:个)?关卡", text)
+        if level_match:
+            count = int(level_match.group(1))
+            rules.append(f"包含{count}个关卡" if ui_language == "zh-CN" else f"Include {count} levels")
+        return rules
 
     @staticmethod
     def _is_retryable_generation_error(exc: Exception) -> bool:

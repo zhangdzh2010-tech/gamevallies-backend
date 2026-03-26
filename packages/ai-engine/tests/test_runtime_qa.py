@@ -143,7 +143,33 @@ def test_runtime_qa_honors_timeout_and_closes_browser(monkeypatch):
     result = asyncio.run(run_runtime_qa("<html></html>", timeout_s=0.05))
 
     assert result.ran is False
+    assert result.unavailable_kind == "timeout"
     assert browser.closed is True
+
+
+def test_runtime_qa_phase_timeout_records_phase_details(monkeypatch):
+    browser = _ClosableBrowser()
+    fake_module = types.SimpleNamespace(
+        async_playwright=lambda: _PlaywrightCtx(browser),
+    )
+    monkeypatch.setitem(sys.modules, "playwright.async_api", fake_module)
+
+    original_get_float = sys.modules["src.engine.runtime_qa"].get_timeout_float
+
+    def fake_get_float(key, default, min_value=0.0, max_value=None):
+        if key == "timeout.ai_engine.runtime_qa.phase_content_load_s":
+            return 0.05
+        return original_get_float(key, default, min_value=min_value, max_value=max_value)
+
+    monkeypatch.setattr("src.engine.runtime_qa.get_timeout_float", fake_get_float)
+
+    result = asyncio.run(run_runtime_qa("<html></html>", timeout_s=1.0))
+
+    assert result.ran is False
+    assert result.unavailable_kind == "timeout"
+    assert result.unavailable_phase == "content_load"
+    assert result.unavailable_reason == "runtime_qa_timeout:content_load:0.05s"
+    assert result.phase_metrics["content_load_timeout_s"] == 0.05
 
 
 def test_runtime_qa_collects_input_handler_signals(monkeypatch):
@@ -164,6 +190,26 @@ def test_runtime_qa_collects_input_handler_signals(monkeypatch):
     assert result.interaction_performed is True
     assert result.canvas_changed_after_input is True
     assert result.dom_changed_after_input is True
+
+
+def test_runtime_qa_launch_exception_is_reported_as_infra_unavailable(monkeypatch):
+    class _BrokenPlaywrightCtx:
+        async def __aenter__(self):
+            raise RuntimeError("browser crashed")
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    fake_module = types.SimpleNamespace(
+        async_playwright=lambda: _BrokenPlaywrightCtx(),
+    )
+    monkeypatch.setitem(sys.modules, "playwright.async_api", fake_module)
+
+    result = asyncio.run(run_runtime_qa("<html></html>", timeout_s=1.0))
+
+    assert result.ran is False
+    assert result.unavailable_kind == "infra_unavailable"
+    assert result.unavailable_phase == "execution"
 
 
 def test_inject_probe_script_places_runtime_probe_before_page_scripts():
@@ -209,3 +255,42 @@ def test_runtime_qa_passes_resolved_executable_to_launch(monkeypatch):
 
     assert result.ran is True
     assert wrapper.launch_kwargs["executable_path"] == "/ms-playwright/chromium-1112/chrome-linux/chrome"
+
+
+def test_runtime_qa_caps_outer_timeout_to_phase_budget_plus_headroom(monkeypatch):
+    browser = _ClosableBrowser()
+    browser.context_factory = _InteractiveContext
+    fake_module = types.SimpleNamespace(
+        async_playwright=lambda: _PlaywrightCtx(browser),
+    )
+    monkeypatch.setitem(sys.modules, "playwright.async_api", fake_module)
+
+    original_get_float = sys.modules["src.engine.runtime_qa"].get_timeout_float
+    real_wait_for = asyncio.wait_for
+    seen_timeouts = []
+
+    def fake_get_float(key, default, min_value=0.0, max_value=None):
+        overrides = {
+            "timeout.ai_engine.runtime_qa.phase_launch_s": 2.0,
+            "timeout.ai_engine.runtime_qa.phase_content_load_s": 3.0,
+            "timeout.ai_engine.runtime_qa.phase_interaction_s": 4.0,
+            "timeout.ai_engine.runtime_qa.phase_collect_s": 5.0,
+            "timeout.ai_engine.runtime_qa.phase_total_headroom_s": 1.0,
+        }
+        if key in overrides:
+            return overrides[key]
+        return original_get_float(key, default, min_value=min_value, max_value=max_value)
+
+    async def recording_wait_for(awaitable, timeout):
+        seen_timeouts.append(timeout)
+        return await real_wait_for(awaitable, timeout)
+
+    monkeypatch.setattr("src.engine.runtime_qa.get_timeout_float", fake_get_float)
+    monkeypatch.setattr("src.engine.runtime_qa.asyncio.wait_for", recording_wait_for)
+
+    result = asyncio.run(run_runtime_qa("<html></html>", timeout_s=600.0))
+
+    assert result.ran is True
+    assert seen_timeouts[0] == 15.0
+    assert result.phase_metrics["overall_timeout_s"] == 15.0
+    assert result.phase_metrics["requested_timeout_s"] == 600.0

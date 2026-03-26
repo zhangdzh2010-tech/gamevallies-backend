@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, BadGatewayException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { GameStatus, GenerationTaskStatus, Prisma } from '@prisma/client';
@@ -13,6 +13,19 @@ interface LegacyPreviewBackfillOptions {
   limit?: number;
   dryRun?: boolean | string;
   gameIds?: string[] | string;
+}
+
+interface LlmProviderCatalogConfig {
+  mode: 'auto' | 'custom';
+  apiUrl: string;
+  authMode: 'inherit_provider' | 'bearer_token';
+  apiKey: string;
+}
+
+interface NormalizedLlmProviderExtraConfig {
+  vendorPreset: string;
+  modelCatalog: LlmProviderCatalogConfig;
+  [key: string]: any;
 }
 
 @Injectable()
@@ -83,11 +96,14 @@ export class AdminService {
         },
       }).catch(() => null);
 
+      appendUrl(this.getConfiguredAiEngineAdminBaseUrlForRegion(target?.executionRegion));
       if (target?.deployEnabled && target?.deployStatus === 'deployed') {
         appendUrl(target.aiEngineUrl);
       }
-      appendUrl(this.getConfiguredAiEngineAdminBaseUrlForRegion(target?.executionRegion));
     } else {
+      appendUrl(this.getConfiguredAiEngineAdminBaseUrlForRegion('cn_shanghai'));
+      appendUrl(this.getConfiguredAiEngineAdminBaseUrlForRegion('ap_southeast_johor'));
+
       const targets = await this.prisma.aiEngineRegionTarget.findMany({
         where: {
           deployEnabled: true,
@@ -102,9 +118,6 @@ export class AdminService {
       for (const target of targets) {
         appendUrl(target.aiEngineUrl);
       }
-
-      appendUrl(this.getConfiguredAiEngineAdminBaseUrlForRegion('cn_shanghai'));
-      appendUrl(this.getConfiguredAiEngineAdminBaseUrlForRegion('ap_southeast_johor'));
     }
 
     if (urls.length > 0) {
@@ -126,6 +139,212 @@ export class AdminService {
   private getOptionalAdminToken(): string | null {
     const token = (process.env.ADMIN_TOKEN || '').trim();
     return token || null;
+  }
+
+  private stringifyAiEngineErrorDetail(detail: any): string {
+    if (detail == null) {
+      return '';
+    }
+    if (typeof detail === 'string') {
+      return detail.trim();
+    }
+    if (Array.isArray(detail)) {
+      return detail
+        .map((item) => this.stringifyAiEngineErrorDetail(item))
+        .filter(Boolean)
+        .join('; ');
+    }
+    if (typeof detail === 'object') {
+      const loc = Array.isArray(detail.loc) ? detail.loc.join('.') : '';
+      const message = typeof detail.msg === 'string'
+        ? detail.msg
+        : typeof detail.message === 'string'
+          ? detail.message
+          : typeof detail.error === 'string'
+            ? detail.error
+            : '';
+      if (loc && message) {
+        return `${loc}: ${message}`;
+      }
+      if (message) {
+        return message;
+      }
+      try {
+        return JSON.stringify(detail);
+      } catch {
+        return '';
+      }
+    }
+    return String(detail);
+  }
+
+  private extractAiEngineAdminErrorMessage(error: any): string {
+    if (axios.isAxiosError(error)) {
+      const data = error.response?.data;
+      const statusText = error.response?.statusText || '';
+      const detail = this.stringifyAiEngineErrorDetail(
+        data?.message
+        ?? data?.detail
+        ?? data?.error
+        ?? data,
+      );
+      if (detail) {
+        return detail;
+      }
+      if (statusText) {
+        return statusText;
+      }
+      if (error.code === 'ECONNABORTED') {
+        return 'request timed out';
+      }
+      if (typeof error.message === 'string' && error.message.trim()) {
+        return error.message.trim();
+      }
+    }
+    if (error instanceof Error && error.message.trim()) {
+      return error.message.trim();
+    }
+    return String(error || 'unknown error');
+  }
+
+  private async postAiEngineAdminWithFailover<T>(
+    regionTargetId: string | undefined,
+    path: string,
+    body: any,
+    timeout: number,
+    emptyUrlMessage: string,
+  ): Promise<{ baseUrl: string; data: T }> {
+    const urls = await this.getAiEngineAdminBaseUrls(regionTargetId);
+    if (!urls.length) {
+      throw new BadRequestException(emptyUrlMessage);
+    }
+
+    const failures: Array<{ baseUrl: string; message: string }> = [];
+    for (const baseUrl of urls) {
+      try {
+        const response = await axios.post<T>(
+          `${baseUrl}${path}`,
+          body,
+          {
+            headers: {
+              'x-admin-token': this.getAdminToken(),
+            },
+            timeout,
+          },
+        );
+        return {
+          baseUrl,
+          data: response.data,
+        };
+      } catch (error) {
+        failures.push({
+          baseUrl,
+          message: this.extractAiEngineAdminErrorMessage(error),
+        });
+      }
+    }
+
+    const summary = failures
+      .map((entry) => `${entry.baseUrl}: ${entry.message}`)
+      .join(' | ');
+    throw new BadGatewayException(
+      `All ai-engine admin endpoints failed. ${summary || 'No upstream error details available.'}`,
+    );
+  }
+
+  private normalizeLlmProviderExtraConfig(extraConfig: any): NormalizedLlmProviderExtraConfig {
+    const normalized = extraConfig && typeof extraConfig === 'object' && !Array.isArray(extraConfig)
+      ? { ...extraConfig }
+      : {};
+    const rawCatalog = normalized.modelCatalog && typeof normalized.modelCatalog === 'object' && !Array.isArray(normalized.modelCatalog)
+      ? normalized.modelCatalog
+      : {};
+    const vendorPreset = typeof normalized.vendorPreset === 'string' && normalized.vendorPreset.trim()
+      ? normalized.vendorPreset.trim()
+      : 'generic';
+    const modelCatalog: LlmProviderCatalogConfig = {
+      mode: rawCatalog.mode === 'custom' ? 'custom' : 'auto',
+      apiUrl: typeof rawCatalog.apiUrl === 'string' ? rawCatalog.apiUrl.trim() : '',
+      authMode: rawCatalog.authMode === 'bearer_token' ? 'bearer_token' : 'inherit_provider',
+      apiKey: typeof rawCatalog.apiKey === 'string' ? rawCatalog.apiKey.trim() : '',
+    };
+    return {
+      ...normalized,
+      vendorPreset,
+      modelCatalog,
+    };
+  }
+
+  private buildLlmProviderExtraConfig(body: any, existing?: any): NormalizedLlmProviderExtraConfig {
+    const current = this.normalizeLlmProviderExtraConfig(existing?.extraConfig);
+    const vendorPreset = typeof body?.vendorPreset === 'string' && body.vendorPreset.trim()
+      ? body.vendorPreset.trim()
+      : current.vendorPreset || 'generic';
+    const catalogMode = body?.catalogMode === 'custom' ? 'custom' : 'auto';
+    const nextCatalogApiKey = typeof body?.catalogApiKey === 'string' && body.catalogApiKey.trim()
+      ? body.catalogApiKey.trim()
+      : current.modelCatalog.apiKey || '';
+    const nextCatalogApiUrl = typeof body?.catalogApiUrl === 'string'
+      ? body.catalogApiUrl.trim()
+      : current.modelCatalog.apiUrl || '';
+    const nextCatalogAuthMode = body?.catalogAuthMode === 'bearer_token'
+      ? 'bearer_token'
+      : 'inherit_provider';
+    return {
+      ...current,
+      vendorPreset,
+      modelCatalog: {
+        mode: catalogMode,
+        apiUrl: nextCatalogApiUrl,
+        authMode: nextCatalogAuthMode,
+        apiKey: nextCatalogApiKey,
+      },
+    };
+  }
+
+  private maskSecret(secret?: string | null): string | null {
+    const value = (secret || '').trim();
+    if (!value) {
+      return null;
+    }
+    if (value.length <= 8) {
+      return `${value.slice(0, 2)}...${value.slice(-2)}`;
+    }
+    return `${value.slice(0, 4)}...${value.slice(-4)}`;
+  }
+
+  private presentLlmProvider(provider: any) {
+    const extraConfig = this.normalizeLlmProviderExtraConfig(provider?.extraConfig);
+    const latestTest = Array.isArray(provider?.testRecords) && provider.testRecords.length
+      ? provider.testRecords[0]
+      : null;
+    const apiKeyMasked = this.maskSecret(provider?.apiKey);
+    const catalogApiKeyMasked = this.maskSecret(extraConfig.modelCatalog.apiKey);
+    return {
+      ...provider,
+      extraConfig: undefined,
+      apiKey: undefined,
+      apiKeySet: Boolean((provider?.apiKey || '').trim()),
+      apiKeyMasked,
+      regionDisplayName: provider?.regionTarget?.displayName || provider?.region,
+      vendorPreset: extraConfig.vendorPreset,
+      catalogMode: extraConfig.modelCatalog.mode,
+      catalogApiUrl: extraConfig.modelCatalog.apiUrl,
+      catalogAuthMode: extraConfig.modelCatalog.authMode,
+      catalogApiKey: undefined,
+      catalogApiKeySet: Boolean(extraConfig.modelCatalog.apiKey),
+      catalogApiKeyMasked,
+      latestTest: latestTest
+        ? {
+            success: latestTest.success,
+            latencyMs: latestTest.latencyMs,
+            httpStatus: latestTest.httpStatus,
+            errorMessage: latestTest.errorMessage,
+            model: latestTest.model,
+            testedAt: latestTest.testedAt,
+          }
+        : null,
+    };
   }
 
   private async invalidateFeedCache(): Promise<void> {
@@ -1401,7 +1620,7 @@ export class AdminService {
       throw new BadRequestException('executionRegion is required');
     }
     const executionRegion = this.normalizeExecutionRegion(body?.executionRegion);
-    const existing = await this.prisma.aiEngineRegionTarget.findUnique({
+    const existing = await this.prisma.aiEngineRegionTarget.findFirst({
       where: { executionRegion },
     });
 
@@ -1465,19 +1684,25 @@ export class AdminService {
             deployEnabled: true,
           },
         },
+        testRecords: {
+          orderBy: {
+            testedAt: 'desc',
+          },
+          take: 1,
+          select: {
+            success: true,
+            latencyMs: true,
+            httpStatus: true,
+            errorMessage: true,
+            model: true,
+            testedAt: true,
+          },
+        },
       },
       orderBy: [{ priority: 'asc' }, { createdAt: 'desc' }],
     });
 
-    return providers.map((provider) => ({
-      ...provider,
-      apiKey: undefined,
-      apiKeySet: Boolean(provider.apiKey),
-      apiKeyMasked: provider.apiKey
-        ? `${provider.apiKey.slice(0, 4)}...${provider.apiKey.slice(-4)}`
-        : null,
-      regionDisplayName: provider.regionTarget?.displayName || provider.region,
-    }));
+    return providers.map((provider) => this.presentLlmProvider(provider));
   }
 
   async listLlmSteps() {
@@ -1522,6 +1747,7 @@ export class AdminService {
     if (!apiKey) {
       throw new BadRequestException('apiKey is required');
     }
+    const extraConfig = this.buildLlmProviderExtraConfig(body, existing);
 
     const provider = await this.prisma.llmGatewayProvider.upsert({
       where: { id: providerId },
@@ -1542,7 +1768,7 @@ export class AdminService {
         enabled: body.enabled !== false,
         priority: Number(body.priority || 100),
         description: body.description || null,
-        extraConfig: body.extraConfig || undefined,
+        extraConfig,
       },
       update: {
         name: body.name,
@@ -1560,17 +1786,17 @@ export class AdminService {
         enabled: body.enabled !== false,
         priority: Number(body.priority || 100),
         description: body.description || null,
-        extraConfig: body.extraConfig || undefined,
+        extraConfig,
       },
     });
 
     await this.refreshLlmGateway();
-    return {
+    return this.presentLlmProvider({
       ...provider,
-      apiKey: undefined,
-      apiKeySet: true,
-      apiKeyMasked: `${apiKey.slice(0, 4)}...${apiKey.slice(-4)}`,
-    };
+      apiKey,
+      regionTarget: regionTarget,
+      testRecords: [],
+    });
   }
 
   async deleteLlmProvider(id: string) {
@@ -1795,21 +2021,129 @@ export class AdminService {
     if (!provider) {
       throw new NotFoundException('Provider not found');
     }
-    const [baseUrl] = await this.getAiEngineAdminBaseUrls(provider.regionTargetId || undefined);
-    if (!baseUrl) {
-      throw new BadRequestException('No reachable ai-engine endpoint found for the selected provider');
-    }
-    const response = await axios.post(
-      `${baseUrl}/api/v1/ai/llm-gateway/providers/${providerId}/test`,
+    const response = await this.postAiEngineAdminWithFailover<any>(
+      provider.regionTargetId || undefined,
+      `/api/v1/ai/llm-gateway/providers/${providerId}/test`,
       {},
-      {
-        headers: {
-          'x-admin-token': this.getAdminToken(),
-        },
-        timeout: 30000,
-      },
+      30000,
+      'No reachable ai-engine endpoint found for the selected provider',
     );
     return response.data;
+  }
+
+  async previewLlmProviderCatalog(body: any) {
+    let payload = { ...(body || {}) };
+    if (payload?.providerId) {
+      const existing = await this.prisma.llmGatewayProvider.findUnique({
+        where: { id: payload.providerId },
+        select: {
+          providerType: true,
+          regionTargetId: true,
+          baseUrl: true,
+          apiKey: true,
+          extraConfig: true,
+        },
+      });
+      if (!existing) {
+        throw new NotFoundException('Provider not found');
+      }
+      const normalizedExtra = this.normalizeLlmProviderExtraConfig(existing.extraConfig);
+      payload = {
+        ...payload,
+        providerType: payload.providerType || existing.providerType,
+        regionTargetId: payload.regionTargetId || existing.regionTargetId,
+        baseUrl: payload.baseUrl || existing.baseUrl,
+        apiKey: payload.apiKey || existing.apiKey,
+        vendorPreset: payload.vendorPreset || normalizedExtra.vendorPreset,
+        catalogApiUrl: payload.catalogApiUrl || normalizedExtra.modelCatalog.apiUrl,
+        catalogAuthMode: payload.catalogAuthMode || normalizedExtra.modelCatalog.authMode,
+        catalogApiKey: payload.catalogApiKey || normalizedExtra.modelCatalog.apiKey,
+      };
+    }
+    const requestBody = {
+      provider_type: payload.providerType || 'openai_compatible',
+      vendor_preset: payload.vendorPreset || 'generic',
+      base_url: payload.baseUrl || '',
+      api_key: payload.apiKey || '',
+      catalog_api_url: payload.catalogApiUrl || '',
+      catalog_auth_mode: payload.catalogAuthMode || 'inherit_provider',
+      catalog_api_key: payload.catalogApiKey || '',
+    };
+    const response = await this.postAiEngineAdminWithFailover<any>(
+      payload?.regionTargetId || undefined,
+      '/api/v1/ai/llm-gateway/providers/catalog/preview',
+      requestBody,
+      30000,
+      'No reachable ai-engine endpoint found for the selected region target',
+    );
+    return {
+      models: response.data?.models || [],
+      fetchedAt: response.data?.fetchedAt || response.data?.fetched_at || null,
+      resolvedCatalogApiUrl: response.data?.resolvedCatalogApiUrl || response.data?.resolved_catalog_api_url || '',
+      vendorPreset: response.data?.vendorPreset || response.data?.vendor_preset || requestBody.vendor_preset || 'generic',
+    };
+  }
+
+  async testLlmProviderChat(providerId: string, body: any) {
+    const provider = await this.prisma.llmGatewayProvider.findUnique({
+      where: { id: providerId },
+      select: {
+        regionTargetId: true,
+      },
+    });
+    if (!provider) {
+      throw new NotFoundException('Provider not found');
+    }
+    const response = await this.postAiEngineAdminWithFailover<any>(
+      provider.regionTargetId || undefined,
+      `/api/v1/ai/llm-gateway/providers/${providerId}/test-chat`,
+      body || {},
+      60000,
+      'No reachable ai-engine endpoint found for the selected provider',
+    );
+    return {
+      providerId: response.data?.providerId || response.data?.provider_id || providerId,
+      providerName: response.data?.providerName || response.data?.provider_name || null,
+      providerType: response.data?.providerType || response.data?.provider_type || null,
+      region: response.data?.region || null,
+      resolvedEndpoint: response.data?.resolvedEndpoint || response.data?.resolved_endpoint || null,
+      model: response.data?.model || null,
+      latencyMs: response.data?.latencyMs ?? response.data?.latency_ms ?? null,
+      httpStatus: response.data?.httpStatus ?? response.data?.http_status ?? null,
+      success: response.data?.success !== false,
+      errorMessage: response.data?.errorMessage || response.data?.error_message || null,
+      reply: response.data?.reply || '',
+      testedAt: response.data?.testedAt || response.data?.tested_at || null,
+    };
+  }
+
+  async listLlmProviderTestRecords(providerId: string, limit = 20) {
+    const provider = await this.prisma.llmGatewayProvider.findUnique({
+      where: { id: providerId },
+      select: {
+        id: true,
+      },
+    });
+    if (!provider) {
+      throw new NotFoundException('Provider not found');
+    }
+    const take = Math.min(Math.max(Number(limit) || 20, 1), 50);
+    return this.prisma.llmGatewayTestRecord.findMany({
+      where: { providerId },
+      orderBy: { testedAt: 'desc' },
+      take,
+      select: {
+        id: true,
+        success: true,
+        region: true,
+        resolvedEndpoint: true,
+        model: true,
+        latencyMs: true,
+        httpStatus: true,
+        errorMessage: true,
+        testedAt: true,
+      },
+    });
   }
 
   // ===================== Stats =====================

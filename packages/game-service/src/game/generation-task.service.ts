@@ -66,6 +66,7 @@ type SuccessParams = {
   previewUrl?: string | null;
   resultSummary?: JsonMap;
   primaryArtifactId?: string | null;
+  force?: boolean;
 };
 
 type ArtifactParams = {
@@ -264,6 +265,7 @@ export class GenerationTaskService {
         progressStage: params.stage,
         progressPct: params.percentage,
         progressMessage: nextMessage,
+        ...this.buildTaskProgressMetadataUpdate(runningTask, params.stage, params.details),
       },
     });
 
@@ -346,7 +348,11 @@ export class GenerationTaskService {
       where: { id: params.taskId },
     });
 
-    if (!existing || this.isFinalStatus(existing.status)) {
+    if (!existing) {
+      return existing;
+    }
+
+    if (this.isFinalStatus(existing.status) && !params.force) {
       return existing;
     }
 
@@ -567,6 +573,26 @@ export class GenerationTaskService {
     });
   }
 
+  async findLatestArtifactForTask(taskId: string, artifactTypes: string | string[]) {
+    const types = Array.isArray(artifactTypes)
+      ? artifactTypes.filter((item) => typeof item === 'string' && item.trim())
+      : [artifactTypes].filter((item) => typeof item === 'string' && item.trim());
+
+    if (types.length === 0) {
+      return null;
+    }
+
+    return this.prisma.generationArtifact.findFirst({
+      where: {
+        taskId,
+        artifactType: {
+          in: types,
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
   async recordStageSummary(params: StageSummaryParams) {
     const task = await this.prisma.generationTask.findUnique({
       where: { id: params.taskId },
@@ -780,6 +806,8 @@ export class GenerationTaskService {
     progressStage?: string | null;
     progressPct?: number | null;
     progressMessage?: string | null;
+    runtimeProfile?: string | null;
+    metadata?: Prisma.JsonValue | null;
   }) {
     if (this.isFinalStatus(task.status)) {
       return { task, transitioned: false };
@@ -913,6 +941,64 @@ export class GenerationTaskService {
     }
 
     return null;
+  }
+
+  private buildTaskProgressMetadataUpdate(
+    task: {
+      runtimeProfile?: string | null;
+      metadata?: Prisma.JsonValue | null;
+    },
+    stage: string,
+    details?: JsonMap,
+  ): Prisma.GenerationTaskUpdateInput {
+    const data: Prisma.GenerationTaskUpdateInput = {};
+    const runtimeProfile = this.extractRuntimeProfileFromProgress(stage, details);
+    if (runtimeProfile && runtimeProfile !== (task.runtimeProfile || null)) {
+      data.runtimeProfile = runtimeProfile;
+    }
+
+    const selectedGameType = this.extractGameTypeFromProgress(stage, details);
+    if (runtimeProfile || selectedGameType) {
+      const metadata = this.mergeTaskMetadata(task.metadata, {
+        ...(runtimeProfile ? { selectedRuntimeProfile: runtimeProfile } : {}),
+        ...(selectedGameType ? { selectedGameType } : {}),
+      });
+      data.metadata = metadata as Prisma.InputJsonValue;
+    }
+
+    return data;
+  }
+
+  private extractRuntimeProfileFromProgress(stage: string, details?: JsonMap): string | undefined {
+    if (!details) {
+      return undefined;
+    }
+    if (stage !== 'runtime_profile_select' && stage !== 'contract_compose' && stage !== 'logic_generate') {
+      return undefined;
+    }
+    const value = details.runtimeProfile;
+    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  }
+
+  private extractGameTypeFromProgress(stage: string, details?: JsonMap): string | undefined {
+    if (!details || stage !== 'runtime_profile_select') {
+      return undefined;
+    }
+    const value = details.gameType;
+    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  }
+
+  private mergeTaskMetadata(
+    current: Prisma.JsonValue | null | undefined,
+    patch: JsonMap,
+  ): JsonMap {
+    const base = current && typeof current === 'object' && !Array.isArray(current)
+      ? { ...(current as JsonMap) }
+      : {};
+    return {
+      ...base,
+      ...patch,
+    };
   }
 
   private normalizeArtifactPayload(payload: unknown): {

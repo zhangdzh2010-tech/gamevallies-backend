@@ -124,6 +124,61 @@ describe('GenerationTaskService', () => {
     expect(result).toBe(runningTask);
   });
 
+  it('syncs selected runtime profile and game type from progress details', async () => {
+    const runningTask = {
+      id: 'task-1',
+      gameId: 'game-1',
+      userId: 'user-1',
+      status: GenerationTaskStatus.running,
+      startedAt: new Date('2026-03-26T07:00:00.000Z'),
+      progressStage: 'spec_build',
+      progressPct: 15,
+      progressMessage: 'Building spec',
+      runtimeProfile: 'portrait_arcade',
+      metadata: {
+        description: 'build a circuit puzzle',
+      },
+    };
+    prisma.generationTask.findUnique.mockResolvedValue(runningTask);
+    prisma.generationTask.update.mockResolvedValue({
+      ...runningTask,
+      progressStage: 'contract_compose',
+      progressPct: 40,
+      progressMessage: 'Composing runtime contract',
+      runtimeProfile: 'grid_puzzle',
+      metadata: {
+        description: 'build a circuit puzzle',
+        selectedRuntimeProfile: 'grid_puzzle',
+        selectedGameType: 'puzzle',
+      },
+    });
+    prisma.generationTaskEvent.create.mockResolvedValue({});
+
+    await service.recordProgress({
+      taskId: 'task-1',
+      gameId: 'game-1',
+      userId: 'user-1',
+      stage: 'contract_compose',
+      percentage: 40,
+      message: 'Composing runtime contract',
+      details: {
+        runtimeProfile: 'grid_puzzle',
+        gameType: 'puzzle',
+      },
+    });
+
+    expect(prisma.generationTask.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'task-1' },
+      data: expect.objectContaining({
+        runtimeProfile: 'grid_puzzle',
+        metadata: expect.objectContaining({
+          description: 'build a circuit puzzle',
+          selectedRuntimeProfile: 'grid_puzzle',
+        }),
+      }),
+    }));
+  });
+
   it('only appends llm timeline events for failures or slow calls', async () => {
     prisma.llmCallLog.create.mockResolvedValue({ id: 'log-1' });
     prisma.generationTask.update.mockResolvedValue({});

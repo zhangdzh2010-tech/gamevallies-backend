@@ -293,6 +293,32 @@ export class AdminController {
     return ok(await this.adminService.testLlmProvider(id));
   }
 
+  @Post('admin/llm/providers/catalog/preview')
+  async previewLlmProviderCatalog(@Headers('x-admin-token') token: string, @Body() body: any) {
+    checkAdminToken(token);
+    return ok(await this.adminService.previewLlmProviderCatalog(body));
+  }
+
+  @Post('admin/llm/providers/:id/test-chat')
+  async testLlmProviderChat(
+    @Headers('x-admin-token') token: string,
+    @Param('id') id: string,
+    @Body() body: any,
+  ) {
+    checkAdminToken(token);
+    return ok(await this.adminService.testLlmProviderChat(id, body));
+  }
+
+  @Get('admin/llm/providers/:id/test-records')
+  async listLlmProviderTestRecords(
+    @Headers('x-admin-token') token: string,
+    @Param('id') id: string,
+    @Query('limit') limit?: string,
+  ) {
+    checkAdminToken(token);
+    return ok(await this.adminService.listLlmProviderTestRecords(id, Number(limit) || 20));
+  }
+
   @Get('admin/llm/routes')
   async listLlmRoutes(
     @Headers('x-admin-token') token: string,

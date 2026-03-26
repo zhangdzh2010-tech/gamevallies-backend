@@ -431,7 +431,7 @@ class PipelineOrchestrator:
             try:
                 spec = await self.dialogue_engine.parse_description_to_spec(
                     description,
-                    allow_fallback=False,
+                    allow_fallback=True,
                 )
                 logger.info(f"Intent parse succeeded on attempt {attempt}: game_type={spec.game_type}")
                 return spec
@@ -467,6 +467,8 @@ class PipelineOrchestrator:
             f"Intent parsing failed after {max_attempts} attempts: {self._error_message(last_exc)}",
             stage=PipelineStage.intent_parsing.value,
             retry_count=max_attempts - 1,
+            failure_family="spec_build",
+            artifacts=getattr(last_exc, "artifacts", None),
         )
 
     async def _stage_design(

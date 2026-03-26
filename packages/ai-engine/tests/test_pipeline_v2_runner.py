@@ -8,8 +8,16 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.api.models import GameRuntimeContract, GameSpec, QACheckError
+from src.api.models import (
+    GameRuntimeContract,
+    GameSpec,
+    IterateV2Request,
+    QACheckError,
+    RunPipelineV2Request,
+    SourceBundleContext,
+)
 from src.engine.pipeline_v2_runner import V2PipelineRunner
+from src.engine.pipeline_orchestrator import PipelineExecutionError
 
 
 def test_function_keyword_is_not_flagged_as_function_constructor():
@@ -42,6 +50,81 @@ def test_function_constructor_is_still_flagged():
     """
 
     assert V2PipelineRunner._contains_forbidden_api(code, "Function") is True
+
+
+def test_runtime_contract_accepts_completion_state_constant_alias():
+    runner = V2PipelineRunner()
+    code = """
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      </head>
+      <body>
+        <canvas id="gameCanvas"></canvas>
+        <script>
+          const canvas = document.getElementById('gameCanvas');
+          const ctx = canvas.getContext('2d');
+          canvas.width = 360;
+          canvas.height = 640;
+          const STATE_READY = 'ready';
+          const STATE_WIN = 'win';
+          let state = STATE_READY;
+          let score = 0;
+          function restartGame() { state = STATE_READY; }
+          canvas.addEventListener('pointerdown', function () {
+            state = STATE_WIN;
+            score += 1;
+          });
+          function loop() {
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            requestAnimationFrame(loop);
+          }
+          requestAnimationFrame(loop);
+        </script>
+      </body>
+    </html>
+    """
+
+    errors = runner._validate_runtime_contract(code, GameRuntimeContract(runtime_profile="topdown_action"))
+    assert not any("terminal or completion state" in error.message.lower() for error in errors)
+
+
+def test_runtime_contract_treats_boot_and_ready_as_same_startup_phase():
+    runner = V2PipelineRunner()
+    code = """
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      </head>
+      <body>
+        <canvas id="gameCanvas"></canvas>
+        <script>
+          const canvas = document.getElementById('gameCanvas');
+          const ctx = canvas.getContext('2d');
+          canvas.width = 360;
+          canvas.height = 640;
+          let state = 'boot';
+          let score = 0;
+          function restartGame() { state = 'boot'; }
+          function startGame() { state = 'playing'; }
+          function finishLevel() { state = 'level_complete'; }
+          canvas.addEventListener('pointerdown', function () { startGame(); score += 1; finishLevel(); });
+          function loop() {
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            requestAnimationFrame(loop);
+          }
+          requestAnimationFrame(loop);
+        </script>
+      </body>
+    </html>
+    """
+
+    errors = runner._validate_runtime_contract(code, GameRuntimeContract(runtime_profile="grid_puzzle"))
+    assert not any("requires state 'ready'" in error.message.lower() for error in errors)
 
 
 def test_contract_qa_loop_passes_prompt_bundle_snapshot_to_repair_code():
@@ -132,7 +215,7 @@ def test_runtime_qa_loop_allows_second_targeted_remediation_attempt():
             SimpleNamespace(success=True, code="<!DOCTYPE html><html><body>fix-2-pass</body></html>", retries=0),
         ]),
     ):
-        final_code, runtime_qa, retries = asyncio.run(
+        final_code, runtime_qa, retries, qa_warnings = asyncio.run(
             runner._run_runtime_qa_loop(
                 code="<!DOCTYPE html><html><body>initial</body></html>",
                 spec=GameSpec(game_type="runner"),
@@ -147,6 +230,7 @@ def test_runtime_qa_loop_allows_second_targeted_remediation_attempt():
     assert final_code == "<!DOCTYPE html><html><body>fix-2-pass</body></html>"
     assert runtime_qa.registered_input_handlers == ["pointerdown"]
     assert retries == 2
+    assert qa_warnings == []
     assert mock_repair.await_count == 2
 
 
@@ -205,7 +289,7 @@ def test_runtime_qa_loop_treats_static_input_handlers_as_valid_signal():
         "src.engine.pipeline_v2_runner.settings.RUNTIME_QA_REMEDIATION_MAX_RETRIES",
         0,
     ):
-        final_code, runtime_qa, retries = asyncio.run(
+        final_code, runtime_qa, retries, qa_warnings = asyncio.run(
             runner._run_runtime_qa_loop(
                 code=code,
                 spec=GameSpec(game_type="runner"),
@@ -220,6 +304,7 @@ def test_runtime_qa_loop_treats_static_input_handlers_as_valid_signal():
     assert final_code == code
     assert runtime_qa.canvas_changed_after_input is True
     assert retries == 0
+    assert qa_warnings == []
 
 
 def test_runtime_qa_loop_accepts_dom_visible_feedback_when_canvas_pixels_do_not_change():
@@ -259,7 +344,7 @@ def test_runtime_qa_loop_accepts_dom_visible_feedback_when_canvas_pixels_do_not_
         "src.engine.pipeline_v2_runner.settings.RUNTIME_QA_REMEDIATION_MAX_RETRIES",
         0,
     ):
-        final_code, runtime_qa, retries = asyncio.run(
+        final_code, runtime_qa, retries, qa_warnings = asyncio.run(
             runner._run_runtime_qa_loop(
                 code=code,
                 spec=GameSpec(game_type="runner"),
@@ -274,6 +359,7 @@ def test_runtime_qa_loop_accepts_dom_visible_feedback_when_canvas_pixels_do_not_
     assert final_code == code
     assert runtime_qa.dom_changed_after_input is True
     assert retries == 0
+    assert qa_warnings == []
 
 
 def test_select_runtime_profile_normalizes_descriptive_game_type_labels():
@@ -282,6 +368,18 @@ def test_select_runtime_profile_normalizes_descriptive_game_type_labels():
     assert runner._select_runtime_profile(GameSpec(game_type="endless runner"), "portrait_arcade") == "lane_runner"
     assert runner._select_runtime_profile(GameSpec(game_type="top-down shooter"), "portrait_arcade") == "topdown_action"
     assert runner._select_runtime_profile(GameSpec(game_type="grid puzzle"), "portrait_arcade") == "grid_puzzle"
+
+
+def test_select_runtime_profile_biases_educational_requests_to_grid_puzzle():
+    runner = V2PipelineRunner()
+
+    spec = GameSpec(
+        game_type="runner",
+        source_description="请围绕浮力知识点设计一个课堂小游戏，包含3道配套练习题和计分方式。",
+        intent_summary="课堂小游戏 + 练习题",
+    )
+
+    assert runner._select_runtime_profile(spec, "portrait_arcade") == "grid_puzzle"
 
 
 def test_validate_runtime_contract_accepts_generic_short_edge_scaling_patterns():
@@ -362,11 +460,241 @@ def test_validate_runtime_contract_accepts_visible_combo_hud_as_scoring_loop():
     )
 
 
+def test_validate_runtime_contract_accepts_grid_puzzle_completion_state_without_score_loop():
+    runner = V2PipelineRunner()
+    contract = GameRuntimeContract(
+        runtime_profile="grid_puzzle",
+        state={
+            "required_states": ["boot", "ready", "playing", "level_complete"],
+            "required_flags": ["levelComplete", "currentLevel", "showHint"],
+            "restartable": True,
+        },
+        input={
+            "required_modes": ["touch"],
+            "gestures": ["tap", "drag"],
+            "allow_mouse_fallback": True,
+        },
+        gameplay={
+            "requires_player_entity": False,
+            "requires_scoring": False,
+            "requires_terminal_state": True,
+            "requires_restart_entry": True,
+            "terminal_state_aliases": [
+                "level_complete",
+                "completed",
+                "complete",
+                "solved",
+            ],
+            "primary_goal": "grid_completion",
+        },
+    )
+    code = """
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      </head>
+      <body>
+        <canvas id="gameCanvas"></canvas>
+        <script>
+          const canvas = document.getElementById('gameCanvas');
+          const ctx = canvas.getContext('2d');
+          let state = 'boot';
+          let levelComplete = false;
+          let currentLevel = 1;
+          let showHint = false;
+          function restartLevel() {
+            state = 'ready';
+            levelComplete = false;
+          }
+          function beginLevel() {
+            state = 'playing';
+          }
+          function solveLevel() {
+            levelComplete = true;
+            state = 'level_complete';
+          }
+          canvas.addEventListener('touchstart', function handleTouch() {
+            beginLevel();
+            solveLevel();
+          });
+          canvas.width = 360;
+          canvas.height = 640;
+        </script>
+      </body>
+    </html>
+    """
+
+    errors = runner._validate_runtime_contract(code, contract)
+
+    assert not any(
+        error.type == "contract_gameplay"
+        and "visible scoring loop" in error.message
+        for error in errors
+    )
+    assert not any(
+        error.type == "contract_gameplay"
+        and "terminal or completion state" in error.message.lower()
+        for error in errors
+    )
+
+
+def test_build_create_spec_passes_title_and_runtime_profile_hint_into_parser():
+    runner = V2PipelineRunner()
+    request = RunPipelineV2Request(
+        game_id="game-1",
+        user_id="user-1",
+        raw_user_input="继续增加关卡，设置5个关卡",
+        title="逮小猪",
+        runtime_contract=GameRuntimeContract(runtime_profile="portrait_arcade"),
+    )
+
+    with patch.object(
+        runner,
+        "_parse_spec_with_retries",
+        new=AsyncMock(return_value=GameSpec(game_type="runner")),
+    ) as mock_parse:
+        spec = asyncio.run(runner._build_create_spec(request))
+
+    assert spec.game_type == "runner"
+    kwargs = mock_parse.await_args.kwargs
+    assert kwargs["description"] == "继续增加关卡，设置5个关卡"
+    assert kwargs["title"] == "逮小猪"
+    assert kwargs["preferred_game_type"] == "runner"
+
+
+def test_build_iteration_spec_merges_with_source_spec_history():
+    runner = V2PipelineRunner()
+    request = IterateV2Request(
+        game_id="game-iter",
+        user_id="user-iter",
+        current_code="<!DOCTYPE html><html><head><title>逮小猪</title></head><body></body></html>",
+        iteration_intent={
+            "feedback": "继续增加关卡，设置5个关卡",
+            "conversation": [{"role": "user", "content": "保留逮小猪主题"}],
+        },
+        source_spec=GameSpec(
+            game_type="runner",
+            intent_summary="逮住小猪并躲开障碍",
+            ui_language="zh-CN",
+        ),
+        source_bundle_context=SourceBundleContext(
+            title="逮小猪",
+            latest_bundle_version=2,
+            latest_game_type="runner",
+            latest_feedback="把障碍再清楚一些",
+        ),
+        runtime_contract=GameRuntimeContract(runtime_profile="portrait_arcade"),
+    )
+
+    parsed_spec = GameSpec(
+        game_type="runner",
+        intent_summary="新增五个关卡并提升节奏",
+        ui_language="zh-CN",
+        special_rules=["包含5个关卡"],
+    )
+
+    with patch(
+        "src.engine.pipeline_v2_runner.require_prompt",
+        return_value=(
+            "Current game context: {current_summary}\n"
+            "Source spec summary: {source_spec_summary}\n"
+            "Historical bundle context: {source_bundle_context}\n"
+            "Requested iteration: {feedback}\n"
+            "Conversation context: {conversation_text}"
+        ),
+    ), patch.object(
+        runner,
+        "_parse_spec_with_retries",
+        new=AsyncMock(return_value=parsed_spec),
+    ):
+        spec = asyncio.run(runner._build_iteration_spec(request))
+
+    assert spec.game_type == "runner"
+    assert spec.visual_style.theme == request.source_spec.visual_style.theme
+    assert any("5个关卡" in rule for rule in spec.special_rules)
+    assert "逮小猪" in spec.intent_summary
+
+
+def test_build_iteration_spec_falls_back_to_source_spec_when_parse_fails():
+    runner = V2PipelineRunner()
+    request = IterateV2Request(
+        game_id="game-iter-fallback",
+        user_id="user-iter-fallback",
+        current_code="<!DOCTYPE html><html><head><title>逮小猪</title></head><body></body></html>",
+        iteration_intent={"feedback": "继续增加关卡，设置5个关卡", "conversation": []},
+        source_spec=GameSpec(game_type="runner", intent_summary="逮住小猪并躲开障碍", ui_language="zh-CN"),
+        source_bundle_context=SourceBundleContext(title="逮小猪"),
+        runtime_contract=GameRuntimeContract(runtime_profile="portrait_arcade"),
+    )
+
+    with patch(
+        "src.engine.pipeline_v2_runner.require_prompt",
+        return_value=(
+            "Current game context: {current_summary}\n"
+            "Source spec summary: {source_spec_summary}\n"
+            "Historical bundle context: {source_bundle_context}\n"
+            "Requested iteration: {feedback}\n"
+            "Conversation context: {conversation_text}"
+        ),
+    ), patch.object(
+        runner,
+        "_parse_spec_with_retries",
+        new=AsyncMock(
+            side_effect=PipelineExecutionError(
+                "Spec build failed after 3 attempts: LLM slot extraction returned no valid JSON",
+                stage="spec_build",
+                artifacts=[{"artifact_type": "spec_build_diagnostics"}],
+            )
+        ),
+    ):
+        spec = asyncio.run(runner._build_iteration_spec(request))
+
+    assert spec.game_type == "runner"
+    assert any("5个关卡" in rule for rule in spec.special_rules)
+
+
+def test_build_iteration_spec_raises_on_generic_pipeline_failure():
+    runner = V2PipelineRunner()
+    request = IterateV2Request(
+        game_id="game-iter-error",
+        user_id="user-iter-error",
+        current_code="<!DOCTYPE html><html><head><title>Pig Runner</title></head><body></body></html>",
+        iteration_intent={"feedback": "add five levels", "conversation": []},
+        source_spec=GameSpec(game_type="runner", intent_summary="Keep the pig runner core", ui_language="en-US"),
+        source_bundle_context=SourceBundleContext(title="Pig Runner"),
+        runtime_contract=GameRuntimeContract(runtime_profile="portrait_arcade"),
+    )
+
+    with patch(
+        "src.engine.pipeline_v2_runner.require_prompt",
+        return_value=(
+            "Current game context: {current_summary}\n"
+            "Source spec summary: {source_spec_summary}\n"
+            "Historical bundle context: {source_bundle_context}\n"
+            "Requested iteration: {feedback}\n"
+            "Conversation context: {conversation_text}"
+        ),
+    ), patch.object(
+        runner,
+        "_parse_spec_with_retries",
+        new=AsyncMock(side_effect=PipelineExecutionError("upstream timed out", stage="spec_build")),
+    ):
+        try:
+            asyncio.run(runner._build_iteration_spec(request))
+            assert False, "expected PipelineExecutionError"
+        except PipelineExecutionError as exc:
+            assert str(exc) == "upstream timed out"
+
+
 def test_runtime_qa_unavailable_in_production_persists_candidate_artifacts():
     runner = V2PipelineRunner()
     runtime_unavailable = SimpleNamespace(
         ran=False,
         unavailable_reason="runtime_qa_timeout:12.00s",
+        unavailable_kind="timeout",
+        unavailable_phase="content_load",
+        phase_metrics={"content_load_timeout_s": 12.0},
     )
 
     with patch(
@@ -386,11 +714,63 @@ def test_runtime_qa_unavailable_in_production_persists_candidate_artifacts():
                     progress_cb=None,
                     game_id="game-1",
                     user_id="user-1",
+                    allow_runtime_qa_unavailable=False,
                 )
             )
             assert False, "expected PipelineExecutionError"
-        except Exception as exc:
+        except PipelineExecutionError as exc:
             assert "Runtime QA unavailable" in str(exc)
+            assert exc.failure_family == "qa_infra_unavailable"
             artifacts = getattr(exc, "artifacts", [])
             assert any(item.get("artifact_type") == "failed_runtime_candidate" for item in artifacts)
             assert any(item.get("artifact_type") == "runtime_qa_report" for item in artifacts)
+            runtime_report = next(
+                item.get("payload")
+                for item in artifacts
+                if item.get("artifact_type") == "runtime_qa_report"
+            )
+            assert runtime_report["unavailableKind"] == "timeout"
+            assert runtime_report["unavailablePhase"] == "content_load"
+
+
+def test_runtime_qa_timeout_can_soft_fail_for_published_iteration():
+    runner = V2PipelineRunner()
+    runtime_unavailable = SimpleNamespace(
+        ran=False,
+        unavailable_reason="runtime_qa_timeout:60.00s",
+        unavailable_kind="timeout",
+        unavailable_phase="overall",
+        phase_metrics={"total_elapsed_ms": 60000},
+    )
+
+    with patch(
+        "src.engine.pipeline_v2_runner.run_runtime_qa",
+        new=AsyncMock(return_value=runtime_unavailable),
+    ), patch(
+        "src.engine.pipeline_v2_runner.settings.ENVIRONMENT",
+        "production",
+    ):
+        final_code, runtime_qa, retries, qa_warnings = asyncio.run(
+            runner._run_runtime_qa_loop(
+                code="<!DOCTYPE html><html><body>candidate</body></html>",
+                spec=GameSpec(game_type="runner"),
+                runtime_contract=GameRuntimeContract(),
+                prompt_bundle_snapshot={"layers": {}},
+                progress_cb=None,
+                game_id="game-1",
+                user_id="user-1",
+                allow_runtime_qa_unavailable=True,
+            )
+        )
+
+    assert final_code == "<!DOCTYPE html><html><body>candidate</body></html>"
+    assert runtime_qa.unavailable_kind == "timeout"
+    assert retries == 0
+    assert qa_warnings == [{
+        "type": "runtime_qa_unavailable",
+        "severity": "warning",
+        "message": "Runtime QA unavailable: runtime_qa_timeout:60.00s",
+        "kind": "timeout",
+        "phase": "overall",
+        "softFailed": True,
+    }]

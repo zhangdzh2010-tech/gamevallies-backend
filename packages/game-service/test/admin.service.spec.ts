@@ -10,6 +10,7 @@ describe('AdminService', () => {
   let gameService: any;
 
   beforeEach(() => {
+    process.env.ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'admin123';
     prisma = {
       game: {
         findMany: jest.fn(),
@@ -29,6 +30,7 @@ describe('AdminService', () => {
       },
       aiEngineRegionTarget: {
         findUnique: jest.fn(),
+        findFirst: jest.fn(),
         findMany: jest.fn(),
         upsert: jest.fn(),
         update: jest.fn(),
@@ -55,6 +57,9 @@ describe('AdminService', () => {
         findUnique: jest.fn(),
         findMany: jest.fn(),
         upsert: jest.fn(),
+      },
+      llmGatewayTestRecord: {
+        findMany: jest.fn(),
       },
       llmStepRoute: {
         findMany: jest.fn(),
@@ -795,7 +800,15 @@ describe('AdminService', () => {
       enabled: true,
       priority: 100,
       description: null,
-      extraConfig: null,
+      extraConfig: {
+        vendorPreset: 'modelverse',
+        modelCatalog: {
+          mode: 'custom',
+          apiUrl: 'https://api.modelverse.cn/v1/models',
+          authMode: 'bearer_token',
+          apiKey: 'catalog-secret-1234',
+        },
+      },
     });
     jest.spyOn(service, 'refreshLlmGateway').mockResolvedValue({ ok: true } as any);
 
@@ -807,6 +820,11 @@ describe('AdminService', () => {
       apiKey: 'sk-test-1234',
       model: 'MiniMax-M2.5',
       fastModel: 'MiniMax-M2.5-fast',
+      vendorPreset: 'modelverse',
+      catalogMode: 'custom',
+      catalogApiUrl: 'https://api.modelverse.cn/v1/models',
+      catalogAuthMode: 'bearer_token',
+      catalogApiKey: 'catalog-secret-1234',
     });
 
     expect(prisma.llmGatewayProvider.upsert).toHaveBeenCalledWith(
@@ -816,11 +834,278 @@ describe('AdminService', () => {
           cloudVendor: 'volcengine',
           cloudRegionCode: 'cn-shanghai',
           region: 'cn_shanghai',
+          extraConfig: expect.objectContaining({
+            vendorPreset: 'modelverse',
+            modelCatalog: expect.objectContaining({
+              mode: 'custom',
+              apiUrl: 'https://api.modelverse.cn/v1/models',
+              authMode: 'bearer_token',
+              apiKey: 'catalog-secret-1234',
+            }),
+          }),
         }),
       }),
     );
     expect(result.region).toBe('cn_shanghai');
     expect(result.apiKeyMasked).toBe('sk-t...1234');
+    expect(result.vendorPreset).toBe('modelverse');
+    expect(result.catalogApiKeyMasked).toBe('cata...1234');
+    expect(result.extraConfig).toBeUndefined();
+  });
+
+  it('proxies provider catalog preview to the selected ai-engine region', async () => {
+    prisma.aiEngineRegionTarget.findUnique.mockResolvedValue({
+      id: 'target-1',
+      executionRegion: 'cn_shanghai',
+      aiEngineUrl: 'https://ai-cn.example.com',
+      deployEnabled: true,
+      deployStatus: 'deployed',
+    });
+    const postSpy = jest.spyOn(axios, 'post').mockResolvedValue({
+      data: {
+        models: [{ id: 'MiniMax-M2.7' }],
+        fetched_at: '2026-03-26T12:00:00.000Z',
+        resolved_catalog_api_url: 'https://api.modelverse.cn/v1/models',
+        vendor_preset: 'modelverse',
+      },
+    } as any);
+
+    try {
+      const result = await service.previewLlmProviderCatalog({
+        regionTargetId: 'target-1',
+        vendorPreset: 'modelverse',
+        catalogApiUrl: 'https://api.modelverse.cn/v1/models',
+      });
+
+      expect(postSpy).toHaveBeenCalledWith(
+        'https://ai-cn.test/api/v1/ai/llm-gateway/providers/catalog/preview',
+        expect.objectContaining({
+          provider_type: 'openai_compatible',
+          vendor_preset: 'modelverse',
+          catalog_api_url: 'https://api.modelverse.cn/v1/models',
+        }),
+        expect.objectContaining({
+          headers: { 'x-admin-token': expect.any(String) },
+          timeout: 30000,
+        }),
+      );
+      expect(result.models).toEqual([{ id: 'MiniMax-M2.7' }]);
+      expect(result.fetchedAt).toBe('2026-03-26T12:00:00.000Z');
+      expect(result.resolvedCatalogApiUrl).toBe('https://api.modelverse.cn/v1/models');
+      expect(result.vendorPreset).toBe('modelverse');
+    } finally {
+      postSpy.mockRestore();
+    }
+  });
+
+  it('reuses stored provider secrets for catalog preview when editing an existing provider', async () => {
+    prisma.llmGatewayProvider.findUnique.mockResolvedValue({
+      providerType: 'openai_compatible',
+      regionTargetId: 'target-1',
+      baseUrl: 'https://api.modelverse.cn/v1',
+      apiKey: 'provider-key-123',
+      extraConfig: {
+        vendorPreset: 'modelverse',
+        modelCatalog: {
+          mode: 'custom',
+          apiUrl: 'https://api.modelverse.cn/v1/models',
+          authMode: 'bearer_token',
+          apiKey: 'catalog-key-456',
+        },
+      },
+    });
+    prisma.aiEngineRegionTarget.findUnique.mockResolvedValue({
+      id: 'target-1',
+      executionRegion: 'cn_shanghai',
+      aiEngineUrl: 'https://ai-cn.example.com',
+      deployEnabled: true,
+      deployStatus: 'deployed',
+    });
+    const postSpy = jest.spyOn(axios, 'post').mockResolvedValue({
+      data: {
+        models: [{ id: 'model-a' }],
+        fetchedAt: '2026-03-26T12:00:00.000Z',
+      },
+    } as any);
+
+    try {
+      await service.previewLlmProviderCatalog({
+        providerId: 'provider-1',
+        catalogAuthMode: 'bearer_token',
+      });
+
+      expect(postSpy).toHaveBeenCalledWith(
+        'https://ai-cn.test/api/v1/ai/llm-gateway/providers/catalog/preview',
+        expect.objectContaining({
+          provider_type: 'openai_compatible',
+          vendor_preset: 'modelverse',
+          base_url: 'https://api.modelverse.cn/v1',
+          api_key: 'provider-key-123',
+          catalog_api_url: 'https://api.modelverse.cn/v1/models',
+          catalog_auth_mode: 'bearer_token',
+          catalog_api_key: 'catalog-key-456',
+        }),
+        expect.any(Object),
+      );
+    } finally {
+      postSpy.mockRestore();
+    }
+  });
+
+  it('proxies provider chat tests and returns recent test records', async () => {
+    prisma.llmGatewayProvider.findUnique
+      .mockResolvedValueOnce({ regionTargetId: 'target-1' })
+      .mockResolvedValueOnce({ id: 'provider-1' });
+    prisma.aiEngineRegionTarget.findUnique.mockResolvedValue({
+      id: 'target-1',
+      executionRegion: 'cn_shanghai',
+      aiEngineUrl: 'https://ai-cn.example.com',
+      deployEnabled: true,
+      deployStatus: 'deployed',
+    });
+    prisma.llmGatewayTestRecord.findMany.mockResolvedValue([
+      {
+        id: 'record-1',
+        success: true,
+        region: 'cn_shanghai',
+        resolvedEndpoint: 'https://api.modelverse.cn/v1/chat/completions',
+        model: 'gpt-5.4-mini',
+        latencyMs: 812,
+        httpStatus: 200,
+        errorMessage: null,
+        testedAt: new Date('2026-03-26T12:01:00.000Z'),
+      },
+    ]);
+    const postSpy = jest.spyOn(axios, 'post').mockResolvedValue({
+      data: {
+        reply: '你好，我准备好了。',
+        latency_ms: 812,
+        model: 'gpt-5.4-mini',
+        success: true,
+        tested_at: '2026-03-26T12:01:00.000Z',
+      },
+    } as any);
+
+    try {
+      const chat = await service.testLlmProviderChat('provider-1', {
+        messages: [{ role: 'user', content: '你好' }],
+      });
+      const records = await service.listLlmProviderTestRecords('provider-1', 5);
+
+      expect(postSpy).toHaveBeenCalledWith(
+        'https://ai-cn.test/api/v1/ai/llm-gateway/providers/provider-1/test-chat',
+        { messages: [{ role: 'user', content: '你好' }] },
+        expect.objectContaining({
+          headers: { 'x-admin-token': expect.any(String) },
+          timeout: 60000,
+        }),
+      );
+      expect(chat.reply).toBe('你好，我准备好了。');
+      expect(chat.latencyMs).toBe(812);
+      expect(chat.testedAt).toBe('2026-03-26T12:01:00.000Z');
+      expect(prisma.llmGatewayTestRecord.findMany).toHaveBeenCalledWith({
+        where: { providerId: 'provider-1' },
+        orderBy: { testedAt: 'desc' },
+        take: 5,
+        select: {
+          id: true,
+          success: true,
+          region: true,
+          resolvedEndpoint: true,
+          model: true,
+          latencyMs: true,
+          httpStatus: true,
+          errorMessage: true,
+          testedAt: true,
+        },
+      });
+      expect(records).toHaveLength(1);
+    } finally {
+      postSpy.mockRestore();
+    }
+  });
+
+  it('falls back to the next ai-engine admin base url when provider test hits a stale endpoint first', async () => {
+    prisma.llmGatewayProvider.findUnique.mockResolvedValue({
+      regionTargetId: 'target-1',
+    });
+    prisma.aiEngineRegionTarget.findUnique.mockResolvedValue({
+      id: 'target-1',
+      executionRegion: 'cn_shanghai',
+      aiEngineUrl: 'https://ai-stale.example.com',
+      deployEnabled: true,
+      deployStatus: 'deployed',
+    });
+    const postSpy = jest.spyOn(axios, 'post')
+      .mockRejectedValueOnce(Object.assign(new Error('connect ECONNREFUSED'), {
+        isAxiosError: true,
+        response: {
+          data: { message: 'configured gateway unavailable' },
+        },
+      }))
+      .mockResolvedValueOnce({
+        data: {
+          success: true,
+          latencyMs: 812,
+        },
+      } as any);
+
+    try {
+      const result = await service.testLlmProvider('provider-1');
+
+      expect(postSpy).toHaveBeenNthCalledWith(
+        1,
+        'https://ai-cn.test/api/v1/ai/llm-gateway/providers/provider-1/test',
+        {},
+        expect.any(Object),
+      );
+      expect(postSpy).toHaveBeenNthCalledWith(
+        2,
+        'https://ai-stale.example.com/api/v1/ai/llm-gateway/providers/provider-1/test',
+        {},
+        expect.any(Object),
+      );
+      expect(result).toEqual({
+        success: true,
+        latencyMs: 812,
+      });
+    } finally {
+      postSpy.mockRestore();
+    }
+  });
+
+  it('surfaces upstream ai-engine errors when every admin endpoint fails', async () => {
+    prisma.llmGatewayProvider.findUnique.mockResolvedValue({
+      regionTargetId: 'target-1',
+    });
+    prisma.aiEngineRegionTarget.findUnique.mockResolvedValue({
+      id: 'target-1',
+      executionRegion: 'cn_shanghai',
+      aiEngineUrl: 'https://ai-stale.example.com',
+      deployEnabled: true,
+      deployStatus: 'deployed',
+    });
+    const postSpy = jest.spyOn(axios, 'post')
+      .mockRejectedValueOnce(Object.assign(new Error('first failure'), {
+        isAxiosError: true,
+        response: {
+          data: { detail: 'configured gateway unavailable' },
+        },
+      }))
+      .mockRejectedValueOnce(Object.assign(new Error('second failure'), {
+        isAxiosError: true,
+        response: {
+          data: { message: 'region runtime unreachable' },
+        },
+      }));
+
+    try {
+      await expect(service.testLlmProvider('provider-1')).rejects.toThrow(
+        'All ai-engine admin endpoints failed. https://ai-cn.test: configured gateway unavailable | https://ai-stale.example.com: region runtime unreachable',
+      );
+    } finally {
+      postSpy.mockRestore();
+    }
   });
 
   it('allows explicit runtime endpoint updates through the standard region target edit flow', async () => {
@@ -837,7 +1122,7 @@ describe('AdminService', () => {
       regionCode: 'cn-shanghai',
       enabled: true,
     });
-    prisma.aiEngineRegionTarget.findUnique.mockResolvedValue({
+    prisma.aiEngineRegionTarget.findFirst.mockResolvedValue({
       id: 'target-1',
       executionRegion: 'cn_shanghai',
       aiEngineUrl: null,
@@ -876,7 +1161,7 @@ describe('AdminService', () => {
   });
 
   it('syncs deployed target runtime state through dedicated endpoint flow', async () => {
-    prisma.aiEngineRegionTarget.findUnique.mockResolvedValue({
+    prisma.aiEngineRegionTarget.findFirst.mockResolvedValue({
       id: 'target-1',
       executionRegion: 'cn_shanghai',
       aiEngineUrl: null,
@@ -909,6 +1194,9 @@ describe('AdminService', () => {
       lastReleaseStatus: 'done',
     });
 
+    expect(prisma.aiEngineRegionTarget.findFirst).toHaveBeenCalledWith({
+      where: { executionRegion: 'cn_shanghai' },
+    });
     expect(prisma.aiEngineRegionTarget.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 'target-1' },

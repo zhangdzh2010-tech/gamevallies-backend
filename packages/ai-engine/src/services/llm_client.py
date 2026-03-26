@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from copy import copy
+import json
 import logging
 import re
 import time
@@ -19,6 +21,42 @@ from .llm_gateway import gateway
 logger = logging.getLogger(__name__)
 
 Message = Dict[str, str]
+
+
+class OpenAICompatibleResponseParseError(ValueError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        response_excerpt: Optional[str] = None,
+        upstream_request_id: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.response_excerpt = response_excerpt
+        self.upstream_request_id = upstream_request_id
+
+
+class EmptyOpenAICompatibleTextError(OpenAICompatibleResponseParseError):
+    """Provider returned a syntactically valid payload, but no usable text."""
+
+
+class LLMResponseTruncatedError(ValueError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        response_excerpt: Optional[str] = None,
+        upstream_request_id: Optional[str] = None,
+        stop_reason: Optional[str] = None,
+        output_tokens: Optional[int] = None,
+    ) -> None:
+        super().__init__(message)
+        self.response_excerpt = response_excerpt
+        self.upstream_request_id = upstream_request_id
+        self.stop_reason = stop_reason
+        self.output_tokens = output_tokens
+
+
 def _build_openai_compatible_chat_url(base_url: str) -> str:
     normalized = base_url.strip().rstrip("/")
     if not normalized:
@@ -62,41 +100,65 @@ def _strip_think_tags(text: str) -> str:
     return text.strip()
 
 
+def _extract_openai_text_fragment(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        text = "".join(_extract_openai_text_fragment(item) for item in value).strip()
+        return text
+    if isinstance(value, dict):
+        for key in ("text", "output_text", "content", "value"):
+            text = _extract_openai_text_fragment(value.get(key))
+            if text:
+                return text
+        return ""
+    if isinstance(value, (int, float, bool)):
+        return str(value).strip()
+    return ""
+
+
 def _extract_openai_message_text(message: Any) -> str:
     if not isinstance(message, dict):
         return ""
 
-    content = message.get("content")
-    if isinstance(content, list):
-        text_parts = [
-            part.get("text", "")
-            for part in content
-            if isinstance(part, dict)
-        ]
-        text = "".join(text_parts).strip()
+    for key in ("content", "reasoning_content"):
+        text = _extract_openai_text_fragment(message.get(key))
         if text:
             return _strip_think_tags(text)
-    elif content is not None:
-        text = str(content).strip()
-        if text:
-            return _strip_think_tags(text)
-
-    reasoning = message.get("reasoning_content")
-    if isinstance(reasoning, list):
-        reasoning_parts = [
-            part.get("text", "")
-            for part in reasoning
-            if isinstance(part, dict)
-        ]
-        reasoning_text = "".join(reasoning_parts).strip()
-        if reasoning_text:
-            return _strip_think_tags(reasoning_text)
-    elif reasoning is not None:
-        reasoning_text = str(reasoning).strip()
-        if reasoning_text:
-            return _strip_think_tags(reasoning_text)
 
     return ""
+
+
+def _extract_openai_choice_text(choice: Any) -> str:
+    if not isinstance(choice, dict):
+        return ""
+
+    message_text = _extract_openai_message_text(choice.get("message"))
+    if message_text:
+        return message_text
+
+    for key in ("text", "output_text"):
+        text = _extract_openai_text_fragment(choice.get(key))
+        if text:
+            return _strip_think_tags(text)
+
+    delta = choice.get("delta")
+    if isinstance(delta, dict):
+        delta_text = _extract_openai_message_text(delta)
+        if delta_text:
+            return delta_text
+
+    return ""
+
+
+def _summarize_openai_response_excerpt(data: Any, limit: int = 1000) -> str:
+    try:
+        rendered = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        rendered = str(data)
+    return rendered[:limit]
 
 
 def _response_request_id(headers: httpx.Headers) -> Optional[str]:
@@ -126,6 +188,10 @@ def _summarize_error_message(message: str, limit: int = 160) -> str:
 
 def _is_retryable_provider_error(exc: Exception) -> bool:
     if isinstance(exc, (asyncio.TimeoutError, httpx.TimeoutException, httpx.RequestError)):
+        return True
+    if isinstance(exc, LLMResponseTruncatedError):
+        return True
+    if isinstance(exc, OpenAICompatibleResponseParseError):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code in {408, 409, 425, 429} or exc.response.status_code >= 500
@@ -363,14 +429,11 @@ class LLMClient:
             effective_provider_type = route.provider_type
             route_snapshot = dict(route.route_snapshot or {})
             if route.provider_type == "anthropic":
-                text = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: self._complete_anthropic(
-                        route=route,
-                        messages=messages,
-                        max_tokens=max_tokens,
-                        system=system,
-                    ),
+                text = await self._run_anthropic_with_timeout(
+                    route=route,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    system=system,
                 )
             elif route.provider_type == "openai_compatible":
                 try:
@@ -390,21 +453,17 @@ class LLMClient:
                     )
                     effective_provider_type = "anthropic"
                     route_snapshot["protocol_fallback"] = "anthropic"
-                    text = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda: self._complete_anthropic(
-                            route=route,
-                            messages=messages,
-                            max_tokens=max_tokens,
-                            system=system,
-                        ),
+                    text = await self._run_anthropic_with_timeout(
+                        route=route,
+                        messages=messages,
+                        max_tokens=max_tokens,
+                        system=system,
                     )
             else:
                 raise RuntimeError(f"Unsupported provider type: {route.provider_type}")
 
             latency_ms = int((time.time() - started_at) * 1000)
-            stop_event.set()
-            await heartbeat_task
+            await self._finish_heartbeat(stop_event=stop_event, heartbeat_task=heartbeat_task)
             await self._emit_task_activity(
                 route=route,
                 stage=stage,
@@ -429,6 +488,35 @@ class LLMClient:
                 "routeSnapshot": route_snapshot,
             })
             return text
+        except asyncio.CancelledError:
+            latency_ms = int((time.time() - started_at) * 1000)
+            await self._finish_heartbeat(stop_event=stop_event, heartbeat_task=heartbeat_task)
+            await self._emit_task_activity(
+                route=route,
+                stage=stage,
+                step_key=step_key,
+                state="failed",
+                elapsed_ms=latency_ms,
+                error_message="LLM call canceled before completion",
+            )
+            await gateway.emit_llm_call_log({
+                "stage": stage,
+                "stepKey": step_key,
+                "providerId": route.provider_id,
+                "providerName": route.provider_name,
+                "providerType": route.provider_type,
+                "region": route.region,
+                "model": route.model,
+                "requestTimeoutS": route.request_timeout_s,
+                "connectTimeoutS": route.connect_timeout_s,
+                "latencyMs": latency_ms,
+                "success": False,
+                "errorCode": "CancelledError",
+                "errorMessage": "LLM call canceled before completion",
+                "configVersion": route.config_version,
+                "routeSnapshot": route.route_snapshot,
+            })
+            raise
         except Exception as exc:
             http_status = None
             upstream_request_id = None
@@ -438,12 +526,17 @@ class LLMClient:
                 http_status = exc.response.status_code
                 upstream_request_id = _response_request_id(exc.response.headers)
                 error_body_excerpt = exc.response.text[:1000]
+            elif isinstance(exc, LLMResponseTruncatedError):
+                upstream_request_id = exc.upstream_request_id
+                error_body_excerpt = exc.response_excerpt
+            elif isinstance(exc, OpenAICompatibleResponseParseError):
+                upstream_request_id = exc.upstream_request_id
+                error_body_excerpt = exc.response_excerpt
             elif isinstance(exc, httpx.RequestError):
                 error_body_excerpt = str(exc)
 
             latency_ms = int((time.time() - started_at) * 1000)
-            stop_event.set()
-            await heartbeat_task
+            await self._finish_heartbeat(stop_event=stop_event, heartbeat_task=heartbeat_task)
             await self._emit_task_activity(
                 route=route,
                 stage=stage,
@@ -474,6 +567,47 @@ class LLMClient:
                 "routeSnapshot": route.route_snapshot,
             })
             raise
+
+    async def _finish_heartbeat(
+        self,
+        *,
+        stop_event: asyncio.Event,
+        heartbeat_task: asyncio.Task[Any],
+    ) -> None:
+        stop_event.set()
+        if heartbeat_task.done():
+            with suppress(Exception, asyncio.CancelledError):
+                await heartbeat_task
+            return
+        with suppress(Exception, asyncio.CancelledError):
+            await heartbeat_task
+
+    async def _run_anthropic_with_timeout(
+        self,
+        *,
+        route: Any,
+        messages: List[Message],
+        max_tokens: int,
+        system: Optional[str],
+    ) -> str:
+        timeout_s = max(1, int(getattr(route, "request_timeout_s", 0) or 1))
+        try:
+            return await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: self._complete_anthropic(
+                        route=route,
+                        messages=messages,
+                        max_tokens=max_tokens,
+                        system=system,
+                    ),
+                ),
+                timeout=timeout_s,
+            )
+        except asyncio.TimeoutError as exc:
+            raise asyncio.TimeoutError(
+                f"Anthropic-compatible request timed out after {timeout_s}s"
+            ) from exc
 
     def _get_anthropic_client(self, *, api_key: str, base_url: Optional[str]):
         import anthropic
@@ -508,7 +642,18 @@ class LLMClient:
             text = getattr(block, "text", "")
             if text:
                 parts.append(text)
-        return _strip_think_tags("\n".join(parts).strip())
+        rendered = _strip_think_tags("\n".join(parts).strip())
+        stop_reason = str(getattr(response, "stop_reason", "") or "").strip().lower()
+        if stop_reason == "max_tokens":
+            usage = getattr(response, "usage", None)
+            raise LLMResponseTruncatedError(
+                "Anthropic response hit max_tokens and may be truncated",
+                response_excerpt=rendered[:1000] or None,
+                upstream_request_id=getattr(response, "id", None),
+                stop_reason=stop_reason,
+                output_tokens=getattr(usage, "output_tokens", None),
+            )
+        return rendered
 
     async def _complete_openai_compatible(
         self,
@@ -539,17 +684,46 @@ class LLMClient:
         ) as client:
             response = await client.post(url, headers=headers, json=payload)
             response.raise_for_status()
-            data = response.json()
+            upstream_request_id = _response_request_id(response.headers)
+            try:
+                data = response.json()
+            except ValueError as exc:
+                excerpt = (response.text or "")[:1000] or None
+                logger.error("OpenAI-compatible provider returned non-JSON payload: %s", excerpt)
+                raise OpenAICompatibleResponseParseError(
+                    "OpenAI-compatible response was not valid JSON",
+                    response_excerpt=excerpt,
+                    upstream_request_id=upstream_request_id,
+                ) from exc
 
         try:
-            message = data["choices"][0]["message"]
+            choice = data["choices"][0]
         except (KeyError, IndexError, TypeError) as exc:
-            logger.error("Unexpected OpenAI-compatible response: %s", data)
-            raise ValueError("Unexpected LLM response payload") from exc
+            excerpt = _summarize_openai_response_excerpt(data)
+            logger.error("Unexpected OpenAI-compatible response: %s", excerpt)
+            raise OpenAICompatibleResponseParseError(
+                "Unexpected LLM response payload",
+                response_excerpt=excerpt,
+                upstream_request_id=upstream_request_id,
+            ) from exc
 
-        text = _extract_openai_message_text(message)
+        text = _extract_openai_choice_text(choice)
+        finish_reason = str(choice.get("finish_reason") or "").strip().lower()
+        if finish_reason in {"length", "max_tokens"}:
+            excerpt = text[:1000] or _summarize_openai_response_excerpt(data)
+            raise LLMResponseTruncatedError(
+                "OpenAI-compatible response hit the output length limit and may be truncated",
+                response_excerpt=excerpt,
+                upstream_request_id=upstream_request_id,
+                stop_reason=finish_reason,
+            )
         if not text:
-            logger.error("OpenAI-compatible response contained no usable text: %s", data)
-            raise ValueError("OpenAI-compatible response contained no usable text")
+            excerpt = _summarize_openai_response_excerpt(data)
+            logger.error("OpenAI-compatible response contained no usable text: %s", excerpt)
+            raise EmptyOpenAICompatibleTextError(
+                "OpenAI-compatible response contained no usable text",
+                response_excerpt=excerpt,
+                upstream_request_id=upstream_request_id,
+            )
 
         return text

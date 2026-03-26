@@ -7,7 +7,14 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..api.models import GDD, GameRuntimeContract, GameSpec, GenerateCodeResult, IterationType
+from ..api.models import (
+    GDD,
+    GameRuntimeContract,
+    GameSpec,
+    GenerateCodeResult,
+    IterationType,
+    SourceBundleContext,
+)
 from ..config.settings import settings
 from ..config.timeout_store import get_int as get_timeout_int
 from ..services.llm_client import LLMClient
@@ -33,6 +40,48 @@ GAME_TYPE_CORE_MECHANIC_SUMMARY: Dict[str, str] = {
     "idle": "Accumulate resources automatically and upgrade progression.",
     "rpg": "Explore, battle, and grow the character through encounters.",
 }
+
+LOCALIZED_CORE_MECHANIC_SUMMARY: Dict[str, Dict[str, str]] = {
+    "zh-CN": {
+        "dodge": "移动并躲开危险，尽量坚持更久。",
+        "platformer": "跨越平台、避开空隙，并抵达终点。",
+        "runner": "持续前进、躲开障碍，并保持跑酷节奏。",
+        "shooter": "瞄准并射击敌人，在压力下保持生存。",
+        "puzzle": "通过空间或逻辑推理完成关卡目标。",
+        "rhythm": "按节奏点击，保持连击并获得高分。",
+        "tower_defense": "布置防御并挡住一波波来袭的敌人。",
+        "idle": "积累资源并升级系统，推动自动成长。",
+        "rpg": "探索、战斗并逐步强化角色。",
+    },
+}
+
+UI_LANGUAGE_LABELS: Dict[str, str] = {
+    "en-US": "English",
+    "zh-CN": "Simplified Chinese",
+}
+
+EDUCATIONAL_REQUEST_MARKERS: tuple[str, ...] = (
+    "classroom",
+    "teacher",
+    "lesson",
+    "quiz",
+    "worksheet",
+    "practice",
+    "practice question",
+    "learning game",
+    "teaching",
+    "knowledge point",
+    "课堂",
+    "教学",
+    "老师",
+    "练习题",
+    "知识点",
+    "问答",
+    "测验",
+    "小测",
+    "学习游戏",
+    "教学游戏",
+)
 
 PLAYER_SIZE_BY_GAME_TYPE: Dict[str, tuple[int, int]] = {
     "dodge": (36, 36),
@@ -131,6 +180,7 @@ class CodeGenerator:
         )
         logic_generate_policy = self._resolved_bundle_prompt(prompt_bundle_snapshot, "logic_generate")
         profile_few_shot = self._resolved_bundle_prompt(prompt_bundle_snapshot, "profile_few_shot")
+        implementation_budget = self._build_implementation_budget_block(spec, request_text)
         full_prompt = "\n\n".join(
             part
             for part in [
@@ -139,7 +189,9 @@ class CodeGenerator:
                 profile_few_shot,
                 structured_design,
                 self._build_critical_intent_block(spec, request_text),
+                self._build_ui_language_block(spec.ui_language),
                 self._build_runtime_contract_block(runtime_contract, runtime_profile, prompt_bundle_snapshot),
+                implementation_budget,
                 self._build_mobile_layout_guardrails(gdd),
                 require_prompt("prompt.platform_standard"),
             ]
@@ -198,6 +250,8 @@ class CodeGenerator:
             "game_type": spec.game_type,
             "core_mechanic": core_mechanic,
             "core_mechanics": core_mechanic,
+            "ui_language": spec.ui_language,
+            "ui_text_examples": self._build_ui_copy_examples(gdd, spec.ui_language),
             "theme": spec.visual_style.theme,
             "art_style": spec.visual_style.art_style,
             "reference_game": spec.reference_game or "none",
@@ -266,8 +320,13 @@ class CodeGenerator:
         if spec.core_mechanics:
             mechanic = spec.core_mechanics[0]
             return f"{mechanic.type} gameplay using {mechanic.input} controls."
+        localized_summary = LOCALIZED_CORE_MECHANIC_SUMMARY.get(spec.ui_language or "", {})
+        if spec.game_type in localized_summary:
+            return localized_summary[spec.game_type]
         if spec.game_type in GAME_TYPE_CORE_MECHANIC_SUMMARY:
             return GAME_TYPE_CORE_MECHANIC_SUMMARY[spec.game_type]
+        if spec.ui_language == "zh-CN":
+            return "适合移动端的玩法循环，目标明确，操控灵敏。"
         return "Mobile-friendly gameplay loop with clear goals and responsive controls."
 
     @staticmethod
@@ -300,7 +359,119 @@ class CodeGenerator:
             win_condition=spec.rules.win_condition,
             reference_line=reference_line,
             special_rules_block=special_rules_block,
+            ui_language=self._describe_ui_language(spec.ui_language),
         )
+
+    @staticmethod
+    def _describe_ui_language(ui_language: str) -> str:
+        normalized = (ui_language or "en-US").strip() or "en-US"
+        return f"{normalized} ({UI_LANGUAGE_LABELS.get(normalized, normalized)})"
+
+    def _build_ui_language_block(self, ui_language: str) -> str:
+        return (
+            "UI LANGUAGE (NON-NEGOTIABLE):\n"
+            f"- Visible UI language: {self._describe_ui_language(ui_language)}\n"
+            "- All player-visible text must use this language, including title, HUD labels, buttons, overlays, tutorials, and win/lose copy.\n"
+            "- Keep code identifiers, variable names, function names, and JSON keys in English.\n"
+            "- Do not silently fall back to English UI copy unless the visible UI language itself is English."
+        )
+
+    @classmethod
+    def _looks_like_educational_request(cls, *texts: str) -> bool:
+        combined = " ".join((text or "").strip().lower() for text in texts if (text or "").strip())
+        if not combined:
+            return False
+        return any(marker in combined for marker in EDUCATIONAL_REQUEST_MARKERS)
+
+    @classmethod
+    def _build_implementation_budget_block(
+        cls,
+        spec: Optional[GameSpec],
+        request_text: str,
+        *,
+        fallback_game_type: str = "dodge",
+    ) -> str:
+        game_type = spec.game_type if spec else fallback_game_type
+        source_description = spec.source_description if spec else ""
+        intent_summary = spec.intent_summary if spec else ""
+        lines = [
+            "IMPLEMENTATION BUDGET (NON-NEGOTIABLE):",
+            "- Use one canvas, one primary state object, and one requestAnimationFrame loop.",
+            "- Keep only one main HUD and at most one overlay screen for ready/game-over or level-complete states.",
+            "- Avoid scene managers, dialogue trees, worksheet generators, multi-page courseware, inventories, or parallel mini-games unless they are absolutely required for the core mechanic.",
+            "- Prefer the smallest complete mechanic that satisfies the request and runtime contract before adding optional polish.",
+            "- Reuse the same controls and state machine across the whole experience instead of creating separate subsystems.",
+        ]
+        if game_type == "runner":
+            lines.extend([
+                "- Keep one obstacle loop and at most one collectible loop.",
+                "- Reuse the same lane/survival loop for progression instead of adding side modes.",
+            ])
+        if game_type == "puzzle":
+            lines.extend([
+                "- Keep one board or playfield and one clear solve condition.",
+                "- Prefer concise tap/drag interactions over multiple modal interfaces.",
+            ])
+        if cls._looks_like_educational_request(request_text, source_description, intent_summary):
+            lines.extend([
+                "- For classroom or knowledge-check requests, convert the idea into one touch-friendly puzzle/quiz loop, not a lesson plan, worksheet, or long teaching document.",
+                "- Keep the challenge set compact, such as 3-5 levels or prompts on one shared board/layout.",
+                "- Use short player-visible prompts and immediate feedback instead of generating long explanatory text blocks.",
+            ])
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_source_bundle_context_block(source_bundle_context: Optional[SourceBundleContext]) -> str:
+        if not source_bundle_context:
+            return ""
+
+        lines = ["HISTORICAL GAME CONTEXT:"]
+        if source_bundle_context.title:
+            lines.append(f"- Existing title: {source_bundle_context.title}")
+        if source_bundle_context.latest_bundle_version is not None:
+            lines.append(f"- Latest bundle version: {source_bundle_context.latest_bundle_version}")
+        if source_bundle_context.latest_game_type:
+            lines.append(f"- Current game type: {source_bundle_context.latest_game_type}")
+        if source_bundle_context.latest_feedback:
+            lines.append(f"- Latest user feedback: {source_bundle_context.latest_feedback}")
+        if source_bundle_context.latest_iteration_type:
+            lines.append(f"- Latest iteration type: {source_bundle_context.latest_iteration_type}")
+        if source_bundle_context.summary:
+            lines.append(f"- Summary: {source_bundle_context.summary}")
+        for revision in (source_bundle_context.recent_revisions or [])[:4]:
+            revision_bits = [
+                f"v{revision.version}" if revision.version is not None else "",
+                revision.feedback or "",
+                revision.iteration_type or "",
+                revision.summary or "",
+            ]
+            compact = " | ".join(bit for bit in revision_bits if bit)
+            if compact:
+                lines.append(f"- Recent revision: {compact}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_ui_copy_examples(gdd: GDD, ui_language: str) -> str:
+        labels = gdd.ui_layout.get("labels", {}) if isinstance(gdd.ui_layout, dict) else {}
+        if not isinstance(labels, dict) or not labels:
+            defaults = {
+                "en-US": {
+                    "score": "Score",
+                    "lives": "Lives",
+                    "ready": "Tap to Start",
+                    "game_over": "Game Over",
+                    "restart": "Restart",
+                },
+                "zh-CN": {
+                    "score": "得分",
+                    "lives": "生命",
+                    "ready": "点击开始",
+                    "game_over": "游戏结束",
+                    "restart": "重新开始",
+                },
+            }
+            labels = defaults.get(ui_language, defaults["en-US"])
+        return ", ".join(f"{key}={value}" for key, value in labels.items())
 
     def _build_mobile_layout_guardrails(self, gdd: GDD) -> str:
         score_layout = gdd.ui_layout.get("score", {}) if isinstance(gdd.ui_layout, dict) else {}
@@ -337,6 +508,7 @@ class CodeGenerator:
                 input_modes="touch, pointer",
                 gestures="tap",
                 forbidden_apis="eval, Function, import, require",
+                terminal_state_aliases="game_over",
                 orientation="portrait_first",
                 ui_scale_mode="short_edge",
                 hud_min=14,
@@ -353,7 +525,8 @@ class CodeGenerator:
         gestures = ", ".join(runtime_contract.input.gestures) if runtime_contract.input.gestures else "tap"
         forbidden = ", ".join(runtime_contract.safety.forbidden_apis)
         required_states = ", ".join(runtime_contract.state.required_states)
-        return require_prompt("prompt.runtime_contract_summary").format(
+        terminal_state_aliases = ", ".join(runtime_contract.gameplay.terminal_state_aliases or []) or "game_over"
+        summary = require_prompt("prompt.runtime_contract_summary").format(
             runtime_profile=runtime_profile or runtime_contract.runtime_profile,
             contract_version=runtime_contract.version,
             bundle_id=bundle_id,
@@ -362,6 +535,7 @@ class CodeGenerator:
             input_modes=", ".join(runtime_contract.input.required_modes),
             gestures=gestures,
             forbidden_apis=forbidden,
+            terminal_state_aliases=terminal_state_aliases,
             orientation=runtime_contract.mobile_layout.orientation,
             ui_scale_mode=runtime_contract.mobile_layout.ui_scale_mode,
             hud_min=runtime_contract.mobile_layout.font_clamp.hud_min,
@@ -369,6 +543,9 @@ class CodeGenerator:
             title_min=runtime_contract.mobile_layout.font_clamp.title_min,
             title_max=runtime_contract.mobile_layout.font_clamp.title_max,
         )
+        if "terminal/completion state aliases" not in summary.lower():
+            summary += f"\n- Accepted terminal/completion state aliases: {terminal_state_aliases}"
+        return summary
 
     @staticmethod
     def _resolved_bundle_prompt(
@@ -447,11 +624,11 @@ class CodeGenerator:
                 f"  - name: {entity.name}",
                 f"    visual: {shape} shape, color {color}",
                 "    size: 32-56px",
-                f"    speed: {fallback_speed} px/帧",
+                f"    speed: {fallback_speed} px/s",
                 f"    spawn_interval: {spawn_interval} ms",
                 "    spawn_position: random edge or lane depending on game flow",
                 "    movement: straight with mild variance unless game rules require otherwise",
-                f"    collision_effect: {'扣命' if entity.role in ('obstacle', 'enemy') else '得分'}",
+                f"    collision_effect: {'damage player' if entity.role in ('obstacle', 'enemy') else 'award score'}",
             ])
         return "\n".join(lines)
 
@@ -484,6 +661,7 @@ class CodeGenerator:
         runtime_profile: Optional[str] = None,
         prompt_bundle_snapshot: Optional[Dict[str, Any]] = None,
         game_spec: Optional[GameSpec] = None,
+        source_bundle_context: Optional[SourceBundleContext] = None,
     ) -> Tuple[str, IterationType]:
         del allow_fallback
         if self.llm_mode != "real" or not self._client.is_enabled():
@@ -504,6 +682,7 @@ class CodeGenerator:
             runtime_profile=runtime_profile,
             prompt_bundle_snapshot=prompt_bundle_snapshot,
             game_spec=game_spec,
+            source_bundle_context=source_bundle_context,
         )
         return updated, iter_type
 
@@ -578,6 +757,7 @@ class CodeGenerator:
         runtime_profile: Optional[str] = None,
         prompt_bundle_snapshot: Optional[Dict[str, Any]] = None,
         game_spec: Optional[GameSpec] = None,
+        source_bundle_context: Optional[SourceBundleContext] = None,
     ) -> str:
         history_text = "\n".join(
             f"{item.get('role', 'user')}: {item.get('content', '')}"
@@ -610,6 +790,7 @@ class CodeGenerator:
             prompt_bundle_snapshot,
         )
         spec_block = self._build_critical_intent_block(game_spec, feedback) if game_spec else ""
+        source_context_block = self._build_source_bundle_context_block(source_bundle_context)
         logic_generate_policy = self._resolved_bundle_prompt(prompt_bundle_snapshot, "logic_generate")
         profile_few_shot = self._resolved_bundle_prompt(prompt_bundle_snapshot, "profile_few_shot")
         prompt = "\n\n".join(
@@ -619,6 +800,9 @@ class CodeGenerator:
                 profile_few_shot,
                 contract_block,
                 spec_block,
+                source_context_block,
+                self._build_ui_language_block(game_spec.ui_language if game_spec else "en-US"),
+                self._build_implementation_budget_block(game_spec, feedback),
                 mobile_guardrails,
                 prompt,
             ]

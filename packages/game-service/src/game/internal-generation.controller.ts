@@ -10,6 +10,7 @@ import {
 import { GameWebSocketGateway } from '../websocket/websocket.gateway';
 import { ok } from '../common/api-response';
 import { GenerationTaskService } from './generation-task.service';
+import { GameService } from './game.service';
 
 let startupAdminToken: string | null = null;
 
@@ -45,6 +46,7 @@ export class InternalGenerationController {
   constructor(
     private readonly wsGateway: GameWebSocketGateway,
     private readonly generationTaskService: GenerationTaskService,
+    private readonly gameService: GameService,
   ) {
     if (startupAdminToken === null) {
       startupAdminToken = getStartupAdminToken();
@@ -325,6 +327,17 @@ export class InternalGenerationController {
       failureFamily: typeof failureFamily === 'string' ? failureFamily : undefined,
       primaryArtifactId: typeof primaryArtifactId === 'string' ? primaryArtifactId : undefined,
       details,
+    });
+
+    await this.gameService.reconcileRelayedTaskFailure({
+      taskId,
+      failedStage,
+      errorMessage,
+      retryCount: typeof retryCount === 'number' ? retryCount : undefined,
+      fallback: typeof fallback === 'string' ? fallback : undefined,
+      timedOut: Boolean(timedOut),
+      failureFamily: typeof failureFamily === 'string' ? failureFamily : undefined,
+      primaryArtifactId: typeof primaryArtifactId === 'string' ? primaryArtifactId : undefined,
     });
 
     return ok({ relayed: true });

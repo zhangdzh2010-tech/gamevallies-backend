@@ -101,6 +101,129 @@ tbody tr:hover{background:#f8fafc}
 .modal-body{padding:24px;max-height:calc(100vh - 200px);overflow-y:auto}
 .modal-footer{padding:16px 24px;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;gap:10px}
 
+/* Sheet */
+.sheet-overlay{position:fixed;inset:0;background:rgba(15,23,42,.35);z-index:1100;display:none;justify-content:flex-end}
+.sheet-overlay.active{display:flex}
+.sheet-panel{width:min(720px,100vw);height:100vh;background:#fff;box-shadow:-18px 0 40px rgba(15,23,42,.18);display:flex;flex-direction:column}
+.sheet-header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:20px 22px;border-bottom:1px solid #e5e7eb}
+.sheet-header h3{font-size:18px;font-weight:700;color:#0f172a}
+.sheet-header p{font-size:12px;color:#64748b;margin-top:4px;line-height:1.6}
+.sheet-body{padding:20px 22px;overflow:auto;display:flex;flex-direction:column;gap:18px}
+.sheet-footer{padding:16px 22px;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;gap:10px}
+.sheet-section{border:1px solid #e5e7eb;border-radius:16px;padding:16px 18px;background:#fff}
+.sheet-section h4{font-size:14px;font-weight:700;color:#0f172a;margin-bottom:12px}
+.sheet-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.sheet-grid .full{grid-column:1/-1}
+.sheet-muted{font-size:12px;color:#64748b;line-height:1.6}
+
+/* LLM workspace */
+.llm-hero{display:flex;align-items:flex-start;justify-content:space-between;gap:22px;flex-wrap:wrap;margin-bottom:18px;padding:24px 26px;border-radius:24px;border:1px solid #d7e3f4;background:radial-gradient(circle at top left,rgba(96,165,250,.2),transparent 38%),linear-gradient(135deg,#eff6ff 0%,#ffffff 48%,#f8fafc 100%);box-shadow:0 18px 40px rgba(15,23,42,.08)}
+.llm-hero h2{font-size:24px;font-weight:800;color:#0f172a;letter-spacing:-.02em}
+.llm-hero p{max-width:760px;font-size:13px;color:#475569;margin-top:8px;line-height:1.75}
+.llm-tools{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;border-radius:18px;background:rgba(255,255,255,.82);border:1px solid rgba(148,163,184,.22);backdrop-filter:blur(10px)}
+.llm-tools .btn{padding:10px 16px;border-radius:14px;font-size:13px;font-weight:700;box-shadow:0 10px 18px rgba(15,23,42,.06)}
+.llm-tools .btn-primary{background:linear-gradient(135deg,#2563eb 0%,#1d4ed8 100%)}
+.llm-tools .btn-primary:hover{background:linear-gradient(135deg,#1d4ed8 0%,#1e40af 100%)}
+.llm-tools .btn-secondary{background:#fff;color:#334155;border:1px solid #dbe4f0}
+.llm-tools .btn-secondary:hover{background:#eff6ff;border-color:#bfdbfe}
+.llm-toolbar-label{font-size:11px;font-weight:800;color:#64748b;text-transform:uppercase;letter-spacing:.08em}
+.llm-inline-card{background:#fff;border:1px solid #dbe4f0;border-radius:18px;padding:16px 18px}
+.llm-inline-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px;flex-wrap:wrap}
+.llm-inline-head h3{font-size:17px;font-weight:800;color:#0f172a;letter-spacing:-.01em}
+.llm-inline-head p{font-size:12px;color:#64748b;line-height:1.7}
+.llm-summary-row{display:flex;align-items:center;justify-content:flex-start;gap:10px;flex-wrap:wrap}
+.llm-empty{padding:34px 18px;text-align:center;color:#94a3b8;font-size:13px;line-height:1.7}
+.llm-pill{display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:999px;background:#fff;border:1px solid #dbe4f0;font-size:12px;color:#334155;box-shadow:0 6px 14px rgba(15,23,42,.04)}
+.llm-record-list{display:flex;flex-direction:column;gap:12px}
+.llm-record-item{border:1px solid #dbe4f0;border-radius:16px;padding:14px 16px;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);box-shadow:0 12px 26px rgba(15,23,42,.04)}
+.llm-record-top{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.llm-record-meta{display:flex;flex-wrap:wrap;gap:12px;margin-top:8px;font-size:12px;color:#64748b;line-height:1.6}
+.llm-kv-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.llm-kv{padding:14px 16px;border-radius:16px;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);border:1px solid #dbe4f0;box-shadow:0 8px 18px rgba(15,23,42,.04)}
+.llm-kv .k{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:#94a3b8;margin-bottom:8px}
+.llm-kv .v{font-size:13px;color:#0f172a;word-break:break-word;line-height:1.7}
+.llm-chat-thread{display:flex;flex-direction:column;gap:12px;max-height:380px;overflow:auto;padding:4px 6px 4px 0}
+.llm-chat-row{display:flex}
+.llm-chat-row.user{justify-content:flex-end}
+.llm-chat-row.assistant{justify-content:flex-start}
+.llm-chat-bubble{max-width:86%;padding:14px 16px;border-radius:18px;border:1px solid #dbe4f0;background:#fff;box-shadow:0 10px 22px rgba(15,23,42,.05)}
+.llm-chat-row.user .llm-chat-bubble{background:linear-gradient(180deg,#eff6ff 0%,#dbeafe 100%);border-color:#bfdbfe}
+.llm-chat-role{font-size:11px;font-weight:800;color:#64748b;margin-bottom:6px;text-transform:uppercase;letter-spacing:.08em}
+.llm-chat-content{font-size:13px;line-height:1.75;color:#0f172a;white-space:pre-wrap;word-break:break-word}
+.llm-chat-meta{margin-top:10px;font-size:11px;color:#64748b;display:flex;gap:10px;flex-wrap:wrap}
+.llm-chat-composer{border:1px solid #dbe4f0;border-radius:18px;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);padding:14px 16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.7)}
+.llm-chat-composer label{display:block;font-size:12px;font-weight:700;color:#334155;margin-bottom:8px}
+.llm-chat-composer textarea{width:100%;min-height:128px;padding:14px 16px;border:1px solid #cbd5e1;border-radius:14px;resize:vertical;font:inherit;font-size:13px;line-height:1.7;background:#fff;color:#0f172a;outline:none}
+.llm-chat-composer textarea:focus{border-color:#2563eb;box-shadow:0 0 0 4px rgba(37,99,235,.1)}
+.llm-chat-send-row{margin-top:12px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.llm-test-actions{display:flex;gap:8px;flex-wrap:wrap}
+.llm-model-picker{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.llm-model-picker label{display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:12px;border:1px solid #dbe4f0;background:#fff;font-size:13px;font-weight:700;color:#0f172a}
+.llm-model-picker input[type="checkbox"]{width:18px !important;height:18px !important;margin:0;accent-color:#2563eb}
+.llm-status-banner{display:flex;flex-direction:column;gap:4px;padding:14px 16px;border-radius:16px;border:1px solid transparent;margin-bottom:14px;box-shadow:0 10px 24px rgba(15,23,42,.06)}
+.llm-status-title{font-size:13px;font-weight:800;letter-spacing:-.01em}
+.llm-status-detail{font-size:12px;line-height:1.7}
+.llm-status-info{background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8}
+.llm-status-success{background:#ecfdf5;border-color:#bbf7d0;color:#15803d}
+.llm-status-error{background:#fef2f2;border-color:#fecaca;color:#b91c1c}
+.llm-status-loading{background:#fff7ed;border-color:#fed7aa;color:#c2410c}
+.llm-badge-ok{display:inline-flex;align-items:center;padding:4px 10px;border-radius:999px;background:#dcfce7;color:#15803d;font-size:11px;font-weight:800}
+.llm-badge-err{display:inline-flex;align-items:center;padding:4px 10px;border-radius:999px;background:#fee2e2;color:#b91c1c;font-size:11px;font-weight:800}
+.llm-row-title{font-size:13px;font-weight:800;color:#0f172a;line-height:1.5}
+.llm-row-sub{font-size:11px;color:#94a3b8;margin-top:4px;line-height:1.6}
+.llm-table-badge{display:inline-flex;align-items:center;padding:4px 10px;border-radius:999px;background:#eff6ff;color:#1d4ed8;font-size:11px;font-weight:700}
+.llm-table-badge-muted{background:#f1f5f9;color:#64748b}
+.llm-table-status{display:inline-flex;align-items:center;padding:5px 10px;border-radius:999px;font-size:11px;font-weight:800}
+.llm-table-status.ok{background:#dcfce7;color:#15803d}
+.llm-table-status.off{background:#e2e8f0;color:#475569}
+.llm-stage-row td{background:#eff6ff;border-bottom:1px solid #dbeafe;font-size:12px;font-weight:800;color:#1e3a8a;text-transform:uppercase;letter-spacing:.06em}
+.llm-sheet-panel{width:min(820px,100vw);background:linear-gradient(180deg,#f8fbff 0%,#f1f5f9 100%)}
+.llm-test-sheet-panel{width:min(860px,100vw)}
+.llm-sheet-panel .sheet-header{padding:24px 24px 20px;background:linear-gradient(180deg,rgba(255,255,255,.96) 0%,rgba(248,250,252,.88) 100%);backdrop-filter:blur(10px)}
+.llm-sheet-panel .sheet-body{padding:22px 24px 24px;gap:20px}
+.llm-sheet-panel .sheet-footer{padding:18px 24px;background:rgba(248,250,252,.94);backdrop-filter:blur(10px)}
+.llm-sheet-panel .sheet-section{padding:20px 22px;border-radius:22px;border:1px solid #d9e7f7;background:rgba(255,255,255,.9);box-shadow:0 18px 34px rgba(15,23,42,.05)}
+.llm-sheet-panel .sheet-section h4{font-size:16px;font-weight:800;letter-spacing:-.01em;margin-bottom:14px}
+.llm-sheet-panel .sheet-grid{gap:16px}
+.llm-field{display:flex;flex-direction:column;gap:8px;min-width:0;padding:14px 16px;border-radius:18px;border:1px solid #dbe4f0;background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%);box-shadow:inset 0 1px 0 rgba(255,255,255,.85)}
+.llm-field.full{grid-column:1/-1}
+.llm-field label{display:block;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:#64748b;margin:0}
+.llm-field input,.llm-field select,.llm-field textarea{width:100%;min-width:0;padding:12px 14px;border:1px solid #cbd5e1;border-radius:14px;background:#fff;font-size:14px;line-height:1.5;color:#0f172a;outline:none;transition:border-color .15s,box-shadow .15s,transform .15s;font-family:inherit}
+.llm-field input::placeholder,.llm-field textarea::placeholder{color:#94a3b8}
+.llm-field input:focus,.llm-field select:focus,.llm-field textarea:focus{border-color:#2563eb;box-shadow:0 0 0 4px rgba(37,99,235,.1)}
+.llm-field .hint{font-size:12px;color:#64748b;line-height:1.6}
+.llm-field-toggle{justify-content:space-between}
+.llm-toggle-line{display:flex !important;align-items:center;gap:10px;padding:12px 14px;border-radius:14px;border:1px solid #dbe4f0;background:#f8fafc;font-size:13px;font-weight:700;color:#0f172a;line-height:1.5;text-transform:none !important;letter-spacing:0 !important}
+.llm-toggle-line input[type="checkbox"]{width:18px !important;height:18px !important;margin:0;accent-color:#2563eb}
+.llm-sheet-panel .btn{padding:10px 16px;border-radius:14px;font-size:13px;font-weight:700;box-shadow:0 10px 18px rgba(15,23,42,.06)}
+.llm-sheet-panel .btn-primary{background:linear-gradient(135deg,#2563eb 0%,#1d4ed8 100%)}
+.llm-sheet-panel .btn-primary:hover{background:linear-gradient(135deg,#1d4ed8 0%,#1e40af 100%)}
+.llm-sheet-panel .btn-secondary{background:#fff;color:#334155;border:1px solid #dbe4f0}
+.llm-sheet-panel .btn-secondary:hover{background:#eff6ff;border-color:#bfdbfe}
+.llm-tools select{height:40px;min-width:180px;padding:0 14px;border-radius:14px;border:1px solid #cbd5e1;background:#fff;font-size:13px;font-weight:700;color:#0f172a;outline:none}
+.llm-tools select:focus{border-color:#2563eb;box-shadow:0 0 0 4px rgba(37,99,235,.08)}
+#page-llm .abtn{padding:7px 12px;border-radius:999px;font-size:11px;font-weight:800;box-shadow:0 8px 14px rgba(15,23,42,.05)}
+#page-llm .abtn-preview{background:#eff6ff;color:#1d4ed8;border-color:#bfdbfe}
+#page-llm .abtn-preview:hover{background:#dbeafe}
+#page-llm .abtn-edit{background:#f8fafc;color:#334155;border-color:#dbe4f0}
+#page-llm .abtn-edit:hover{background:#e2e8f0}
+#page-llm .abtn-delete{background:#fff1f2;color:#be123c;border-color:#fecdd3}
+#page-llm .abtn-delete:hover{background:#ffe4e6}
+#page-llm table select{width:min(100%,280px);padding:9px 12px;border:1px solid #cbd5e1;border-radius:12px;background:#fff;font-size:13px;color:#0f172a;outline:none}
+#page-llm table select:focus{border-color:#2563eb;box-shadow:0 0 0 4px rgba(37,99,235,.08)}
+#page-llm .table-wrap{border-radius:22px;overflow:hidden;border:1px solid #dbe4f0;box-shadow:0 16px 34px rgba(15,23,42,.06);background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%)}
+#page-llm .table-wrap table{border-collapse:separate;border-spacing:0}
+#page-llm .table-wrap thead th{padding:14px 16px;border-bottom:1px solid #e2e8f0;background:#f8fafc;font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.08em}
+#page-llm .table-wrap tbody td{padding:15px 16px;vertical-align:top}
+#page-llm .table-wrap tbody tr:hover{background:rgba(248,250,252,.9)}
+
+@media (max-width: 900px){
+  .sheet-grid,.llm-kv-grid{grid-template-columns:1fr}
+  .llm-hero{padding:20px}
+  .llm-tools{width:100%}
+  .llm-chat-send-row{align-items:flex-start}
+}
+
 /* Form */
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 .form-group{margin-bottom:0}
@@ -515,6 +638,252 @@ tbody tr:hover{background:#f8fafc}
 
     <!-- LLM Gateway -->
     <div id="page-llm" class="page">
+      <div class="llm-hero">
+        <div>
+          <h2>LLM 网关工作台</h2>
+          <p>首屏聚焦 Provider 状态、固定步骤绑定和在线测试。创建与编辑按需展开，测试支持多轮对话与延时查看。</p>
+        </div>
+        <div class="llm-tools">
+          <span class="llm-toolbar-label">Execution Region</span>
+          <select id="llm2-route-execution-region" onchange="handleExecutionRegionChange()">
+            <option value="cn_shanghai">cn_shanghai</option>
+            <option value="ap_southeast_johor">ap_southeast_johor</option>
+          </select>
+          <button class="btn btn-secondary" onclick="refreshGateway()">热刷新网关</button>
+          <button class="btn btn-secondary" onclick="loadLlmGateway()">刷新列表</button>
+          <button class="btn btn-primary" onclick="openProviderSheet()">新建 Provider</button>
+        </div>
+      </div>
+
+      <div class="table-wrap llm-surface">
+        <div style="padding:16px 18px;border-bottom:1px solid #e5e7eb">
+          <div class="llm-inline-head" style="margin-bottom:0">
+            <div>
+              <h3>固定步骤绑定</h3>
+              <p>步骤目录固定，只需要为当前区域选择 Provider。Region 跟随所选 Provider 自动校验。</p>
+            </div>
+            <div class="llm-summary-row">
+              <span class="llm-pill">当前区域：<strong id="llm2CurrentRegionLabel" style="color:#0f172a">cn_shanghai</strong></span>
+            </div>
+          </div>
+        </div>
+        <div id="llm2RouteTableWrap"></div>
+      </div>
+
+      <div style="margin-top:16px" class="table-wrap llm-surface">
+        <div style="padding:16px 18px;border-bottom:1px solid #e5e7eb">
+          <div class="llm-inline-head" style="margin-bottom:0">
+            <div>
+              <h3>Provider 列表</h3>
+              <p>在这里查看模型、timeout、最近一次测试，并从列表进入编辑或测试台。</p>
+            </div>
+            <div id="llm2ProviderSummary" class="llm-summary-row"></div>
+          </div>
+        </div>
+        <div id="llm2ProviderTableWrap"></div>
+      </div>
+
+      <div id="llmProviderSheet" class="sheet-overlay" onclick="closeSheetOnBackdrop(event, 'llmProviderSheet')">
+        <div class="sheet-panel llm-sheet-panel">
+          <div class="sheet-header">
+            <div>
+              <h3 id="llm2ProviderSheetTitle">新建 Provider</h3>
+              <p id="llm2ProviderSheetDesc">支持供应商预设、模型目录自动/自定义配置，以及下拉方式选择模型。</p>
+            </div>
+            <button class="modal-close" onclick="closeProviderSheet()">&times;</button>
+          </div>
+          <div class="sheet-body">
+            <div class="sheet-section">
+              <h4>基础配置</h4>
+              <div class="sheet-grid">
+                <div class="llm-field">
+                  <label>名称</label>
+                  <input type="text" id="llm2-provider-name" placeholder="例如 MiniMax Shanghai">
+                </div>
+                <div class="llm-field">
+                  <label>Provider 类型</label>
+                  <select id="llm2-provider-type">
+                    <option value="openai_compatible">openai_compatible</option>
+                    <option value="anthropic">anthropic</option>
+                  </select>
+                </div>
+                <div class="llm-field">
+                  <label>供应商预设</label>
+                  <select id="llm2-provider-vendor-preset" onchange="applyProviderVendorPreset()">
+                    <option value="generic">generic</option>
+                    <option value="modelverse">modelverse</option>
+                  </select>
+                </div>
+                <div class="llm-field">
+                  <label>Region Target</label>
+                  <select id="llm2-provider-region-target"></select>
+                </div>
+                <div class="llm-field full">
+                  <label>Base URL</label>
+                  <input type="text" id="llm2-provider-base-url" placeholder="https://api.minimaxi.com/v1" oninput="toggleCatalogModeFields()">
+                </div>
+                <div class="llm-field full">
+                  <label>API Key</label>
+                  <input type="password" id="llm2-provider-api-key" placeholder="留空表示编辑时保留原值">
+                  <div class="hint" id="llm2-provider-api-key-hint"></div>
+                </div>
+                <div class="llm-field">
+                  <label>优先级</label>
+                  <input type="number" id="llm2-provider-priority" placeholder="100">
+                </div>
+                <div class="llm-field llm-field-toggle">
+                  <label>启用</label>
+                  <label class="llm-toggle-line"><input type="checkbox" id="llm2-provider-enabled" checked style="width:auto"> Provider 可用于路由</label>
+                </div>
+                <div class="llm-field">
+                  <label>请求超时（秒）</label>
+                  <input type="number" id="llm2-provider-timeout" placeholder="600">
+                </div>
+                <div class="llm-field">
+                  <label>连接超时（秒）</label>
+                  <input type="number" id="llm2-provider-connect-timeout" placeholder="15">
+                </div>
+                <div class="llm-field full">
+                  <label>描述</label>
+                  <input type="text" id="llm2-provider-description" placeholder="可选说明">
+                </div>
+              </div>
+            </div>
+
+            <div class="sheet-section">
+              <div class="llm-inline-head">
+                <div>
+                  <h4 style="margin-bottom:4px">模型目录</h4>
+                  <p class="sheet-muted">预设可自动填充，也支持手动覆盖模型目录 URL 与目录认证。</p>
+                </div>
+                <div class="llm-test-actions">
+                  <button class="btn btn-secondary btn-sm" onclick="loadProviderCatalogPreview()">加载模型</button>
+                </div>
+              </div>
+              <div class="sheet-grid">
+                <div class="llm-field">
+                  <label>模型目录模式</label>
+                  <select id="llm2-provider-catalog-mode" onchange="toggleCatalogModeFields()">
+                    <option value="auto">自动</option>
+                    <option value="custom">自定义</option>
+                  </select>
+                </div>
+                <div class="llm-field">
+                  <label>目录认证方式</label>
+                  <select id="llm2-provider-catalog-auth-mode" onchange="toggleCatalogModeFields()">
+                    <option value="inherit_provider">继承 Provider Key</option>
+                    <option value="bearer_token">单独 Bearer Token</option>
+                  </select>
+                </div>
+                <div class="llm-field full">
+                  <label>模型目录 URL</label>
+                  <input type="text" id="llm2-provider-catalog-api-url" placeholder="https://api.modelverse.cn/v1/models">
+                </div>
+                <div class="llm-field full" id="llm2ProviderCatalogTokenWrap">
+                  <label>模型目录 Token</label>
+                  <input type="password" id="llm2-provider-catalog-api-key" placeholder="留空表示编辑时保留原值">
+                  <div class="hint" id="llm2-provider-catalog-api-key-hint"></div>
+                </div>
+                <div class="llm-field full">
+                  <div class="sheet-muted" id="llm2ProviderCatalogStatus">尚未加载模型目录。</div>
+                </div>
+                <div class="llm-field">
+                  <label>主模型</label>
+                  <input type="text" id="llm2-provider-model" list="llm2-provider-model-options" placeholder="从下拉列表中选择">
+                  <datalist id="llm2-provider-model-options"></datalist>
+                </div>
+                <div class="llm-field">
+                  <label>快模型</label>
+                  <input type="text" id="llm2-provider-fast-model" list="llm2-provider-fast-model-options" placeholder="可选">
+                  <datalist id="llm2-provider-fast-model-options"></datalist>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="sheet-footer">
+            <button class="btn btn-secondary" onclick="closeProviderSheet()">取消</button>
+            <button class="btn btn-primary" onclick="saveProvider()">保存 Provider</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="llmProviderTestSheet" class="sheet-overlay" onclick="closeSheetOnBackdrop(event, 'llmProviderTestSheet')">
+        <div class="sheet-panel llm-sheet-panel llm-test-sheet-panel">
+          <div class="sheet-header">
+            <div>
+              <h3 id="llm2TestSheetTitle">Provider 测试台</h3>
+              <p id="llm2TestSheetDesc">支持单次连通测试、多轮对话和最近测试延时查看。</p>
+            </div>
+            <button class="modal-close" onclick="closeProviderTestSheet()">&times;</button>
+          </div>
+          <div class="sheet-body">
+            <div id="llm2TestStatusBanner" class="llm-status-banner llm-status-info" hidden></div>
+            <div class="sheet-section">
+              <div class="llm-inline-head">
+                <div>
+                  <h4 style="margin-bottom:4px">当前 Provider</h4>
+                  <p class="sheet-muted" id="llm2TestProviderMeta">-</p>
+                </div>
+                <div class="llm-test-actions">
+                  <button class="btn btn-secondary btn-sm" onclick="runProviderSmokeTest()">一键连通测试</button>
+                  <button class="btn btn-secondary btn-sm" onclick="loadProviderTestRecords()">刷新记录</button>
+                </div>
+              </div>
+              <div class="llm-kv-grid">
+                <div class="llm-kv">
+                  <div class="k">最近一次测试</div>
+                  <div class="v" id="llm2TestSmokeResult">尚未执行。</div>
+                </div>
+                <div class="llm-kv">
+                  <div class="k">模型选择</div>
+                  <div class="v llm-model-picker">
+                    <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="llm2-test-use-fast-model" style="width:auto"> 使用快模型</label>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="sheet-section">
+              <div class="llm-inline-head">
+                <div>
+                  <h4 style="margin-bottom:4px">对话测试</h4>
+                  <p class="sheet-muted">每一轮助手回复都会显示延时、模型和时间戳。</p>
+                </div>
+                <div class="llm-test-actions">
+                  <button class="btn btn-secondary btn-sm" onclick="clearProviderChatSession()">清空会话</button>
+                </div>
+              </div>
+              <div id="llm2TestChatThread" class="llm-chat-thread">
+                <div class="llm-empty">从一条消息开始，观察回复内容和每轮延时。</div>
+              </div>
+              <div class="llm-chat-composer" style="margin-top:12px">
+                <label for="llm2-test-chat-input">发送消息</label>
+                <textarea id="llm2-test-chat-input" rows="4" placeholder="输入你想和这个 Provider 对话的内容"></textarea>
+                <div class="llm-chat-send-row">
+                  <div class="sheet-muted">将携带当前会话上下文一起发送，并在每轮回复旁展示模型、时间戳和延时。</div>
+                  <div class="llm-test-actions">
+                  <button class="btn btn-primary" onclick="sendProviderChatMessage()">发送</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="sheet-section">
+              <div class="llm-inline-head">
+                <div>
+                  <h4 style="margin-bottom:4px">最近测试记录</h4>
+                  <p class="sheet-muted">用于快速查看最近若干次交互的成功率和延时。</p>
+                </div>
+              </div>
+              <div id="llm2ProviderTestRecords" class="llm-record-list">
+                <div class="llm-empty">暂无测试记录</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:none">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:12px;flex-wrap:wrap">
         <div>
           <h2 style="font-size:18px;font-weight:600;color:#1e293b">LLM 网关配置</h2>
@@ -717,9 +1086,13 @@ let llmProviders = [];
 let llmRoutes = [];
 let llmSteps = [];
 let llmRegionTargets = [];
+let llmProviderCatalogOptions = [];
 let timeoutConfigList = [];
 let currentExecutionRegion = 'cn_shanghai';
 let currentProviderId = null;
+let currentTestProviderId = null;
+let currentTestProvider = null;
+let llmTestMessages = [];
 let currentTaskDetailId = null;
 let taskDetailRefreshTimer = null;
 
@@ -755,6 +1128,34 @@ document.getElementById('tokenInput').addEventListener('keydown', e => {
 });
 
 // ===================== API =====================
+function tryParseJson(text) {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function extractApiErrorMessage(payload, rawText, status) {
+  const fromDetailArray = Array.isArray(payload?.detail)
+    ? payload.detail.map(item => {
+      if (!item) return '';
+      if (typeof item === 'string') return item;
+      const loc = Array.isArray(item.loc) ? item.loc.join('.') : '';
+      const msg = item.msg || item.message || item.error || '';
+      return loc && msg ? `${loc}: ${msg}` : msg;
+    }).filter(Boolean).join('; ')
+    : '';
+  const fromDetail = typeof payload?.detail === 'string' ? payload.detail : '';
+  const fromMessage = typeof payload?.message === 'string' ? payload.message : '';
+  const fromError = typeof payload?.error === 'string' ? payload.error : '';
+  const strippedText = typeof rawText === 'string'
+    ? rawText.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+    : '';
+  return fromDetailArray || fromDetail || fromMessage || fromError || strippedText || `HTTP ${status}`;
+}
+
 async function api(path, options = {}) {
   const url = API_BASE + path;
   const opts = {
@@ -766,14 +1167,18 @@ async function api(path, options = {}) {
   }
   try {
     const res = await fetch(url, opts);
-    const data = await res.json();
+    const rawText = await res.text();
+    const data = tryParseJson(rawText);
     if (!res.ok) {
-      throw new Error(data.message || `HTTP ${res.status}`);
+      throw new Error(extractApiErrorMessage(data, rawText, res.status));
     }
-    if (data.code !== 0) {
-      throw new Error(data.message || 'Request failed');
+    if (data && data.code !== undefined && data.code !== 0) {
+      throw new Error(extractApiErrorMessage(data, rawText, res.status));
     }
-    return data.data;
+    if (data && Object.prototype.hasOwnProperty.call(data, 'data')) {
+      return data.data;
+    }
+    return data;
   } catch (err) {
     if (err.message && err.message.includes('Unauthorized')) {
       doLogout();
@@ -910,7 +1315,7 @@ function buildTaskDetailMarkup(task, options = {}) {
     ? new Date(task.completedAt).getTime() - new Date(task.startedAt).getTime()
     : null;
   const routeSnapshot = task.routeSnapshot
-    ? `<pre class="log-code" style="max-height:180px">${escHtml(JSON.stringify(task.routeSnapshot, null, 2))}</pre>`
+    ? renderRouteSnapshotPanel(task.routeSnapshot)
     : '<div class="log-empty">暂无最近路由快照</div>';
   const resultSummary = task.resultSummary
     ? `<pre class="log-code" style="max-height:220px">${escHtml(JSON.stringify(task.resultSummary, null, 2))}</pre>`
@@ -2614,6 +3019,42 @@ function renderTaskEventDetail(details) {
   return `<pre class="log-code" style="max-height:180px;margin-top:10px">${escHtml(JSON.stringify(details, null, 2))}</pre>`;
 }
 
+function routeMatchStrategyLabel(strategy) {
+  const labels = {
+    exact: '精确匹配',
+    parent_step: '父级步骤回退',
+    provider_pool: '区域候选池回退',
+  };
+  return labels[strategy] || strategy || '-';
+}
+
+function renderRouteSnapshotPanel(snapshot, options = {}) {
+  if (!snapshot || (typeof snapshot === 'object' && !Object.keys(snapshot).length)) {
+    return options.emptyText || '<div class="log-empty">暂无路由快照</div>';
+  }
+  const requestedStep = snapshot.requested_step_key || snapshot.step_key || '-';
+  const matchedStep = snapshot.matched_step_key || snapshot.step_key || '-';
+  const providerName = snapshot.provider_name || '-';
+  const strategy = routeMatchStrategyLabel(snapshot.route_match_strategy);
+  const routeId = snapshot.route_id || '-';
+  const configVersion = snapshot.config_version ?? '-';
+  const fallbackCount = Array.isArray(snapshot.fallback_provider_ids) ? snapshot.fallback_provider_ids.length : 0;
+  return `
+    <div class="log-card" style="padding:14px 16px">
+      <div class="log-kv-grid">
+        <div class="log-kv"><div class="k">请求步骤</div><div class="v"><code>${escHtml(requestedStep)}</code></div></div>
+        <div class="log-kv"><div class="k">命中步骤</div><div class="v"><code>${escHtml(matchedStep)}</code></div></div>
+        <div class="log-kv"><div class="k">匹配策略</div><div class="v">${escHtml(strategy)}</div></div>
+        <div class="log-kv"><div class="k">Provider</div><div class="v">${escHtml(providerName)}</div></div>
+        <div class="log-kv"><div class="k">Route ID</div><div class="v"><code>${escHtml(routeId)}</code></div></div>
+        <div class="log-kv"><div class="k">Fallback 数</div><div class="v">${escHtml(String(fallbackCount))}</div></div>
+        <div class="log-kv"><div class="k">配置版本</div><div class="v">${escHtml(String(configVersion))}</div></div>
+      </div>
+      <pre class="log-code" style="max-height:180px;margin-top:10px">${escHtml(JSON.stringify(snapshot, null, 2))}</pre>
+    </div>
+  `;
+}
+
 function renderTaskEvents(events) {
   if (!events || !events.length) return '<div class="log-empty">暂无阶段事件</div>';
   return events.map(event => `
@@ -2654,7 +3095,7 @@ function renderLlmLogs(logs) {
       </div>
       ${log.errorMessage ? `<div class="log-alert" style="margin-top:10px">${escHtml(log.errorMessage)}</div>` : ''}
       ${log.errorBodyExcerpt ? `<pre class="log-code" style="max-height:180px;margin-top:10px">${escHtml(log.errorBodyExcerpt)}</pre>` : ''}
-      ${log.routeSnapshot ? `<pre class="log-code" style="max-height:180px;margin-top:10px">${escHtml(JSON.stringify(log.routeSnapshot, null, 2))}</pre>` : ''}
+      ${log.routeSnapshot ? `<div style="margin-top:10px">${renderRouteSnapshotPanel(log.routeSnapshot)}</div>` : ''}
     </div>
   `).join('');
 }
@@ -2983,6 +3424,691 @@ async function refreshGateway() {
     await api('/llm/refresh', { method: 'POST' });
     toast('LLM 网关已热刷新');
     loadLlmGateway();
+  } catch (e) {
+    toast('热刷新失败: ' + e.message, 'error');
+  }
+}
+
+// ===================== LLM Gateway V2 =====================
+async function loadLlmGateway() {
+  const providerWrap = document.getElementById('llm2ProviderTableWrap');
+  const routeWrap = document.getElementById('llm2RouteTableWrap');
+  if (providerWrap) {
+    providerWrap.innerHTML = '<div class="loading"><div class="spinner"></div><div style="margin-top:8px">加载中...</div></div>';
+  }
+  if (routeWrap) {
+    routeWrap.innerHTML = '<div class="loading"><div class="spinner"></div><div style="margin-top:8px">加载中...</div></div>';
+  }
+  try {
+    currentExecutionRegion = document.getElementById('llm2-route-execution-region')?.value || currentExecutionRegion || 'cn_shanghai';
+    const [providers, routes, steps, regionTargets] = await Promise.all([
+      api('/llm/providers'),
+      api('/llm/routes?executionRegion=' + encodeURIComponent(currentExecutionRegion)),
+      api('/llm/steps'),
+      api('/cloud/ai-engine-region-targets?providerSelectableOnly=true'),
+    ]);
+    llmProviders = providers || [];
+    llmRoutes = routes || [];
+    llmSteps = steps || [];
+    llmRegionTargets = regionTargets || [];
+    updateCurrentRegionLabel();
+    renderProviderRegionTargetOptions();
+    renderProviderTable();
+    renderRouteTable();
+    if (currentProviderId) {
+      const provider = llmProviders.find(item => item.id === currentProviderId);
+      if (provider) {
+        populateProviderForm(provider);
+      }
+    } else {
+      resetProviderForm();
+    }
+    if (currentTestProviderId) {
+      currentTestProvider = llmProviders.find(item => item.id === currentTestProviderId) || null;
+      renderProviderTestHeader();
+    }
+  } catch (e) {
+    if (providerWrap) {
+      providerWrap.innerHTML = `<div class="loading" style="color:#dc2626">加载失败: ${escHtml(e.message)}</div>`;
+    }
+    if (routeWrap) {
+      routeWrap.innerHTML = `<div class="loading" style="color:#dc2626">加载失败: ${escHtml(e.message)}</div>`;
+    }
+    toast('加载 LLM 网关失败: ' + e.message, 'error');
+  }
+}
+
+function updateCurrentRegionLabel() {
+  const label = document.getElementById('llm2CurrentRegionLabel');
+  if (label) {
+    label.textContent = currentExecutionRegion || 'cn_shanghai';
+  }
+}
+
+function renderProviderRegionTargetOptions(selectId = 'llm2-provider-region-target') {
+  const select = document.getElementById(selectId);
+  if (!select) return;
+  const previousValue = select.value;
+  if (!llmRegionTargets.length) {
+    select.innerHTML = '<option value="">暂无可用 Region Target</option>';
+    return;
+  }
+  select.innerHTML = llmRegionTargets.map(target => (
+    `<option value="${escAttr(target.id)}">${escHtml(target.displayName || target.executionRegion)} · ${escHtml(target.cloudRegionCode || '')}</option>`
+  )).join('');
+  if (previousValue && Array.from(select.options).some(option => option.value === previousValue)) {
+    select.value = previousValue;
+  }
+}
+
+function handleExecutionRegionChange() {
+  currentExecutionRegion = document.getElementById('llm2-route-execution-region')?.value || 'cn_shanghai';
+  updateCurrentRegionLabel();
+  loadLlmGateway();
+}
+
+function summarizeLatestTest(test) {
+  if (!test) return '暂无测试';
+  const segments = [test.success ? '成功' : '失败'];
+  if (test.latencyMs !== null && test.latencyMs !== undefined) segments.push(`${test.latencyMs}ms`);
+  if (test.model) segments.push(test.model);
+  if (!test.success && test.errorMessage) segments.push(test.errorMessage);
+  return segments.join(' · ');
+}
+
+function setProviderTestStatusBanner(type, title, detail = '') {
+  const banner = document.getElementById('llm2TestStatusBanner');
+  if (!banner) return;
+  if (!title) {
+    banner.hidden = true;
+    banner.className = 'llm-status-banner llm-status-info';
+    banner.innerHTML = '';
+    return;
+  }
+  banner.hidden = false;
+  banner.className = `llm-status-banner llm-status-${type || 'info'}`;
+  banner.innerHTML = `
+    <div class="llm-status-title">${escHtml(title)}</div>
+    ${detail ? `<div class="llm-status-detail">${escHtml(detail)}</div>` : ''}
+  `;
+}
+
+function getDefaultCatalogApiUrl(vendorPreset, baseUrl) {
+  if ((vendorPreset || 'generic') === 'modelverse') {
+    return 'https://api.modelverse.cn/v1/models';
+  }
+  const trimmed = (baseUrl || '').trim().replace(/\/+$/, '');
+  if (!trimmed) return '';
+  if (trimmed.endsWith('/chat/completions')) {
+    return trimmed.slice(0, -('/chat/completions'.length)) + '/models';
+  }
+  return trimmed + '/models';
+}
+
+function renderProviderSummary() {
+  const wrap = document.getElementById('llm2ProviderSummary');
+  if (!wrap) return;
+  const enabledCount = llmProviders.filter(item => item.enabled !== false).length;
+  const disabledCount = llmProviders.length - enabledCount;
+  const failedCount = llmProviders.filter(item => item.latestTest && item.latestTest.success === false).length;
+  wrap.innerHTML = [
+    `<span class="llm-pill">Provider ${llmProviders.length}</span>`,
+    `<span class="llm-pill">启用 ${enabledCount}</span>`,
+    `<span class="llm-pill">停用 ${disabledCount}</span>`,
+    `<span class="llm-pill">最近失败 ${failedCount}</span>`,
+  ].join('');
+}
+
+function renderProviderTable() {
+  const wrap = document.getElementById('llm2ProviderTableWrap');
+  if (!wrap) return;
+  renderProviderSummary();
+  if (!llmProviders.length) {
+    wrap.innerHTML = '<div class="loading">暂无 Provider</div>';
+    return;
+  }
+  let html = '<table><thead><tr><th>名称</th><th>类型 / 预设</th><th>Region</th><th>模型</th><th>超时</th><th>优先级</th><th>最近测试</th><th>状态</th><th>操作</th></tr></thead><tbody>';
+  for (const provider of llmProviders) {
+    const latestTest = provider.latestTest;
+    const latestTestHtml = latestTest
+      ? `<div class="${latestTest.success ? 'llm-badge-ok' : 'llm-badge-err'}">${latestTest.success ? '成功' : '失败'}</div><div class="llm-row-sub" style="margin-top:8px">${escHtml(summarizeLatestTest(latestTest))}</div><div class="llm-row-sub">${escHtml(fmtDateTime(latestTest.testedAt))}</div>`
+      : '<span class="llm-row-sub">暂无测试</span>';
+    html += `<tr>
+      <td><div class="llm-row-title">${escHtml(provider.name)}</div><div class="llm-row-sub">${escHtml(provider.apiKeyMasked || '已设置密钥')}</div></td>
+      <td><div><span class="llm-table-badge">${escHtml(provider.providerType)}</span></div><div class="llm-row-sub">${escHtml(provider.vendorPreset || 'generic')}</div></td>
+      <td><div class="llm-row-title">${escHtml(provider.regionDisplayName || provider.region)}</div><div class="llm-row-sub">${escHtml(provider.cloudRegionCode || '')}</div></td>
+      <td><div class="llm-row-title">${escHtml(provider.model || '-')}</div>${provider.fastModel ? `<div class="llm-row-sub">fast · ${escHtml(provider.fastModel)}</div>` : '<div class="llm-row-sub">无快模型</div>'}</td>
+      <td><div class="llm-row-title">${provider.requestTimeoutS}s</div><div class="llm-row-sub">connect ${provider.connectTimeoutS}s</div></td>
+      <td><span class="llm-table-badge llm-table-badge-muted">P${escHtml(String(provider.priority))}</span></td>
+      <td>${latestTestHtml}</td>
+      <td><span class="llm-table-status ${provider.enabled ? 'ok' : 'off'}">${provider.enabled ? '启用' : '停用'}</span></td>
+      <td>
+        <button class="abtn abtn-edit" onclick="openProviderSheet('${provider.id}')">编辑</button>
+        <button class="abtn abtn-preview" onclick="openProviderTestSheet('${provider.id}')">测试台</button>
+        <button class="abtn abtn-delete" onclick="deleteProvider('${provider.id}')">删除</button>
+      </td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+}
+
+function renderRouteTable() {
+  const wrap = document.getElementById('llm2RouteTableWrap');
+  if (!wrap) return;
+  if (!llmRoutes.length) {
+    wrap.innerHTML = '<div class="loading">暂无步骤绑定</div>';
+    return;
+  }
+  const regionProviders = llmProviders.filter(provider => provider.region === currentExecutionRegion);
+  let currentStageLabel = null;
+  let html = '<table><thead><tr><th>步骤</th><th>Execution Region</th><th>Provider 绑定</th><th>模型</th><th>状态</th><th>操作</th></tr></thead><tbody>';
+  for (const route of llmRoutes) {
+    const stageLabel = route.stageLabel || '未分组';
+    if (stageLabel !== currentStageLabel) {
+      currentStageLabel = stageLabel;
+      html += `<tr class="llm-stage-row"><td colspan="6">${escHtml(stageLabel)}</td></tr>`;
+    }
+    const domKey = route.stepKey.replace(/[^a-zA-Z0-9_-]/g, '-');
+    const stepTitle = route.displayName ? `${route.displayName} · ${route.stepKey}` : route.stepKey;
+    const stepHint = route.description || '';
+    const providerOptions = regionProviders.map(provider => (
+      `<option value="${escAttr(provider.id)}" ${provider.id === route.providerId ? 'selected' : ''}>${escHtml(provider.name)} · ${escHtml(provider.model)}${provider.fastModel ? ' / fast ' + escHtml(provider.fastModel) : ''}</option>`
+    )).join('');
+    html += `<tr>
+      <td>
+        <div class="llm-row-title">${escHtml(stepTitle)}</div>
+        ${stepHint ? `<div class="llm-row-sub">${escHtml(stepHint)}</div>` : ''}
+      </td>
+      <td>${escHtml(route.executionRegion)}</td>
+      <td>
+        <select id="llm-route-binding-provider-${escAttr(domKey)}">
+          ${providerOptions || '<option value="">暂无可用 Provider</option>'}
+        </select>
+      </td>
+      <td><div class="llm-row-title">${escHtml(route.modelDefault || '-')}</div>${route.modelFast ? `<div class="llm-row-sub">fast · ${escHtml(route.modelFast)}</div>` : ''}</td>
+      <td><label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="llm-route-binding-enabled-${escAttr(domKey)}" ${route.enabled ? 'checked' : ''}> 启用</label></td>
+      <td><button class="abtn abtn-preview" onclick="saveRouteBinding('${escAttr(route.stepKey)}')">保存</button></td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+}
+
+async function saveRouteBinding(stepKey) {
+  const route = llmRoutes.find(item => item.stepKey === stepKey);
+  if (!route) {
+    toast('未找到步骤绑定', 'error');
+    return;
+  }
+  const domKey = stepKey.replace(/[^a-zA-Z0-9_-]/g, '-');
+  const providerId = document.getElementById(`llm-route-binding-provider-${domKey}`)?.value || '';
+  const enabled = document.getElementById(`llm-route-binding-enabled-${domKey}`)?.checked !== false;
+  if (!providerId) {
+    toast('请先选择 Provider', 'error');
+    return;
+  }
+  try {
+    await api(route.id ? '/llm/routes/' + route.id : '/llm/routes', {
+      method: route.id ? 'PUT' : 'POST',
+      body: {
+        stepKey: route.stepKey,
+        executionRegion: route.executionRegion || currentExecutionRegion,
+        providerId,
+        enabled,
+      },
+    });
+    toast('步骤绑定已保存');
+    await loadLlmGateway();
+  } catch (e) {
+    toast('保存步骤绑定失败: ' + e.message, 'error');
+  }
+}
+
+function resetProviderForm() {
+  currentProviderId = null;
+  llmProviderCatalogOptions = [];
+  renderProviderCatalogOptions();
+  renderProviderRegionTargetOptions();
+  document.getElementById('llm2ProviderSheetTitle').textContent = '新建 Provider';
+  document.getElementById('llm2ProviderSheetDesc').textContent = '支持供应商预设、模型目录自动/自定义配置，以及下拉方式选择模型。';
+  document.getElementById('llm2-provider-name').value = '';
+  document.getElementById('llm2-provider-type').value = 'openai_compatible';
+  document.getElementById('llm2-provider-vendor-preset').value = 'generic';
+  document.getElementById('llm2-provider-region-target').value = llmRegionTargets[0]?.id || '';
+  document.getElementById('llm2-provider-priority').value = '100';
+  document.getElementById('llm2-provider-base-url').value = '';
+  document.getElementById('llm2-provider-api-key').value = '';
+  document.getElementById('llm2-provider-model').value = '';
+  document.getElementById('llm2-provider-fast-model').value = '';
+  document.getElementById('llm2-provider-timeout').value = '600';
+  document.getElementById('llm2-provider-connect-timeout').value = '15';
+  document.getElementById('llm2-provider-description').value = '';
+  document.getElementById('llm2-provider-enabled').checked = true;
+  document.getElementById('llm2-provider-catalog-mode').value = 'auto';
+  document.getElementById('llm2-provider-catalog-auth-mode').value = 'inherit_provider';
+  document.getElementById('llm2-provider-catalog-api-url').value = '';
+  document.getElementById('llm2-provider-catalog-api-key').value = '';
+  document.getElementById('llm2-provider-api-key-hint').textContent = '新建 Provider 时必须输入 API Key。';
+  document.getElementById('llm2-provider-catalog-api-key-hint').textContent = '默认继承 Provider API Key。';
+  document.getElementById('llm2ProviderCatalogStatus').textContent = '尚未加载模型目录。';
+  toggleCatalogModeFields();
+}
+
+function populateProviderForm(provider) {
+  if (!provider) return;
+  currentProviderId = provider.id;
+  llmProviderCatalogOptions = [];
+  renderProviderCatalogOptions();
+  document.getElementById('llm2ProviderSheetTitle').textContent = '编辑 Provider';
+  document.getElementById('llm2ProviderSheetDesc').textContent = '编辑基础配置、模型目录来源和默认模型，保存后会刷新网关缓存。';
+  document.getElementById('llm2-provider-name').value = provider.name || '';
+  document.getElementById('llm2-provider-type').value = provider.providerType || 'openai_compatible';
+  document.getElementById('llm2-provider-vendor-preset').value = provider.vendorPreset || 'generic';
+  renderProviderRegionTargetOptions();
+  document.getElementById('llm2-provider-region-target').value = provider.regionTargetId || '';
+  document.getElementById('llm2-provider-priority').value = provider.priority ?? 100;
+  document.getElementById('llm2-provider-base-url').value = provider.baseUrl || '';
+  document.getElementById('llm2-provider-api-key').value = '';
+  document.getElementById('llm2-provider-model').value = provider.model || '';
+  document.getElementById('llm2-provider-fast-model').value = provider.fastModel || '';
+  document.getElementById('llm2-provider-timeout').value = provider.requestTimeoutS ?? 600;
+  document.getElementById('llm2-provider-connect-timeout').value = provider.connectTimeoutS ?? 15;
+  document.getElementById('llm2-provider-description').value = provider.description || '';
+  document.getElementById('llm2-provider-enabled').checked = provider.enabled !== false;
+  document.getElementById('llm2-provider-catalog-mode').value = provider.catalogMode || 'auto';
+  document.getElementById('llm2-provider-catalog-auth-mode').value = provider.catalogAuthMode || 'inherit_provider';
+  document.getElementById('llm2-provider-catalog-api-url').value = provider.catalogApiUrl || '';
+  document.getElementById('llm2-provider-catalog-api-key').value = '';
+  document.getElementById('llm2-provider-api-key-hint').textContent = provider.apiKeySet
+    ? `已保存密钥：${provider.apiKeyMasked || '已设置'}；留空表示保留原值。`
+    : '尚未保存 API Key。';
+  document.getElementById('llm2-provider-catalog-api-key-hint').textContent = provider.catalogApiKeySet
+    ? `已保存目录 Token：${provider.catalogApiKeyMasked || '已设置'}；留空表示保留原值。`
+    : '默认继承 Provider API Key。';
+  document.getElementById('llm2ProviderCatalogStatus').textContent = provider.catalogApiUrl
+    ? `当前目录地址：${provider.catalogApiUrl}`
+    : '尚未加载模型目录。';
+  toggleCatalogModeFields();
+}
+
+function closeSheetOnBackdrop(event, sheetId) {
+  if (event.target?.id !== sheetId) return;
+  document.getElementById(sheetId)?.classList.remove('active');
+}
+
+function openProviderSheet(id) {
+  if (id) {
+    const provider = llmProviders.find(item => item.id === id);
+    if (!provider) {
+      toast('未找到 Provider', 'error');
+      return;
+    }
+    populateProviderForm(provider);
+  } else {
+    resetProviderForm();
+  }
+  document.getElementById('llmProviderSheet').classList.add('active');
+}
+
+function closeProviderSheet() {
+  document.getElementById('llmProviderSheet').classList.remove('active');
+}
+
+function applyProviderVendorPreset() {
+  const vendorPreset = document.getElementById('llm2-provider-vendor-preset').value || 'generic';
+  const baseUrlInput = document.getElementById('llm2-provider-base-url');
+  if (vendorPreset === 'modelverse') {
+    document.getElementById('llm2-provider-type').value = 'openai_compatible';
+    if (!baseUrlInput.value.trim()) {
+      baseUrlInput.value = 'https://api.modelverse.cn/v1';
+    }
+  }
+  toggleCatalogModeFields();
+}
+
+function toggleCatalogModeFields() {
+  const mode = document.getElementById('llm2-provider-catalog-mode').value || 'auto';
+  const authMode = document.getElementById('llm2-provider-catalog-auth-mode').value || 'inherit_provider';
+  const urlInput = document.getElementById('llm2-provider-catalog-api-url');
+  const tokenWrap = document.getElementById('llm2ProviderCatalogTokenWrap');
+  const tokenInput = document.getElementById('llm2-provider-catalog-api-key');
+  if (mode === 'auto') {
+    urlInput.readOnly = true;
+    urlInput.value = getDefaultCatalogApiUrl(
+      document.getElementById('llm2-provider-vendor-preset').value,
+      document.getElementById('llm2-provider-base-url').value,
+    );
+  } else {
+    urlInput.readOnly = false;
+    if (!urlInput.value.trim()) {
+      urlInput.value = getDefaultCatalogApiUrl(
+        document.getElementById('llm2-provider-vendor-preset').value,
+        document.getElementById('llm2-provider-base-url').value,
+      );
+    }
+  }
+  if (tokenWrap) {
+    tokenWrap.style.display = authMode === 'bearer_token' ? 'block' : 'none';
+  }
+  if (tokenInput) {
+    tokenInput.disabled = authMode !== 'bearer_token';
+  }
+}
+
+function renderProviderCatalogOptions() {
+  const markup = llmProviderCatalogOptions.map(item => (
+    `<option value="${escAttr(item.id)}">${escHtml(item.label || item.id)}</option>`
+  )).join('');
+  document.getElementById('llm2-provider-model-options').innerHTML = markup;
+  document.getElementById('llm2-provider-fast-model-options').innerHTML = markup;
+}
+
+async function loadProviderCatalogPreview() {
+  const regionTargetId = document.getElementById('llm2-provider-region-target').value;
+  if (!regionTargetId) {
+    toast('请先选择 Region Target', 'error');
+    return;
+  }
+  try {
+    document.getElementById('llm2ProviderCatalogStatus').textContent = '正在加载模型目录...';
+    const result = await api('/llm/providers/catalog/preview', {
+      method: 'POST',
+      body: {
+        providerId: currentProviderId,
+        regionTargetId,
+        providerType: document.getElementById('llm2-provider-type').value,
+        vendorPreset: document.getElementById('llm2-provider-vendor-preset').value,
+        baseUrl: document.getElementById('llm2-provider-base-url').value.trim(),
+        apiKey: document.getElementById('llm2-provider-api-key').value.trim(),
+        catalogMode: document.getElementById('llm2-provider-catalog-mode').value,
+        catalogApiUrl: document.getElementById('llm2-provider-catalog-api-url').value.trim(),
+        catalogAuthMode: document.getElementById('llm2-provider-catalog-auth-mode').value,
+        catalogApiKey: document.getElementById('llm2-provider-catalog-api-key').value.trim(),
+      },
+    });
+    llmProviderCatalogOptions = result.models || [];
+    renderProviderCatalogOptions();
+    document.getElementById('llm2ProviderCatalogStatus').textContent = `已加载 ${llmProviderCatalogOptions.length} 个模型 · ${result.resolvedCatalogApiUrl}`;
+    toast(`已加载 ${llmProviderCatalogOptions.length} 个模型`, 'success');
+  } catch (e) {
+    document.getElementById('llm2ProviderCatalogStatus').textContent = `加载失败：${e.message}`;
+    toast('加载模型目录失败: ' + e.message, 'error');
+  }
+}
+
+async function saveProvider() {
+  const body = {
+    name: document.getElementById('llm2-provider-name').value.trim(),
+    providerType: document.getElementById('llm2-provider-type').value,
+    vendorPreset: document.getElementById('llm2-provider-vendor-preset').value,
+    regionTargetId: document.getElementById('llm2-provider-region-target').value,
+    priority: Number(document.getElementById('llm2-provider-priority').value || 100),
+    baseUrl: document.getElementById('llm2-provider-base-url').value.trim(),
+    apiKey: document.getElementById('llm2-provider-api-key').value.trim(),
+    model: document.getElementById('llm2-provider-model').value.trim(),
+    fastModel: document.getElementById('llm2-provider-fast-model').value.trim(),
+    requestTimeoutS: Number(document.getElementById('llm2-provider-timeout').value || 600),
+    connectTimeoutS: Number(document.getElementById('llm2-provider-connect-timeout').value || 15),
+    description: document.getElementById('llm2-provider-description').value.trim(),
+    enabled: document.getElementById('llm2-provider-enabled').checked,
+    catalogMode: document.getElementById('llm2-provider-catalog-mode').value,
+    catalogApiUrl: document.getElementById('llm2-provider-catalog-api-url').value.trim(),
+    catalogAuthMode: document.getElementById('llm2-provider-catalog-auth-mode').value,
+    catalogApiKey: document.getElementById('llm2-provider-catalog-api-key').value.trim(),
+  };
+  try {
+    await api(currentProviderId ? '/llm/providers/' + currentProviderId : '/llm/providers', {
+      method: currentProviderId ? 'PUT' : 'POST',
+      body,
+    });
+    toast('Provider 已保存');
+    closeProviderSheet();
+    resetProviderForm();
+    await loadLlmGateway();
+  } catch (e) {
+    toast('保存 Provider 失败: ' + e.message, 'error');
+  }
+}
+
+function renderProviderTestHeader() {
+  const meta = document.getElementById('llm2TestProviderMeta');
+  const smokeResult = document.getElementById('llm2TestSmokeResult');
+  const title = document.getElementById('llm2TestSheetTitle');
+  if (!currentTestProvider) {
+    if (meta) meta.textContent = '-';
+    if (smokeResult) smokeResult.textContent = '尚未执行。';
+    if (title) title.textContent = 'Provider 测试台';
+    setProviderTestStatusBanner('', '');
+    return;
+  }
+  if (title) {
+    title.textContent = `Provider 测试台 · ${currentTestProvider.name}`;
+  }
+  if (meta) {
+    meta.textContent = `${currentTestProvider.providerType} · ${currentTestProvider.regionDisplayName || currentTestProvider.region} · 主模型 ${currentTestProvider.model}${currentTestProvider.fastModel ? ` · 快模型 ${currentTestProvider.fastModel}` : ''}`;
+  }
+  if (smokeResult) {
+    smokeResult.textContent = summarizeLatestTest(currentTestProvider.latestTest);
+  }
+}
+
+function openProviderTestSheet(id) {
+  const provider = llmProviders.find(item => item.id === id);
+  if (!provider) {
+    toast('未找到 Provider', 'error');
+    return;
+  }
+  currentTestProviderId = id;
+  currentTestProvider = provider;
+  llmTestMessages = [];
+  document.getElementById('llm2-test-chat-input').value = '';
+  renderProviderChatThread();
+  renderProviderTestHeader();
+  setProviderTestStatusBanner(
+    'info',
+    '测试台已就绪',
+    '你可以先运行一键连通测试，或直接发起多轮对话来观察回复质量与延时。',
+  );
+  document.getElementById('llmProviderTestSheet').classList.add('active');
+  loadProviderTestRecords();
+}
+
+function closeProviderTestSheet() {
+  document.getElementById('llmProviderTestSheet').classList.remove('active');
+  setProviderTestStatusBanner('', '');
+}
+
+async function runProviderSmokeTest() {
+  if (!currentTestProviderId) {
+    toast('请先选择 Provider', 'error');
+    return;
+  }
+  try {
+    setProviderTestStatusBanner('loading', '正在进行连通测试', '会按当前 Region 的可用 ai-engine 节点顺序尝试。');
+    const result = await api('/llm/providers/' + currentTestProviderId + '/test', { method: 'POST' });
+    if (currentTestProvider) {
+      currentTestProvider.latestTest = result;
+    }
+    renderProviderTestHeader();
+    await loadProviderTestRecords();
+    await loadLlmGateway();
+    const detail = [
+      result.model || '',
+      result.latencyMs !== null && result.latencyMs !== undefined ? `${result.latencyMs}ms` : '',
+      result.resolvedEndpoint || '',
+      result.errorMessage || '',
+    ].filter(Boolean).join(' · ');
+    setProviderTestStatusBanner(
+      result.success ? 'success' : 'error',
+      result.success ? '连通测试成功' : '连通测试失败',
+      detail,
+    );
+  } catch (e) {
+    setProviderTestStatusBanner('error', '测试 Provider 失败', e.message || '未知错误');
+  }
+}
+
+function clearProviderChatSession() {
+  llmTestMessages = [];
+  renderProviderChatThread();
+}
+
+function renderProviderChatThread() {
+  const wrap = document.getElementById('llm2TestChatThread');
+  if (!wrap) return;
+  if (!llmTestMessages.length) {
+    wrap.innerHTML = '<div class="llm-empty">从一条消息开始，观察回复内容和每轮延时。</div>';
+    return;
+  }
+  wrap.innerHTML = llmTestMessages.map(message => {
+    const meta = [];
+    if (message.model) meta.push(message.model);
+    if (message.latencyMs !== undefined && message.latencyMs !== null) meta.push(`${message.latencyMs}ms`);
+    if (message.testedAt) meta.push(fmtDateTime(message.testedAt));
+    if (message.pending) meta.push('生成中...');
+    if (message.errorMessage) meta.push(message.errorMessage);
+    return `<div class="llm-chat-row ${escAttr(message.role)}">
+      <div class="llm-chat-bubble" style="${message.success === false ? 'border-color:#fecaca;background:#fef2f2' : ''}">
+        <div style="font-size:11px;color:#64748b;margin-bottom:6px">${message.role === 'user' ? 'User' : 'Assistant'}</div>
+        <div style="white-space:pre-wrap;word-break:break-word">${escHtml(message.content || '')}</div>
+        ${meta.length ? `<div style="margin-top:8px;font-size:11px;color:${message.success === false ? '#b91c1c' : '#64748b'}">${escHtml(meta.join(' · '))}</div>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+async function sendProviderChatMessage() {
+  if (!currentTestProviderId) {
+    toast('请先选择 Provider', 'error');
+    return;
+  }
+  const input = document.getElementById('llm2-test-chat-input');
+  const content = input.value.trim();
+  if (!content) {
+    toast('请输入消息内容', 'error');
+    return;
+  }
+  llmTestMessages.push({ role: 'user', content, testedAt: new Date().toISOString() });
+  input.value = '';
+  const pendingIndex = llmTestMessages.push({ role: 'assistant', content: '正在请求 Provider...', pending: true }) - 1;
+  renderProviderChatThread();
+  const requestMessages = llmTestMessages
+    .filter(item => (item.role === 'user' || item.role === 'assistant') && !item.pending)
+    .map(item => ({ role: item.role, content: item.content }));
+  try {
+    setProviderTestStatusBanner('loading', '正在请求 Provider 回复', '这次会带上当前会话上下文，并记录本轮延时。');
+    const result = await api('/llm/providers/' + currentTestProviderId + '/test-chat', {
+      method: 'POST',
+      body: {
+        messages: requestMessages,
+        useFastModel: document.getElementById('llm2-test-use-fast-model').checked,
+      },
+    });
+    llmTestMessages[pendingIndex] = {
+      role: 'assistant',
+      content: result.reply || '(empty response)',
+      testedAt: result.testedAt,
+      latencyMs: result.latencyMs,
+      model: result.model,
+      success: result.success,
+      errorMessage: result.errorMessage || '',
+    };
+    if (currentTestProvider) {
+      currentTestProvider.latestTest = result;
+    }
+    renderProviderChatThread();
+    renderProviderTestHeader();
+    await loadProviderTestRecords();
+    await loadLlmGateway();
+    const detail = [
+      result.model || '',
+      result.latencyMs !== null && result.latencyMs !== undefined ? `${result.latencyMs}ms` : '',
+      result.testedAt ? fmtDateTime(result.testedAt) : '',
+      result.errorMessage || '',
+    ].filter(Boolean).join(' · ');
+    setProviderTestStatusBanner(
+      result.success === false ? 'error' : 'success',
+      result.success === false ? '本轮对话返回失败状态' : '本轮对话已完成',
+      detail,
+    );
+  } catch (e) {
+    llmTestMessages[pendingIndex] = {
+      role: 'assistant',
+      content: '请求失败',
+      testedAt: new Date().toISOString(),
+      success: false,
+      errorMessage: e.message,
+    };
+    renderProviderChatThread();
+    setProviderTestStatusBanner('error', 'Provider 对话测试失败', e.message || '未知错误');
+  }
+}
+
+async function loadProviderTestRecords() {
+  const wrap = document.getElementById('llm2ProviderTestRecords');
+  if (!wrap) return;
+  if (!currentTestProviderId) {
+    wrap.innerHTML = '<div class="llm-empty">请先选择 Provider</div>';
+    return;
+  }
+  wrap.innerHTML = '<div class="loading"><div class="spinner"></div><div style="margin-top:8px">加载测试记录...</div></div>';
+  try {
+    const records = await api('/llm/providers/' + currentTestProviderId + '/test-records?limit=20');
+    if (!records.length) {
+      wrap.innerHTML = '<div class="llm-empty">暂无测试记录</div>';
+      return;
+    }
+    wrap.innerHTML = records.map(record => `
+      <div class="llm-record-item">
+        <div class="llm-record-top">
+          <strong style="color:${record.success ? '#166534' : '#b91c1c'}">${record.success ? '成功' : '失败'}</strong>
+          <span style="font-size:12px;color:#64748b">${escHtml(fmtDateTime(record.testedAt))}</span>
+        </div>
+        <div class="llm-record-meta">
+          <span>模型 ${escHtml(record.model || '-')}</span>
+          <span>延时 ${record.latencyMs ?? '-'}ms</span>
+          <span>状态码 ${record.httpStatus ?? '-'}</span>
+        </div>
+        <div class="llm-record-meta">
+          <span>端点 ${escHtml(record.resolvedEndpoint || '-')}</span>
+        </div>
+        ${record.errorMessage ? `<div style="margin-top:8px;font-size:12px;color:#b91c1c;white-space:pre-wrap">${escHtml(record.errorMessage)}</div>` : ''}
+      </div>
+    `).join('');
+  } catch (e) {
+    wrap.innerHTML = `<div class="llm-empty" style="color:#dc2626">加载失败: ${escHtml(e.message)}</div>`;
+  }
+}
+
+async function deleteProvider(id) {
+  const yes = await confirmDialog('确认删除', '确定删除这个 Provider 吗？');
+  if (!yes) return;
+  try {
+    await api('/llm/providers/' + id, { method: 'DELETE' });
+    toast('Provider 已删除');
+    if (currentProviderId === id) {
+      closeProviderSheet();
+      resetProviderForm();
+    }
+    if (currentTestProviderId === id) {
+      closeProviderTestSheet();
+      currentTestProviderId = null;
+      currentTestProvider = null;
+      llmTestMessages = [];
+    }
+    await loadLlmGateway();
+  } catch (e) {
+    toast('删除 Provider 失败: ' + e.message, 'error');
+  }
+}
+
+async function refreshGateway() {
+  try {
+    await api('/llm/refresh', { method: 'POST' });
+    toast('LLM 网关已热刷新');
+    await loadLlmGateway();
   } catch (e) {
     toast('热刷新失败: ' + e.message, 'error');
   }
