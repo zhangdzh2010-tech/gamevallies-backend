@@ -100,3 +100,88 @@ def test_resolve_candidates_prefers_exact_route_over_parent_route():
     assert candidates[0].route_snapshot["requested_step_key"] == "qa_fix.mobile_layout"
     assert candidates[0].route_snapshot["matched_step_key"] == "qa_fix.mobile_layout"
     assert candidates[0].route_snapshot["route_match_strategy"] == "exact"
+
+
+def test_route_exists_empty_fallback_only_returns_primary_provider():
+    """When a route exists with empty fallback_provider_ids,
+    only the primary provider should be returned — no implicit
+    regional or global providers."""
+    primary = _provider("provider-primary", "Primary Provider")
+    unrelated = _provider("provider-unrelated", "Unrelated Provider")
+    gateway = _gateway(
+        providers=[primary, unrelated],
+        routes=[_route("route-intent", "intent_parse", primary.id)],
+    )
+
+    with patch("src.services.llm_gateway.settings.SERVICE_REGION", "cn_shanghai"), patch.object(
+        gateway,
+        "_ensure_loaded",
+        return_value=None,
+    ):
+        candidates = gateway.resolve_candidates(step_key="intent_parse")
+
+    assert len(candidates) == 1
+    assert candidates[0].provider_id == primary.id
+    assert candidates[0].route_snapshot["explicit_fallback_only"] is True
+
+
+def test_route_exists_with_explicit_fallbacks_returns_primary_and_fallbacks():
+    """When a route has explicit fallback_provider_ids,
+    return primary + fallbacks only — no implicit providers."""
+    primary = _provider("provider-primary", "Primary")
+    fallback = _provider("provider-fallback", "Fallback")
+    unrelated = _provider("provider-unrelated", "Unrelated")
+
+    route = RouteRecord(
+        id="route-codegen",
+        step_key="code_generate.full",
+        region="cn_shanghai",
+        provider_id=primary.id,
+        fallback_provider_ids=[fallback.id],
+        model_override=None,
+        fast_model_override=None,
+        request_timeout_s=None,
+        connect_timeout_s=None,
+        enabled=True,
+        updated_at=100.0,
+    )
+    gateway = _gateway(
+        providers=[primary, fallback, unrelated],
+        routes=[route],
+    )
+
+    with patch("src.services.llm_gateway.settings.SERVICE_REGION", "cn_shanghai"), patch.object(
+        gateway,
+        "_ensure_loaded",
+        return_value=None,
+    ):
+        candidates = gateway.resolve_candidates(step_key="code_generate.full")
+
+    assert len(candidates) == 2
+    assert candidates[0].provider_id == primary.id
+    assert candidates[1].provider_id == fallback.id
+    assert candidates[0].route_snapshot["explicit_fallback_only"] is True
+
+
+def test_no_route_falls_back_to_all_regional_providers():
+    """When no route matches the step_key, all enabled providers
+    in the same region should be returned as candidates."""
+    provider_a = _provider("provider-a", "Provider A")
+    provider_b = _provider("provider-b", "Provider B")
+    gateway = _gateway(
+        providers=[provider_a, provider_b],
+        routes=[],  # no routes configured
+    )
+
+    with patch("src.services.llm_gateway.settings.SERVICE_REGION", "cn_shanghai"), patch.object(
+        gateway,
+        "_ensure_loaded",
+        return_value=None,
+    ):
+        candidates = gateway.resolve_candidates(step_key="some_unknown_step")
+
+    assert len(candidates) == 2
+    provider_ids = {c.provider_id for c in candidates}
+    assert provider_a.id in provider_ids
+    assert provider_b.id in provider_ids
+    assert candidates[0].route_snapshot["explicit_fallback_only"] is False
