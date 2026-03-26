@@ -99,6 +99,79 @@ class TestDialogueEngineJsonRepair(unittest.TestCase):
         self.assertIn("SLOT_JSON_REPAIR_PROMPT_FROM_DB", mock_complete.await_args_list[1].kwargs["system"])
         self.assertIn("NON-NEGOTIABLE OUTPUT CONTRACT", mock_complete.await_args_list[1].kwargs["system"])
 
+    def test_parse_description_to_spec_synthesizes_sparse_request_fallback(self):
+        engine = DialogueEngine()
+
+        def fake_get_prompt(key: str, default=None):
+            if key == "prompt.intent_parse_system":
+                return "INTENT_PARSE_PROMPT_FROM_DB"
+            if key == "prompt.slot_json_repair_system":
+                return "SLOT_JSON_REPAIR_PROMPT_FROM_DB"
+            return DIALOGUE_TEST_PROMPTS.get(key, default)
+
+        with patch.object(engine._client, "is_enabled", return_value=True), patch(
+            "src.engine.dialogue_engine.require_prompt",
+            side_effect=fake_get_prompt,
+        ), patch.object(
+            engine._client,
+            "complete",
+            new=AsyncMock(
+                side_effect=[
+                    "The request only asks to add more levels for a pig-themed game.",
+                    "Still not enough information to emit strict JSON.",
+                ]
+            ),
+        ) as mock_complete:
+            spec = asyncio.run(
+                engine.parse_description_to_spec(
+                    "继续增加关卡，设置5个关卡",
+                    title="逮小猪",
+                    preferred_game_type="runner",
+                )
+            )
+
+        self.assertEqual(spec.game_type, "runner")
+        self.assertEqual(spec.platform_constraints.input_mode, "tap")
+        self.assertEqual(spec.visual_style.theme, "zoo")
+        self.assertTrue(any("5个关卡" in rule for rule in spec.special_rules))
+        self.assertEqual(mock_complete.await_count, 2)
+
+    def test_parse_description_to_spec_backfills_partial_json_with_preferred_game_type(self):
+        engine = DialogueEngine()
+
+        def fake_get_prompt(key: str, default=None):
+            if key == "prompt.intent_parse_system":
+                return "INTENT_PARSE_PROMPT_FROM_DB"
+            if key == "prompt.slot_json_repair_system":
+                return "SLOT_JSON_REPAIR_PROMPT_FROM_DB"
+            return DIALOGUE_TEST_PROMPTS.get(key, default)
+
+        with patch.object(engine._client, "is_enabled", return_value=True), patch(
+            "src.engine.dialogue_engine.require_prompt",
+            side_effect=fake_get_prompt,
+        ), patch.object(
+            engine._client,
+            "complete",
+            new=AsyncMock(
+                side_effect=[
+                    '{"theme":"lab","input_method":"drag"}',
+                    '{"core_mechanic":"connect the pieces","win_condition":"complete the target"}',
+                ]
+            ),
+        ) as mock_complete:
+            spec = asyncio.run(
+                engine.parse_description_to_spec(
+                    "Arrange the components and make the setup work on mobile.",
+                    title="Focused Lab",
+                    preferred_game_type="puzzle",
+                )
+            )
+
+        self.assertEqual(spec.game_type, "puzzle")
+        self.assertEqual(spec.platform_constraints.input_mode, "drag")
+        self.assertEqual(spec.rules.win_condition, "complete the target")
+        self.assertEqual(mock_complete.await_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

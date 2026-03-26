@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
 import logging
 import re
@@ -15,6 +16,7 @@ from urllib.parse import unquote
 import httpx
 import pymysql
 
+from ..api.models import ProviderCatalogPreviewRequest, ProviderCatalogPreviewResponse, ProviderTestChatRequest, ProviderTestChatResponse
 from ..config.settings import settings
 from ..config.timeout_store import get_float as get_timeout_float, get_int as get_timeout_int
 
@@ -120,6 +122,45 @@ def _build_anthropic_base_url(base_url: Optional[str]) -> Optional[str]:
 
     normalized_url = str(parsed.copy_with(path=path or "/")).rstrip("/")
     return normalized_url or None
+
+
+def _build_openai_chat_endpoint(base_url: Optional[str]) -> str:
+    normalized = (base_url or "").strip().rstrip("/")
+    if not normalized:
+        raise ValueError("Provider base URL is required")
+    if normalized.endswith("/chat/completions"):
+        return normalized
+    if normalized.endswith("/v1"):
+        return f"{normalized}/chat/completions"
+    return f"{normalized}/chat/completions"
+
+
+def _extract_openai_choice_text(choice: Any) -> str:
+    if not isinstance(choice, dict):
+        return ""
+    message = choice.get("message")
+    if isinstance(message, dict):
+        content = message.get("content")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            text_parts: list[str] = []
+            for item in content:
+                if isinstance(item, str) and item.strip():
+                    text_parts.append(item.strip())
+                elif isinstance(item, dict):
+                    text_value = item.get("text")
+                    if isinstance(text_value, str) and text_value.strip():
+                        text_parts.append(text_value.strip())
+            return "\n".join(text_parts).strip()
+    text = choice.get("text")
+    if isinstance(text, str):
+        return text.strip()
+    return ""
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 @dataclass
@@ -353,15 +394,32 @@ class LLMGateway:
             },
         )
 
-    def _find_route_for_step(self, *, step_key: str, region: str) -> Optional[RouteRecord]:
-        return next(
-            (
-                candidate
-                for candidate in self._routes
-                if candidate.step_key == step_key and candidate.region == region
-            ),
-            None,
-        )
+    def _route_lookup_candidates(self, *, step_key: str) -> list[tuple[str, str]]:
+        candidates: list[tuple[str, str]] = [(step_key, "exact")]
+        parent_step_key = step_key
+        while "." in parent_step_key:
+            parent_step_key = parent_step_key.rsplit(".", 1)[0]
+            candidates.append((parent_step_key, "parent_step"))
+        return candidates
+
+    def _find_route_for_step(
+        self,
+        *,
+        step_key: str,
+        region: str,
+    ) -> tuple[Optional[RouteRecord], Optional[str], Optional[str]]:
+        for candidate_key, strategy in self._route_lookup_candidates(step_key=step_key):
+            route = next(
+                (
+                    candidate
+                    for candidate in self._routes
+                    if candidate.step_key == candidate_key and candidate.region == region
+                ),
+                None,
+            )
+            if route:
+                return route, candidate_key, strategy
+        return None, None, None
 
     def _ordered_provider_candidates(
         self,
@@ -401,6 +459,8 @@ class LLMGateway:
         provider: ProviderRecord,
         route: Optional[RouteRecord],
         step_key: str,
+        matched_step_key: Optional[str] = None,
+        route_match_strategy: Optional[str] = None,
         prefer_fast: bool = False,
         model_override: Optional[str] = None,
     ) -> ResolvedRoute:
@@ -437,6 +497,9 @@ class LLMGateway:
                 "route_id": route.id if route else None,
                 "prefer_fast": prefer_fast,
                 "fallback_provider_ids": list(route.fallback_provider_ids) if route else [],
+                "requested_step_key": step_key,
+                "matched_step_key": matched_step_key or step_key,
+                "route_match_strategy": route_match_strategy or ("exact" if route else "none"),
             },
         )
 
@@ -474,7 +537,10 @@ class LLMGateway:
             return [self._fallback_route(step_key=step_key, prefer_fast=prefer_fast, model_override=model_override)]
 
         service_region = (settings.SERVICE_REGION or "cn_shanghai").strip() or "cn_shanghai"
-        route = self._find_route_for_step(step_key=step_key, region=service_region)
+        route, matched_step_key, route_match_strategy = self._find_route_for_step(
+            step_key=step_key,
+            region=service_region,
+        )
         providers = self._ordered_provider_candidates(route=route, service_region=service_region)
         if not providers:
             return [self._fallback_route(step_key=step_key, prefer_fast=prefer_fast, model_override=model_override)]
@@ -484,6 +550,8 @@ class LLMGateway:
                 provider=provider,
                 route=route,
                 step_key=step_key,
+                matched_step_key=matched_step_key,
+                route_match_strategy=route_match_strategy,
                 prefer_fast=prefer_fast,
                 model_override=model_override,
             )
@@ -554,20 +622,24 @@ class LLMGateway:
         except Exception as exc:
             logger.debug("Failed to relay task activity to game-service: %s", exc)
 
-    async def test_provider(self, provider_id: str) -> dict[str, Any]:
-        self.refresh(raise_on_error=True)
-        provider = self._providers.get(provider_id)
-        if not provider:
-            raise ValueError("Provider not found")
-
-        route = ResolvedRoute(
+    def _resolved_route_for_provider(
+        self,
+        provider: ProviderRecord,
+        *,
+        prefer_fast: bool = False,
+        model_override: Optional[str] = None,
+    ) -> ResolvedRoute:
+        resolved_model = model_override or (
+            provider.fast_model if prefer_fast and provider.fast_model else provider.model
+        )
+        return ResolvedRoute(
             provider_id=provider.id,
             provider_name=provider.name,
             provider_type=provider.provider_type,
             region=provider.region,
             base_url=provider.base_url,
             api_key=provider.api_key,
-            model=provider.fast_model or provider.model,
+            model=resolved_model,
             fast_model=provider.fast_model,
             request_timeout_s=provider.request_timeout_s,
             connect_timeout_s=provider.connect_timeout_s,
@@ -576,66 +648,87 @@ class LLMGateway:
             route_snapshot={"provider_id": provider.id, "provider_name": provider.name},
         )
 
-        start = time.time()
-        success = False
-        http_status = None
-        error_message = None
-        try:
-            if route.provider_type == "anthropic":
+    async def _invoke_test_completion(
+        self,
+        *,
+        route: ResolvedRoute,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        system: Optional[str] = None,
+    ) -> tuple[str, Optional[int], str]:
+        if route.provider_type == "anthropic":
+            from anthropic import Anthropic
+
+            client = Anthropic(api_key=route.api_key, base_url=_build_anthropic_base_url(route.base_url))
+            kwargs: dict[str, Any] = {
+                "model": route.model,
+                "max_tokens": max_tokens,
+                "messages": messages,
+            }
+            if system:
+                kwargs["system"] = system
+            response = client.messages.create(**kwargs)
+            text_parts: list[str] = []
+            for block in response.content:
+                text = getattr(block, "text", "")
+                if text:
+                    text_parts.append(text)
+            return "\n".join(text_parts).strip(), 200, _build_anthropic_base_url(route.base_url) or route.base_url
+
+        payload_messages: list[dict[str, str]] = []
+        if system:
+            payload_messages.append({"role": "system", "content": system})
+        payload_messages.extend(messages)
+        payload = {
+            "model": route.model,
+            "messages": payload_messages,
+            "max_tokens": max_tokens,
+        }
+        headers = {
+            "Authorization": f"Bearer {route.api_key}",
+            "Content-Type": "application/json",
+        }
+        endpoint = _build_openai_chat_endpoint(route.base_url)
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(route.request_timeout_s, connect=route.connect_timeout_s)
+        ) as client:
+            response = await client.post(endpoint, headers=headers, json=payload)
+            http_status = response.status_code
+            if _is_anthropic_protocol_mismatch_response(response):
                 from anthropic import Anthropic
+
                 client = Anthropic(api_key=route.api_key, base_url=_build_anthropic_base_url(route.base_url))
-                response = client.messages.create(
-                    model=route.model,
-                    max_tokens=32,
-                    messages=[{"role": "user", "content": "Reply with PONG"}],
-                )
-                success = True
-                output = ""
-                for block in response.content:
+                kwargs = {
+                    "model": route.model,
+                    "max_tokens": max_tokens,
+                    "messages": messages,
+                }
+                if system:
+                    kwargs["system"] = system
+                anth_response = client.messages.create(**kwargs)
+                text_parts: list[str] = []
+                for block in anth_response.content:
                     text = getattr(block, "text", "")
                     if text:
-                        output += text
-            else:
-                payload = {
-                    "model": route.model,
-                    "messages": [{"role": "user", "content": "Reply with PONG"}],
-                    "max_tokens": 32,
-                }
-                headers = {
-                    "Authorization": f"Bearer {route.api_key}",
-                    "Content-Type": "application/json",
-                }
-                endpoint = route.base_url.rstrip("/")
-                if not endpoint.endswith("/chat/completions"):
-                    endpoint = f"{endpoint}/chat/completions"
-                async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(route.request_timeout_s, connect=route.connect_timeout_s)
-                ) as client:
-                    response = await client.post(endpoint, headers=headers, json=payload)
-                    http_status = response.status_code
-                    if _is_anthropic_protocol_mismatch_response(response):
-                        from anthropic import Anthropic
-                        client = Anthropic(api_key=route.api_key, base_url=_build_anthropic_base_url(route.base_url))
-                        anth_response = client.messages.create(
-                            model=route.model,
-                            max_tokens=32,
-                            messages=[{"role": "user", "content": "Reply with PONG"}],
-                        )
-                        success = True
-                        http_status = 200
-                        output = ""
-                        for block in anth_response.content:
-                            text = getattr(block, "text", "")
-                            if text:
-                                output += text
-                    else:
-                        response.raise_for_status()
-                        success = True
-                        output = response.text[:200]
-        except Exception as exc:
-            error_message = str(exc)
-        latency_ms = int((time.time() - start) * 1000)
+                        text_parts.append(text)
+                return "\n".join(text_parts).strip(), 200, _build_anthropic_base_url(route.base_url) or route.base_url
 
+            response.raise_for_status()
+            data = response.json()
+            choice = data["choices"][0] if isinstance(data, dict) else {}
+            return _extract_openai_choice_text(choice), http_status, endpoint
+
+    def _persist_test_record(
+        self,
+        *,
+        provider: ProviderRecord,
+        resolved_endpoint: str,
+        model: str,
+        latency_ms: int,
+        success: bool,
+        http_status: Optional[int],
+        error_message: Optional[str],
+    ) -> None:
         try:
             conn = self._connect()
             try:
@@ -654,8 +747,8 @@ class LLMGateway:
                             provider.id,
                             1 if success else 0,
                             provider.region,
-                            provider.base_url,
-                            route.model,
+                            resolved_endpoint,
+                            model,
                             latency_ms,
                             http_status,
                             error_message,
@@ -667,18 +760,189 @@ class LLMGateway:
         except Exception:
             logger.debug("Failed to persist llm gateway test record", exc_info=True)
 
+    async def preview_model_catalog(
+        self,
+        request: ProviderCatalogPreviewRequest,
+    ) -> ProviderCatalogPreviewResponse:
+        vendor_preset = (request.vendor_preset or "generic").strip() or "generic"
+        catalog_api_url = (request.catalog_api_url or "").strip()
+        if not catalog_api_url:
+            if vendor_preset == "modelverse":
+                catalog_api_url = "https://api.modelverse.cn/v1/models"
+            else:
+                base_url = (request.base_url or "").strip().rstrip("/")
+                if base_url.endswith("/chat/completions"):
+                    base_url = base_url[: -len("/chat/completions")]
+                if not base_url:
+                    raise ValueError("catalogApiUrl is required when no vendor preset default is available")
+                catalog_api_url = f"{base_url}/models"
+
+        headers = {
+            "User-Agent": "GameVallies-Admin/1.0",
+        }
+        auth_mode = request.catalog_auth_mode if request.catalog_auth_mode == "bearer_token" else "inherit_provider"
+        auth_token = (
+            (request.catalog_api_key or "").strip()
+            if auth_mode == "bearer_token"
+            else (request.api_key or "").strip()
+        )
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(20.0, connect=10.0)
+        ) as client:
+            response = await client.get(catalog_api_url, headers=headers)
+            response.raise_for_status()
+            payload = response.json()
+
+        if isinstance(payload, list):
+            raw_models = payload
+        elif isinstance(payload, dict):
+            raw_models = payload.get("data") or payload.get("models") or payload.get("result") or []
+        else:
+            raw_models = []
+
+        models: list[dict[str, Any]] = []
+        if isinstance(raw_models, list):
+            for item in raw_models:
+                if isinstance(item, str):
+                    models.append({
+                        "id": item,
+                        "label": item,
+                        "owned_by": None,
+                        "created": None,
+                    })
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                model_id = item.get("id") or item.get("name") or item.get("model")
+                if not model_id:
+                    continue
+                label = item.get("label") or item.get("display_name") or model_id
+                models.append({
+                    "id": str(model_id),
+                    "label": str(label),
+                    "owned_by": item.get("owned_by"),
+                    "created": item.get("created"),
+                })
+
+        models.sort(key=lambda item: item["id"])
+        return ProviderCatalogPreviewResponse(
+            models=models,
+            fetched_at=_utc_now_iso(),
+            resolved_catalog_api_url=catalog_api_url,
+            vendor_preset=vendor_preset,
+        )
+
+    async def test_provider(self, provider_id: str) -> dict[str, Any]:
+        self.refresh(raise_on_error=True)
+        provider = self._providers.get(provider_id)
+        if not provider:
+            raise ValueError("Provider not found")
+
+        route = self._resolved_route_for_provider(provider, prefer_fast=True)
+        start = time.time()
+        success = False
+        http_status = None
+        error_message = None
+        output = ""
+        resolved_endpoint = route.base_url
+        try:
+            output, http_status, resolved_endpoint = await self._invoke_test_completion(
+                route=route,
+                messages=[{"role": "user", "content": "Reply with PONG"}],
+                max_tokens=32,
+            )
+            success = True
+        except Exception as exc:
+            error_message = str(exc)
+        latency_ms = int((time.time() - start) * 1000)
+
+        self._persist_test_record(
+            provider=provider,
+            resolved_endpoint=resolved_endpoint,
+            model=route.model,
+            latency_ms=latency_ms,
+            success=success,
+            http_status=http_status,
+            error_message=error_message,
+        )
+
         return {
             "providerId": provider.id,
             "providerName": provider.name,
             "providerType": provider.provider_type,
             "region": provider.region,
-            "resolvedEndpoint": provider.base_url,
+            "resolvedEndpoint": resolved_endpoint,
             "model": route.model,
             "latencyMs": latency_ms,
             "httpStatus": http_status,
             "success": success,
             "errorMessage": error_message,
+            "outputPreview": output[:200],
+            "testedAt": _utc_now_iso(),
         }
+
+    async def test_provider_chat(
+        self,
+        provider_id: str,
+        request: ProviderTestChatRequest,
+    ) -> ProviderTestChatResponse:
+        self.refresh(raise_on_error=True)
+        provider = self._providers.get(provider_id)
+        if not provider:
+            raise ValueError("Provider not found")
+        if not request.messages:
+            raise ValueError("messages are required")
+
+        route = self._resolved_route_for_provider(
+            provider,
+            prefer_fast=request.use_fast_model,
+            model_override=request.model,
+        )
+        start = time.time()
+        success = False
+        http_status = None
+        error_message = None
+        reply = ""
+        resolved_endpoint = route.base_url
+        try:
+            reply, http_status, resolved_endpoint = await self._invoke_test_completion(
+                route=route,
+                messages=[{"role": item.role, "content": item.content} for item in request.messages],
+                max_tokens=request.max_tokens,
+                system=request.system,
+            )
+            success = True
+        except Exception as exc:
+            error_message = str(exc)
+        latency_ms = int((time.time() - start) * 1000)
+
+        self._persist_test_record(
+            provider=provider,
+            resolved_endpoint=resolved_endpoint,
+            model=route.model,
+            latency_ms=latency_ms,
+            success=success,
+            http_status=http_status,
+            error_message=error_message,
+        )
+
+        return ProviderTestChatResponse(
+            provider_id=provider.id,
+            provider_name=provider.name,
+            provider_type=provider.provider_type,
+            region=provider.region,
+            resolved_endpoint=resolved_endpoint,
+            model=route.model,
+            latency_ms=latency_ms,
+            http_status=http_status,
+            success=success,
+            error_message=error_message,
+            reply=reply,
+            tested_at=_utc_now_iso(),
+        )
 
 
 gateway = LLMGateway()

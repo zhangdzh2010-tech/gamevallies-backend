@@ -16,6 +16,7 @@ import axios from 'axios';
 import {
   GameAccessGrantSource,
   GenerationTaskEventType,
+  GenerationTaskStatus,
   GenerationTaskType,
   GameStatus,
   Prisma,
@@ -121,6 +122,24 @@ interface RuntimeContractPayload {
   [key: string]: unknown;
 }
 
+interface SourceBundleRevisionPayload {
+  version?: number | null;
+  generated_at?: string | null;
+  feedback?: string | null;
+  iteration_type?: string | null;
+  summary?: string | null;
+}
+
+interface SourceBundleContextPayload {
+  title?: string | null;
+  latest_bundle_version?: number | null;
+  latest_game_type?: string | null;
+  latest_feedback?: string | null;
+  latest_iteration_type?: string | null;
+  summary?: string | null;
+  recent_revisions?: SourceBundleRevisionPayload[];
+}
+
 interface CreateExecutionOptions {
   pipelineVersion?: PipelineVersion;
   title?: string;
@@ -133,6 +152,8 @@ interface IterateExecutionOptions {
   pipelineVersion?: PipelineVersion;
   promptBundleSnapshot?: PromptBundleSnapshotPayload | null;
   runtimeContract?: RuntimeContractPayload | null;
+  sourceSpec?: Record<string, unknown> | null;
+  sourceBundleContext?: SourceBundleContextPayload | null;
   game?: {
     gameType?: string | null;
     status?: string | null;
@@ -151,6 +172,10 @@ interface UpstreamAsyncTaskHandle {
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
   poll_url?: string;
   cancel_url?: string;
+}
+
+interface ResolvedUpstreamAsyncTaskHandle extends UpstreamAsyncTaskHandle {
+  aiEngineBaseUrl: string;
 }
 
 interface UpstreamAsyncTaskFailure {
@@ -544,10 +569,13 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       return undefined;
     }
 
+    if (/(classroom|teacher|lesson|quiz|worksheet|practice question|practice quiz|learning game|teaching|knowledge point|课堂|教学|老师|练习题|知识点|问答|测验|小测|学习游戏|教学游戏)/.test(text)) {
+      return 'grid_puzzle';
+    }
     if (/(runner|race|racing|lane|endless runner|跑酷|赛道|lane runner)/.test(text)) {
       return 'lane_runner';
     }
-    if (/(puzzle|grid|tile|match|merge|拼图|消除|方块)/.test(text)) {
+    if (/(puzzle|grid|tile|match|merge|circuit|wire|battery|bulb|switch|connect|drag|assemble|拼图|消除|方块|电路|导线|电池|灯泡|开关|连接|拖拽|组装)/.test(text)) {
       return 'grid_puzzle';
     }
     if (/(shooter|shoot|top-down|top down|action|射击|飞船|弹幕|俯视|动作)/.test(text)) {
@@ -717,6 +745,87 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  private extractBundleGameSpec(bundleHistory: any[]): Record<string, unknown> | null {
+    for (const bundle of [...bundleHistory].reverse()) {
+      const gameSpec = bundle?.metadata?.gameSpec;
+      if (
+        gameSpec
+        && typeof gameSpec === 'object'
+        && !Array.isArray(gameSpec)
+        && typeof (gameSpec as Record<string, unknown>).game_type === 'string'
+        && String((gameSpec as Record<string, unknown>).game_type).trim()
+      ) {
+        return gameSpec as Record<string, unknown>;
+      }
+    }
+    return null;
+  }
+
+  private buildIterationSourceBundleContext(params: {
+    game: any;
+    latestBundle: any | null;
+    bundleHistory: any[];
+  }): SourceBundleContextPayload | null {
+    const { game, latestBundle, bundleHistory } = params;
+    const latestMetadata = latestBundle?.metadata || {};
+    const recentRevisions = [...bundleHistory]
+      .slice(-4)
+      .reverse()
+      .map((bundleVersion: any) => {
+        const metadata = bundleVersion?.metadata || {};
+        const feedback = typeof metadata.feedback === 'string' ? metadata.feedback.trim() : '';
+        const iterationType = typeof metadata.iterationType === 'string' ? metadata.iterationType.trim() : '';
+        const summary = [
+          feedback || '',
+          iterationType ? `type=${iterationType}` : '',
+        ].filter(Boolean).join(' | ');
+
+        return {
+          version: typeof bundleVersion?.version === 'number' ? bundleVersion.version : null,
+          generated_at: bundleVersion?.createdAt ? new Date(bundleVersion.createdAt).toISOString() : null,
+          feedback: feedback || null,
+          iteration_type: iterationType || null,
+          summary: summary || null,
+        };
+      })
+      .filter((revision) => (
+        revision.version !== null
+        || revision.feedback
+        || revision.iteration_type
+        || revision.summary
+      ));
+
+    const latestFeedback = typeof latestMetadata.feedback === 'string' ? latestMetadata.feedback.trim() : '';
+    const latestIterationType = typeof latestMetadata.iterationType === 'string'
+      ? latestMetadata.iterationType.trim()
+      : '';
+    const latestGameType = typeof game?.gameType === 'string' && game.gameType.trim()
+      ? game.gameType.trim()
+      : (
+        typeof latestMetadata?.gameSpec?.game_type === 'string'
+          ? latestMetadata.gameSpec.game_type.trim()
+          : null
+      );
+    const summaryParts = [
+      latestGameType ? `game_type=${latestGameType}` : '',
+      latestFeedback ? `latest_feedback=${latestFeedback}` : '',
+      latestIterationType ? `latest_iteration=${latestIterationType}` : '',
+      latestBundle?.htmlCode ? `code_size=${Buffer.byteLength(String(latestBundle.htmlCode), 'utf8')}B` : '',
+    ].filter(Boolean);
+
+    return {
+      title: typeof game?.title === 'string' ? game.title : null,
+      latest_bundle_version: typeof latestBundle?.version === 'number'
+        ? latestBundle.version
+        : (typeof game?.version === 'number' ? game.version : null),
+      latest_game_type: latestGameType,
+      latest_feedback: latestFeedback || null,
+      latest_iteration_type: latestIterationType || null,
+      summary: summaryParts.length > 0 ? summaryParts.join('; ') : null,
+      recent_revisions: recentRevisions,
+    };
+  }
+
   private buildCreateV2Payload(params: {
     gameId: string;
     userId: string;
@@ -784,6 +893,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     timeoutS: number;
     taskId?: string;
     game?: IterateExecutionOptions['game'];
+    sourceSpec?: Record<string, unknown> | null;
+    sourceBundleContext?: SourceBundleContextPayload | null;
     promptBundleSnapshot: PromptBundleSnapshotPayload;
     runtimeContract: RuntimeContractPayload;
   }): Record<string, unknown> {
@@ -810,6 +921,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         feedback: params.feedback,
         conversation: params.conversationHistory,
       },
+      source_spec: params.sourceSpec || null,
+      source_bundle_context: params.sourceBundleContext || null,
       existing_game: {
         status: game.status || GameStatus.draft,
         visibility: game.visibility || 'private',
@@ -850,6 +963,17 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     return this.resolveAiEngineEndpoint(executionRegion);
   }
 
+  private normalizeAiEngineBaseUrl(value?: string | null): string {
+    return (value || '').trim().replace(/\/$/, '');
+  }
+
+  private appendAiEngineBaseUrl(urls: string[], value?: string | null): void {
+    const normalized = this.normalizeAiEngineBaseUrl(value);
+    if (normalized && !urls.includes(normalized)) {
+      urls.push(normalized);
+    }
+  }
+
   private getConfiguredAiEngineUrlForRegion(executionRegion?: string): string {
     const region = this.resolveExecutionRegion(executionRegion);
     const defaultRegion = this.resolveExecutionRegion(
@@ -873,7 +997,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     return '';
   }
 
-  private async resolveAiEngineEndpoint(executionRegion?: string): Promise<string> {
+  private async getDeployedAiEngineTargetUrl(executionRegion?: string): Promise<string> {
     await this.ensureTimeoutConfigCache();
     const region = this.resolveExecutionRegion(executionRegion);
     const cached = this.aiEngineTargetCache.get(region);
@@ -902,7 +1026,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       ? await Promise.resolve(targetQuery).catch(() => null)
       : null;
 
-    const targetUrl = (target?.aiEngineUrl || '').trim().replace(/\/$/, '');
+    const targetUrl = this.normalizeAiEngineBaseUrl(target?.aiEngineUrl);
     if (targetUrl) {
       this.aiEngineTargetCache.set(region, {
         url: targetUrl,
@@ -911,21 +1035,33 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       return targetUrl;
     }
 
-    const configuredUrl = this.getConfiguredAiEngineUrlForRegion(region);
-    if (configuredUrl) {
-      this.aiEngineTargetCache.set(region, {
-        url: configuredUrl,
-        cachedAt: now,
-      });
-      return configuredUrl;
+    return '';
+  }
+
+  private async resolveAiEngineEndpointCandidates(
+    executionRegion?: string,
+    preferredBaseUrl?: string | null,
+  ): Promise<string[]> {
+    await this.ensureTimeoutConfigCache();
+    const region = this.resolveExecutionRegion(executionRegion);
+    const urls: string[] = [];
+    this.appendAiEngineBaseUrl(urls, preferredBaseUrl);
+    this.appendAiEngineBaseUrl(urls, this.getConfiguredAiEngineUrlForRegion(region));
+    this.appendAiEngineBaseUrl(urls, await this.getDeployedAiEngineTargetUrl(region));
+    if (!urls.length && process.env.NODE_ENV !== 'production') {
+      this.appendAiEngineBaseUrl(urls, this.aiEngineUrl);
     }
 
-    const fallbackUrl = (this.aiEngineUrl || '').trim().replace(/\/$/, '');
-    if (fallbackUrl && process.env.NODE_ENV !== 'production') {
-      return fallbackUrl;
+    if (urls.length > 0) {
+      return urls;
     }
 
     throw new Error(`missing_ai_engine_region_target: no deployed ai-engine target for region ${region}`);
+  }
+
+  private async resolveAiEngineEndpoint(executionRegion?: string): Promise<string> {
+    const urls = await this.resolveAiEngineEndpointCandidates(executionRegion);
+    return urls[0];
   }
 
   private getPublicBaseUrl(): string {
@@ -1391,11 +1527,40 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     return token || null;
   }
 
-  private async bindUpstreamTaskId(taskId: string, upstreamTaskId: string): Promise<void> {
+  private getPersistedUpstreamBaseUrl(task: { metadata?: any } | null | undefined): string {
+    const metadata = task?.metadata;
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      return '';
+    }
+    return this.normalizeAiEngineBaseUrl((metadata as Record<string, unknown>).upstreamBaseUrl as string | undefined);
+  }
+
+  private async bindUpstreamTaskId(
+    taskId: string,
+    upstreamTaskId: string,
+    upstreamBaseUrl?: string,
+  ): Promise<void> {
+    const currentTask = await Promise.resolve(this.prisma.generationTask.findUnique({
+      where: { id: taskId },
+      select: {
+        metadata: true,
+      },
+    })).catch(() => null);
+    const metadata = currentTask?.metadata && typeof currentTask.metadata === 'object' && !Array.isArray(currentTask.metadata)
+      ? { ...(currentTask.metadata as Record<string, unknown>) }
+      : {};
+    const normalizedBaseUrl = this.normalizeAiEngineBaseUrl(upstreamBaseUrl);
+    if (normalizedBaseUrl) {
+      metadata.upstreamBaseUrl = normalizedBaseUrl;
+    }
+
     await Promise.resolve(this.prisma.generationTask.update({
       where: { id: taskId },
       data: {
         upstreamTaskId,
+        metadata: Object.keys(metadata).length > 0
+          ? (metadata as Prisma.InputJsonValue)
+          : undefined,
       },
     })).catch((error) => {
       this.logger.warn(`Failed to bind upstream task ${upstreamTaskId} to ${taskId}: ${error.message}`);
@@ -1403,7 +1568,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async requestUpstreamAsyncTask(params: {
-    aiEngineBaseUrl: string;
+    aiEngineBaseUrls: string[];
     endpoint:
       | '/api/v1/ai/pipeline/run/async'
       | '/api/v1/ai/pipeline/iterate/async'
@@ -1413,65 +1578,98 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     taskId?: string;
     userId: string;
     gameId: string;
-  }): Promise<UpstreamAsyncTaskHandle> {
+  }): Promise<ResolvedUpstreamAsyncTaskHandle> {
     await this.ensureTimeoutConfigCache();
-    const response = await withRetry(() =>
-      axios.post(
-        `${params.aiEngineBaseUrl}${params.endpoint}`,
-        params.payload,
-        { timeout: this.getUpstreamRequestTimeoutMs() },
-      ),
-      {
-        maxAttempts: 3,
-        delayMs: this.getUpstreamRequestRetryDelayMs(),
-        retryOnHttpResponse: false,
-        onRetry: async ({ retry, maxRetries, attempt, maxAttempts, error }) => {
-          this.emitProgress(
-            params.userId,
-            params.gameId,
-            `AI generation request failed, retrying (${retry}/${maxRetries})`,
-            STAGE_PCT.code_generating,
-            {
-              stage: 'code_generating',
-              retry,
-              maxRetries,
-              attempt,
-              maxAttempts,
-              error: this.extractErrorMessage(error),
-              taskId: params.taskId,
+    const candidateUrls = params.aiEngineBaseUrls
+      .map((value) => this.normalizeAiEngineBaseUrl(value))
+      .filter(Boolean)
+      .filter((value, index, list) => list.indexOf(value) === index);
+    if (!candidateUrls.length) {
+      throw new Error('No reachable ai-engine base URL configured');
+    }
+
+    const failures: Array<{ baseUrl: string; message: string }> = [];
+    let lastError: unknown = null;
+    for (const aiEngineBaseUrl of candidateUrls) {
+      try {
+        const response = await withRetry(() =>
+          axios.post(
+            `${aiEngineBaseUrl}${params.endpoint}`,
+            params.payload,
+            { timeout: this.getUpstreamRequestTimeoutMs() },
+          ),
+          {
+            maxAttempts: 3,
+            delayMs: this.getUpstreamRequestRetryDelayMs(),
+            retryOnHttpResponse: false,
+            onRetry: async ({ retry, maxRetries, attempt, maxAttempts, error }) => {
+              this.emitProgress(
+                params.userId,
+                params.gameId,
+                `AI generation request failed, retrying (${retry}/${maxRetries})`,
+                STAGE_PCT.code_generating,
+                {
+                  stage: 'code_generating',
+                  retry,
+                  maxRetries,
+                  attempt,
+                  maxAttempts,
+                  error: this.extractErrorMessage(error),
+                  taskId: params.taskId,
+                  aiEngineBaseUrl,
+                },
+              );
+              if (params.taskId) {
+                await this.generationTaskService.recordProgress({
+                  taskId: params.taskId,
+                  gameId: params.gameId,
+                  userId: params.userId,
+                  stage: 'code_generating',
+                  percentage: STAGE_PCT.code_generating,
+                  message: `AI generation request failed, retrying (${retry}/${maxRetries})`,
+                  details: {
+                    retry,
+                    maxRetries,
+                    attempt,
+                    maxAttempts,
+                    error: this.extractErrorMessage(error),
+                    aiEngineBaseUrl,
+                  },
+                });
+              }
             },
-          );
-          if (params.taskId) {
-            await this.generationTaskService.recordProgress({
-              taskId: params.taskId,
-              gameId: params.gameId,
-              userId: params.userId,
-              stage: 'code_generating',
-              percentage: STAGE_PCT.code_generating,
-              message: `AI generation request failed, retrying (${retry}/${maxRetries})`,
-              details: {
-                retry,
-                maxRetries,
-                attempt,
-                maxAttempts,
-                error: this.extractErrorMessage(error),
-              },
-            });
-          }
-        },
-      },
+          },
+        );
+
+        const handle = response.data as UpstreamAsyncTaskHandle;
+        if (!handle?.task_id) {
+          throw new Error('AI engine did not return an async task handle');
+        }
+
+        if (params.taskId) {
+          await this.bindUpstreamTaskId(params.taskId, handle.task_id, aiEngineBaseUrl);
+        }
+
+        return {
+          ...handle,
+          aiEngineBaseUrl,
+        };
+      } catch (error) {
+        lastError = error;
+        failures.push({
+          baseUrl: aiEngineBaseUrl,
+          message: this.extractErrorMessage(error),
+        });
+      }
+    }
+
+    if (failures.length <= 1 && lastError) {
+      throw lastError;
+    }
+
+    throw new Error(
+      `All ai-engine endpoints failed for ${params.endpoint}: ${failures.map((item) => `${item.baseUrl}: ${item.message}`).join(' | ')}`,
     );
-
-    const handle = response.data as UpstreamAsyncTaskHandle;
-    if (!handle?.task_id) {
-      throw new Error('AI engine did not return an async task handle');
-    }
-
-    if (params.taskId) {
-      await this.bindUpstreamTaskId(params.taskId, handle.task_id);
-    }
-
-    return handle;
   }
 
   private async fetchUpstreamTaskSnapshot(
@@ -1493,6 +1691,42 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async fetchUpstreamTaskSnapshotWithFailover(task: {
+    region?: string | null;
+    metadata?: any;
+  }, upstreamTaskId: string): Promise<UpstreamAsyncTaskSnapshot | null> {
+    const baseUrls = await this.resolveAiEngineEndpointCandidates(
+      task.region || undefined,
+      this.getPersistedUpstreamBaseUrl(task),
+    );
+    const failures: Array<{ baseUrl: string; message: string }> = [];
+    let sawNotFound = false;
+    for (const baseUrl of baseUrls) {
+      try {
+        const snapshot = await this.fetchUpstreamTaskSnapshot(baseUrl, upstreamTaskId);
+        if (snapshot) {
+          return snapshot;
+        }
+        sawNotFound = true;
+      } catch (error) {
+        failures.push({
+          baseUrl,
+          message: this.extractErrorMessage(error),
+        });
+      }
+    }
+
+    if (sawNotFound || !failures.length) {
+      return null;
+    }
+
+    throw new Error(
+      `All ai-engine snapshot endpoints failed for ${upstreamTaskId}: ${
+        failures.map((item) => `${item.baseUrl}: ${item.message}`).join(' | ')
+      }`,
+    );
+  }
+
   private async waitForUpstreamTaskTerminal(params: {
     aiEngineBaseUrl: string;
     upstreamTaskId: string;
@@ -1507,6 +1741,13 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     while (Date.now() <= deadlineMs) {
       if (params.taskId && params.gameId) {
         await this.assertTaskCanPersistResult(params.taskId, params.gameId);
+      }
+
+      if (params.taskId) {
+        const localTerminalSnapshot = await this.resolveDurableLocalTaskSnapshot(params.taskId);
+        if (localTerminalSnapshot) {
+          return localTerminalSnapshot;
+        }
       }
 
       const snapshot = await this.fetchUpstreamTaskSnapshot(params.aiEngineBaseUrl, params.upstreamTaskId);
@@ -1525,6 +1766,92 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     }
 
     throw new Error(`Upstream AI task ${params.upstreamTaskId} timed out while waiting for completion`);
+  }
+
+  private async getStoredFailureResponseData(taskId: string): Promise<Record<string, any> | null> {
+    const artifact = await this.generationTaskService.findLatestArtifactForTask(taskId, ['task_failure']);
+    return this.parseArtifactPayload<Record<string, any>>(artifact);
+  }
+
+  private async resolveDurableLocalTaskSnapshot(taskId: string): Promise<UpstreamAsyncTaskSnapshot | null> {
+    const task = await this.prisma.generationTask.findUnique({
+      where: { id: taskId },
+      select: {
+        id: true,
+        status: true,
+        taskType: true,
+        progressStage: true,
+        errorMessage: true,
+        failedStage: true,
+        retryCount: true,
+        fallback: true,
+        failureFamily: true,
+        primaryArtifactId: true,
+      },
+    });
+
+    if (!task) {
+      return null;
+    }
+
+    const buildFailureSnapshot = (message: string, stage?: string | null, extra?: Record<string, any>): UpstreamAsyncTaskSnapshot => ({
+      task_id: task.id,
+      status: task.status === 'canceled' ? 'canceled' : 'failed',
+      error: {
+        message,
+        failed_stage: stage || task.failedStage || task.progressStage || 'failed',
+        retry_count: task.retryCount || 0,
+        fallback: task.fallback || undefined,
+        failure_family: task.failureFamily || undefined,
+        primary_artifact_id: task.primaryArtifactId || undefined,
+        ...(extra || {}),
+      },
+    });
+
+    if (task.status === 'succeeded') {
+      const responseData = await this.getStoredTerminalResponseData(task.id, task.taskType as GenerationTaskType);
+      if (!responseData) {
+        return null;
+      }
+      return {
+        task_id: task.id,
+        status: 'succeeded',
+        result: responseData,
+      };
+    }
+
+    if (task.status === 'failed' || task.status === 'timed_out') {
+      return buildFailureSnapshot(task.errorMessage || 'Local task failed');
+    }
+
+    if (task.status === 'canceled') {
+      return buildFailureSnapshot(task.errorMessage || 'Local task was canceled');
+    }
+
+    const responseData = await this.getStoredTerminalResponseData(task.id, task.taskType as GenerationTaskType);
+    if (responseData) {
+      return {
+        task_id: task.id,
+        status: 'succeeded',
+        result: responseData,
+      };
+    }
+
+    const failureData = await this.getStoredFailureResponseData(task.id);
+    if (failureData) {
+      return buildFailureSnapshot(
+        String(failureData.message || failureData.errorMessage || task.errorMessage || 'Local task failed'),
+        String(failureData.failed_stage || failureData.failedStage || task.failedStage || task.progressStage || 'failed'),
+        {
+          retry_count: Number(failureData.retry_count || failureData.retryCount || task.retryCount || 0) || 0,
+          fallback: failureData.fallback || task.fallback || undefined,
+          failure_family: failureData.failure_family || failureData.failureFamily || task.failureFamily || undefined,
+          primary_artifact_id: failureData.primary_artifact_id || failureData.primaryArtifactId || task.primaryArtifactId || undefined,
+        },
+      );
+    }
+
+    return null;
   }
 
   private buildUpstreamTaskFailureError(
@@ -1551,22 +1878,48 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     id?: string;
     region?: string | null;
     upstreamTaskId?: string | null;
+    metadata?: any;
   }): Promise<void> {
     if (!task?.upstreamTaskId) {
       return;
     }
 
     await this.ensureTimeoutConfigCache();
-    const aiEngineBaseUrl = await this.resolveAiEngineEndpoint(task.region || undefined);
-    await axios.post(
-      `${aiEngineBaseUrl}/api/v1/ai/tasks/${task.upstreamTaskId}/cancel`,
-      {},
-      { timeout: this.getUpstreamCancelTimeoutMs() },
+    const baseUrls = await this.resolveAiEngineEndpointCandidates(
+      task.region || undefined,
+      this.getPersistedUpstreamBaseUrl(task),
     ).catch((error) => {
       this.logger.warn(
-        `Failed to cancel upstream task ${task.upstreamTaskId} for ${task.id || 'unknown'}: ${this.extractErrorMessage(error)}`,
+        `Failed to resolve ai-engine endpoints for cancel ${task.upstreamTaskId}: ${this.extractErrorMessage(error)}`,
       );
+      return [] as string[];
     });
+    if (!baseUrls.length) {
+      return;
+    }
+
+    const failures: Array<{ baseUrl: string; message: string }> = [];
+    for (const aiEngineBaseUrl of baseUrls) {
+      try {
+        await axios.post(
+          `${aiEngineBaseUrl}/api/v1/ai/tasks/${task.upstreamTaskId}/cancel`,
+          {},
+          { timeout: this.getUpstreamCancelTimeoutMs() },
+        );
+        return;
+      } catch (error) {
+        failures.push({
+          baseUrl: aiEngineBaseUrl,
+          message: this.extractErrorMessage(error),
+        });
+      }
+    }
+
+    this.logger.warn(
+      `Failed to cancel upstream task ${task.upstreamTaskId} for ${task.id || 'unknown'}: ${
+        failures.map((item) => `${item.baseUrl}: ${item.message}`).join(' | ')
+      }`,
+    );
   }
 
   private async ensureNoActiveTaskForGame(gameId: string): Promise<void> {
@@ -1763,6 +2116,18 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (resolution.status === 'timed_out') {
+      if (task.progressStage === 'completed') {
+        const recovered = await this.recoverTaskFromStoredTerminalResponse({ task, game }).catch((error) => {
+          this.logger.warn(
+            `Failed to recover completed task ${task.id} before timeout finalization: ${this.extractErrorMessage(error)}`,
+          );
+          return null;
+        });
+        if (recovered) {
+          return recovered;
+        }
+      }
+
       await this.cancelUpstreamTask(task);
       if (game?.status === 'generating') {
         if (task.taskType === GenerationTaskType.pipeline_run) {
@@ -1808,24 +2173,28 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     if (!task?.upstreamTaskId || this.isFinalTaskStatus(task.status)) {
       return null;
     }
-
-    let aiEngineBaseUrl: string;
-    try {
-      aiEngineBaseUrl = await this.resolveAiEngineEndpoint(task.region);
-    } catch (error: any) {
-      this.logger.warn(`Failed to resolve AI engine endpoint for task ${task.id}: ${error?.message || error}`);
-      return null;
-    }
+    const game = task.game || null;
 
     let snapshot: UpstreamAsyncTaskSnapshot | null;
     try {
-      snapshot = await this.fetchUpstreamTaskSnapshot(aiEngineBaseUrl, task.upstreamTaskId);
+      snapshot = await this.fetchUpstreamTaskSnapshotWithFailover(task, task.upstreamTaskId);
     } catch (error: any) {
       this.logger.warn(`Failed to fetch upstream task ${task.upstreamTaskId}: ${this.extractErrorMessage(error)}`);
       return null;
     }
 
     if (!snapshot) {
+      if (task.progressStage === 'completed') {
+        const recovered = await this.recoverTaskFromStoredTerminalResponse({ task, game }).catch((error) => {
+          this.logger.warn(
+            `Failed to recover task ${task.id} from stored completion artifacts after missing upstream snapshot: ${this.extractErrorMessage(error)}`,
+          );
+          return null;
+        });
+        if (recovered) {
+          return recovered;
+        }
+      }
       return null;
     }
 
@@ -1838,6 +2207,17 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         await Promise.resolve(this.generationTaskService.markRunning(task.id))
           .catch(() => undefined);
         return this.prisma.generationTask.findUnique({ where: { id: task.id } });
+      }
+      if (task.progressStage === 'completed') {
+        const recovered = await this.recoverTaskFromStoredTerminalResponse({ task, game }).catch((error) => {
+          this.logger.warn(
+            `Failed to recover task ${task.id} from stored completion artifacts while upstream still reports running: ${this.extractErrorMessage(error)}`,
+          );
+          return null;
+        });
+        if (recovered) {
+          return recovered;
+        }
       }
       return null;
     }
@@ -2516,6 +2896,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     description: string;
     taskId?: string;
     responseData: Record<string, any>;
+    allowFinalTaskRecovery?: boolean;
   }): Promise<void> {
     const {
       gameId,
@@ -2523,6 +2904,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       description,
       taskId,
       responseData,
+      allowFinalTaskRecovery = false,
     } = params;
     const {
       html_code: htmlCode = '',
@@ -2535,9 +2917,18 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       quality_score: qualityScore = 0,
       quality_breakdown: qualityBreakdown = {},
       primary_artifact_id: primaryArtifactId = undefined,
+      qa_warnings: rawQaWarnings = [],
+      runtime_qa_report: rawRuntimeQaReport = undefined,
     } = responseData || {};
+    const qaWarnings = this.normalizeQaWarnings(rawQaWarnings);
+    const runtimeQaReport = this.normalizeRuntimeQaReport(rawRuntimeQaReport);
+    const runtimeQaSummary = this.buildRuntimeQaResultSummary(qaWarnings, runtimeQaReport);
     this.ensurePersistableGeneratedHtml(htmlCode);
-    await this.assertTaskCanPersistResult(taskId, gameId);
+    if (allowFinalTaskRecovery) {
+      await this.assertTaskCanRecoverResult(taskId, gameId, { allowUnavailableGame: true });
+    } else {
+      await this.assertTaskCanPersistResult(taskId, gameId);
+    }
 
     const bundlePreviewUrl = this.buildPreviewUrl(gameId);
     const htmlTitleMatch = htmlCode.match(/<title>([^<]{1,60})<\/title>/i);
@@ -2568,6 +2959,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         codeSizeBytes,
         qualityScore,
         qualityBreakdown,
+        ...(qaWarnings.length > 0 ? { qaWarnings } : {}),
+        ...(runtimeQaReport ? { runtimeQaReport } : {}),
       },
       gameTitle: isPlaceholderTitle ? gameTitle : undefined,
       updateData: {
@@ -2590,6 +2983,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           typeof primaryArtifactId === 'string' && primaryArtifactId.trim()
             ? primaryArtifactId
             : undefined,
+        force: allowFinalTaskRecovery,
         resultSummary: {
           strategy,
           qaPassed,
@@ -2598,6 +2992,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           generationTimeMs: genTimeMs,
           codeSizeBytes,
           qualityScore,
+          ...runtimeQaSummary,
         },
       });
     }
@@ -2605,6 +3000,65 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     this.emitStage(userId, gameId, 'completed', {
       stage: 'completed',
       qaRetries,
+    });
+  }
+
+  async reconcileRelayedTaskFailure(params: {
+    taskId: string;
+    failedStage: string;
+    errorMessage: string;
+    retryCount?: number;
+    fallback?: string | null;
+    timedOut?: boolean;
+    failureFamily?: string | null;
+    primaryArtifactId?: string | null;
+  }): Promise<void> {
+    const task = await this.prisma.generationTask.findUnique({
+      where: { id: params.taskId },
+      select: {
+        id: true,
+        gameId: true,
+        userId: true,
+        taskType: true,
+      },
+    });
+
+    if (!task) {
+      return;
+    }
+
+    const relayedError = {
+      response: {
+        data: {
+          detail: {
+            message: params.errorMessage,
+            failed_stage: params.failedStage,
+            retry_count: params.retryCount ?? 0,
+            fallback: params.fallback ?? undefined,
+            failure_family: params.failureFamily ?? undefined,
+            primary_artifact_id: params.primaryArtifactId ?? undefined,
+            timed_out: Boolean(params.timedOut),
+          },
+        },
+      },
+      message: params.errorMessage,
+    };
+
+    if (task.taskType === GenerationTaskType.pipeline_run) {
+      await this.failPipelineTask({
+        gameId: task.gameId,
+        userId: task.userId,
+        taskId: task.id,
+        error: relayedError,
+      });
+      return;
+    }
+
+    await this.failIterationTask({
+      gameId: task.gameId,
+      userId: task.userId,
+      taskId: task.id,
+      error: relayedError,
     });
   }
 
@@ -2625,7 +3079,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         where: { id: taskId },
         select: { status: true },
       });
-      if (currentTask && this.isFinalTaskStatus(currentTask.status)) {
+      if (
+        currentTask
+        && (currentTask.status === GenerationTaskStatus.succeeded
+          || currentTask.status === GenerationTaskStatus.canceled)
+      ) {
         return;
       }
     }
@@ -2703,6 +3161,187 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       .filter((item) => item.role && item.content);
   }
 
+  private normalizeQaWarnings(value: unknown): Array<Record<string, any>> {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    return value.filter((item) => item && typeof item === 'object') as Array<Record<string, any>>;
+  }
+
+  private normalizeRuntimeQaReport(value: unknown): Record<string, any> | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return undefined;
+    }
+    return value as Record<string, any>;
+  }
+
+  private buildRuntimeQaResultSummary(
+    qaWarnings: Array<Record<string, any>>,
+    runtimeQaReport?: Record<string, any>,
+  ): Record<string, any> {
+    const warningCount = qaWarnings.length;
+    const unavailableKind = typeof runtimeQaReport?.unavailableKind === 'string'
+      ? runtimeQaReport.unavailableKind
+      : undefined;
+    const unavailablePhase = typeof runtimeQaReport?.unavailablePhase === 'string'
+      ? runtimeQaReport.unavailablePhase
+      : undefined;
+    const unavailableReason = typeof runtimeQaReport?.unavailableReason === 'string'
+      ? runtimeQaReport.unavailableReason
+      : undefined;
+
+    return {
+      qaWarningCount: warningCount,
+      ...(warningCount > 0 ? { qaWarnings } : {}),
+      ...(runtimeQaReport ? { runtimeQaReport } : {}),
+      ...(unavailableKind || warningCount > 0 ? { runtimeQaUnavailable: Boolean(unavailableKind || warningCount > 0) } : {}),
+      ...(unavailableKind ? { runtimeQaUnavailableKind: unavailableKind } : {}),
+      ...(unavailablePhase ? { runtimeQaUnavailablePhase: unavailablePhase } : {}),
+      ...(unavailableReason ? { runtimeQaUnavailableReason: unavailableReason } : {}),
+    };
+  }
+
+  private isUpstreamWaitTimeoutError(error: unknown): boolean {
+    const message = this.extractErrorMessage(error as any);
+    return /upstream ai task .*timed out while waiting for completion/i.test(message);
+  }
+
+  private getSuccessArtifactTypes(taskType: GenerationTaskType): string[] {
+    return taskType === GenerationTaskType.pipeline_iterate
+      ? ['iteration_response']
+      : ['pipeline_response'];
+  }
+
+  private parseArtifactPayload<T extends Record<string, any>>(artifact: {
+    payloadJson?: unknown;
+    payloadText?: string | null;
+  } | null | undefined): T | null {
+    if (!artifact) {
+      return null;
+    }
+
+    if (artifact.payloadJson && typeof artifact.payloadJson === 'object' && !Array.isArray(artifact.payloadJson)) {
+      return artifact.payloadJson as T;
+    }
+
+    if (typeof artifact.payloadText === 'string' && artifact.payloadText.trim()) {
+      try {
+        const parsed = JSON.parse(artifact.payloadText);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          return parsed as T;
+        }
+      } catch (error) {
+        this.logger.warn(`Failed to parse stored artifact payload as JSON: ${this.extractErrorMessage(error)}`);
+      }
+    }
+
+    return null;
+  }
+
+  private async getStoredTerminalResponseData(
+    taskId: string,
+    taskType: GenerationTaskType,
+  ): Promise<Record<string, any> | null> {
+    const artifact = await this.generationTaskService.findLatestArtifactForTask(
+      taskId,
+      this.getSuccessArtifactTypes(taskType),
+    );
+    return this.parseArtifactPayload<Record<string, any>>(artifact);
+  }
+
+  private async assertTaskCanRecoverResult(
+    taskId?: string,
+    gameId?: string,
+    options: { allowUnavailableGame?: boolean } = {},
+  ): Promise<void> {
+    if (!taskId) {
+      return;
+    }
+
+    const task = await this.prisma.generationTask.findUnique({
+      where: { id: taskId },
+      select: {
+        cancelRequested: true,
+        gameId: true,
+      },
+    });
+
+    if (!task) {
+      throw new TaskAbortedError('Task no longer exists');
+    }
+
+    if (task.cancelRequested) {
+      throw new TaskAbortedError('Task was terminated before completion');
+    }
+
+    const effectiveGameId = gameId || task.gameId;
+    const game = await this.prisma.game.findUnique({
+      where: { id: effectiveGameId },
+      select: { status: true },
+    });
+
+    if (!game) {
+      throw new TaskAbortedError('Game is unavailable');
+    }
+
+    if (!options.allowUnavailableGame && game.status === 'banned') {
+      throw new TaskAbortedError('Game is unavailable');
+    }
+  }
+
+  private async recoverTaskFromStoredTerminalResponse(params: {
+    task: any;
+    game?: any;
+    allowFinalTaskRecovery?: boolean;
+  }): Promise<any | null> {
+    const { task, game, allowFinalTaskRecovery = false } = params;
+    if (!task?.id) {
+      return null;
+    }
+
+    const responseData = await this.getStoredTerminalResponseData(task.id, task.taskType);
+    if (!responseData) {
+      return null;
+    }
+
+    const currentGame = game || await this.prisma.game.findUnique({
+      where: { id: task.gameId },
+      select: {
+        id: true,
+        status: true,
+        publishedAt: true,
+      },
+    });
+
+    if (task.taskType === GenerationTaskType.pipeline_run) {
+      await this.completePipelineTask({
+        gameId: task.gameId,
+        userId: task.userId,
+        description: String(task.metadata?.description || ''),
+        taskId: task.id,
+        responseData,
+        allowFinalTaskRecovery,
+      });
+    } else {
+      const latestBundle = await Promise.resolve(this.bundleService.getLatestBundle(task.gameId))
+        .catch(() => null);
+      await this.completeIterationTask({
+        gameId: task.gameId,
+        userId: task.userId,
+        feedback: String(task.metadata?.feedback || ''),
+        conversationHistory: this.normalizeConversationHistory(task.metadata?.conversation),
+        nextVersion: task.version || 1,
+        taskId: task.id,
+        currentCode: latestBundle?.htmlCode || '',
+        responseData,
+        baseStatus: this.getIterationBaseStatus(task, currentGame),
+        allowFinalTaskRecovery,
+      });
+    }
+
+    return this.prisma.generationTask.findUnique({ where: { id: task.id } });
+  }
+
   private async completeIterationTask(params: {
     gameId: string;
     userId: string;
@@ -2713,6 +3352,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     currentCode: string;
     responseData: Record<string, any>;
     baseStatus?: GameStatus;
+    allowFinalTaskRecovery?: boolean;
   }): Promise<void> {
     const {
       gameId,
@@ -2724,17 +3364,28 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       currentCode,
       responseData,
       baseStatus,
+      allowFinalTaskRecovery = false,
     } = params;
     const {
       html_code: htmlCode = currentCode,
       iteration_type: iterationType = 'element_change',
+      game_spec: gameSpec = undefined,
       generation_time_ms: genTimeMs = 0,
       qa_retries: qaRetries = 0,
       iteration_retries: iterationRetries = 0,
       primary_artifact_id: primaryArtifactId = undefined,
+      qa_warnings: rawQaWarnings = [],
+      runtime_qa_report: rawRuntimeQaReport = undefined,
     } = responseData || {};
+    const qaWarnings = this.normalizeQaWarnings(rawQaWarnings);
+    const runtimeQaReport = this.normalizeRuntimeQaReport(rawRuntimeQaReport);
+    const runtimeQaSummary = this.buildRuntimeQaResultSummary(qaWarnings, runtimeQaReport);
     this.ensurePersistableGeneratedHtml(htmlCode);
-    await this.assertTaskCanPersistResult(taskId, gameId);
+    if (allowFinalTaskRecovery) {
+      await this.assertTaskCanRecoverResult(taskId, gameId, { allowUnavailableGame: true });
+    } else {
+      await this.assertTaskCanPersistResult(taskId, gameId);
+    }
 
     const bundlePreviewUrl = this.buildPreviewUrl(gameId);
     this.emitStage(userId, gameId, 'publishing', {
@@ -2753,9 +3404,12 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       metadata: {
         feedback,
         iterationType,
+        ...(gameSpec ? { gameSpec } : {}),
         genTimeMs,
         qaRetries,
         iterationRetries,
+        ...(qaWarnings.length > 0 ? { qaWarnings } : {}),
+        ...(runtimeQaReport ? { runtimeQaReport } : {}),
         aiConversation: [
           ...conversationHistory,
           { role: 'user', content: feedback },
@@ -2764,6 +3418,9 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       updateData: {
         ...(baseStatus === GameStatus.published ? {} : { version: nextVersion }),
         status: baseStatus || GameStatus.draft,
+        ...(baseStatus === GameStatus.published
+          ? {}
+          : (gameSpec?.game_type ? { gameType: gameSpec.game_type } : {})),
         failedStage: null,
         failedReason: null,
         retryCount: 0,
@@ -2779,6 +3436,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           typeof primaryArtifactId === 'string' && primaryArtifactId.trim()
             ? primaryArtifactId
             : undefined,
+        force: allowFinalTaskRecovery,
         resultSummary: {
           feedback,
           iterationType,
@@ -2786,6 +3444,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           qaRetries,
           iterationRetries,
           version: nextVersion,
+          ...runtimeQaSummary,
         },
       });
     }
@@ -2810,7 +3469,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         where: { id: taskId },
         select: { status: true },
       });
-      if (currentTask && this.isFinalTaskStatus(currentTask.status)) {
+      if (
+        currentTask
+        && (currentTask.status === GenerationTaskStatus.succeeded
+          || currentTask.status === GenerationTaskStatus.canceled)
+      ) {
         return;
       }
     }
@@ -2884,7 +3547,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   ): Promise<void> {
     try {
       const resolvedTimeoutS = this.resolvePipelineTimeout(timeoutS);
-      const aiEngineBaseUrl = await this.resolveAiEngineEndpoint(executionRegion);
+      const aiEngineBaseUrls = await this.resolveAiEngineEndpointCandidates(executionRegion);
       const resolvedRegion = this.resolveExecutionRegion(executionRegion);
       const pipelineVersion = options.pipelineVersion === 'v1' ? 'v1' : 'v2';
       const runtimeProfileHint = this.inferRuntimeProfileHint(description, options.title);
@@ -2899,7 +3562,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       }
 
       const handle = await this.requestUpstreamAsyncTask({
-        aiEngineBaseUrl,
+        aiEngineBaseUrls,
         endpoint: pipelineVersion === 'v2'
           ? '/api/v1/ai/pipeline/v2/run/async'
           : '/api/v1/ai/pipeline/run/async',
@@ -2930,12 +3593,22 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         gameId,
       });
       const snapshot = await this.waitForUpstreamTaskTerminal({
-        aiEngineBaseUrl,
+        aiEngineBaseUrl: handle.aiEngineBaseUrl,
         upstreamTaskId: handle.task_id,
         timeoutS: resolvedTimeoutS,
         taskId,
         gameId,
       });
+
+      if (taskId) {
+        const localTask = await this.prisma.generationTask.findUnique({
+          where: { id: taskId },
+          select: { status: true },
+        });
+        if (localTask && this.isFinalTaskStatus(localTask.status)) {
+          return;
+        }
+      }
 
       if (snapshot.status === 'canceled') {
         throw new TaskAbortedError(snapshot.error?.message || 'Upstream task was canceled');
@@ -2969,6 +3642,26 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
+      if (taskId && this.isUpstreamWaitTimeoutError(error)) {
+        const recovered = await this.recoverTaskFromStoredTerminalResponse({
+          task: {
+            id: taskId,
+            gameId,
+            userId,
+            taskType: GenerationTaskType.pipeline_run,
+            metadata: { description },
+          },
+        }).catch((recoveryError) => {
+          this.logger.warn(
+            `Failed to recover timed-out pipeline task ${taskId} from stored artifacts: ${this.extractErrorMessage(recoveryError)}`,
+          );
+          return null;
+        });
+        if (recovered) {
+          return;
+        }
+      }
+
       await this.failPipelineTask({
         gameId,
         userId,
@@ -2992,7 +3685,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   ): Promise<void> {
     try {
       const resolvedTimeoutS = this.resolvePipelineTimeout(timeoutS);
-      const aiEngineBaseUrl = await this.resolveAiEngineEndpoint(executionRegion);
+      const aiEngineBaseUrls = await this.resolveAiEngineEndpointCandidates(executionRegion);
       const resolvedRegion = this.resolveExecutionRegion(executionRegion);
       const pipelineVersion = options.pipelineVersion === 'v1' ? 'v1' : 'v2';
       const runtimeProfileHint = this.inferRuntimeProfileHint(options.game?.gameType, feedback);
@@ -3007,7 +3700,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       }
 
       const handle = await this.requestUpstreamAsyncTask({
-        aiEngineBaseUrl,
+        aiEngineBaseUrls,
         endpoint: pipelineVersion === 'v2'
           ? '/api/v1/ai/pipeline/v2/iterate/async'
           : '/api/v1/ai/pipeline/iterate/async',
@@ -3022,6 +3715,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
             timeoutS: resolvedTimeoutS,
             taskId,
             game: options.game,
+            sourceSpec: options.sourceSpec,
+            sourceBundleContext: options.sourceBundleContext,
             promptBundleSnapshot: promptBundleSnapshot!,
             runtimeContract: runtimeContract!,
           })
@@ -3040,12 +3735,22 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         gameId,
       });
       const snapshot = await this.waitForUpstreamTaskTerminal({
-        aiEngineBaseUrl,
+        aiEngineBaseUrl: handle.aiEngineBaseUrl,
         upstreamTaskId: handle.task_id,
         timeoutS: resolvedTimeoutS,
         taskId,
         gameId,
       });
+
+      if (taskId) {
+        const localTask = await this.prisma.generationTask.findUnique({
+          where: { id: taskId },
+          select: { status: true },
+        });
+        if (localTask && this.isFinalTaskStatus(localTask.status)) {
+          return;
+        }
+      }
 
       if (snapshot.status === 'canceled') {
         throw new TaskAbortedError(snapshot.error?.message || 'Upstream task was canceled');
@@ -3089,6 +3794,31 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       if (error instanceof TaskAbortedError) {
         this.logger.warn(`Iteration result discarded for task ${taskId || 'n/a'}: ${error.message}`);
         return;
+      }
+
+      if (taskId && this.isUpstreamWaitTimeoutError(error)) {
+        const recovered = await this.recoverTaskFromStoredTerminalResponse({
+          task: {
+            id: taskId,
+            gameId,
+            userId,
+            taskType: GenerationTaskType.pipeline_iterate,
+            version: nextVersion,
+            metadata: {
+              feedback,
+              conversation: conversationHistory,
+              baseStatus: options.game?.status || null,
+            },
+          },
+        }).catch((recoveryError) => {
+          this.logger.warn(
+            `Failed to recover timed-out iteration task ${taskId} from stored artifacts: ${this.extractErrorMessage(recoveryError)}`,
+          );
+          return null;
+        });
+        if (recovered) {
+          return;
+        }
       }
 
       await this.failIterationTask({
@@ -3803,6 +4533,15 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         const feedback = String(bundleVersion.metadata?.feedback || '').trim();
         return feedback ? [{ role: 'user', content: feedback }] : [];
       });
+      const sourceSpec = this.extractBundleGameSpec([
+        ...bundleHistory,
+        ...(bundle ? [bundle] : []),
+      ]);
+      const sourceBundleContext = this.buildIterationSourceBundleContext({
+        game,
+        latestBundle: bundle,
+        bundleHistory,
+      });
 
       const latestTask = await Promise.resolve(this.generationTaskService.getLatestTaskForGame(id, userId))
         .catch(() => null);
@@ -3887,6 +4626,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
             promptBundleSnapshot,
             runtimeContract,
             game,
+            sourceSpec,
+            sourceBundleContext,
           },
         ).catch((error) => {
           this.logger.error(

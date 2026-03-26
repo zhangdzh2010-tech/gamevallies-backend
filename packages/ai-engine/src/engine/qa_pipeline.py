@@ -28,8 +28,10 @@ except ImportError:  # pragma: no cover - optional dependency during local editi
 from ..api.models import GameRuntimeContract, GameSpec, QACheckError, QACheckResponse, QAResult
 from ..config.settings import settings
 from ..config.timeout_store import get_int as get_timeout_int
-from ..services.llm_client import LLMClient
+from ..services.llm_client import LLMClient, LLMResponseTruncatedError
 from .prompt_store import require_prompt
+from .restart_entry import has_restart_entry
+from .terminal_state import has_terminal_state_transition
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +128,11 @@ class QAPipeline:
     # Public: single check
     # ------------------------------------------------------------------
 
-    def check(self, html_code: str) -> QACheckResponse:
+    def check(
+        self,
+        html_code: str,
+        runtime_contract: Optional[GameRuntimeContract] = None,
+    ) -> QACheckResponse:
         errors: List[QACheckError] = []
         warnings: List[QACheckError] = []
         summary: dict = {}
@@ -144,7 +150,10 @@ class QAPipeline:
         errors.extend(l3_errors)
         warnings.extend(l3_warnings)
 
-        l4_errors, l4_warnings = self._check_l4_playability(html_code)
+        l4_errors, l4_warnings = self._check_l4_playability(
+            html_code,
+            runtime_contract=runtime_contract,
+        )
         summary["L4_playability"] = len(l4_errors) == 0
         errors.extend(l4_errors)
         warnings.extend(l4_warnings)
@@ -218,6 +227,22 @@ class QAPipeline:
 
         return False
 
+    def _extract_canvas_handles(self, code: str) -> set[str]:
+        handles = {"canvas"}
+        for match in re.finditer(
+            r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*document\.(?:getElementById|querySelector)\s*\(\s*['\"][^'\"]*(?:gameCanvas|canvas)[^'\"]*['\"]\s*\)",
+            code,
+            re.IGNORECASE,
+        ):
+            handles.add(match.group(1))
+        return handles
+
+    def _has_canvas_dimensions_set(self, code: str) -> bool:
+        for handle in self._extract_canvas_handles(code):
+            if re.search(rf"\b{re.escape(handle)}\.(width|height)\s*=", code):
+                return True
+        return False
+
     @staticmethod
     def _has_width_only_font_scaling(code: str) -> bool:
         if not re.search(r"\bscaleX\b", code) or not re.search(r"\bscaleY\b", code):
@@ -257,6 +282,31 @@ class QAPipeline:
         buffer = 1024 if prefer_fast else 2048
         ceiling = 6144 if prefer_fast else 8192
         floor = 2048 if prefer_fast else 3072
+        return min(ceiling, max(floor, approx_tokens + buffer))
+
+    @staticmethod
+    def _errors_look_like_truncation(errors: List[QACheckError]) -> bool:
+        markers = (
+            "unexpected end of input",
+            "html appears truncated",
+            "unbalanced <script>",
+            "unbalanced <html>",
+            "unbalanced <body>",
+            "unbalanced <head>",
+            "missing required html tag",
+        )
+        for error in errors:
+            message = re.sub(r"\s+", " ", (error.message or "").strip().lower())
+            if any(marker in message for marker in markers):
+                return True
+        return False
+
+    @staticmethod
+    def _estimate_syntax_repair_max_tokens(code: str, *, truncation_risk: bool) -> int:
+        approx_tokens = max(2048, len((code or "").encode("utf-8")) // 3)
+        buffer = 4096 if truncation_risk else 3072
+        ceiling = 12288 if truncation_risk else 10240
+        floor = 6144 if truncation_risk else 5120
         return min(ceiling, max(floor, approx_tokens + buffer))
 
     def _extract_input_handlers(self, code: str) -> Dict[str, List[str]]:
@@ -309,7 +359,7 @@ class QAPipeline:
                     instructions,
                     "prompt.qa_instruction_visible_feedback",
                 )
-            elif "game-over state never set to true" in message:
+            elif "game-over state never set to true" in message or "terminal or completion state is never set" in message:
                 QAPipeline._append_instruction_prompt(
                     instructions,
                     "prompt.qa_instruction_terminal_state",
@@ -400,13 +450,18 @@ class QAPipeline:
         required_states = ", ".join(runtime_contract.state.required_states) or "boot, ready, playing, game_over"
         input_modes = ", ".join(runtime_contract.input.required_modes) or "touch, pointer"
         forbidden_apis = ", ".join(runtime_contract.safety.forbidden_apis) or "eval, Function, import, require"
-        return "\n" + require_prompt("prompt.qa_runtime_contract_block").format(
+        terminal_state_aliases = ", ".join(runtime_contract.gameplay.terminal_state_aliases or []) or "game_over"
+        block = require_prompt("prompt.qa_runtime_contract_block").format(
             contract_version=runtime_contract.version,
             runtime_profile=runtime_contract.runtime_profile,
             required_states=required_states,
             input_modes=input_modes,
             forbidden_apis=forbidden_apis,
+            terminal_state_aliases=terminal_state_aliases,
         )
+        if "terminal/completion state aliases" not in block.lower():
+            block += f"\n- Accepted terminal/completion state aliases: {terminal_state_aliases}"
+        return "\n" + block
 
     @staticmethod
     def _resolved_bundle_prompt(
@@ -564,6 +619,7 @@ class QAPipeline:
                     "no user input handlers",
                     "no registered user input handlers",
                     "game-over state never set to true",
+                    "terminal or completion state is never set",
                     "localstorage",
                     "sessionstorage",
                     "blank screen",
@@ -597,7 +653,7 @@ class QAPipeline:
         previous_code_hash = self._code_hash(code)
 
         for attempt in range(max_retries + 1):
-            result = self.check(code)
+            result = self.check(code, runtime_contract=runtime_contract)
             if result.passed:
                 logger.info(f"QA passed on attempt {attempt}")
                 return QAResult(success=True, code=code, retries=repair_attempts)
@@ -650,7 +706,7 @@ class QAPipeline:
             previous_code_hash = repaired_hash
             previous_error_signature = current_signature
 
-        final = self.check(code)
+        final = self.check(code, runtime_contract=runtime_contract)
         return QAResult(
             success=final.passed,
             code=code,
@@ -674,6 +730,7 @@ class QAPipeline:
         if not self._client.is_enabled() or not errors:
             return repaired
 
+        force_full = force_full or self._should_force_full_repair(errors)
         repair_family, scoped_errors = self._select_repair_scope(errors, force_full=force_full)
         repaired = self._apply_family_deterministic_repairs(
             repaired,
@@ -687,6 +744,14 @@ class QAPipeline:
             repaired,
             prefer_fast=prefer_fast,
         )
+        if repair_family == "syntax_structural":
+            effective_max_tokens = max(
+                effective_max_tokens,
+                self._estimate_syntax_repair_max_tokens(
+                    repaired,
+                    truncation_risk=self._errors_look_like_truncation(scoped_errors),
+                ),
+            )
 
         llm_fixed = await self._fix_with_llm(
             repaired,
@@ -701,7 +766,58 @@ class QAPipeline:
             repair_family=repair_family,
         )
         llm_repaired = self._apply_deterministic_repairs(llm_fixed)
+        if repair_family == "syntax_structural":
+            llm_syntax_errors = self._check_l1_syntax(llm_repaired)
+            if self._has_syntax_structural_errors(llm_syntax_errors):
+                logger.warning(
+                    "Syntax repair candidate still has %s L1 syntax errors; attempting simplified rewrite",
+                    len(llm_syntax_errors),
+                )
+                simplified_candidate = await self._rewrite_with_simplified_budget(
+                    llm_repaired,
+                    llm_syntax_errors,
+                    game_spec,
+                    runtime_contract,
+                )
+                simplified_candidate = self._apply_deterministic_repairs(simplified_candidate)
+                simplified_errors = self._check_l1_syntax(simplified_candidate)
+                if (
+                    not self._introduces_structural_regression(repaired, simplified_candidate)
+                    and len(simplified_errors) < len(llm_syntax_errors)
+                ):
+                    llm_repaired = simplified_candidate
+                else:
+                    logger.warning("Simplified syntax rewrite did not improve structural validity; attempting spec-driven rebuild")
+                    rebuilt_candidate = await self._rebuild_from_spec_for_syntax_recovery(
+                        code=repaired,
+                        errors=llm_syntax_errors,
+                        game_spec=game_spec,
+                        runtime_contract=runtime_contract,
+                    )
+                    if rebuilt_candidate:
+                        rebuilt_candidate = self._apply_deterministic_repairs(rebuilt_candidate)
+                        rebuilt_errors = self._check_l1_syntax(rebuilt_candidate)
+                        if not self._has_syntax_structural_errors(rebuilt_errors):
+                            return rebuilt_candidate
+                        if len(rebuilt_errors) < len(llm_syntax_errors):
+                            llm_repaired = rebuilt_candidate
+                        else:
+                            return repaired
+                    else:
+                        return repaired
         if self._introduces_structural_regression(repaired, llm_repaired):
+            if repair_family == "syntax_structural":
+                rebuilt_candidate = await self._rebuild_from_spec_for_syntax_recovery(
+                    code=repaired,
+                    errors=self._check_l1_syntax(llm_repaired) or scoped_errors,
+                    game_spec=game_spec,
+                    runtime_contract=runtime_contract,
+                )
+                if rebuilt_candidate:
+                    rebuilt_candidate = self._apply_deterministic_repairs(rebuilt_candidate)
+                    rebuilt_errors = self._check_l1_syntax(rebuilt_candidate)
+                    if not self._has_syntax_structural_errors(rebuilt_errors):
+                        return rebuilt_candidate
             logger.warning(
                 "QA repair candidate rejected because it introduced structural regression; keeping previous stable candidate"
             )
@@ -777,8 +893,12 @@ class QAPipeline:
                 severity="error",
             ))
 
+        script_matches = list(re.finditer(r"<script\b[^>]*>([\s\S]*?)</script>", trimmed, re.IGNORECASE))
+        if script_matches and esprima is None:
+            logger.warning("esprima is unavailable; skipping JavaScript syntax parsing in L1 QA")
+
         if esprima is not None:
-            for match in re.finditer(r"<script\b[^>]*>([\s\S]*?)</script>", trimmed, re.IGNORECASE):
+            for match in script_matches:
                 script_content = match.group(1).strip()
                 if not script_content:
                     continue
@@ -963,7 +1083,7 @@ class QAPipeline:
             ))
 
         # Canvas must have width/height set (not just declared)
-        if not re.search(r"canvas\.(width|height)\s*=", code):
+        if not self._has_canvas_dimensions_set(code):
             errors.append(QACheckError(
                 type="L3_startup",
                 message="Canvas width/height never set – game renders at 0×0",
@@ -1000,14 +1120,27 @@ class QAPipeline:
     # L4: Playability – state-machine validation (P0 improved version)
     # ------------------------------------------------------------------
 
-    def _check_l4_playability(self, code: str) -> Tuple[List[QACheckError], List[QACheckError]]:
+    def _check_l4_playability(
+        self,
+        code: str,
+        runtime_contract: Optional[GameRuntimeContract] = None,
+    ) -> Tuple[List[QACheckError], List[QACheckError]]:
         errors, warnings = [], []
 
         # ── game-over state: must be ASSIGNED true, not just declared ──
-        gameover_set = bool(re.search(
-            r"(gameOver|game[._]over|isOver|game_over|isGameOver|gameEnded|hasEnded|isEnded|playerDead|isDead|dead)\s*=\s*true",
-            code, re.IGNORECASE,
-        ))
+        terminal_state_required = (
+            runtime_contract.gameplay.requires_terminal_state
+            if runtime_contract
+            else True
+        )
+        gameover_set = (
+            not terminal_state_required
+            or has_terminal_state_transition(code, runtime_contract)
+            or bool(re.search(
+                r"(gameOver|game[._]over|isOver|game_over|isGameOver|gameEnded|hasEnded|isEnded|playerDead|isDead|dead)\s*=\s*true",
+                code, re.IGNORECASE,
+            ))
+        )
         # Also accept patterns like: state = 'gameover', state = states.OVER
         gameover_state_change = bool(re.search(
             r"(state|gameState|currentState|status|gameStatus)\s*=\s*['\"]?(gameover|game_over|over|ended|lost|lose|failed|dead)['\"]?",
@@ -1024,7 +1157,7 @@ class QAPipeline:
         if not gameover_set and not gameover_state_change and not gameover_state_transition and not gameover_state_enum_change:
             errors.append(QACheckError(
                 type="L4_playability",
-                message="Game-over state never set to true – game cannot end",
+                message="Required terminal or completion state is never set – game cannot end or complete",
                 severity="error",
             ))
 
@@ -1038,7 +1171,8 @@ class QAPipeline:
             r"(restart|reset|newGame)\s*[=:]\s*(function|\(|\(\))",
             code, re.IGNORECASE,
         ))
-        if not has_restart:
+        has_restart = has_restart or has_restart_entry(code)
+        if (runtime_contract.gameplay.requires_restart_entry if runtime_contract else True) and not has_restart:
             warnings.append(QACheckError(
                 type="L4_playability",
                 message="No restart/reset function detected – player cannot retry",
@@ -1050,7 +1184,7 @@ class QAPipeline:
             r"score\s*[\+\-]=|score\s*\+\+|\bscore\b\s*=\s*\bscore\b\s*\+",
             code, re.IGNORECASE,
         ))
-        if not has_score_increment:
+        if (runtime_contract.gameplay.requires_scoring if runtime_contract else True) and not has_score_increment:
             warnings.append(QACheckError(
                 type="L4_playability",
                 message="Score variable exists but is never incremented",
@@ -1071,7 +1205,7 @@ class QAPipeline:
                 message="No user input handlers – game is not interactive",
                 severity="error",
             ))
-        if not has_touch and not has_pointer and not has_sensor:
+        if any(mode in {"touch", "pointer"} for mode in (runtime_contract.input.required_modes if runtime_contract else ["touch", "pointer"])) and not has_touch and not has_pointer and not has_sensor:
             warnings.append(QACheckError(
                 type="L4_playability",
                 message="No touch event handlers – game may not work on mobile",
@@ -1177,6 +1311,234 @@ class QAPipeline:
     # LLM auto-fix
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _describe_ui_language(game_spec: Optional[GameSpec]) -> str:
+        normalized = (game_spec.ui_language if game_spec else "en-US") or "en-US"
+        if normalized == "zh-CN":
+            return "zh-CN (Simplified Chinese)"
+        return f"{normalized} (English)" if normalized == "en-US" else normalized
+
+    @classmethod
+    def _build_ui_language_instruction(cls, game_spec: Optional[GameSpec]) -> str:
+        if not game_spec:
+            return ""
+        return (
+            "UI LANGUAGE (NON-NEGOTIABLE):\n"
+            f"- Visible UI language: {cls._describe_ui_language(game_spec)}\n"
+            "- Keep all player-visible text in this language, including HUD labels, buttons, overlays, tutorials, and win/lose copy.\n"
+            "- Keep code identifiers and internal keys in English.\n"
+            "- Do not rewrite visible UI copy into English unless the visible UI language itself is English."
+        )
+
+    @staticmethod
+    def _build_compact_spec_summary(game_spec: GameSpec) -> str:
+        mechanics = ", ".join(
+            mechanic.type or ""
+            for mechanic in (game_spec.core_mechanics or [])
+            if (mechanic.type or "").strip()
+        ) or game_spec.game_type
+        entities = ", ".join(
+            f"{entity.role}:{entity.name}"
+            for entity in (game_spec.entities or [])[:6]
+            if (entity.role or "").strip() and (entity.name or "").strip()
+        ) or "player, obstacle, collectible"
+        special_rules = "; ".join(
+            rule.strip()
+            for rule in (game_spec.special_rules or [])
+            if (rule or "").strip()
+        ) or "none"
+        return (
+            f"Game type: {game_spec.game_type}\n"
+            f"Intent summary: {game_spec.intent_summary or game_spec.source_description or 'minimal mobile game'}\n"
+            f"Core mechanics: {mechanics}\n"
+            f"Theme: {game_spec.visual_style.theme}\n"
+            f"Art style: {game_spec.visual_style.art_style}\n"
+            f"Entities: {entities}\n"
+            f"Special rules: {special_rules}\n"
+            f"Original request: {game_spec.source_description or game_spec.intent_summary or '(empty)'}"
+        )
+
+    @staticmethod
+    def _has_syntax_structural_errors(errors: List[QACheckError]) -> bool:
+        return any((error.type or "").lower().startswith("l1_") for error in errors)
+
+    async def _rebuild_from_spec_for_syntax_recovery(
+        self,
+        *,
+        code: str,
+        errors: List[QACheckError],
+        game_spec: Optional[GameSpec],
+        runtime_contract: Optional[GameRuntimeContract],
+    ) -> Optional[str]:
+        if not game_spec:
+            return None
+
+        from .code_generator import CodeGenerator
+
+        error_list = "\n".join(f"  - [{e.type}] {e.message}" for e in errors)
+        implementation_budget = CodeGenerator._build_implementation_budget_block(
+            game_spec,
+            game_spec.source_description or game_spec.intent_summary,
+            fallback_game_type="puzzle",
+        )
+        prompt_parts = [
+            self._build_ui_language_instruction(game_spec),
+            (
+                "MINIMAL SPEC REBUILD (NON-NEGOTIABLE):\n"
+                "- The previous candidate failed syntax validation repeatedly and must NOT be edited in place.\n"
+                "- Rebuild the game from scratch using the spec and runtime contract below.\n"
+                "- Return the smallest complete mobile game that satisfies the mechanic and runtime contract.\n"
+                "- Use one canvas, one primary state object, one requestAnimationFrame loop, and at most one overlay screen.\n"
+                "- Keep JavaScript compact, balanced, and syntactically complete.\n"
+                "- Prefer 3-5 short prompts/levels max for classroom or knowledge-check requests.\n"
+                "- Avoid long lesson-plan text, worksheets, scene managers, or multi-screen flows.\n"
+                "- Return ONLY one complete HTML document that ends with </html>."
+            ),
+            implementation_budget,
+            self._build_runtime_contract_block(runtime_contract),
+            self._build_compact_spec_summary(game_spec),
+            "Observed syntax/structural failures:",
+            error_list,
+        ]
+        prompt = "\n\n".join(part for part in prompt_parts if part)
+        try:
+            request_timeout_s = get_timeout_int(
+                "timeout.ai_engine.qa_repair_s",
+                180,
+                min_value=30,
+            )
+            max_tokens = max(
+                4096,
+                min(
+                    8192,
+                    self._estimate_syntax_repair_max_tokens(
+                        code,
+                        truncation_risk=self._errors_look_like_truncation(errors),
+                    ),
+                ),
+            )
+            return await self._complete_repair_prompt_with_retry(
+                prompt=prompt,
+                code=code,
+                step_key="qa_fix.syntax_rebuild",
+                request_timeout_s=request_timeout_s,
+                max_tokens=max_tokens,
+                prefer_fast=False,
+                repair_family="syntax_structural",
+            )
+        except Exception as exc:
+            logger.error("Spec-driven syntax rebuild failed: %s", exc)
+            return None
+
+    async def _rewrite_with_simplified_budget(
+        self,
+        code: str,
+        errors: List[QACheckError],
+        game_spec: Optional[GameSpec],
+        runtime_contract: Optional[GameRuntimeContract],
+    ) -> str:
+        error_list = "\n".join(f"  - [{e.type}] {e.message}" for e in errors)
+        prompt_parts = [
+            self._build_ui_language_instruction(game_spec),
+            (
+                "SIMPLIFIED STRUCTURAL REWRITE (NON-NEGOTIABLE):\n"
+                "- The previous candidate still has JavaScript or structural syntax errors.\n"
+                "- Rewrite the game into the smallest complete implementation that satisfies the listed issues and runtime contract.\n"
+                "- Use one canvas, one primary state object, one requestAnimationFrame loop, and at most one overlay screen.\n"
+                "- Remove optional subsystems, worksheets, lesson-plan text, scene managers, or multi-page flows before touching the core loop.\n"
+                "- Keep the original core mechanic and visible UI language, but simplify supporting systems aggressively.\n"
+                "- Output must parse as plain browser JavaScript with balanced blocks and complete statements.\n"
+                "- Return ONLY one complete HTML document."
+            ),
+            self._build_runtime_contract_block(runtime_contract),
+            f"Game type: {game_spec.game_type if game_spec else 'unknown'}",
+            "Issues:",
+            error_list,
+            "Current code:",
+            code,
+        ]
+        prompt = "\n\n".join(part for part in prompt_parts if part)
+        try:
+            request_timeout_s = get_timeout_int(
+                "timeout.ai_engine.qa_repair_s",
+                180,
+                min_value=30,
+            )
+            max_tokens = max(
+                6144,
+                self._estimate_syntax_repair_max_tokens(
+                    code,
+                    truncation_risk=self._errors_look_like_truncation(errors),
+                ),
+            )
+            return await self._complete_repair_prompt_with_retry(
+                prompt=prompt,
+                code=code,
+                step_key="qa_fix.syntax_structural",
+                request_timeout_s=request_timeout_s,
+                max_tokens=max_tokens,
+                prefer_fast=False,
+                repair_family="syntax_structural",
+            )
+        except Exception as exc:
+            logger.error("Simplified syntax rewrite failed: %s", exc)
+            return code
+
+    async def _complete_repair_prompt_with_retry(
+        self,
+        *,
+        prompt: str,
+        code: str,
+        step_key: str,
+        request_timeout_s: int,
+        max_tokens: int,
+        prefer_fast: bool,
+        repair_family: str,
+    ) -> str:
+        from .code_generator import _extract_html
+
+        allow_provider_fallback = bool(settings.LLM_PROVIDER_FAILOVER_ENABLED)
+        try:
+            text = await self._client.complete(
+                max_tokens=max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+                step_key=step_key,
+                stage="qa_checking",
+                prefer_fast=prefer_fast,
+                request_timeout_s=request_timeout_s,
+                overall_timeout_s=request_timeout_s,
+                allow_provider_fallback=allow_provider_fallback,
+            )
+            return _extract_html(text)
+        except LLMResponseTruncatedError as exc:
+            if repair_family != "syntax_structural":
+                raise
+            retry_max_tokens = max(
+                max_tokens + 2048,
+                self._estimate_syntax_repair_max_tokens(code, truncation_risk=True),
+            )
+            retry_max_tokens = min(12288, retry_max_tokens)
+            if retry_max_tokens <= max_tokens:
+                raise
+            logger.warning(
+                "LLM %s response was truncated; retrying syntax repair with larger budget (%s -> %s): %s",
+                step_key,
+                max_tokens,
+                retry_max_tokens,
+                exc,
+            )
+            text = await self._client.complete(
+                max_tokens=retry_max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+                step_key=step_key,
+                stage="qa_checking",
+                prefer_fast=prefer_fast,
+                request_timeout_s=request_timeout_s,
+                overall_timeout_s=request_timeout_s,
+                allow_provider_fallback=allow_provider_fallback,
+            )
+            return _extract_html(text)
+
     async def _fix_with_llm(
         self,
         code: str,
@@ -1216,24 +1578,24 @@ class QAPipeline:
             raise RuntimeError(
                 f"QA fix prompt template is invalid for {prompt_key}: {exc}"
             ) from exc
+        ui_language_instruction = self._build_ui_language_instruction(game_spec)
+        if ui_language_instruction:
+            prompt = "\n\n".join([ui_language_instruction, prompt])
         try:
-            from .code_generator import _extract_html
             request_timeout_s = get_timeout_int(
                 "timeout.ai_engine.qa_fast_repair_s" if prefer_fast else "timeout.ai_engine.qa_repair_s",
                 120 if prefer_fast else 180,
                 min_value=30,
             )
-            text = await self._client.complete(
-                max_tokens=max_tokens,
-                messages=[{"role": "user", "content": prompt}],
+            return await self._complete_repair_prompt_with_retry(
+                prompt=prompt,
+                code=code,
                 step_key=f"qa_fix.{repair_family}" if repair_family and repair_family != "generic" else "qa_fix",
-                stage="qa_checking",
-                prefer_fast=prefer_fast,
                 request_timeout_s=request_timeout_s,
-                overall_timeout_s=request_timeout_s,
-                allow_provider_fallback=bool(settings.LLM_PROVIDER_FAILOVER_ENABLED),
+                max_tokens=max_tokens,
+                prefer_fast=prefer_fast,
+                repair_family=repair_family,
             )
-            return _extract_html(text)
         except Exception as e:
             logger.error(f"LLM auto-fix failed: {e}")
             return code
@@ -1251,6 +1613,15 @@ class QAPipeline:
         if repair_family == "forbidden_api":
             repaired = self._sanitize_forbidden_api_usage(repaired, errors)
         return repaired
+
+    @classmethod
+    def _should_force_full_repair(cls, errors: List[QACheckError]) -> bool:
+        if len(errors) <= 1:
+            return False
+        families = {cls._classify_error_family(error) for error in errors}
+        if "syntax_structural" in families:
+            return False
+        return len(families) >= 3
 
     def _can_short_circuit_repair(
         self,

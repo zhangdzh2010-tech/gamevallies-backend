@@ -4,7 +4,13 @@ import { InternalGenerationController } from '../src/game/internal-generation.co
 describe('InternalGenerationController', () => {
   let controller: InternalGenerationController;
   let wsGateway: { emitGenerationProgress: jest.Mock };
-  let generationTaskService: { recordProgress: jest.Mock; ingestLlmCallLog: jest.Mock; recordActivity: jest.Mock };
+  let generationTaskService: {
+    recordProgress: jest.Mock;
+    ingestLlmCallLog: jest.Mock;
+    recordActivity: jest.Mock;
+    recordTaskFailure: jest.Mock;
+  };
+  let gameService: { reconcileRelayedTaskFailure: jest.Mock };
   const previousToken = process.env.ADMIN_TOKEN;
 
   beforeEach(() => {
@@ -16,8 +22,16 @@ describe('InternalGenerationController', () => {
       recordProgress: jest.fn(),
       ingestLlmCallLog: jest.fn(),
       recordActivity: jest.fn(),
+      recordTaskFailure: jest.fn(),
     };
-    controller = new InternalGenerationController(wsGateway as any, generationTaskService as any);
+    gameService = {
+      reconcileRelayedTaskFailure: jest.fn(),
+    };
+    controller = new InternalGenerationController(
+      wsGateway as any,
+      generationTaskService as any,
+      gameService as any,
+    );
   });
 
   afterAll(() => {
@@ -34,7 +48,7 @@ describe('InternalGenerationController', () => {
       gameId: 'game-1',
       stage: 'code_generating',
       percentage: 60,
-      message: '代码生成失败，重试中（1/2）',
+      message: 'retrying code generation',
       details: {
         retry: 1,
         maxRetries: 2,
@@ -44,7 +58,7 @@ describe('InternalGenerationController', () => {
     expect(wsGateway.emitGenerationProgress).toHaveBeenCalledWith(
       'user-1',
       'game-1',
-      '代码生成失败，重试中（1/2）',
+      'retrying code generation',
       60,
       {
         retry: 1,
@@ -91,7 +105,7 @@ describe('InternalGenerationController', () => {
       gameId: 'game-1',
       stage: 'intent_parsing',
       percentage: 15,
-      message: '解析游戏意图',
+      message: 'parsing intent',
     });
 
     process.env.ADMIN_TOKEN = 'rotated-token';
@@ -102,50 +116,56 @@ describe('InternalGenerationController', () => {
         gameId: 'game-2',
         stage: 'code_generating',
         percentage: 60,
-        message: '生成游戏代码',
+        message: 'generating game code',
       }),
     ).resolves.toEqual(expect.objectContaining({
       data: expect.objectContaining({ relayed: true }),
     }));
   });
 
-  it('relays long-running task activity and preserves progress percentage when provided by the task store', async () => {
-    generationTaskService.recordActivity.mockResolvedValue({
-      progressPct: 78,
-    });
-
+  it('suppresses heartbeat task activity noise before it reaches the timeline', async () => {
     const result = await controller.relayTaskActivity('unit-test-token', {
       taskId: 'task-1',
       userId: 'user-1',
       gameId: 'game-1',
       stage: 'qa_checking',
       stepKey: 'qa_fix',
-      message: 'qa_fix 仍在调用 MiniMax Shanghai（已等待 45s）',
+      message: 'still waiting for provider response',
       details: {
         activityState: 'heartbeat',
       },
     });
 
-    expect(generationTaskService.recordActivity).toHaveBeenCalledWith(
-      expect.objectContaining({
-        taskId: 'task-1',
-        userId: 'user-1',
-        gameId: 'game-1',
-        stage: 'qa_checking',
-        stepKey: 'qa_fix',
-      }),
-    );
-    expect(wsGateway.emitGenerationProgress).toHaveBeenCalledWith(
-      'user-1',
-      'game-1',
-      'qa_fix 仍在调用 MiniMax Shanghai（已等待 45s）',
-      78,
-      {
-        activityState: 'heartbeat',
-        stage: 'qa_checking',
-        stepKey: 'qa_fix',
-      },
-    );
+    expect(generationTaskService.recordActivity).not.toHaveBeenCalled();
+    expect(wsGateway.emitGenerationProgress).not.toHaveBeenCalled();
+    expect(result).toEqual(expect.objectContaining({
+      data: expect.objectContaining({ relayed: false, suppressed: true }),
+    }));
+  });
+
+  it('reconciles game failure state when relaying task failures', async () => {
+    const result = await controller.relayTaskFailure('unit-test-token', {
+      taskId: 'task-1',
+      failedStage: 'contract_qa',
+      errorMessage: 'Contract QA failed',
+      retryCount: 2,
+      failureFamily: 'contract_qa',
+    });
+
+    expect(generationTaskService.recordTaskFailure).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'task-1',
+      failedStage: 'contract_qa',
+      errorMessage: 'Contract QA failed',
+      retryCount: 2,
+      failureFamily: 'contract_qa',
+    }));
+    expect(gameService.reconcileRelayedTaskFailure).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'task-1',
+      failedStage: 'contract_qa',
+      errorMessage: 'Contract QA failed',
+      retryCount: 2,
+      failureFamily: 'contract_qa',
+    }));
     expect(result).toEqual(expect.objectContaining({
       data: expect.objectContaining({ relayed: true }),
     }));

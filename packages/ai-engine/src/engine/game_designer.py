@@ -116,11 +116,50 @@ DEFAULT_STATE_MACHINE = {
     },
 }
 
+DEFAULT_PUZZLE_STATE_MACHINE = {
+    "states": ["boot", "ready", "playing", "level_complete"],
+    "initial": "boot",
+    "transitions": {
+        "boot": "ready",
+        "ready": "playing",
+        "playing": ["level_complete"],
+        "level_complete": "ready",
+    },
+}
+
 DEFAULT_INPUT_MAP = {
     "touchmove": "player_follow_x",
     "touchstart": "player_follow_x",
     "touchend": "player_stop",
     "click_game_over": "restart",
+}
+
+DEFAULT_PUZZLE_INPUT_MAP = {
+    "touchstart": "pick_component",
+    "touchmove": "drag_component",
+    "touchend": "drop_component",
+    "tap_hint": "show_hint",
+    "tap_restart": "restart_level",
+}
+
+UI_LABELS_BY_LANGUAGE = {
+    "en-US": {
+        "score": "Score",
+        "lives": "Lives",
+        "level": "Level",
+        "objective": "Objective",
+        "ready": "Tap to Start",
+        "game_over": "Game Over",
+        "completed": "Level Complete",
+        "restart": "Restart",
+    },
+    "zh-CN": {
+        "score": "得分",
+        "lives": "生命",
+        "ready": "点击开始",
+        "game_over": "游戏结束",
+        "restart": "重新开始",
+    },
 }
 
 
@@ -132,9 +171,9 @@ class GameDesigner:
         canvas = self._build_canvas(spec)
         numerics = self._derive_numerics(spec)
         collision = self._build_collision(spec)
-        ui_layout = self._build_ui_layout(canvas)
+        ui_layout = self._build_ui_layout(spec, canvas)
         input_map = self._build_input_map(spec)
-        state_machine = DEFAULT_STATE_MACHINE.copy()
+        state_machine = self._build_state_machine(spec)
 
         return GDD(
             canvas=canvas,
@@ -229,14 +268,81 @@ class GameDesigner:
     # UI layout
     # ------------------------------------------------------------------
 
-    def _build_ui_layout(self, canvas: CanvasConfig) -> Dict[str, Any]:
+    def _build_ui_layout(self, spec: GameSpec, canvas: CanvasConfig) -> Dict[str, Any]:
+        labels = UI_LABELS_BY_LANGUAGE.get(spec.ui_language, UI_LABELS_BY_LANGUAGE["en-US"])
+        if spec.game_type == "puzzle":
+            return {
+                "labels": labels,
+                "score": {
+                    "x": 16,
+                    "y": 32,
+                    "font": "bold 16px Arial",
+                    "align": "left",
+                    "label": labels.get("objective", labels["score"]),
+                },
+                "lives": {
+                    "x": canvas.width - 16,
+                    "y": 32,
+                    "font": "bold 16px Arial",
+                    "align": "right",
+                    "label": labels.get("level", labels["lives"]),
+                },
+                "game_over_overlay": {
+                    "title": {
+                        "x": canvas.width // 2,
+                        "y": canvas.height // 2 - 36,
+                        "font": "bold 32px Arial",
+                        "label": labels.get("completed", labels["game_over"]),
+                    },
+                    "score": {
+                        "x": canvas.width // 2,
+                        "y": canvas.height // 2 + 14,
+                        "font": "18px Arial",
+                        "label": labels.get("objective", labels["score"]),
+                    },
+                    "restart": {
+                        "x": canvas.width // 2,
+                        "y": canvas.height // 2 + 52,
+                        "font": "16px Arial",
+                        "label": labels["restart"],
+                    },
+                },
+            }
         return {
-            "score": {"x": 16, "y": 32, "font": "bold 16px Arial", "align": "left"},
-            "lives": {"x": canvas.width - 16, "y": 32, "font": "bold 16px Arial", "align": "right"},
+            "labels": labels,
+            "score": {
+                "x": 16,
+                "y": 32,
+                "font": "bold 16px Arial",
+                "align": "left",
+                "label": labels["score"],
+            },
+            "lives": {
+                "x": canvas.width - 16,
+                "y": 32,
+                "font": "bold 16px Arial",
+                "align": "right",
+                "label": labels["lives"],
+            },
             "game_over_overlay": {
-                "title": {"x": canvas.width // 2, "y": canvas.height // 2 - 36, "font": "bold 32px Arial"},
-                "score": {"x": canvas.width // 2, "y": canvas.height // 2 + 14, "font": "18px Arial"},
-                "restart": {"x": canvas.width // 2, "y": canvas.height // 2 + 52, "font": "16px Arial"},
+                "title": {
+                    "x": canvas.width // 2,
+                    "y": canvas.height // 2 - 36,
+                    "font": "bold 32px Arial",
+                    "label": labels["game_over"],
+                },
+                "score": {
+                    "x": canvas.width // 2,
+                    "y": canvas.height // 2 + 14,
+                    "font": "18px Arial",
+                    "label": labels["score"],
+                },
+                "restart": {
+                    "x": canvas.width // 2,
+                    "y": canvas.height // 2 + 52,
+                    "font": "16px Arial",
+                    "label": labels["restart"],
+                },
             },
         }
 
@@ -254,9 +360,17 @@ class GameDesigner:
                 "touchstart_right": "player_jump",
                 "click_game_over": "restart",
             }
-        elif spec.game_type in ("puzzle", "rhythm"):
+        elif spec.game_type == "puzzle":
+            base = DEFAULT_PUZZLE_INPUT_MAP.copy()
+        elif spec.game_type == "rhythm":
             base = {
                 "touchstart": "tap_action",
                 "click_game_over": "restart",
             }
         return base
+
+    @staticmethod
+    def _build_state_machine(spec: GameSpec) -> Dict[str, Any]:
+        if spec.game_type == "puzzle":
+            return DEFAULT_PUZZLE_STATE_MACHINE.copy()
+        return DEFAULT_STATE_MACHINE.copy()

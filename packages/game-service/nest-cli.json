@@ -8,6 +8,10 @@
       {
         "include": "admin/**/*.html",
         "watchAssets": true
+      },
+      {
+        "include": "game/**/*.html",
+        "watchAssets": true
       }
     ]
   }

@@ -12,7 +12,7 @@ Score components:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -40,6 +40,9 @@ class RuntimeQAResult:
     canvas_changed_after_input: bool = False
     dom_changed_after_input: bool = False
     unavailable_reason: Optional[str] = None
+    unavailable_kind: Optional[str] = None
+    unavailable_phase: Optional[str] = None
+    phase_metrics: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

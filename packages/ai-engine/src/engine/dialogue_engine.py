@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import logging
 import re
@@ -22,97 +23,288 @@ from ..api.models import (
     SlotState,
     VisualStyle,
 )
-from ..services.llm_client import LLMClient
+from ..services.llm_client import LLMClient, LLMResponseTruncatedError
 from .prompt_store import require_prompt
 
 logger = logging.getLogger(__name__)
 
 _sessions: Dict[str, DialogueSession] = {}
 
-GAME_TYPE_DEFAULTS: Dict[str, Dict[str, str]] = {
+LOCALIZED_GAME_TYPE_DEFAULTS: Dict[str, Dict[str, Dict[str, str]]] = {
     "dodge": {
-        "core_mechanic": "Move to avoid hazards and survive.",
-        "win_condition": "Survive as long as possible.",
-        "input_method": "touch",
+        "en-US": {
+            "core_mechanic": "Move through the arena, avoid hazards, and stay alive.",
+            "win_condition": "Survive long enough to beat your best run.",
+            "input_method": "touch",
+        },
+        "zh-CN": {
+            "core_mechanic": "在场地中移动，躲开危险并尽量坚持更久。",
+            "win_condition": "尽可能长时间存活并刷新自己的成绩。",
+            "input_method": "touch",
+        },
     },
     "platformer": {
-        "core_mechanic": "Jump across platforms and reach the goal.",
-        "win_condition": "Reach the finish point.",
-        "input_method": "tap",
+        "en-US": {
+            "core_mechanic": "Jump across gaps, use moving platforms, and reach the end safely.",
+            "win_condition": "Reach the finish marker without losing all lives.",
+            "input_method": "tap",
+        },
+        "zh-CN": {
+            "core_mechanic": "跨越空隙、利用平台移动，并安全抵达终点。",
+            "win_condition": "在生命耗尽前抵达终点标记。",
+            "input_method": "tap",
+        },
     },
     "runner": {
-        "core_mechanic": "Run continuously and dodge obstacles.",
-        "win_condition": "Travel as far as possible.",
-        "input_method": "tap",
+        "en-US": {
+            "core_mechanic": "Keep running, switch lanes or dodge obstacles, and maintain momentum.",
+            "win_condition": "Run as far as possible while collecting bonuses.",
+            "input_method": "tap",
+        },
+        "zh-CN": {
+            "core_mechanic": "持续前进，切换路线或躲开障碍，并保持节奏。",
+            "win_condition": "尽可能跑得更远，同时收集加成道具。",
+            "input_method": "tap",
+        },
     },
     "shooter": {
-        "core_mechanic": "Aim and defeat enemies.",
-        "win_condition": "Defeat all enemies or reach target score.",
-        "input_method": "touch",
+        "en-US": {
+            "core_mechanic": "Aim, fire at threats, and control space under pressure.",
+            "win_condition": "Clear enough enemies or reach the target score.",
+            "input_method": "touch",
+        },
+        "zh-CN": {
+            "core_mechanic": "瞄准并攻击威胁目标，在压力中控制场面。",
+            "win_condition": "消灭足够多的敌人或达到目标分数。",
+            "input_method": "touch",
+        },
     },
     "puzzle": {
-        "core_mechanic": "Solve the puzzle through pattern matching or logic.",
-        "win_condition": "Clear the board or solve the puzzle.",
-        "input_method": "touch",
+        "en-US": {
+            "core_mechanic": "Solve the board through matching, ordering, or spatial logic.",
+            "win_condition": "Clear the board or satisfy the puzzle target.",
+            "input_method": "touch",
+        },
+        "zh-CN": {
+            "core_mechanic": "通过匹配、排序或空间逻辑来解开棋盘谜题。",
+            "win_condition": "清空棋盘或完成谜题目标。",
+            "input_method": "touch",
+        },
     },
     "rhythm": {
-        "core_mechanic": "Tap notes in time with the beat.",
-        "win_condition": "Finish the track with a passing score.",
-        "input_method": "tap",
+        "en-US": {
+            "core_mechanic": "Tap in rhythm and chain accurate hits for a combo.",
+            "win_condition": "Finish the song or section with a passing score.",
+            "input_method": "tap",
+        },
+        "zh-CN": {
+            "core_mechanic": "按节奏点击，并通过精准命中维持连击。",
+            "win_condition": "以达标分数完成当前曲段或整首曲目。",
+            "input_method": "tap",
+        },
     },
     "tower_defense": {
-        "core_mechanic": "Place defenses to stop incoming enemies.",
-        "win_condition": "Defend all waves.",
-        "input_method": "touch",
+        "en-US": {
+            "core_mechanic": "Place defenses and react to incoming waves efficiently.",
+            "win_condition": "Hold the line until every wave is cleared.",
+            "input_method": "touch",
+        },
+        "zh-CN": {
+            "core_mechanic": "摆放防御单位，并高效应对不断来袭的波次。",
+            "win_condition": "守住防线直到所有波次结束。",
+            "input_method": "touch",
+        },
     },
     "idle": {
-        "core_mechanic": "Accumulate resources and upgrade automation.",
-        "win_condition": "Reach the target progression milestone.",
-        "input_method": "tap",
+        "en-US": {
+            "core_mechanic": "Accumulate resources, automate production, and unlock upgrades.",
+            "win_condition": "Reach the target progression milestone.",
+            "input_method": "tap",
+        },
+        "zh-CN": {
+            "core_mechanic": "积累资源、自动化产出，并逐步解锁升级。",
+            "win_condition": "达成目标成长里程碑。",
+            "input_method": "tap",
+        },
     },
     "rpg": {
-        "core_mechanic": "Explore, battle, and grow the character.",
-        "win_condition": "Complete the main quest objective.",
-        "input_method": "touch",
+        "en-US": {
+            "core_mechanic": "Explore encounters, fight threats, and grow the hero.",
+            "win_condition": "Complete the main quest objective.",
+            "input_method": "touch",
+        },
+        "zh-CN": {
+            "core_mechanic": "探索遭遇、战胜敌人，并逐步强化主角。",
+            "win_condition": "完成主要任务目标。",
+            "input_method": "touch",
+        },
     },
 }
 
-ENTITY_DEFAULTS: Dict[str, List[Dict[str, Any]]] = {
+ENTITY_VARIANTS: Dict[str, List[List[Dict[str, Any]]]] = {
     "dodge": [
-        {"name": "player", "role": "player", "shape": "triangle", "color": "#6366f1"},
-        {"name": "hazard", "role": "obstacle", "shape": "square", "color": "#f43f5e"},
-        {"name": "pickup", "role": "collectible", "shape": "diamond", "color": "#22c55e"},
+        [
+            {"name": "glider", "role": "player", "shape": "triangle", "color": "#6366f1"},
+            {"name": "meteor", "role": "obstacle", "shape": "diamond", "color": "#f43f5e"},
+            {"name": "beacon", "role": "collectible", "shape": "circle", "color": "#22c55e"},
+        ],
+        [
+            {"name": "hopper", "role": "player", "shape": "circle", "color": "#0ea5e9"},
+            {"name": "vine", "role": "obstacle", "shape": "rectangle", "color": "#f97316"},
+            {"name": "seed", "role": "collectible", "shape": "diamond", "color": "#84cc16"},
+        ],
+        [
+            {"name": "skater", "role": "player", "shape": "square", "color": "#8b5cf6"},
+            {"name": "barrier", "role": "obstacle", "shape": "rectangle", "color": "#ef4444"},
+            {"name": "spark", "role": "collectible", "shape": "circle", "color": "#facc15"},
+        ],
     ],
     "platformer": [
-        {"name": "hero", "role": "player", "shape": "square", "color": "#6366f1"},
-        {"name": "platform", "role": "obstacle", "shape": "rectangle"},
-        {"name": "pickup", "role": "collectible", "shape": "circle", "color": "#22c55e"},
+        [
+            {"name": "hero", "role": "player", "shape": "square", "color": "#6366f1"},
+            {"name": "platform", "role": "obstacle", "shape": "rectangle", "color": "#475569"},
+            {"name": "pickup", "role": "collectible", "shape": "circle", "color": "#22c55e"},
+        ],
+        [
+            {"name": "climber", "role": "player", "shape": "circle", "color": "#06b6d4"},
+            {"name": "ledge", "role": "obstacle", "shape": "rectangle", "color": "#f59e0b"},
+            {"name": "badge", "role": "collectible", "shape": "diamond", "color": "#f43f5e"},
+        ],
+        [
+            {"name": "mascot", "role": "player", "shape": "triangle", "color": "#8b5cf6"},
+            {"name": "crate", "role": "obstacle", "shape": "square", "color": "#f97316"},
+            {"name": "gem", "role": "collectible", "shape": "diamond", "color": "#10b981"},
+        ],
     ],
     "runner": [
-        {"name": "runner", "role": "player", "shape": "square", "color": "#6366f1"},
-        {"name": "obstacle", "role": "obstacle", "shape": "rectangle", "color": "#f43f5e"},
-        {"name": "coin", "role": "collectible", "shape": "circle", "color": "#22c55e"},
+        [
+            {"name": "runner", "role": "player", "shape": "square", "color": "#6366f1"},
+            {"name": "obstacle", "role": "obstacle", "shape": "rectangle", "color": "#f43f5e"},
+            {"name": "coin", "role": "collectible", "shape": "circle", "color": "#22c55e"},
+        ],
+        [
+            {"name": "courier", "role": "player", "shape": "circle", "color": "#0ea5e9"},
+            {"name": "cone", "role": "obstacle", "shape": "triangle", "color": "#f97316"},
+            {"name": "ticket", "role": "collectible", "shape": "rectangle", "color": "#eab308"},
+        ],
+        [
+            {"name": "rocket", "role": "player", "shape": "diamond", "color": "#8b5cf6"},
+            {"name": "gate", "role": "obstacle", "shape": "square", "color": "#ef4444"},
+            {"name": "energy", "role": "collectible", "shape": "circle", "color": "#14b8a6"},
+        ],
     ],
     "shooter": [
-        {"name": "ship", "role": "player", "shape": "triangle", "color": "#6366f1"},
-        {"name": "enemy", "role": "enemy", "shape": "square", "color": "#f43f5e"},
-        {"name": "powerup", "role": "collectible", "shape": "diamond", "color": "#22c55e"},
+        [
+            {"name": "ship", "role": "player", "shape": "triangle", "color": "#6366f1"},
+            {"name": "enemy", "role": "enemy", "shape": "square", "color": "#f43f5e"},
+            {"name": "powerup", "role": "collectible", "shape": "diamond", "color": "#22c55e"},
+        ],
+        [
+            {"name": "ranger", "role": "player", "shape": "circle", "color": "#06b6d4"},
+            {"name": "drone", "role": "enemy", "shape": "diamond", "color": "#ef4444"},
+            {"name": "charge", "role": "collectible", "shape": "rectangle", "color": "#f59e0b"},
+        ],
+        [
+            {"name": "turret", "role": "player", "shape": "square", "color": "#8b5cf6"},
+            {"name": "phantom", "role": "enemy", "shape": "triangle", "color": "#fb7185"},
+            {"name": "shield", "role": "collectible", "shape": "circle", "color": "#10b981"},
+        ],
     ],
     "puzzle": [
-        {"name": "piece", "role": "player", "shape": "square", "color": "#6366f1"},
-        {"name": "goal", "role": "collectible", "shape": "square", "color": "#22c55e"},
+        [
+            {"name": "piece", "role": "player", "shape": "square", "color": "#6366f1"},
+            {"name": "goal", "role": "collectible", "shape": "square", "color": "#22c55e"},
+        ],
+        [
+            {"name": "tile", "role": "player", "shape": "diamond", "color": "#0ea5e9"},
+            {"name": "target", "role": "collectible", "shape": "circle", "color": "#f97316"},
+        ],
+        [
+            {"name": "node", "role": "player", "shape": "circle", "color": "#8b5cf6"},
+            {"name": "marker", "role": "collectible", "shape": "rectangle", "color": "#14b8a6"},
+        ],
     ],
     "rhythm": [
-        {"name": "note", "role": "collectible", "shape": "rectangle", "color": "#6366f1"},
-        {"name": "marker", "role": "obstacle", "shape": "rectangle", "color": "#f43f5e"},
+        [
+            {"name": "note", "role": "collectible", "shape": "rectangle", "color": "#6366f1"},
+            {"name": "marker", "role": "obstacle", "shape": "rectangle", "color": "#f43f5e"},
+        ],
+        [
+            {"name": "beat", "role": "collectible", "shape": "circle", "color": "#06b6d4"},
+            {"name": "pulse", "role": "obstacle", "shape": "diamond", "color": "#f97316"},
+        ],
+        [
+            {"name": "tone", "role": "collectible", "shape": "diamond", "color": "#8b5cf6"},
+            {"name": "bar", "role": "obstacle", "shape": "rectangle", "color": "#e11d48"},
+        ],
     ],
 }
 
-GENERIC_ENTITY_DEFAULTS: List[Dict[str, Any]] = [
-    {"name": "player", "role": "player", "shape": "circle", "color": "#6366f1"},
-    {"name": "hazard", "role": "obstacle", "shape": "square", "color": "#f43f5e"},
-    {"name": "goal", "role": "collectible", "shape": "diamond", "color": "#22c55e"},
+GENERIC_ENTITY_VARIANTS: List[List[Dict[str, Any]]] = [
+    [
+        {"name": "player", "role": "player", "shape": "circle", "color": "#6366f1"},
+        {"name": "hazard", "role": "obstacle", "shape": "square", "color": "#f43f5e"},
+        {"name": "goal", "role": "collectible", "shape": "diamond", "color": "#22c55e"},
+    ],
+    [
+        {"name": "player", "role": "player", "shape": "diamond", "color": "#0ea5e9"},
+        {"name": "hazard", "role": "obstacle", "shape": "triangle", "color": "#f97316"},
+        {"name": "goal", "role": "collectible", "shape": "circle", "color": "#eab308"},
+    ],
+    [
+        {"name": "player", "role": "player", "shape": "square", "color": "#8b5cf6"},
+        {"name": "hazard", "role": "obstacle", "shape": "rectangle", "color": "#ef4444"},
+        {"name": "goal", "role": "collectible", "shape": "circle", "color": "#14b8a6"},
+    ],
 ]
+
+THEME_STYLE_PRESETS: Dict[str, Dict[str, Any]] = {
+    "space": {"theme": "space", "palette": ["#081028", "#60a5fa", "#22c55e", "#f97316", "#f8fafc"], "background": "starfield", "art_style": "geometric", "effects": ["glow"]},
+    "zoo": {"theme": "zoo", "palette": ["#14532d", "#22c55e", "#f59e0b", "#ef4444", "#fefce8"], "background": "park", "art_style": "cartoon", "effects": []},
+    "neon": {"theme": "neon", "palette": ["#111827", "#8b5cf6", "#06b6d4", "#f43f5e", "#f8fafc"], "background": "dark_gradient", "art_style": "neon", "effects": ["glow"]},
+    "fantasy": {"theme": "fantasy", "palette": ["#312e81", "#8b5cf6", "#22c55e", "#f59e0b", "#fef3c7"], "background": "mist", "art_style": "storybook", "effects": ["sparkles"]},
+    "ocean": {"theme": "ocean", "palette": ["#0f172a", "#0ea5e9", "#14b8a6", "#facc15", "#ecfeff"], "background": "waves", "art_style": "soft_geometric", "effects": ["bubbles"]},
+    "forest": {"theme": "forest", "palette": ["#14532d", "#22c55e", "#84cc16", "#f59e0b", "#f7fee7"], "background": "canopy", "art_style": "storybook", "effects": ["leaf_trails"]},
+    "city": {"theme": "city", "palette": ["#1f2937", "#38bdf8", "#a3e635", "#fb7185", "#f9fafb"], "background": "skyline", "art_style": "flat", "effects": ["speed_lines"]},
+    "garden": {"theme": "garden", "palette": ["#365314", "#4ade80", "#f472b6", "#facc15", "#fefce8"], "background": "meadow", "art_style": "soft_geometric", "effects": ["petals"]},
+    "food": {"theme": "food", "palette": ["#7c2d12", "#fb923c", "#facc15", "#ef4444", "#fff7ed"], "background": "tabletop", "art_style": "cartoon", "effects": []},
+    "candy": {"theme": "candy", "palette": ["#831843", "#f472b6", "#38bdf8", "#facc15", "#fff1f2"], "background": "sweetscape", "art_style": "playful", "effects": ["sparkles"]},
+    "sports": {"theme": "sports", "palette": ["#0f172a", "#22c55e", "#38bdf8", "#f97316", "#f8fafc"], "background": "arena", "art_style": "bold_flat", "effects": ["streaks"]},
+    "toy": {"theme": "toy", "palette": ["#1d4ed8", "#60a5fa", "#f97316", "#ef4444", "#fefce8"], "background": "playroom", "art_style": "playful", "effects": []},
+}
+
+VISUAL_VARIANTS_BY_GAME_TYPE: Dict[str, List[Dict[str, Any]]] = {
+    "dodge": [
+        {"theme": "garden", "palette": ["#365314", "#4ade80", "#f472b6", "#facc15", "#fefce8"], "background": "meadow", "art_style": "soft_geometric", "effects": ["petals"]},
+        {"theme": "city", "palette": ["#1f2937", "#38bdf8", "#a3e635", "#fb7185", "#f9fafb"], "background": "skyline", "art_style": "flat", "effects": ["speed_lines"]},
+        {"theme": "toy", "palette": ["#1d4ed8", "#60a5fa", "#f97316", "#ef4444", "#fefce8"], "background": "playroom", "art_style": "playful", "effects": []},
+    ],
+    "runner": [
+        {"theme": "city", "palette": ["#1f2937", "#38bdf8", "#a3e635", "#fb7185", "#f9fafb"], "background": "skyline", "art_style": "flat", "effects": ["speed_lines"]},
+        {"theme": "forest", "palette": ["#14532d", "#22c55e", "#84cc16", "#f59e0b", "#f7fee7"], "background": "canopy", "art_style": "storybook", "effects": ["leaf_trails"]},
+        {"theme": "sports", "palette": ["#0f172a", "#22c55e", "#38bdf8", "#f97316", "#f8fafc"], "background": "arena", "art_style": "bold_flat", "effects": ["streaks"]},
+    ],
+    "platformer": [
+        {"theme": "fantasy", "palette": ["#312e81", "#8b5cf6", "#22c55e", "#f59e0b", "#fef3c7"], "background": "mist", "art_style": "storybook", "effects": ["sparkles"]},
+        {"theme": "garden", "palette": ["#365314", "#4ade80", "#f472b6", "#facc15", "#fefce8"], "background": "meadow", "art_style": "soft_geometric", "effects": ["petals"]},
+        {"theme": "toy", "palette": ["#1d4ed8", "#60a5fa", "#f97316", "#ef4444", "#fefce8"], "background": "playroom", "art_style": "playful", "effects": []},
+    ],
+    "shooter": [
+        {"theme": "city", "palette": ["#111827", "#8b5cf6", "#06b6d4", "#f43f5e", "#f8fafc"], "background": "night_grid", "art_style": "neon", "effects": ["glow"]},
+        {"theme": "ocean", "palette": ["#0f172a", "#0ea5e9", "#14b8a6", "#facc15", "#ecfeff"], "background": "waves", "art_style": "soft_geometric", "effects": ["bubbles"]},
+        {"theme": "fantasy", "palette": ["#312e81", "#8b5cf6", "#22c55e", "#f59e0b", "#fef3c7"], "background": "mist", "art_style": "storybook", "effects": ["sparkles"]},
+    ],
+    "puzzle": [
+        {"theme": "candy", "palette": ["#831843", "#f472b6", "#38bdf8", "#facc15", "#fff1f2"], "background": "sweetscape", "art_style": "playful", "effects": ["sparkles"]},
+        {"theme": "garden", "palette": ["#365314", "#4ade80", "#f472b6", "#facc15", "#fefce8"], "background": "meadow", "art_style": "soft_geometric", "effects": ["petals"]},
+        {"theme": "toy", "palette": ["#1d4ed8", "#60a5fa", "#f97316", "#ef4444", "#fefce8"], "background": "playroom", "art_style": "playful", "effects": []},
+    ],
+    "rhythm": [
+        {"theme": "neon", "palette": ["#111827", "#8b5cf6", "#06b6d4", "#f43f5e", "#f8fafc"], "background": "dark_gradient", "art_style": "neon", "effects": ["glow"]},
+        {"theme": "festival", "palette": ["#581c87", "#a855f7", "#06b6d4", "#f59e0b", "#fdf4ff"], "background": "stage_lights", "art_style": "bold_flat", "effects": ["pulse"]},
+        {"theme": "sports", "palette": ["#0f172a", "#22c55e", "#38bdf8", "#f97316", "#f8fafc"], "background": "arena", "art_style": "bold_flat", "effects": ["streaks"]},
+    ],
+}
 
 SLOT_LABELS = {
     "game_type": "Game Type",
@@ -250,6 +442,103 @@ NULLISH_TEXT = {
     "\u672a\u77e5",
     "\u4e0d\u786e\u5b9a",
 }
+
+SPARSE_REQUEST_MARKERS = (
+    "continue",
+    "another",
+    "more",
+    "add",
+    "increase",
+    "update",
+    "adjust",
+    "modify",
+    "tweak",
+    "improve",
+    "expand",
+    "set to",
+    "\u7ee7\u7eed",
+    "\u518d",
+    "\u65b0\u589e",
+    "\u6dfb\u52a0",
+    "\u589e\u52a0",
+    "\u6269\u5c55",
+    "\u8bbe\u7f6e",
+    "\u8c03\u6574",
+    "\u4fee\u6539",
+    "\u4f18\u5316",
+    "\u5173\u5361",
+)
+
+EDUCATIONAL_REQUEST_MARKERS = (
+    "classroom",
+    "teacher",
+    "lesson",
+    "quiz",
+    "worksheet",
+    "practice",
+    "practice question",
+    "learning game",
+    "teaching",
+    "knowledge point",
+    "study guide",
+    "\u8bfe\u5802",
+    "\u6559\u5b66",
+    "\u8001\u5e08",
+    "\u7ec3\u4e60\u9898",
+    "\u7ec3\u4e60",
+    "\u77e5\u8bc6\u70b9",
+    "\u95ee\u7b54",
+    "\u6d4b\u9a8c",
+    "\u5c0f\u6d4b",
+    "\u6559\u5177",
+    "\u5b66\u4e60\u6e38\u620f",
+    "\u6559\u5b66\u6e38\u620f",
+)
+
+CONTEXT_GAME_TYPE_RULES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+    ("puzzle", EDUCATIONAL_REQUEST_MARKERS),
+    ("tower_defense", ("tower defense", "defend", "\u5854\u9632", "\u9632\u5b88", "\u5b88\u536b")),
+    ("idle", ("idle", "incremental", "auto", "\u653e\u7f6e", "\u6302\u673a", "\u81ea\u52a8")),
+    ("rpg", ("rpg", "quest", "hero", "adventure", "\u5192\u9669", "\u89d2\u8272", "\u82f1\u96c4")),
+    ("rhythm", ("rhythm", "beat", "music", "dance", "\u8282\u594f", "\u97f3\u4e50", "\u821e")),
+    ("shooter", ("shoot", "shooter", "gun", "attack", "\u5c04\u51fb", "\u5f00\u706b", "\u653b\u51fb")),
+    ("platformer", ("jump", "platform", "climb", "\u8df3", "\u5e73\u53f0", "\u722c")),
+    ("runner", ("run", "runner", "race", "chase", "catch", "\u8dd1", "\u8ffd", "\u9017", "\u6293")),
+    ("puzzle", ("puzzle", "match", "merge", "sort", "solve", "circuit", "wire", "battery", "bulb", "switch", "connect", "drag", "assemble", "\u8c1c\u9898", "\u6d88\u9664", "\u62fc", "\u914d\u5bf9", "\u7535\u8def", "\u5bfc\u7ebf", "\u7535\u6c60", "\u706f\u6ce1", "\u5f00\u5173", "\u8fde\u63a5", "\u62d6\u62fd", "\u7ec4\u88c5")),
+    ("dodge", ("dodge", "avoid", "survive", "escape", "\u95ea", "\u8e32", "\u907f", "\u751f\u5b58", "\u9003")),
+)
+
+CONTEXT_THEME_RULES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+    ("space", ("space", "galaxy", "star", "planet", "\u592a\u7a7a", "\u5b87\u5b99", "\u661f")),
+    ("zoo", ("animal", "zoo", "pig", "cat", "dog", "panda", "\u52a8\u7269", "\u5c0f\u732a", "\u732a", "\u732b", "\u72d7", "\u718a\u732b")),
+    ("ocean", ("ocean", "sea", "water", "fish", "\u6d77", "\u6d0b", "\u6c34", "\u9c7c")),
+    ("forest", ("forest", "jungle", "tree", "\u68ee\u6797", "\u4e1b\u6797", "\u6811")),
+    ("city", ("city", "street", "car", "traffic", "\u57ce\u5e02", "\u8857", "\u6c7d\u8f66", "\u4ea4\u901a")),
+    ("food", ("food", "kitchen", "chef", "candy", "dessert", "\u98df\u7269", "\u53a8\u623f", "\u539f\u70b9", "\u7cd6", "\u751c\u54c1")),
+    ("toy", ("toy", "block", "brick", "\u73a9\u5177", "\u79ef\u6728", "\u65b9\u5757")),
+    ("fantasy", ("fantasy", "magic", "dragon", "\u5947\u5e7b", "\u9b54\u6cd5", "\u9f99")),
+)
+
+SPARSE_DEFAULT_GAME_TYPES = ("puzzle", "runner", "platformer", "dodge")
+
+
+class SlotExtractionFailure(ValueError):
+    """Raised when slot extraction cannot produce a minimally valid payload."""
+
+    def __init__(self, message: str, *, diagnostics: Dict[str, Any]) -> None:
+        super().__init__(message)
+        self.stage = "spec_build"
+        self.retry_count = 0
+        self.failure_family = "spec_build"
+        self.diagnostics = diagnostics
+        self.artifacts = [
+            {
+                "artifact_type": "spec_build_diagnostics",
+                "content_type": "application/json",
+                "payload": diagnostics,
+                "metadata": {"stage": "spec_build"},
+            }
+        ]
 
 
 def _with_slot_json_contract(prompt: str) -> str:
@@ -540,6 +829,262 @@ def _merge_slot_payloads(*payloads: Dict[str, Any]) -> Dict[str, Any]:
     return merged
 
 
+def _normalize_free_text(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip())
+
+
+def _contains_marker(text: str, marker: str) -> bool:
+    normalized_text = text.lower()
+    normalized_marker = marker.lower()
+    if re.search(r"[a-z0-9]", normalized_marker):
+        pattern = rf"(?<![a-z0-9]){re.escape(normalized_marker)}(?![a-z0-9])"
+        return re.search(pattern, normalized_text) is not None
+    return marker in text
+
+
+def _looks_like_sparse_request(text: str) -> bool:
+    normalized = _normalize_free_text(text)
+    if not normalized:
+        return True
+    if len(normalized) <= 24:
+        return True
+    return any(_contains_marker(normalized, marker) for marker in SPARSE_REQUEST_MARKERS)
+
+
+def _looks_like_educational_request(*texts: str) -> bool:
+    normalized_texts = [_normalize_free_text(text) for text in texts if _normalize_free_text(text)]
+    if not normalized_texts:
+        return False
+    combined = " ".join(normalized_texts)
+    return any(_contains_marker(combined, marker) for marker in EDUCATIONAL_REQUEST_MARKERS)
+
+
+def _build_intent_parse_input(description: str, *, title: Optional[str] = None) -> str:
+    normalized_description = _normalize_free_text(description)
+    normalized_title = _normalize_free_text(title or "")
+    if not normalized_title:
+        return normalized_description
+
+    lines = [
+        f"Game title: {normalized_title}",
+        f"User request: {normalized_description or '(empty)'}",
+    ]
+    if _looks_like_sparse_request(normalized_description):
+        lines.append(
+            "Treat short change-style requests as requirements for a full mobile game spec. "
+            "Infer the missing base loop conservatively from the title and request."
+        )
+    return "\n".join(lines)
+
+
+def _infer_game_type_from_sparse_context(
+    *texts: str,
+    preferred_game_type: Optional[str] = None,
+) -> Optional[str]:
+    normalized_texts = [_normalize_free_text(text) for text in texts if _normalize_free_text(text)]
+    combined = " ".join(normalized_texts)
+    if not combined:
+        return preferred_game_type
+
+    if _looks_like_educational_request(*normalized_texts):
+        return "puzzle"
+
+    for game_type, markers in CONTEXT_GAME_TYPE_RULES:
+        if any(_contains_marker(combined, marker) for marker in markers):
+            return game_type
+
+    if preferred_game_type:
+        return preferred_game_type
+
+    if re.search(r"(?<!\d)(\d{1,2})\s*(?:levels?|stages?)\b", combined, flags=re.IGNORECASE) or re.search(
+        r"(?<!\d)(\d{1,2})\s*(?:\u4e2a)?\u5173\u5361",
+        combined,
+    ):
+        if any(_contains_marker(combined, marker) for marker in ("run", "race", "catch", "\u8ffd", "\u6293", "\u9017")):
+            return "runner"
+        return "puzzle"
+
+    index = _stable_variant_index(*normalized_texts, count=len(SPARSE_DEFAULT_GAME_TYPES))
+    return SPARSE_DEFAULT_GAME_TYPES[index]
+
+
+def _infer_theme_from_context(*texts: str) -> Optional[str]:
+    normalized_texts = [_normalize_free_text(text) for text in texts if _normalize_free_text(text)]
+    combined = " ".join(normalized_texts)
+    if not combined:
+        return None
+
+    for theme, markers in CONTEXT_THEME_RULES:
+        if any(_contains_marker(combined, marker) for marker in markers):
+            return theme
+    return None
+
+
+def _extract_sparse_special_rules(text: str, *, ui_language: str) -> List[str]:
+    normalized = _normalize_free_text(text)
+    if not normalized:
+        return []
+
+    rules: List[str] = []
+    match = re.search(r"(?<!\d)(\d{1,2})\s*(?:levels?|stages?)\b", normalized, flags=re.IGNORECASE)
+    if not match:
+        match = re.search(r"(?<!\d)(\d{1,2})\s*(?:\u4e2a)?\u5173\u5361", normalized)
+    if match:
+        level_count = int(match.group(1))
+        if ui_language == "zh-CN":
+            rules.append(f"\u5305\u542b{level_count}\u4e2a\u5173\u5361")
+        else:
+            rules.append(f"Include {level_count} levels")
+
+    if _looks_like_sparse_request(normalized):
+        if ui_language == "zh-CN":
+            rules.append("\u4f18\u5148\u4fdd\u7559\u539f\u6709\u4e3b\u9898\u5e76\u6269\u5c55\u5185\u5bb9")
+        else:
+            rules.append("Preserve the core theme while expanding the content")
+
+    deduped: List[str] = []
+    for item in rules:
+        if item not in deduped:
+            deduped.append(item)
+    return deduped
+
+
+def _build_sparse_slot_fallback(
+    *,
+    source_text: str,
+    title: Optional[str],
+    raw_text: str,
+    repaired_text: str,
+    preferred_game_type: Optional[str],
+) -> Dict[str, Any]:
+    normalized_source = _normalize_free_text(source_text)
+    normalized_title = _normalize_free_text(title or "")
+    ui_language = _detect_ui_language(" ".join(item for item in [normalized_title, normalized_source] if item))
+    merged = _merge_slot_payloads(
+        _normalize_slot_payload(_infer_slots_from_text(raw_text)),
+        _normalize_slot_payload(_infer_slots_from_text(repaired_text)),
+        _normalize_slot_payload(_infer_slots_from_text(normalized_source)),
+        _normalize_slot_payload(_infer_slots_from_text(normalized_title)),
+    )
+
+    if not merged.get("game_type"):
+        merged["game_type"] = _infer_game_type_from_sparse_context(
+            normalized_title,
+            normalized_source,
+            raw_text,
+            repaired_text,
+            preferred_game_type=preferred_game_type,
+        )
+
+    if not merged.get("theme"):
+        merged["theme"] = _infer_theme_from_context(normalized_title, normalized_source, raw_text, repaired_text)
+
+    game_type = str(merged.get("game_type") or "").strip()
+    if not game_type:
+        return {}
+
+    defaults = _localized_game_type_defaults(game_type, ui_language)
+    merged.setdefault("core_mechanic", defaults.get("core_mechanic") or "")
+    merged.setdefault("win_condition", defaults.get("win_condition") or "")
+    merged.setdefault("input_method", defaults.get("input_method") or "touch")
+    merged.setdefault("difficulty", "progressive")
+    merged.setdefault("theme", "arcade")
+
+    special_rules = list(merged.get("special_rules") or [])
+    for item in _extract_sparse_special_rules(normalized_source, ui_language=ui_language):
+        if item not in special_rules:
+            special_rules.append(item)
+    if special_rules:
+        merged["special_rules"] = special_rules
+
+    return _normalize_slot_payload(merged)
+
+
+def _has_minimum_viable_slot_payload(slot_data: Dict[str, Any]) -> bool:
+    return bool(str(slot_data.get("game_type") or "").strip())
+
+
+def _detect_ui_language(text: str) -> str:
+    if re.search(r"[\u4e00-\u9fff]", text or ""):
+        return "zh-CN"
+    return "en-US"
+
+
+def _coerce_game_type_for_request(game_type: str, source_description: str) -> str:
+    normalized_game_type = (game_type or "").strip()
+    normalized_description = _normalize_free_text(source_description)
+    if not normalized_game_type or not normalized_description:
+        return normalized_game_type
+
+    if not _looks_like_educational_request(normalized_description):
+        return normalized_game_type
+
+    if normalized_game_type in {"runner", "lane runner", "platformer", "dodge", "shooter", "top down shooter"}:
+        return "puzzle"
+
+    return normalized_game_type
+
+
+def _stable_variant_index(*parts: str, count: int) -> int:
+    if count <= 1:
+        return 0
+    seed = "|".join((part or "").strip() for part in parts if part is not None)
+    digest = hashlib.sha256(seed.encode("utf-8")).digest()
+    return digest[0] % count
+
+
+def _localized_game_type_defaults(game_type: str, ui_language: str) -> Dict[str, str]:
+    defaults = LOCALIZED_GAME_TYPE_DEFAULTS.get(game_type, {})
+    if ui_language == "zh-CN" and "zh-CN" in defaults:
+        return defaults["zh-CN"]
+    return defaults.get("en-US", {})
+
+
+def _select_entity_variant(game_type: str, *, source_description: str, theme: str) -> List[Dict[str, Any]]:
+    variants = ENTITY_VARIANTS.get(game_type, GENERIC_ENTITY_VARIANTS)
+    index = _stable_variant_index(game_type, theme, source_description, count=len(variants))
+    return variants[index]
+
+
+def _select_visual_variant(
+    game_type: str,
+    *,
+    explicit_theme: str,
+    explicit_art_style: str,
+    source_description: str,
+) -> Dict[str, Any]:
+    normalized_theme = (explicit_theme or "").strip().lower()
+    if normalized_theme in THEME_STYLE_PRESETS:
+        preset = THEME_STYLE_PRESETS[normalized_theme]
+        return {
+            "theme": preset["theme"],
+            "palette": list(preset["palette"]),
+            "background": preset["background"],
+            "art_style": explicit_art_style or preset.get("art_style", "geometric"),
+            "effects": list(preset.get("effects", [])),
+        }
+
+    variants = VISUAL_VARIANTS_BY_GAME_TYPE.get(game_type, VISUAL_VARIANTS_BY_GAME_TYPE.get("dodge", []))
+    if not variants:
+        return {
+            "theme": normalized_theme or "arcade",
+            "palette": ["#1f2937", "#38bdf8", "#22c55e", "#f97316", "#f8fafc"],
+            "background": "gradient",
+            "art_style": explicit_art_style or "geometric",
+            "effects": [],
+        }
+
+    index = _stable_variant_index(game_type, normalized_theme, source_description, count=len(variants))
+    preset = variants[index]
+    return {
+        "theme": normalized_theme or preset["theme"],
+        "palette": list(preset["palette"]),
+        "background": preset["background"],
+        "art_style": explicit_art_style or preset.get("art_style", "geometric"),
+        "effects": list(preset.get("effects", [])),
+    }
+
+
 def _infer_slots_from_text(text: str) -> Dict[str, Any]:
     source = (text or "").strip()
     if not source:
@@ -547,9 +1092,14 @@ def _infer_slots_from_text(text: str) -> Dict[str, Any]:
 
     lowered = source.lower()
     inferred: Dict[str, Any] = {}
+    ui_language = _detect_ui_language(source)
 
     game_type_rules = (
-        ("dodge", ("躲避", "闪避", "dodg")),
+        ("puzzle", EDUCATIONAL_REQUEST_MARKERS),
+        ("tower_defense", ("塔防", "defense", "tower defense", "守塔")),
+        ("idle", ("放置", "idle", "挂机", "incremental")),
+        ("rpg", ("角色扮演", "冒险", "rpg", "quest")),
+        ("dodge", ("躲避", "闪避", "dodge", "avoid hazards")),
         ("runner", ("跑酷", "runner", "endless run", "endless runner")),
         ("platformer", ("平台", "跳跃", "platformer", "jump between")),
         ("shooter", ("射击", "枪战", "shooter", "shoot")),
@@ -557,73 +1107,7 @@ def _infer_slots_from_text(text: str) -> Dict[str, Any]:
         ("rhythm", ("节奏", "音游", "rhythm", "beat")),
     )
     for game_type, markers in game_type_rules:
-        if any(marker in source or marker in lowered for marker in markers):
-            inferred["game_type"] = game_type
-            break
-
-    input_rules = (
-        ("swipe", ("滑动", "左右移动", "swipe", "drag left and right")),
-        ("tap", ("点击", "轻点", "tap")),
-        ("drag", ("拖拽", "drag")),
-        ("hold", ("长按", "hold")),
-        ("touch", ("触摸", "touch")),
-    )
-    for input_method, markers in input_rules:
-        if any(marker in source or marker in lowered for marker in markers):
-            inferred["input_method"] = input_method
-            break
-
-    if "theme" not in inferred:
-        theme_rules = (
-            ("space", ("太空", "宇宙", "space", "cosmic")),
-            ("zoo", ("动物园", "zoo")),
-            ("neon", ("霓虹", "neon")),
-            ("fantasy", ("奇幻", "fantasy")),
-            ("ocean", ("海洋", "ocean", "underwater")),
-        )
-        for theme, markers in theme_rules:
-            if any(marker in source or marker in lowered for marker in markers):
-                inferred["theme"] = theme
-                break
-
-    game_type = inferred.get("game_type")
-    defaults = GAME_TYPE_DEFAULTS.get(str(game_type), {}) if game_type else {}
-
-    if defaults.get("core_mechanic"):
-        inferred.setdefault("core_mechanic", defaults["core_mechanic"])
-    if defaults.get("win_condition"):
-        inferred.setdefault("win_condition", defaults["win_condition"])
-    if defaults.get("input_method"):
-        inferred.setdefault("input_method", defaults["input_method"])
-
-    if "重新开始" in source or "restart" in lowered:
-        inferred.setdefault("special_rules", [])
-        inferred["special_rules"] = list(inferred["special_rules"]) + ["restart after losing"]
-    if "点击开始" in source or "tap to start" in lowered or "click to start" in lowered:
-        inferred.setdefault("special_rules", [])
-        inferred["special_rules"] = list(inferred["special_rules"]) + ["tap to start"]
-
-    return inferred
-
-
-def _infer_slots_from_text(text: str) -> Dict[str, Any]:
-    source = (text or "").strip()
-    if not source:
-        return {}
-
-    lowered = source.lower()
-    inferred: Dict[str, Any] = {}
-
-    game_type_rules = (
-        ("dodge", ("\u8e32\u907f", "\u95ea\u907f", "dodge")),
-        ("runner", ("\u8dd1\u9177", "runner", "endless run", "endless runner")),
-        ("platformer", ("\u5e73\u53f0", "\u8df3\u8dc3", "platformer", "jump between")),
-        ("shooter", ("\u5c04\u51fb", "\u67aa\u6218", "shooter", "shoot")),
-        ("puzzle", ("\u8c1c\u9898", "\u62fc\u56fe", "\u6d88\u9664", "puzzle", "match-3", "merge")),
-        ("rhythm", ("\u8282\u594f", "\u97f3\u6e38", "rhythm", "beat")),
-    )
-    for game_type, markers in game_type_rules:
-        if any(marker in source or marker in lowered for marker in markers):
+        if any(_contains_marker(source, marker) or _contains_marker(lowered, marker) for marker in markers):
             inferred["game_type"] = game_type
             break
 
@@ -635,25 +1119,32 @@ def _infer_slots_from_text(text: str) -> Dict[str, Any]:
         ("touch", ("\u89e6\u6478", "touch")),
     )
     for input_method, markers in input_rules:
-        if any(marker in source or marker in lowered for marker in markers):
+        if any(_contains_marker(source, marker) or _contains_marker(lowered, marker) for marker in markers):
             inferred["input_method"] = input_method
             break
 
     if "theme" not in inferred:
         theme_rules = (
-            ("space", ("\u592a\u7a7a", "\u5b87\u5b99", "space", "cosmic")),
-            ("zoo", ("\u52a8\u7269\u56ed", "zoo")),
-            ("neon", ("\u9713\u8679", "neon")),
-            ("fantasy", ("\u5947\u5e7b", "fantasy")),
-            ("ocean", ("\u6d77\u6d0b", "ocean", "underwater")),
+            ("space", ("太空", "宇宙", "space", "cosmic", "galaxy")),
+            ("zoo", ("动物园", "zoo", "animal")),
+            ("neon", ("霓虹", "neon", "cyber")),
+            ("fantasy", ("奇幻", "fantasy", "magic")),
+            ("ocean", ("海洋", "ocean", "underwater", "water")),
+            ("forest", ("森林", "forest", "jungle")),
+            ("city", ("城市", "city", "urban")),
+            ("garden", ("花园", "garden", "farm")),
+            ("food", ("美食", "厨房", "food", "kitchen", "chef")),
+            ("candy", ("糖果", "甜品", "candy", "dessert")),
+            ("sports", ("运动", "球场", "sports", "stadium")),
+            ("toy", ("玩具", "toy", "block")),
         )
         for theme, markers in theme_rules:
-            if any(marker in source or marker in lowered for marker in markers):
+            if any(_contains_marker(source, marker) or _contains_marker(lowered, marker) for marker in markers):
                 inferred["theme"] = theme
                 break
 
     game_type = inferred.get("game_type")
-    defaults = GAME_TYPE_DEFAULTS.get(str(game_type), {}) if game_type else {}
+    defaults = _localized_game_type_defaults(str(game_type), ui_language) if game_type else {}
 
     if defaults.get("core_mechanic"):
         inferred.setdefault("core_mechanic", defaults["core_mechanic"])
@@ -664,10 +1155,14 @@ def _infer_slots_from_text(text: str) -> Dict[str, Any]:
 
     if "\u91cd\u65b0\u5f00\u59cb" in source or "restart" in lowered:
         inferred.setdefault("special_rules", [])
-        inferred["special_rules"] = list(inferred["special_rules"]) + ["restart after losing"]
+        inferred["special_rules"] = list(inferred["special_rules"]) + [
+            "失败后可重新开始" if ui_language == "zh-CN" else "Restart after losing",
+        ]
     if "\u70b9\u51fb\u5f00\u59cb" in source or "tap to start" in lowered or "click to start" in lowered:
         inferred.setdefault("special_rules", [])
-        inferred["special_rules"] = list(inferred["special_rules"]) + ["tap to start"]
+        inferred["special_rules"] = list(inferred["special_rules"]) + [
+            "点击开始" if ui_language == "zh-CN" else "Tap to start",
+        ]
 
     return inferred
 
@@ -686,6 +1181,37 @@ class DialogueEngine:
 
     def __init__(self) -> None:
         self._client = LLMClient()
+
+    async def _complete_slot_request(
+        self,
+        *,
+        messages: List[Dict[str, str]],
+        system: str,
+        step_key: str,
+        stage: str,
+        max_tokens: int,
+    ) -> str:
+        try:
+            return await self._client.complete(
+                max_tokens=max_tokens,
+                system=system,
+                messages=messages,
+                step_key=step_key,
+                stage=stage,
+                prefer_fast=False,
+                allow_provider_fallback=True,
+            )
+        except LLMResponseTruncatedError as exc:
+            excerpt = _clean_llm_output(exc.response_excerpt or "")
+            if excerpt:
+                logger.warning(
+                    "LLM %s response was truncated (reason=%s, outputTokens=%s); attempting slot recovery from excerpt",
+                    step_key,
+                    exc.stop_reason,
+                    exc.output_tokens,
+                )
+                return excerpt
+            raise
 
     def get_or_create_session(self, session_id: str, user_id: str) -> DialogueSession:
         if session_id not in _sessions:
@@ -729,26 +1255,31 @@ class DialogueEngine:
         self,
         description: str,
         allow_fallback: bool = True,
+        *,
+        title: Optional[str] = None,
+        preferred_game_type: Optional[str] = None,
     ) -> GameSpec:
-        del allow_fallback
         if not self._client.is_enabled():
             raise RuntimeError("Real LLM mode is required for intent parsing")
 
-        text = await self._client.complete(
-            max_tokens=1024,
+        parse_input = _build_intent_parse_input(description, title=title)
+        text = await self._complete_slot_request(
+            max_tokens=640,
             system=_with_slot_json_contract(
                 require_prompt("prompt.intent_parse_system")
             ),
-            messages=[{"role": "user", "content": description}],
+            messages=[{"role": "user", "content": parse_input}],
             step_key="intent_parse",
             stage="intent_parsing",
-            prefer_fast=False,
         )
         slot_data = await self._extract_slot_payload_with_repair(
             raw_text=text,
-            source_text=description,
+            source_text=parse_input,
             step_key="intent_parse",
             stage="intent_parsing",
+            allow_fallback=allow_fallback,
+            title=title,
+            preferred_game_type=preferred_game_type,
         )
         slots = SlotState(**slot_data)
         return _build_game_spec(slots, source_description=description)
@@ -756,15 +1287,14 @@ class DialogueEngine:
     async def _llm_process(self, session: DialogueSession) -> Tuple[str, List[str]]:
         old_slots = session.slots.model_copy()
 
-        slot_text = await self._client.complete(
-            max_tokens=1024,
+        slot_text = await self._complete_slot_request(
+            max_tokens=640,
             system=_with_slot_json_contract(
                 require_prompt("prompt.slot_extraction_system")
             ),
             messages=_history_to_messages(session.history),
             step_key="dialogue.slot_extract",
             stage="dialogue",
-            prefer_fast=False,
         )
         slot_data = await self._extract_slot_payload_with_repair(
             raw_text=slot_text,
@@ -812,38 +1342,41 @@ class DialogueEngine:
         source_text: str,
         step_key: str,
         stage: str,
+        allow_fallback: bool = False,
+        title: Optional[str] = None,
+        preferred_game_type: Optional[str] = None,
     ) -> Dict[str, Any]:
         heuristic_slot_data = _normalize_slot_payload({
             **_infer_slots_from_text(raw_text),
             **_infer_slots_from_text(source_text),
+            **_infer_slots_from_text(title or ""),
         })
         raw_slot_data = _normalize_slot_payload(_safe_parse_json(raw_text) or {})
         slot_data = _merge_slot_payloads(
             heuristic_slot_data,
             raw_slot_data,
         )
-        if raw_slot_data and slot_data:
+        if raw_slot_data and _has_minimum_viable_slot_payload(slot_data):
             return slot_data
 
         repair_input = require_prompt("prompt.slot_json_repair_user_template").format(
             source_text=source_text or "(empty)",
             raw_parser_output=_clean_llm_output(raw_text) or "(empty)",
         )
-        repaired_text = await self._client.complete(
-            max_tokens=1024,
+        repaired_text = await self._complete_slot_request(
+            max_tokens=640,
             system=_with_slot_json_contract(
                 require_prompt("prompt.slot_json_repair_system")
             ),
             messages=[{"role": "user", "content": repair_input}],
             step_key=step_key,
             stage=stage,
-            prefer_fast=False,
         )
         repaired_slot_data = _merge_slot_payloads(
             heuristic_slot_data,
             _normalize_slot_payload(_safe_parse_json(repaired_text) or {}),
         )
-        if repaired_slot_data:
+        if _has_minimum_viable_slot_payload(repaired_slot_data):
             return repaired_slot_data
 
         if heuristic_slot_data.get("game_type"):
@@ -853,7 +1386,35 @@ class DialogueEngine:
             )
             return heuristic_slot_data
 
-        raise ValueError("LLM slot extraction returned no valid JSON")
+        if allow_fallback:
+            fallback_slot_data = _build_sparse_slot_fallback(
+                source_text=source_text,
+                title=title,
+                raw_text=raw_text,
+                repaired_text=repaired_text,
+                preferred_game_type=preferred_game_type,
+            )
+            merged_fallback_slot_data = _merge_slot_payloads(fallback_slot_data, repaired_slot_data)
+            if _has_minimum_viable_slot_payload(merged_fallback_slot_data):
+                logger.warning(
+                    "LLM slot extraction repair failed; synthesized sparse-request fallback for source=%s",
+                    source_text[:120],
+                )
+                return merged_fallback_slot_data
+
+        raise SlotExtractionFailure(
+            "LLM slot extraction returned no valid JSON",
+            diagnostics={
+                "sourceText": source_text,
+                "title": title,
+                "preferredGameType": preferred_game_type,
+                "rawParserOutput": _clean_llm_output(raw_text),
+                "repairedParserOutput": _clean_llm_output(repaired_text),
+                "heuristicSlotData": heuristic_slot_data,
+                "rawSlotData": raw_slot_data,
+                "repairedSlotData": repaired_slot_data,
+            },
+        )
 
     @staticmethod
     def _next_state(current: DialogueState, fill_pct: float) -> DialogueState:
@@ -867,12 +1428,33 @@ class DialogueEngine:
 
 
 def _build_game_spec(slots: SlotState, *, source_description: str = "") -> GameSpec:
-    game_type = (slots.game_type or "").strip()
+    normalized_description = re.sub(r"\s+", " ", source_description.strip()) if source_description else ""
+    game_type = _coerce_game_type_for_request((slots.game_type or "").strip(), normalized_description)
     if not game_type:
         raise ValueError("Missing required slot: game_type")
 
-    defaults = GAME_TYPE_DEFAULTS.get(game_type, {})
-    entity_defs = ENTITY_DEFAULTS.get(game_type, GENERIC_ENTITY_DEFAULTS)
+    ui_language = _detect_ui_language(normalized_description or " ".join(
+        str(value or "") for value in [
+            slots.core_mechanic,
+            slots.theme,
+            slots.win_condition,
+            slots.visual_style,
+            slots.reference_game,
+        ]
+    ))
+    defaults = _localized_game_type_defaults(game_type, ui_language)
+    theme = (slots.theme or "").strip()
+    visual_variant = _select_visual_variant(
+        game_type,
+        explicit_theme=theme,
+        explicit_art_style=(slots.visual_style or "").strip(),
+        source_description=normalized_description,
+    )
+    entity_defs = _select_entity_variant(
+        game_type,
+        source_description=normalized_description,
+        theme=visual_variant["theme"],
+    )
     entities = [GameEntity(**entity) for entity in entity_defs]
 
     mechanics = [CoreMechanic(
@@ -888,12 +1470,12 @@ def _build_game_spec(slots: SlotState, *, source_description: str = "") -> GameS
         lives=3,
     )
 
-    art_style = slots.visual_style or "geometric"
     visual = VisualStyle(
-        theme=slots.theme or "custom",
-        art_style=art_style,
-        background="gradient",
-        effects=["glow"] if art_style == "neon" else [],
+        theme=visual_variant["theme"],
+        palette=visual_variant["palette"],
+        art_style=visual_variant["art_style"],
+        background=visual_variant["background"],
+        effects=visual_variant["effects"],
     )
     intent_summary = (slots.core_mechanic or defaults.get("core_mechanic", "")).strip()
     special_rules = [
@@ -902,12 +1484,12 @@ def _build_game_spec(slots: SlotState, *, source_description: str = "") -> GameS
         if str(rule).strip()
     ]
     reference_game = (slots.reference_game or "").strip() or None
-    normalized_description = re.sub(r"\s+", " ", source_description.strip()) if source_description else ""
 
     return GameSpec(
         game_type=game_type,
         source_description=normalized_description,
         intent_summary=intent_summary,
+        ui_language=ui_language,
         core_mechanics=mechanics,
         entities=entities,
         rules=rules,

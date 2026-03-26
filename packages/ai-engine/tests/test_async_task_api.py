@@ -575,6 +575,51 @@ class TestAsyncTaskApi(unittest.TestCase):
         self.assertIsNotNone(mock_runner.await_args)
         self.assertIsNone(mock_legacy.await_args)
 
+    def test_v2_create_internal_does_not_persist_iteration_history_artifacts(self):
+        request = RunPipelineV2Request(
+            game_id="game-v2-create-artifacts",
+            user_id="user-v2-create-artifacts",
+            raw_user_input="make a runner game",
+        )
+        fake_result = RunPipelineResponse(
+            game_id="game-v2-create-artifacts",
+            html_code="<!DOCTYPE html><html></html>",
+            game_spec=GameSpec(game_type="runner"),
+            strategy="llm",
+            qa_passed=True,
+            qa_retries=1,
+            generation_time_ms=789,
+            code_size_bytes=64,
+            quality_score=8.9,
+            quality_breakdown={"qa_penalty": 0},
+            runtime_profile="lane_runner",
+            contract_version="1.0",
+        )
+        relay_artifact = AsyncMock(
+            side_effect=lambda **kwargs: f"artifact-{kwargs['artifact_type']}"
+        )
+
+        with patch_v2_prompt_defaults(), patch(
+            "src.api.endpoints.generate._v2_runner.run",
+            new=AsyncMock(return_value=fake_result),
+        ), patch(
+            "src.api.endpoints.generate._relay_artifact_to_game_service",
+            new=relay_artifact,
+        ), patch(
+            "src.api.endpoints.generate._relay_stage_summary_to_game_service",
+            new=AsyncMock(),
+        ):
+            asyncio.run(
+                generate_api._run_pipeline_v2_internal(
+                    request,
+                    task_id="task-v2-create-artifacts",
+                )
+            )
+
+        artifact_types = [call.kwargs["artifact_type"] for call in relay_artifact.await_args_list]
+        self.assertNotIn("source_game_spec", artifact_types)
+        self.assertNotIn("source_bundle_context", artifact_types)
+
     def test_v2_iteration_internal_uses_runner_instead_of_legacy_internal(self):
         request = IterateV2Request(
             game_id="game-v2-iter-internal",
@@ -612,6 +657,58 @@ class TestAsyncTaskApi(unittest.TestCase):
         self.assertEqual(response.runtime_profile, "lane_runner")
         self.assertIsNotNone(mock_runner.await_args)
         self.assertIsNone(mock_legacy.await_args)
+
+    def test_v2_iteration_internal_persists_source_history_artifacts(self):
+        request = IterateV2Request(
+            game_id="game-v2-iter-artifacts",
+            user_id="user-v2-iter-artifacts",
+            current_code="<!DOCTYPE html><html><body>old</body></html>",
+            iteration_intent={
+                "feedback": "add five levels",
+                "conversation": [],
+            },
+            source_spec=GameSpec(game_type="runner", intent_summary="keep runner"),
+            source_bundle_context={
+                "title": "Pig Runner",
+                "latest_bundle_version": 3,
+                "latest_game_type": "runner",
+            },
+        )
+        fake_result = IterateResponse(
+            html_code="<!DOCTYPE html><html><body>new</body></html>",
+            changes=["Applied: add five levels"],
+            iteration_type="element_change",
+            game_spec=GameSpec(game_type="runner"),
+            generation_time_ms=456,
+            qa_retries=1,
+            iteration_retries=0,
+            runtime_profile="lane_runner",
+            contract_version="1.0",
+        )
+        relay_artifact = AsyncMock(
+            side_effect=lambda **kwargs: f"artifact-{kwargs['artifact_type']}"
+        )
+
+        with patch_v2_prompt_defaults(), patch(
+            "src.api.endpoints.generate._v2_runner.iterate",
+            new=AsyncMock(return_value=fake_result),
+        ), patch(
+            "src.api.endpoints.generate._relay_artifact_to_game_service",
+            new=relay_artifact,
+        ), patch(
+            "src.api.endpoints.generate._relay_stage_summary_to_game_service",
+            new=AsyncMock(),
+        ):
+            asyncio.run(
+                generate_api._run_iteration_v2_internal(
+                    request,
+                    task_id="task-v2-iter-artifacts",
+                )
+            )
+
+        artifact_types = [call.kwargs["artifact_type"] for call in relay_artifact.await_args_list]
+        self.assertIn("source_game_spec", artifact_types)
+        self.assertIn("source_bundle_context", artifact_types)
 
 
 if __name__ == "__main__":

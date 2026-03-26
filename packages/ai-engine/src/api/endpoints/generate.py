@@ -43,6 +43,10 @@ from ..models import (
     ListAsyncTasksResponse,
     ParseIntentRequest,
     ParseIntentResponse,
+    ProviderCatalogPreviewRequest,
+    ProviderCatalogPreviewResponse,
+    ProviderTestChatRequest,
+    ProviderTestChatResponse,
     QACheckRequest,
     QACheckResponse,
     RunPipelineRequest,
@@ -484,6 +488,8 @@ async def _persist_v2_request_artifacts(
     normalized_request: dict[str, Any],
     runtime_contract: dict[str, Any],
     prompt_bundle_snapshot: dict[str, Any],
+    source_spec: Optional[dict[str, Any]] = None,
+    source_bundle_context: Optional[dict[str, Any]] = None,
 ) -> list[str]:
     artifact_ids: list[str] = []
 
@@ -522,6 +528,32 @@ async def _persist_v2_request_artifacts(
     )
     if prompt_bundle_id:
         artifact_ids.append(prompt_bundle_id)
+
+    if source_spec:
+        source_spec_id = await _relay_artifact_to_game_service(
+            task_id=task_id,
+            game_id=game_id,
+            user_id=user_id,
+            artifact_type="source_game_spec",
+            content_type="application/json",
+            payload=source_spec,
+            metadata={"pipelineVersion": "v2"},
+        )
+        if source_spec_id:
+            artifact_ids.append(source_spec_id)
+
+    if source_bundle_context:
+        source_bundle_context_id = await _relay_artifact_to_game_service(
+            task_id=task_id,
+            game_id=game_id,
+            user_id=user_id,
+            artifact_type="source_bundle_context",
+            content_type="application/json",
+            payload=source_bundle_context,
+            metadata={"pipelineVersion": "v2"},
+        )
+        if source_bundle_context_id:
+            artifact_ids.append(source_bundle_context_id)
 
     return artifact_ids
 
@@ -970,6 +1002,10 @@ async def _run_iteration_v2_internal(
         normalized_request=resolved_request.normalized_request,
         runtime_contract=resolved_request.runtime_contract.model_dump(),
         prompt_bundle_snapshot=resolved_request.prompt_bundle_snapshot.model_dump(),
+        source_spec=resolved_request.source_spec.model_dump(mode="json") if resolved_request.source_spec else None,
+        source_bundle_context=resolved_request.source_bundle_context.model_dump(mode="json")
+        if resolved_request.source_bundle_context
+        else None,
     )
     await _relay_stage_summary_to_game_service(
         task_id=effective_task_id,
@@ -998,6 +1034,18 @@ async def _run_iteration_v2_internal(
                 progress_cb=progress_cb,
                 timeout_s=_resolve_timeout_s(resolved_request.timeout_s),
             )
+        spec_artifact_id = await _relay_artifact_to_game_service(
+            task_id=effective_task_id,
+            game_id=resolved_request.game_id,
+            user_id=resolved_request.user_id,
+            artifact_type="compiled_game_spec",
+            content_type="application/json",
+            payload=response.game_spec.model_dump(mode="json") if response.game_spec else {},
+            metadata={
+                "pipelineVersion": "v2",
+                "entrypoint": resolved_request.request_context.entrypoint,
+            },
+        )
         profile_artifact_id = await _relay_artifact_to_game_service(
             task_id=effective_task_id,
             game_id=resolved_request.game_id,
@@ -1036,7 +1084,11 @@ async def _run_iteration_v2_internal(
                 "pipelineVersion": "v2",
                 "entrypoint": resolved_request.request_context.entrypoint,
             },
-            artifact_ids=[artifact_id for artifact_id in [profile_artifact_id, primary_artifact_id] if artifact_id],
+            artifact_ids=[
+                artifact_id
+                for artifact_id in [spec_artifact_id, profile_artifact_id, primary_artifact_id]
+                if artifact_id
+            ],
         )
         return _decorate_v2_iterate_response(
             response,
@@ -1231,6 +1283,37 @@ async def test_llm_gateway_provider(
     except Exception as exc:
         logger.exception("LLM gateway provider test failed")
         raise HTTPException(status_code=500, detail=f"Provider test failed: {exc}") from exc
+
+
+@router.post("/llm-gateway/providers/catalog/preview", response_model=ProviderCatalogPreviewResponse)
+async def preview_llm_gateway_provider_catalog(
+    request: ProviderCatalogPreviewRequest,
+    x_admin_token: Optional[str] = Header(default=None, alias="x-admin-token"),
+):
+    _require_admin_token(x_admin_token)
+    try:
+      return await gateway.preview_model_catalog(request)
+    except ValueError as exc:
+      raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+      logger.exception("LLM gateway provider catalog preview failed")
+      raise HTTPException(status_code=500, detail=f"Provider catalog preview failed: {exc}") from exc
+
+
+@router.post("/llm-gateway/providers/{provider_id}/test-chat", response_model=ProviderTestChatResponse)
+async def test_llm_gateway_provider_chat(
+    provider_id: str,
+    request: ProviderTestChatRequest,
+    x_admin_token: Optional[str] = Header(default=None, alias="x-admin-token"),
+):
+    _require_admin_token(x_admin_token)
+    try:
+        return await gateway.test_provider_chat(provider_id, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("LLM gateway provider chat test failed")
+        raise HTTPException(status_code=500, detail=f"Provider chat test failed: {exc}") from exc
 
 
 # ===========================================================================

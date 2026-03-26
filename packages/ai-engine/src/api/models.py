@@ -118,6 +118,7 @@ class GameSpec(BaseModel):
     game_type: str
     source_description: str = ""
     intent_summary: str = ""
+    ui_language: str = "en-US"
     core_mechanics: List[CoreMechanic] = Field(default_factory=list)
     entities: List[GameEntity] = Field(default_factory=list)
     rules: GameRules = Field(default_factory=GameRules)
@@ -328,6 +329,8 @@ class RunPipelineResponse(BaseModel):
     runtime_profile: Optional[str] = None
     contract_version: Optional[str] = None
     primary_artifact_id: Optional[str] = None
+    qa_warnings: List[Dict[str, Any]] = Field(default_factory=list)
+    runtime_qa_report: Optional[Dict[str, Any]] = None
 
 
 class FontClamp(BaseModel):
@@ -382,6 +385,26 @@ class GameplayContract(BaseModel):
     requires_scoring: bool = True
     requires_terminal_state: bool = True
     requires_restart_entry: bool = True
+    terminal_state_aliases: List[str] = Field(default_factory=lambda: [
+        "game_over",
+        "gameover",
+        "over",
+        "ended",
+        "lost",
+        "failed",
+        "dead",
+        "win",
+        "won",
+        "victory",
+        "complete",
+        "completed",
+        "level_complete",
+        "clear",
+        "cleared",
+        "success",
+        "succeeded",
+        "solved",
+    ])
     primary_goal: str = "clear_feedback_loop"
 
 
@@ -443,6 +466,24 @@ class IterationIntent(BaseModel):
     conversation: List[Dict[str, str]] = Field(default_factory=list)
 
 
+class SourceBundleRevision(BaseModel):
+    version: Optional[int] = None
+    generated_at: Optional[str] = None
+    feedback: Optional[str] = None
+    iteration_type: Optional[str] = None
+    summary: Optional[str] = None
+
+
+class SourceBundleContext(BaseModel):
+    title: Optional[str] = None
+    latest_bundle_version: Optional[int] = None
+    latest_game_type: Optional[str] = None
+    latest_feedback: Optional[str] = None
+    latest_iteration_type: Optional[str] = None
+    summary: Optional[str] = None
+    recent_revisions: List[SourceBundleRevision] = Field(default_factory=list)
+
+
 class RunPipelineV2Request(BaseModel):
     game_id: str
     user_id: str
@@ -466,6 +507,8 @@ class IterateV2Request(BaseModel):
     current_code: str
     iteration_intent: IterationIntent
     existing_game: ExistingGameContext = Field(default_factory=ExistingGameContext)
+    source_spec: Optional[GameSpec] = None
+    source_bundle_context: SourceBundleContext = Field(default_factory=SourceBundleContext)
     platform: str = "wechat_webview"
     timeout_s: int = Field(default=600, ge=30, le=3600)
     task_id: Optional[str] = None
@@ -535,6 +578,7 @@ class IterateResponse(BaseModel):
     html_code: str
     changes: List[str]
     iteration_type: str = "element_change"
+    game_spec: Optional[GameSpec] = None
     generation_time_ms: int
     qa_retries: int = 0
     iteration_retries: int = 0
@@ -544,10 +588,59 @@ class IterateResponse(BaseModel):
     runtime_profile: Optional[str] = None
     contract_version: Optional[str] = None
     primary_artifact_id: Optional[str] = None
+    qa_warnings: List[Dict[str, Any]] = Field(default_factory=list)
+    runtime_qa_report: Optional[Dict[str, Any]] = None
 
 
 class QACheckRequest(BaseModel):
     html_code: str
+
+
+class ProviderCatalogPreviewRequest(BaseModel):
+    provider_type: str = "openai_compatible"
+    vendor_preset: str = "generic"
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    catalog_api_url: Optional[str] = None
+    catalog_auth_mode: str = "inherit_provider"
+    catalog_api_key: Optional[str] = None
+
+
+class ProviderCatalogEntry(BaseModel):
+    id: str
+    label: Optional[str] = None
+    owned_by: Optional[str] = None
+    created: Optional[int] = None
+
+
+class ProviderCatalogPreviewResponse(BaseModel):
+    models: List[ProviderCatalogEntry] = Field(default_factory=list)
+    fetched_at: str
+    resolved_catalog_api_url: str
+    vendor_preset: str = "generic"
+
+
+class ProviderTestChatRequest(BaseModel):
+    messages: List[ConversationMessage] = Field(default_factory=list)
+    use_fast_model: bool = False
+    model: Optional[str] = None
+    max_tokens: int = Field(default=256, ge=1, le=4096)
+    system: Optional[str] = None
+
+
+class ProviderTestChatResponse(BaseModel):
+    provider_id: str
+    provider_name: str
+    provider_type: str
+    region: str
+    resolved_endpoint: str
+    model: str
+    latency_ms: int
+    http_status: Optional[int] = None
+    success: bool
+    error_message: Optional[str] = None
+    reply: str = ""
+    tested_at: str
 
 
 class GenerateProgress(BaseModel):

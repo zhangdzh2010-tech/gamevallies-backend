@@ -122,6 +122,7 @@ describe('GameService', () => {
       recordProgress: jest.fn(async () => undefined),
       markSucceeded: jest.fn(async () => undefined),
       markFailed: jest.fn(async () => undefined),
+      findLatestArtifactForTask: jest.fn(),
       getLatestTaskForGame: jest.fn(),
       getTaskForUser: jest.fn(),
       listTaskEvents: jest.fn(),
@@ -157,6 +158,7 @@ describe('GameService', () => {
     mockedAxios.get.mockReset();
     jest.useRealTimers();
     prisma.game.updateMany.mockResolvedValue({ count: 1 });
+    prisma.generationTask.findMany.mockResolvedValue([]);
     prisma.generationTaskEvent.create.mockResolvedValue({});
     prisma.systemConfig.findMany.mockResolvedValue([]);
     prisma.userQuota.updateMany.mockResolvedValue({ count: 0 });
@@ -368,6 +370,135 @@ describe('GameService', () => {
       'user-network',
       'game-network',
       expect.stringContaining('https://gamevallies.com/games/game-network/preview?previewToken='),
+    );
+  });
+
+  it('falls back across ai-engine endpoints and stores the selected upstream base URL', async () => {
+    mockedAxios.post
+      .mockRejectedValueOnce({
+        message: 'Request failed with status code 404',
+        response: { status: 404 },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          task_id: 'upstream-failover',
+          status: 'queued',
+        },
+      } as any);
+    prisma.generationTask.findUnique.mockResolvedValue({
+      metadata: {
+        description: 'persist me',
+      },
+    });
+
+    const handle = await (service as any).requestUpstreamAsyncTask({
+      aiEngineBaseUrls: ['http://ai-engine-primary.test', 'http://ai-engine-backup.test'],
+      endpoint: '/api/v1/ai/pipeline/v2/run/async',
+      payload: {
+        game_id: 'game-failover',
+      },
+      taskId: 'task-failover',
+      userId: 'user-failover',
+      gameId: 'game-failover',
+    });
+
+    expect(handle).toEqual(expect.objectContaining({
+      task_id: 'upstream-failover',
+      aiEngineBaseUrl: 'http://ai-engine-backup.test',
+    }));
+    expect(mockedAxios.post).toHaveBeenNthCalledWith(
+      1,
+      'http://ai-engine-primary.test/api/v1/ai/pipeline/v2/run/async',
+      { game_id: 'game-failover' },
+      expect.objectContaining({ timeout: 30000 }),
+    );
+    expect(mockedAxios.post).toHaveBeenNthCalledWith(
+      2,
+      'http://ai-engine-backup.test/api/v1/ai/pipeline/v2/run/async',
+      { game_id: 'game-failover' },
+      expect.objectContaining({ timeout: 30000 }),
+    );
+    expect(prisma.generationTask.update).toHaveBeenCalledWith({
+      where: { id: 'task-failover' },
+      data: {
+        upstreamTaskId: 'upstream-failover',
+        metadata: expect.objectContaining({
+          description: 'persist me',
+          upstreamBaseUrl: 'http://ai-engine-backup.test',
+        }),
+      },
+    });
+  });
+
+  it('biases classroom and quiz prompts toward the grid puzzle runtime profile', () => {
+    expect(
+      (service as any).inferRuntimeProfileHint(
+        '请设计一个课堂小游戏，包含3道配套练习题，帮助学生巩固浮力知识点',
+        '浮力的故事',
+      ),
+    ).toBe('grid_puzzle');
+  });
+
+  it('prefers persisted upstream base URLs when fetching upstream snapshots', async () => {
+    mockedAxios.get.mockResolvedValueOnce({
+      data: {
+        task_id: 'upstream-persisted',
+        status: 'succeeded',
+        result: {
+          html_code: '<!DOCTYPE html><html><body>ok</body></html>',
+        },
+      },
+    } as any);
+
+    const snapshot = await (service as any).fetchUpstreamTaskSnapshotWithFailover(
+      {
+        region: 'cn_shanghai',
+        metadata: {
+          upstreamBaseUrl: 'http://ai-engine-persisted.test',
+        },
+      },
+      'upstream-persisted',
+    );
+
+    expect(snapshot).toEqual(expect.objectContaining({
+      task_id: 'upstream-persisted',
+      status: 'succeeded',
+    }));
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      'http://ai-engine-persisted.test/api/v1/ai/tasks/upstream-persisted',
+      expect.objectContaining({ timeout: 10000 }),
+    );
+  });
+
+  it('cancels upstream tasks by failing over from persisted to configured ai-engine endpoints', async () => {
+    mockedAxios.post
+      .mockRejectedValueOnce({
+        message: 'Request failed with status code 404',
+        response: { status: 404 },
+      })
+      .mockResolvedValueOnce({ data: {} } as any);
+
+    await (service as any).cancelUpstreamTask({
+      id: 'task-cancel-failover',
+      region: 'cn_shanghai',
+      upstreamTaskId: 'upstream-cancel-failover',
+      metadata: {
+        upstreamBaseUrl: 'http://ai-engine-persisted.test',
+      },
+    });
+
+    expect(mockedAxios.post).toHaveBeenNthCalledWith(
+      1,
+      'http://ai-engine-persisted.test/api/v1/ai/tasks/upstream-cancel-failover/cancel',
+      {},
+      expect.objectContaining({ timeout: 10000 }),
+    );
+    expect(mockedAxios.post).toHaveBeenNthCalledWith(
+      2,
+      'http://ai-engine.test/api/v1/ai/tasks/upstream-cancel-failover/cancel',
+      {},
+      expect.objectContaining({ timeout: 10000 }),
     );
   });
 
@@ -1000,6 +1131,191 @@ describe('GameService', () => {
     }));
   });
 
+  it('recovers create tasks from stored pipeline artifacts after upstream wait timeout', async () => {
+    prisma.generationTask.findUnique.mockImplementation(({ where, select }: any) => {
+      if (where?.id === 'task-v2-recover' && select?.cancelRequested) {
+        return Promise.resolve({
+          status: 'running',
+          cancelRequested: false,
+          gameId: 'game-v2-recover',
+        });
+      }
+
+      if (where?.id === 'task-v2-recover') {
+        return Promise.resolve({
+          id: 'task-v2-recover',
+          status: 'succeeded',
+        });
+      }
+
+      return Promise.resolve(null);
+    });
+    prisma.game.findUnique.mockImplementation(({ select }: any) => {
+      if (select?.title) {
+        return Promise.resolve({
+          title: 'Recovered task game',
+        });
+      }
+
+      if (select?.version) {
+        return Promise.resolve({
+          version: 0,
+          status: 'generating',
+        });
+      }
+
+      return Promise.resolve({
+        status: 'generating',
+      });
+    });
+    prisma.game.update.mockResolvedValue({});
+    bundleService.getBundle.mockResolvedValue(null);
+    bundleService.saveBundle.mockResolvedValue(undefined);
+    generationTaskService.findLatestArtifactForTask.mockResolvedValue({
+      payloadJson: {
+        html_code: '<!DOCTYPE html><html><head><title>Recovered Create</title></head><body></body></html>',
+        strategy: 'llm',
+        qa_passed: true,
+        qa_retries: 0,
+        game_spec: { game_type: 'runner' },
+        generation_time_ms: 1200,
+        code_size_bytes: 99,
+        quality_score: 91,
+        quality_breakdown: {},
+        primary_artifact_id: 'artifact-recovered-1',
+      },
+    });
+
+    jest.spyOn(service as any, 'requestUpstreamAsyncTask').mockResolvedValue({
+      task_id: 'upstream-v2-recover',
+      status: 'queued',
+    });
+    jest.spyOn(service as any, 'waitForUpstreamTaskTerminal').mockRejectedValue(
+      new Error('Upstream AI task upstream-v2-recover timed out while waiting for completion'),
+    );
+
+    await (service as any).executePipelineTask(
+      'game-v2-recover',
+      'user-v2-recover',
+      'make a runner',
+      900,
+      'task-v2-recover',
+      'cn_shanghai',
+      {
+        pipelineVersion: 'v2',
+      },
+    );
+
+    expect(generationTaskService.findLatestArtifactForTask).toHaveBeenCalledWith(
+      'task-v2-recover',
+      ['pipeline_response'],
+    );
+    expect(generationTaskService.markSucceeded).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'task-v2-recover',
+      primaryArtifactId: 'artifact-recovered-1',
+    }));
+    expect(generationTaskService.markFailed).not.toHaveBeenCalled();
+  });
+
+  it('recovers completed tasks from stored artifacts before timing them out', async () => {
+    prisma.generationTask.findUnique.mockImplementation(({ where, select }: any) => {
+      if (where?.id === 'task-timeout-recover' && select?.cancelRequested) {
+        return Promise.resolve({
+          status: 'running',
+          cancelRequested: false,
+          gameId: 'game-timeout-recover',
+        });
+      }
+
+      if (where?.id === 'task-timeout-recover') {
+        return Promise.resolve({
+          id: 'task-timeout-recover',
+          status: 'succeeded',
+        });
+      }
+
+      return Promise.resolve(null);
+    });
+    prisma.game.findUnique.mockImplementation(({ select }: any) => {
+      if (select?.title) {
+        return Promise.resolve({
+          title: 'Recovered timeout game',
+        });
+      }
+
+      if (select?.version) {
+        return Promise.resolve({
+          version: 0,
+          status: 'generating',
+        });
+      }
+
+      return Promise.resolve({
+        status: 'generating',
+      });
+    });
+    prisma.game.update.mockResolvedValue({});
+    bundleService.getBundle.mockResolvedValue(null);
+    bundleService.saveBundle.mockResolvedValue(undefined);
+    generationTaskService.findLatestArtifactForTask.mockResolvedValue({
+      payloadJson: {
+        html_code: '<!DOCTYPE html><html><head><title>Recovered Timeout</title></head><body></body></html>',
+        strategy: 'llm',
+        qa_passed: true,
+        qa_retries: 0,
+        game_spec: { game_type: 'runner' },
+        generation_time_ms: 1400,
+        code_size_bytes: 101,
+        quality_score: 92,
+        quality_breakdown: {},
+        primary_artifact_id: 'artifact-recovered-timeout',
+      },
+    });
+    const cancelUpstreamTaskSpy = jest
+      .spyOn(service as any, 'cancelUpstreamTask')
+      .mockResolvedValue(undefined);
+
+    const result = await (service as any).persistDerivedTaskResolution(
+      {
+        id: 'task-timeout-recover',
+        gameId: 'game-timeout-recover',
+        userId: 'user-timeout-recover',
+        taskType: 'pipeline_run',
+        progressStage: 'completed',
+        retryCount: 0,
+        metadata: {
+          description: 'make a runner',
+        },
+      },
+      {
+        id: 'game-timeout-recover',
+        status: 'generating',
+      },
+      {
+        status: 'timed_out',
+        stage: 'completed',
+        message: 'Task timed out after 1200s',
+        retryCount: 0,
+      },
+    );
+
+    expect(generationTaskService.findLatestArtifactForTask).toHaveBeenCalledWith(
+      'task-timeout-recover',
+      ['pipeline_response'],
+    );
+    expect(cancelUpstreamTaskSpy).not.toHaveBeenCalled();
+    expect(generationTaskService.markSucceeded).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'task-timeout-recover',
+      primaryArtifactId: 'artifact-recovered-timeout',
+    }));
+    expect(generationTaskService.markFailed).not.toHaveBeenCalled();
+    expect(result).toEqual(expect.objectContaining({
+      id: 'task-timeout-recover',
+      status: 'succeeded',
+    }));
+    cancelUpstreamTaskSpy.mockRestore();
+  });
+
   it('persists failure family and primary artifact ids from failed upstream async tasks', async () => {
     prisma.generationTask.findUnique.mockImplementation(({ select }: any) => {
       if (select?.cancelRequested) {
@@ -1068,6 +1384,64 @@ describe('GameService', () => {
       failedStage: 'qa_checking',
       failureFamily: 'contract_qa',
       primaryArtifactId: 'artifact-failure-1',
+    }));
+  });
+
+  it('reconciles relayed pipeline failures even after the task row is already marked failed', async () => {
+    prisma.generationTask.findUnique.mockImplementation(({ select }: any) => {
+      if (select?.taskType) {
+        return Promise.resolve({
+          id: 'task-relayed-failure',
+          gameId: 'game-relayed-failure',
+          userId: 'user-relayed-failure',
+          taskType: 'pipeline_run',
+        });
+      }
+
+      return Promise.resolve({
+        status: 'failed',
+      });
+    });
+    prisma.game.findUnique.mockImplementation(({ select }: any) => {
+      if (select?.status) {
+        return Promise.resolve({
+          status: 'generating',
+        });
+      }
+
+      return Promise.resolve({
+        id: 'game-relayed-failure',
+        authorId: 'user-relayed-failure',
+        accessGrantSource: GameAccessGrantSource.none,
+        accessGrantSubscriptionId: null,
+      });
+    });
+    prisma.game.update.mockResolvedValue({});
+
+    await service.reconcileRelayedTaskFailure({
+      taskId: 'task-relayed-failure',
+      failedStage: 'contract_qa',
+      errorMessage: 'Runtime contract requires a restart entry point',
+      retryCount: 3,
+      failureFamily: 'contract_qa',
+      primaryArtifactId: 'artifact-relayed-failure',
+    });
+
+    expect(prisma.game.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'game-relayed-failure' },
+      data: expect.objectContaining({
+        status: 'failed',
+        failedStage: 'contract_qa',
+        failedReason: 'Runtime contract requires a restart entry point',
+        retryCount: 3,
+      }),
+    }));
+    expect(generationTaskService.markFailed).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'task-relayed-failure',
+      failedStage: 'contract_qa',
+      errorMessage: 'Runtime contract requires a restart entry point',
+      failureFamily: 'contract_qa',
+      primaryArtifactId: 'artifact-relayed-failure',
     }));
   });
 
@@ -2019,6 +2393,91 @@ describe('GameService', () => {
     jest.useRealTimers();
   });
 
+  it('passes source spec and bundle history context into v2 iteration execution', async () => {
+    jest.useFakeTimers();
+    const executeIterationTaskSpy = jest
+      .spyOn(service as any, 'executeIterationTask')
+      .mockResolvedValue(undefined);
+
+    prisma.game.findUnique.mockResolvedValue({
+      id: 'game-history-aware',
+      authorId: 'user-history-aware',
+      title: '逮小猪',
+      gameType: 'runner',
+      version: 2,
+      status: 'draft',
+      updatedAt: new Date('2026-03-23T10:00:00.000Z'),
+    });
+    prisma.generationTask.findFirst.mockResolvedValue(null);
+    bundleService.getLatestBundle.mockResolvedValue({
+      version: 2,
+      htmlCode: '<!DOCTYPE html><html><head><title>逮小猪</title></head><body>old</body></html>',
+      metadata: {
+        feedback: '把障碍再清楚一些',
+        iterationType: 'element_change',
+        gameSpec: {
+          game_type: 'runner',
+          intent_summary: '逮住小猪并躲开障碍',
+          ui_language: 'zh-CN',
+        },
+      },
+    });
+    bundleService.getBundleHistory.mockResolvedValue([
+      {
+        version: 1,
+        createdAt: new Date('2026-03-22T10:00:00.000Z'),
+        metadata: {
+          feedback: '做一个逮小猪游戏',
+          gameSpec: {
+            game_type: 'runner',
+            intent_summary: '逮住小猪并躲开障碍',
+            ui_language: 'zh-CN',
+          },
+        },
+      },
+      {
+        version: 2,
+        createdAt: new Date('2026-03-23T10:00:00.000Z'),
+        metadata: {
+          feedback: '把障碍再清楚一些',
+          iterationType: 'element_change',
+        },
+      },
+    ]);
+    generationTaskService.getLatestTaskForGame.mockResolvedValue(null);
+
+    await service.iterate('game-history-aware', 'user-history-aware', {
+      feedback: '继续增加关卡，设置5个关卡',
+    } as any);
+
+    jest.runOnlyPendingTimers();
+    expect(executeIterationTaskSpy).toHaveBeenCalledWith(
+      'game-history-aware',
+      'user-history-aware',
+      '继续增加关卡，设置5个关卡',
+      3,
+      expect.any(Array),
+      expect.stringContaining('<title>逮小猪</title>'),
+      expect.any(Number),
+      expect.any(String),
+      expect.any(String),
+      expect.objectContaining({
+        sourceSpec: expect.objectContaining({
+          game_type: 'runner',
+          ui_language: 'zh-CN',
+        }),
+        sourceBundleContext: expect.objectContaining({
+          title: '逮小猪',
+          latest_game_type: 'runner',
+          latest_feedback: '把障碍再清楚一些',
+          recent_revisions: expect.any(Array),
+        }),
+      }),
+    );
+    executeIterationTaskSpy.mockRestore();
+    jest.useRealTimers();
+  });
+
   it('clamps v2 iteration timeouts to at least 1200 seconds', async () => {
     jest.useFakeTimers();
     (configService.get as jest.Mock).mockImplementation((key: string, defaultValue?: string) => {
@@ -2138,6 +2597,9 @@ describe('GameService', () => {
       currentCode: '<!DOCTYPE html><html><body>old</body></html>',
       responseData: {
         html_code: '<!DOCTYPE html><html><body>new</body></html>',
+        game_spec: {
+          game_type: 'runner',
+        },
       },
       baseStatus: 'published',
     });
@@ -2145,12 +2607,88 @@ describe('GameService', () => {
     expect(persistGeneratedGameResultSpy).toHaveBeenCalledWith(expect.objectContaining({
       gameId: 'game-published-live',
       version: 3,
+      metadata: expect.objectContaining({
+        gameSpec: expect.objectContaining({
+          game_type: 'runner',
+        }),
+      }),
       updateData: expect.objectContaining({
         status: 'published',
       }),
     }));
     const persistCall = persistGeneratedGameResultSpy.mock.calls[0]?.[0] as any;
     expect(persistCall.updateData.version).toBeUndefined();
+    expect(persistCall.updateData.gameType).toBeUndefined();
+    assertTaskCanPersistResultSpy.mockRestore();
+    persistGeneratedGameResultSpy.mockRestore();
+  });
+
+  it('persists runtime qa warnings on published iteration candidates', async () => {
+    const persistGeneratedGameResultSpy = jest
+      .spyOn(service as any, 'persistGeneratedGameResult')
+      .mockResolvedValue(undefined);
+    const assertTaskCanPersistResultSpy = jest
+      .spyOn(service as any, 'assertTaskCanPersistResult')
+      .mockResolvedValue(undefined);
+
+    await (service as any).completeIterationTask({
+      gameId: 'game-published-warning',
+      userId: 'user-published-warning',
+      feedback: 'add five levels',
+      conversationHistory: [],
+      nextVersion: 4,
+      taskId: 'task-published-warning',
+      currentCode: '<!DOCTYPE html><html><body>old</body></html>',
+      responseData: {
+        html_code: '<!DOCTYPE html><html><body>candidate</body></html>',
+        iteration_type: 'mechanic_change',
+        qa_warnings: [
+          {
+            type: 'runtime_qa_unavailable',
+            severity: 'warning',
+            message: 'Runtime QA unavailable: runtime_qa_timeout:60.00s',
+            kind: 'timeout',
+            phase: 'overall',
+            softFailed: true,
+          },
+        ],
+        runtime_qa_report: {
+          ran: false,
+          unavailableReason: 'runtime_qa_timeout:60.00s',
+          unavailableKind: 'timeout',
+          unavailablePhase: 'overall',
+          phaseMetrics: {
+            total_elapsed_ms: 60000,
+          },
+        },
+      },
+      baseStatus: 'published',
+    });
+
+    expect(persistGeneratedGameResultSpy).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({
+        qaWarnings: expect.arrayContaining([
+          expect.objectContaining({
+            type: 'runtime_qa_unavailable',
+            kind: 'timeout',
+          }),
+        ]),
+        runtimeQaReport: expect.objectContaining({
+          unavailableKind: 'timeout',
+          unavailablePhase: 'overall',
+        }),
+      }),
+    }));
+    expect(generationTaskService.markSucceeded).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'task-published-warning',
+      resultSummary: expect.objectContaining({
+        qaWarningCount: 1,
+        runtimeQaUnavailable: true,
+        runtimeQaUnavailableKind: 'timeout',
+        runtimeQaUnavailablePhase: 'overall',
+        runtimeQaUnavailableReason: 'runtime_qa_timeout:60.00s',
+      }),
+    }));
     assertTaskCanPersistResultSpy.mockRestore();
     persistGeneratedGameResultSpy.mockRestore();
   });
