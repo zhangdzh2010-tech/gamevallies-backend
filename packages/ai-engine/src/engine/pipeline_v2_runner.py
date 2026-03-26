@@ -23,12 +23,14 @@ from ..api.models import (
 from ..config.settings import settings
 from ..config.timeout_store import get_float as get_timeout_float, get_int as get_timeout_int
 from .code_generator import CodeGenerator
+from .code_reviewer import CodeReviewer
 from .dialogue_engine import DialogueEngine, SlotExtractionFailure, _looks_like_educational_request
 from .game_designer import GameDesigner
 from .pipeline_orchestrator import PipelineExecutionError
+from .pre_generation_validator import PreGenerationValidator
 from .prompt_store import get_default_runtime_profile, require_prompt
 from .qa_pipeline import QAPipeline
-from .quality_scorer import LLMReviewResult, QAStaticResult, QualityScorer
+from .quality_scorer import LLMReviewResult, QAStaticResult, QualityScorer, RuntimeQAResult
 from .restart_entry import has_restart_entry
 from .runtime_qa import run_runtime_qa
 from .terminal_state import has_required_state_presence, has_terminal_state_transition
@@ -111,6 +113,8 @@ class V2PipelineRunner:
         self.code_generator = CodeGenerator(llm_mode=settings.LLM_MODE)
         self.qa_pipeline = QAPipeline()
         self.quality_scorer = QualityScorer()
+        self.code_reviewer = CodeReviewer()
+        self.pre_gen_validator = PreGenerationValidator()
 
     async def run(
         self,
@@ -208,6 +212,11 @@ class V2PipelineRunner:
         )
         gdd = await self._build_gdd(spec, runtime_contract)
 
+        pre_issues = self.pre_gen_validator.validate(spec, gdd, runtime_contract)
+        if pre_issues:
+            logger.warning("Pre-generation issues detected: %s", pre_issues)
+            spec, gdd = self.pre_gen_validator.auto_fix(spec, gdd, pre_issues)
+
         self._notify(progress_cb, "logic_generate", 60, "Generating runtime-bound game logic", {
             "gameId": request.game_id,
             "userId": request.user_id,
@@ -228,9 +237,33 @@ class V2PipelineRunner:
             allow_runtime_qa_unavailable=False,
         )
 
+        if qa_result.needs_regeneration:
+            logger.info("QA signaled regeneration needed; retrying code generation with complex budget")
+            self._notify(progress_cb, "logic_generate", 65, "Regenerating with higher token budget", {
+                "gameId": request.game_id,
+                "userId": request.user_id,
+                "runtimeProfile": runtime_profile,
+            })
+            stage_context["stage"] = "logic_generate"
+            generated = await self._generate_create_code(
+                request, spec, gdd, runtime_contract, budget_override="complex",
+            )
+            qa_result, runtime_qa, runtime_retries, qa_warnings = await self._run_contract_and_runtime_flow(
+                code=generated.html_code,
+                spec=spec,
+                runtime_contract=runtime_contract,
+                prompt_bundle_snapshot=request.prompt_bundle_snapshot.model_dump(),
+                progress_cb=progress_cb,
+                game_id=request.game_id,
+                user_id=request.user_id,
+                stage_context=stage_context,
+                allow_runtime_qa_unavailable=False,
+            )
+
         elapsed = int(time.time() * 1000) - start_ms
         code_bytes = len(qa_result.code.encode("utf-8"))
         final_check = self.qa_pipeline.check(qa_result.code)
+        review = await self.code_reviewer.review(qa_result.code)
         quality = self.quality_scorer.compute(
             static=QAStaticResult(
                 passed=final_check.passed,
@@ -241,7 +274,7 @@ class V2PipelineRunner:
                 code_size_bytes=code_bytes,
             ),
             runtime=runtime_qa,
-            review=LLMReviewResult(ran=False),
+            review=review,
         )
 
         stage_context["stage"] = "completed"
@@ -328,7 +361,7 @@ class V2PipelineRunner:
             game_id=request.game_id,
             user_id=request.user_id,
             stage_context=stage_context,
-            allow_runtime_qa_unavailable=(request.existing_game.status or "").strip().lower() == "published",
+            allow_runtime_qa_unavailable=False,
         )
 
         elapsed = int(time.time() * 1000) - start_ms
@@ -666,6 +699,7 @@ class V2PipelineRunner:
         spec: GameSpec,
         gdd: GDD,
         runtime_contract: GameRuntimeContract,
+        budget_override: Optional[str] = None,
     ):
         last_exc: Exception | None = None
         for attempt in range(1, DEFAULT_STAGE_TOTAL_ATTEMPTS + 1):
@@ -678,6 +712,7 @@ class V2PipelineRunner:
                     runtime_contract=runtime_contract,
                     runtime_profile=runtime_contract.runtime_profile,
                     prompt_bundle_snapshot=request.prompt_bundle_snapshot.model_dump(),
+                    budget_override=budget_override,
                 )
             except Exception as exc:
                 last_exc = exc
@@ -751,6 +786,8 @@ class V2PipelineRunner:
             game_id=game_id,
             user_id=user_id,
         )
+        if not qa_result.success and qa_result.needs_regeneration:
+            return qa_result, RuntimeQAResult(), 0, []
         if not qa_result.success:
             error_messages = "; ".join(error.message for error in qa_result.last_errors[:5])
             raise PipelineExecutionError(
@@ -817,6 +854,10 @@ class V2PipelineRunner:
             errors = self._validate_contract_bundle(current_code, runtime_contract)
             if not errors:
                 return QAResult(success=True, code=current_code, retries=repair_attempts)
+
+            if attempt >= 1 and self.qa_pipeline._errors_look_like_truncation(errors):
+                logger.warning("Contract QA: truncation persists after %d repair(s); signaling regeneration", repair_attempts)
+                return QAResult(success=False, code=current_code, retries=repair_attempts, last_errors=errors, needs_regeneration=True)
 
             if attempt == retries_allowed:
                 return QAResult(success=False, code=current_code, retries=repair_attempts, last_errors=errors)

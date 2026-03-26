@@ -636,6 +636,29 @@ class QAPipeline:
     # Public: auto-fix loop
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _errors_look_like_truncation(errors: List[QACheckError]) -> bool:
+        """Detect if errors suggest the LLM output was truncated mid-code."""
+        truncation_signals = (
+            "unexpected end of input",
+            "unexpected eof",
+            "unterminated string",
+            "unbalanced",
+            "missing closing",
+            "unclosed",
+            "syntax error",
+            "</html> missing",
+            "</script> missing",
+            "</body> missing",
+        )
+        for error in errors:
+            msg = error.message.lower()
+            if any(signal in msg for signal in truncation_signals):
+                return True
+            if error.error_type == "l1_syntax" and "tag" in msg and "missing" in msg:
+                return True
+        return False
+
     async def run_with_auto_fix(
         self,
         code: str,
@@ -678,6 +701,20 @@ class QAPipeline:
                     result.errors[0].message if result.errors else "unknown",
                 )
                 break
+
+            if attempt >= 1 and self._errors_look_like_truncation(result.errors):
+                logger.warning(
+                    "Truncation persists after %d repair attempt(s); signaling regeneration needed",
+                    repair_attempts,
+                )
+                final = self.check(code, runtime_contract=runtime_contract)
+                return QAResult(
+                    success=False,
+                    code=code,
+                    retries=repair_attempts,
+                    last_errors=final.errors,
+                    needs_regeneration=True,
+                )
 
             if retry_cb:
                 try:
