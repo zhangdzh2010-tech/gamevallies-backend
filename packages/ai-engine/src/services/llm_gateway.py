@@ -440,10 +440,16 @@ class LLMGateway:
             ordered.append(provider)
 
         if route:
+            # When a route exists, only use explicitly configured providers.
+            # This prevents unrelated enabled providers from being called
+            # as implicit fallbacks.
             add_provider(route.provider_id)
             for fallback_id in route.fallback_provider_ids:
                 add_provider(fallback_id)
+            return ordered
 
+        # No route matched — fall back to all enabled providers,
+        # preferring same-region first.
         for provider in self._providers.values():
             if provider.region == service_region:
                 add_provider(provider.id)
@@ -500,6 +506,7 @@ class LLMGateway:
                 "requested_step_key": step_key,
                 "matched_step_key": matched_step_key or step_key,
                 "route_match_strategy": route_match_strategy or ("exact" if route else "none"),
+                "explicit_fallback_only": route is not None,
             },
         )
 
