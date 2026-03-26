@@ -107,9 +107,33 @@ class CodeGenerator:
     def _long_generation_timeout_s() -> int:
         return get_timeout_int(
             "timeout.ai_engine.llm_long_generation_s",
-            240,
+            300,
             min_value=30,
         )
+
+    @staticmethod
+    def _select_token_budget(spec: Optional[GameSpec] = None, budget_override: Optional[str] = None) -> int:
+        """Select token budget based on game complexity or explicit override."""
+        if budget_override:
+            mapping = {
+                "simple": settings.LLM_GENERATION_TOKEN_BUDGET_SIMPLE,
+                "standard": settings.LLM_GENERATION_TOKEN_BUDGET_STANDARD,
+                "complex": settings.LLM_GENERATION_TOKEN_BUDGET_COMPLEX,
+            }
+            return max(1024, mapping.get(budget_override, settings.LLM_LONG_GENERATION_MAX_TOKENS))
+
+        if spec is None:
+            return max(1024, settings.LLM_LONG_GENERATION_MAX_TOKENS)
+
+        special_rules_count = len(spec.special_rules or [])
+        entity_count = len(spec.entities or [])
+        game_type = (spec.game_type or "").lower()
+
+        if special_rules_count >= 3 or entity_count >= 5 or game_type in ("rpg", "tower_defense"):
+            return max(1024, settings.LLM_GENERATION_TOKEN_BUDGET_COMPLEX)
+        if special_rules_count == 0 and entity_count <= 2 and game_type in ("dodge", "runner"):
+            return max(1024, settings.LLM_GENERATION_TOKEN_BUDGET_SIMPLE)
+        return max(1024, settings.LLM_GENERATION_TOKEN_BUDGET_STANDARD)
 
     async def generate(
         self,
@@ -122,6 +146,7 @@ class CodeGenerator:
         runtime_contract: Optional[GameRuntimeContract] = None,
         runtime_profile: Optional[str] = None,
         prompt_bundle_snapshot: Optional[Dict[str, Any]] = None,
+        budget_override: Optional[str] = None,
     ) -> GenerateCodeResult:
         del template_id, confidence, allow_fallback
         if self.llm_mode != "real" or not self._client.is_enabled():
@@ -135,6 +160,7 @@ class CodeGenerator:
             runtime_contract=runtime_contract,
             runtime_profile=runtime_profile,
             prompt_bundle_snapshot=prompt_bundle_snapshot,
+            budget_override=budget_override,
         )
         elapsed = int((time.time() - start) * 1000)
         return GenerateCodeResult(
@@ -153,6 +179,7 @@ class CodeGenerator:
         runtime_contract: Optional[GameRuntimeContract] = None,
         runtime_profile: Optional[str] = None,
         prompt_bundle_snapshot: Optional[Dict[str, Any]] = None,
+        budget_override: Optional[str] = None,
     ) -> str:
         request_text = self._resolve_request_context(spec, gdd, description)
         entities_desc = "\n".join(
@@ -203,7 +230,7 @@ class CodeGenerator:
         try:
             long_generation_timeout_s = self._long_generation_timeout_s()
             text = await self._client.complete(
-                max_tokens=max(1024, int(settings.LLM_LONG_GENERATION_MAX_TOKENS or 6144)),
+                max_tokens=self._select_token_budget(spec, budget_override),
                 system=self._build_system_prompt(prompt_bundle_snapshot),
                 messages=[{"role": "user", "content": full_prompt}],
                 step_key="code_generate.full",
@@ -812,7 +839,7 @@ class CodeGenerator:
         try:
             long_generation_timeout_s = self._long_generation_timeout_s()
             text = await self._client.complete(
-                max_tokens=max(1024, int(settings.LLM_LONG_GENERATION_MAX_TOKENS or 6144)),
+                max_tokens=self._select_token_budget(game_spec),
                 system=self._build_system_prompt(prompt_bundle_snapshot),
                 messages=[{"role": "user", "content": prompt}],
                 step_key=step_key,

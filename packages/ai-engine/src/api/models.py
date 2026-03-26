@@ -213,6 +213,7 @@ class QAResult(BaseModel):
     code: str
     retries: int = 0
     last_errors: List[QACheckError] = Field(default_factory=list)
+    needs_regeneration: bool = False
 
 
 # ---------------------------------------------------------------------------
