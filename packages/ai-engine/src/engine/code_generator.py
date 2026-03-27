@@ -521,11 +521,19 @@ class CodeGenerator:
         match = re.search(r"(\d+)", score_font)
         hud_font = int(match.group(1)) if match else 16
         hud_font = max(14, min(hud_font, 18))
-        return require_prompt("prompt.mobile_layout_guardrails").format(
+        prompt = require_prompt("prompt.mobile_layout_guardrails").format(
             canvas_w=gdd.canvas.width,
             canvas_h=gdd.canvas.height,
             hud_font=hud_font,
         )
+        supplement = (
+            "MOBILE LAYOUT CONTRACT SUPPLEMENT\n"
+            f"- Keep the reference playfield portrait-first at {gdd.canvas.width}x{gdd.canvas.height}.\n"
+            "- Add a resize or orientation-change handler that reads both viewport width and viewport height.\n"
+            "- Compute scaleX and scaleY from the viewport against the portrait reference size.\n"
+            "- Derive uiScale from Math.min(scaleX, scaleY) or an equivalent short-edge fit, then center the canvas."
+        )
+        return "\n".join([prompt, supplement])
 
     @staticmethod
     def _format_state_flow(state_machine: Dict[str, Any]) -> str:
@@ -805,7 +813,15 @@ class CodeGenerator:
             f"{item.get('role', 'user')}: {item.get('content', '')}"
             for item in conversation[-4:]
         )
-        mobile_guardrails = require_prompt("prompt.iteration_mobile_layout_guardrails")
+        mobile_guardrails = "\n".join([
+            require_prompt("prompt.iteration_mobile_layout_guardrails"),
+            (
+                "MOBILE LAYOUT CONTRACT SUPPLEMENT\n"
+                "- Preserve portrait-first sizing during iteration.\n"
+                "- Read both viewport width and viewport height inside resize logic.\n"
+                "- Compute scaleX and scaleY, then derive uiScale from Math.min(scaleX, scaleY) or an equivalent short-edge fit."
+            ),
+        ])
 
         if iter_type == IterationType.param_adjust:
             prompt = require_prompt("prompt.param_adjust").format(

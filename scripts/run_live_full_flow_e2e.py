@@ -103,6 +103,83 @@ def fetch_author_play(base_url: str, game_id: str, bearer_headers: dict[str, str
     }
 
 
+def fetch_share_data(base_url: str, game_id: str) -> dict[str, Any]:
+    response = http_json(
+        "GET",
+        f"{base_url}/api/v1/games/{game_id}/share-data",
+        timeout=60,
+    )
+    data = (response or {}).get("data") or {}
+    return {
+        "response": response,
+        "ok": bool(data.get("url")) and bool(data.get("title")),
+        "url": data.get("url"),
+        "title": data.get("title"),
+    }
+
+
+def run_subscription_flow(
+    base_url: str,
+    bearer_headers: dict[str, str],
+    *,
+    game_id_to_unlock: str | None = None,
+) -> dict[str, Any]:
+    plans_response = http_json("GET", f"{base_url}/api/v1/subscription/plans", timeout=60)
+    plans_data = (plans_response or {}).get("data") or {}
+    plans = plans_data.get("plans") or []
+    if not plans:
+        raise RuntimeError(f"No subscription plans returned: {plans_response}")
+
+    selected_plan = plans[0]
+    order_payload: dict[str, Any] = {"planId": selected_plan["id"]}
+    if game_id_to_unlock:
+        order_payload["gameId"] = game_id_to_unlock
+
+    order_response = http_json(
+        "POST",
+        f"{base_url}/api/v1/subscription/order",
+        payload=order_payload,
+        headers=bearer_headers,
+        timeout=60,
+    )
+    order_data = (order_response or {}).get("data") or {}
+    order_id = order_data.get("orderId")
+    if not order_id:
+        raise RuntimeError(f"Subscription order did not return orderId: {order_response}")
+
+    mock_pay_response = http_json(
+        "POST",
+        f"{base_url}/api/v1/subscription/orders/{order_id}/mock-pay",
+        payload={},
+        headers=bearer_headers,
+        timeout=60,
+    )
+    order_status_response = http_json(
+        "GET",
+        f"{base_url}/api/v1/subscription/orders/{order_id}",
+        headers=bearer_headers,
+        timeout=60,
+    )
+    subscription_status_response = http_json(
+        "GET",
+        f"{base_url}/api/v1/subscription/status",
+        headers=bearer_headers,
+        timeout=60,
+    )
+    order_status = ((order_status_response or {}).get("data") or {}).get("status")
+    subscription_status = (subscription_status_response or {}).get("data") or {}
+
+    return {
+        "plans": plans_response,
+        "selectedPlanId": selected_plan["id"],
+        "order": order_response,
+        "mockPay": mock_pay_response,
+        "orderStatus": order_status_response,
+        "subscriptionStatus": subscription_status_response,
+        "ok": str(order_status or "").lower() == "paid" and bool(subscription_status.get("active")),
+    }
+
+
 def publish_and_check_public(base_url: str, game_id: str, bearer_headers: dict[str, str]) -> dict[str, Any]:
     publish_response = http_json(
         "POST",
@@ -199,6 +276,12 @@ def run_full_flow_case(
 
     result["create"]["authorPlay"] = fetch_author_play(base_url, game_id, author_headers)
     result["create"].update(publish_and_check_public(base_url, game_id, author_headers))
+    result["create"]["share"] = fetch_share_data(base_url, game_id)
+    result["subscription"] = run_subscription_flow(
+        base_url,
+        author_headers,
+        game_id_to_unlock=game_id,
+    )
 
     iterate_response = http_json(
         "POST",
@@ -262,6 +345,7 @@ def run_full_flow_case(
         "authorPlay": fetch_author_play(base_url, fork_game_id, forker_headers),
     }
     result["fork"].update(publish_and_check_public(base_url, fork_game_id, forker_headers))
+    result["fork"]["share"] = fetch_share_data(base_url, fork_game_id)
     forks_response = http_json("GET", f"{base_url}/api/v1/games/{game_id}/forks?page=1&limit=50", timeout=60)
     tree_response = http_json("GET", f"{base_url}/api/v1/games/{game_id}/fork-tree", timeout=60)
     lineage_response = http_json("GET", f"{base_url}/api/v1/games/{fork_game_id}/fork-lineage", timeout=60)
@@ -280,11 +364,14 @@ def run_full_flow_case(
         result["create"]["finalStatus"] == "succeeded"
         and result["create"]["authorPlay"]["ok"]
         and result["create"]["publicAfterPublish"]["previewOk"]
+        and result["create"]["share"]["ok"]
+        and result["subscription"]["ok"]
         and result["iterate"]["finalStatus"] == "succeeded"
         and result["iterate"]["authorPlay"]["ok"]
         and result["iterate"]["publicAfterPublish"]["previewOk"]
         and result["fork"]["authorPlay"]["ok"]
         and result["fork"]["publicAfterPublish"]["previewOk"]
+        and result["fork"]["share"]["ok"]
         and result["fork"]["relationships"]["containsForkId"]
         and result["fork"]["relationships"]["containsSourceId"]
     )

@@ -627,6 +627,61 @@ def test_complete_applies_overall_timeout_budget_across_provider_fallbacks():
         settings.LLM_PROVIDER_FAILOVER_ENABLED = old_failover
 
 
+def test_complete_clamps_max_tokens_to_provider_limit_and_records_metadata():
+    client = LLMClient()
+    route = SimpleNamespace(
+        provider_id="provider-capped",
+        provider_name="MiniMax Capped",
+        provider_type="openai_compatible",
+        region="cn-shanghai",
+        base_url="https://provider.example/v1",
+        api_key="secret",
+        model="MiniMax-M2.7",
+        fast_model="MiniMax-M2.7",
+        request_timeout_s=600,
+        connect_timeout_s=15,
+        context_window=128000,
+        max_tokens=4096,
+        config_version=123,
+        route_snapshot={"step_key": "code_generate.full"},
+    )
+    old_mode = settings.LLM_MODE
+    settings.LLM_MODE = "real"
+
+    try:
+        captured = {}
+
+        async def fake_complete_with_route(**kwargs):
+            captured["max_tokens"] = kwargs["max_tokens"]
+            captured["route_snapshot"] = kwargs["route"].route_snapshot
+            return "ok"
+
+        with patch.object(llm_client_module.gateway, "has_enabled_provider", return_value=True), patch.object(
+            llm_client_module.gateway,
+            "resolve",
+            return_value=route,
+        ), patch.object(
+            client,
+            "_complete_with_route",
+            new=AsyncMock(side_effect=fake_complete_with_route),
+        ):
+            result = asyncio.run(client.complete(
+                messages=[{"role": "user", "content": "make me a game"}],
+                max_tokens=8192,
+                step_key="code_generate.full",
+                stage="code_generating",
+            ))
+
+        assert result == "ok"
+        assert captured["max_tokens"] == 4096
+        assert captured["route_snapshot"]["requested_max_tokens"] == 8192
+        assert captured["route_snapshot"]["effective_max_tokens"] == 4096
+        assert captured["route_snapshot"]["provider_max_tokens"] == 4096
+        assert captured["route_snapshot"]["provider_context_window"] == 128000
+    finally:
+        settings.LLM_MODE = old_mode
+
+
 def test_extract_openai_choice_text_supports_nested_text_blocks_and_legacy_text():
     nested_choice = {
         "message": {
@@ -641,6 +696,72 @@ def test_extract_openai_choice_text_supports_nested_text_blocks_and_legacy_text(
 
     assert _extract_openai_choice_text(nested_choice) == "<html>ok</html>"
     assert _extract_openai_choice_text(legacy_choice) == "```html\n<html>legacy</html>\n```"
+
+
+def test_complete_openai_compatible_accepts_complete_html_even_when_finish_reason_is_length():
+    client = LLMClient()
+    route = SimpleNamespace(
+        api_key="secret",
+        base_url="https://api.example.com/v1",
+        model="MiniMax-M2.7",
+        request_timeout_s=60,
+        connect_timeout_s=15,
+    )
+    payload = {
+        "choices": [
+            {
+                "finish_reason": "length",
+                "message": {
+                    "content": "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas></body></html>",
+                },
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 111,
+            "completion_tokens": 222,
+            "total_tokens": 333,
+        },
+    }
+
+    class _FakeResponse:
+        headers = httpx.Headers({"x-request-id": "req-complete-html"})
+        text = '{"choices":[{"finish_reason":"length"}]}'
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        @staticmethod
+        def json():
+            return payload
+
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, *args, **kwargs):
+            return _FakeResponse()
+
+    with patch("src.services.llm_client.httpx.AsyncClient", _FakeAsyncClient):
+        result = asyncio.run(
+            client._complete_openai_compatible(
+                route=route,
+                messages=[{"role": "user", "content": "fix layout"}],
+                max_tokens=1024,
+                system="SYSTEM",
+            )
+        )
+
+    assert result.text == "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas></body></html>"
+    assert result.usage.input_tokens == 111
+    assert result.usage.output_tokens == 222
+    assert result.usage.total_tokens == 333
 
 
 def test_complete_anthropic_raises_truncation_error_on_max_tokens_stop_reason():
@@ -686,6 +807,48 @@ def test_complete_anthropic_raises_truncation_error_on_max_tokens_stop_reason():
             assert exc.stop_reason == "max_tokens"
             assert exc.upstream_request_id == "msg_123"
             assert exc.output_tokens == 4096
+
+
+def test_complete_anthropic_accepts_complete_html_even_when_stop_reason_is_max_tokens():
+    client = LLMClient()
+
+    class _FakeUsage:
+        output_tokens = 4096
+
+    class _FakeBlock:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    class _FakeResponse:
+        id = "msg_complete"
+        stop_reason = "max_tokens"
+        usage = _FakeUsage()
+        content = [_FakeBlock("<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas></body></html>")]
+
+    class _FakeMessages:
+        @staticmethod
+        def create(**_kwargs):
+            return _FakeResponse()
+
+    class _FakeClient:
+        messages = _FakeMessages()
+
+    route = SimpleNamespace(
+        api_key="secret",
+        base_url="https://api.example.com",
+        model="claude-opus-4-6",
+    )
+
+    with patch.object(client, "_get_anthropic_client", return_value=_FakeClient()):
+        result = client._complete_anthropic(
+            route=route,
+            messages=[{"role": "user", "content": "fix code"}],
+            max_tokens=1024,
+            system="SYSTEM",
+        )
+
+    assert result.text == "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas></body></html>"
+    assert result.usage.output_tokens == 4096
 
 
 def test_complete_enforces_request_timeout_for_anthropic_provider_and_logs_failure():

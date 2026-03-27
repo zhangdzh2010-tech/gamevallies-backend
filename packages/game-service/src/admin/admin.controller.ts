@@ -127,10 +127,52 @@ export class AdminController {
   }
 
   @Get('admin/stats')
-  async getStats(@Headers('x-admin-token') token: string) {
+  async getStats(
+    @Headers('x-admin-token') token: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
     checkAdminToken(token);
-    const stats = await this.adminService.getStats();
+    const stats = await this.adminService.getStats(from, to);
     return ok(stats);
+  }
+
+  @Get('admin/subscription/plans')
+  async listSubscriptionPlans(
+    @Headers('x-admin-token') token: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    checkAdminToken(token);
+    return ok(await this.adminService.listSubscriptionPlans(from, to));
+  }
+
+  @Post('admin/subscription/plans')
+  async createSubscriptionPlan(
+    @Headers('x-admin-token') token: string,
+    @Body() body: any,
+  ) {
+    checkAdminToken(token);
+    return ok(await this.adminService.upsertSubscriptionPlan(undefined, body), 'Subscription plan saved');
+  }
+
+  @Put('admin/subscription/plans/:id')
+  async updateSubscriptionPlan(
+    @Headers('x-admin-token') token: string,
+    @Param('id') id: string,
+    @Body() body: any,
+  ) {
+    checkAdminToken(token);
+    return ok(await this.adminService.upsertSubscriptionPlan(id, body), 'Subscription plan saved');
+  }
+
+  @Delete('admin/subscription/plans/:id')
+  async deleteSubscriptionPlan(
+    @Headers('x-admin-token') token: string,
+    @Param('id') id: string,
+  ) {
+    checkAdminToken(token);
+    return ok(await this.adminService.deleteSubscriptionPlan(id), 'Subscription plan removed');
   }
 
   @Get('admin/genlog')

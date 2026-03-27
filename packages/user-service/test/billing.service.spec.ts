@@ -26,6 +26,7 @@ describe('BillingService', () => {
       },
       systemConfig: {
         findUnique: jest.fn(),
+        upsert: jest.fn(),
       },
       userQuota: {
         upsert: jest.fn(),
@@ -34,6 +35,8 @@ describe('BillingService', () => {
         findFirst: jest.fn(),
         findMany: jest.fn(),
         upsert: jest.fn(),
+        count: jest.fn(),
+        createMany: jest.fn(),
       },
       userSubscription: {
         count: jest.fn(),
@@ -71,6 +74,7 @@ describe('BillingService', () => {
     };
 
     service = new BillingService(prisma, configService, wechatPayService);
+    prisma.systemConfig.findUnique.mockResolvedValue({ id: 'cfg_bootstrap' });
   });
 
   it('initializes user quota and reports inactive subscription status', async () => {
@@ -107,6 +111,68 @@ describe('BillingService', () => {
         usedFreeQuota: 0,
       },
     });
+  });
+
+  it('bootstraps default plans only once and does not overwrite admin-managed plans afterwards', async () => {
+    prisma.systemConfig.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: 'cfg_bootstrap' });
+    prisma.subscriptionPlan.count.mockResolvedValue(0);
+    prisma.subscriptionPlan.createMany.mockResolvedValue({ count: 2 });
+    prisma.systemConfig.upsert.mockResolvedValue({
+      id: 'cfg_bootstrap',
+      configKey: 'billing.subscription_plans_bootstrapped_at',
+    });
+    prisma.subscriptionPlan.findMany
+      .mockResolvedValueOnce([
+        {
+          id: 'plan_monthly_basic',
+          name: '基础月卡',
+          price: 990,
+          currency: 'CNY',
+          period: SubscriptionPeriod.monthly,
+          quota: 10,
+          features: ['每月10次创建'],
+          recommended: false,
+          badge: null,
+          active: true,
+          sortOrder: 10,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 'plan_monthly_basic',
+          name: '后台改过名的月卡',
+          price: 1290,
+          currency: 'CNY',
+          period: SubscriptionPeriod.monthly,
+          quota: 12,
+          features: ['后台配置保留'],
+          recommended: false,
+          badge: null,
+          active: true,
+          sortOrder: 10,
+        },
+      ]);
+    prisma.userSubscription.count.mockResolvedValue(3);
+
+    const first = await service.listPlans();
+    const second = await service.listPlans();
+
+    expect(prisma.subscriptionPlan.createMany).toHaveBeenCalledTimes(1);
+    expect(prisma.systemConfig.upsert).toHaveBeenCalledTimes(1);
+    expect(first.plans[0]).toEqual(expect.objectContaining({
+      id: 'plan_monthly_basic',
+      name: '基础月卡',
+      price: 990,
+    }));
+    expect(second.plans[0]).toEqual(expect.objectContaining({
+      id: 'plan_monthly_basic',
+      name: '后台改过名的月卡',
+      price: 1290,
+      quota: 12,
+    }));
   });
 
   it('creates a pending subscription order with mock payment params', async () => {

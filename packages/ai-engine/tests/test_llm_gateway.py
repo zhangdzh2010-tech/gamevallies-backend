@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 from unittest.mock import patch
@@ -28,6 +29,8 @@ def _provider(
         priority=100,
         description=None,
         extra_config={},
+        context_window=None,
+        max_tokens=None,
         updated_at=updated_at,
     )
 
@@ -185,3 +188,106 @@ def test_no_route_falls_back_to_all_regional_providers():
     assert provider_a.id in provider_ids
     assert provider_b.id in provider_ids
     assert candidates[0].route_snapshot["explicit_fallback_only"] is False
+
+
+def test_resolve_candidates_exposes_provider_context_and_max_tokens_in_route_snapshot():
+    provider = ProviderRecord(
+        id="provider-capped",
+        name="Provider Capped",
+        provider_type="openai_compatible",
+        region="cn_shanghai",
+        base_url="https://provider-capped.example.com/v1",
+        api_key="secret-provider-capped",
+        model="model-provider-capped",
+        fast_model="fast-provider-capped",
+        request_timeout_s=600,
+        connect_timeout_s=15,
+        enabled=True,
+        priority=100,
+        description=None,
+        extra_config={"contextWindow": 128000, "maxTokens": 8192},
+        context_window=128000,
+        max_tokens=8192,
+        updated_at=100.0,
+    )
+    gateway = _gateway(
+        providers=[provider],
+        routes=[_route("route-codegen", "code_generate.full", provider.id)],
+    )
+
+    with patch("src.services.llm_gateway.settings.SERVICE_REGION", "cn_shanghai"), patch.object(
+        gateway,
+        "_ensure_loaded",
+        return_value=None,
+    ):
+        candidates = gateway.resolve_candidates(step_key="code_generate.full")
+
+    assert candidates[0].context_window == 128000
+    assert candidates[0].max_tokens == 8192
+    assert candidates[0].route_snapshot["context_window"] == 128000
+    assert candidates[0].route_snapshot["max_tokens"] == 8192
+
+
+def test_invoke_test_completion_clamps_max_tokens_to_provider_limit():
+    gateway = LLMGateway()
+    provider = ProviderRecord(
+        id="provider-capped",
+        name="Provider Capped",
+        provider_type="openai_compatible",
+        region="cn_shanghai",
+        base_url="https://provider-capped.example.com/v1",
+        api_key="secret-provider-capped",
+        model="model-provider-capped",
+        fast_model="fast-provider-capped",
+        request_timeout_s=600,
+        connect_timeout_s=15,
+        enabled=True,
+        priority=100,
+        description=None,
+        extra_config={"maxTokens": 512},
+        context_window=None,
+        max_tokens=512,
+        updated_at=100.0,
+    )
+    route = gateway._resolved_route_for_provider(provider)
+    captured = {}
+
+    class _FakeResponse:
+        status_code = 200
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        @staticmethod
+        def json():
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, endpoint, headers=None, json=None):
+            captured["endpoint"] = endpoint
+            captured["max_tokens"] = json["max_tokens"]
+            return _FakeResponse()
+
+    with patch("src.services.llm_gateway.httpx.AsyncClient", _FakeAsyncClient):
+        reply, http_status, endpoint = asyncio.run(
+            gateway._invoke_test_completion(
+                route=route,
+                messages=[{"role": "user", "content": "ping"}],
+                max_tokens=2048,
+            )
+        )
+
+    assert reply == "ok"
+    assert http_status == 200
+    assert endpoint == "https://provider-capped.example.com/v1/chat/completions"
+    assert captured["max_tokens"] == 512

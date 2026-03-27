@@ -46,7 +46,7 @@ STATE_GROUP_EQUIVALENCE: Dict[str, str] = {
 }
 
 STATE_VARIABLE_RE = re.compile(
-    r"(state|gameState|currentState|status|gameStatus)\s*=\s*(?:[A-Za-z_$][\w$]*\.)*([A-Za-z_$][\w$]*)\b",
+    r"(?:[A-Za-z_$][\w$]*\.)?(state|gameState|currentState|status|gameStatus|phase|mode)\s*=\s*(?:[A-Za-z_$][\w$]*\.)*([A-Za-z_$][\w$]*)\b",
     re.IGNORECASE,
 )
 STATE_TRANSITION_FN_RE = re.compile(
@@ -54,7 +54,7 @@ STATE_TRANSITION_FN_RE = re.compile(
     re.IGNORECASE,
 )
 STATE_LITERAL_ASSIGN_RE = re.compile(
-    r"(state|gameState|currentState|status|gameStatus)\s*=\s*['\"]([^'\"]+)['\"]",
+    r"(?:[A-Za-z_$][\w$]*\.)?(state|gameState|currentState|status|gameStatus|phase|mode)\s*=\s*['\"]([^'\"]+)['\"]",
     re.IGNORECASE,
 )
 STATE_LITERAL_TRANSITION_RE = re.compile(
@@ -103,7 +103,7 @@ def has_terminal_state_transition(
         return True
 
     if re.search(
-        rf"(state|gameState|currentState|status|gameStatus)\s*=\s*['\"]?(?:{state_value_pattern})['\"]?",
+        rf"(?:[A-Za-z_$][\w$]*\.)?(state|gameState|currentState|status|gameStatus|phase|mode)\s*=\s*['\"]?(?:{state_value_pattern})['\"]?",
         source,
         re.IGNORECASE,
     ):
@@ -117,7 +117,7 @@ def has_terminal_state_transition(
         return True
 
     if enum_value_pattern and re.search(
-        rf"(state|gameState|currentState|status|gameStatus)\s*=\s*(?:[A-Za-z_$][\w$]*\.)*(?:{enum_value_pattern})\b",
+        rf"(?:[A-Za-z_$][\w$]*\.)?(state|gameState|currentState|status|gameStatus|phase|mode)\s*=\s*(?:[A-Za-z_$][\w$]*\.)*(?:{enum_value_pattern})\b",
         source,
         re.IGNORECASE,
     ):

@@ -206,6 +206,26 @@ def _coerce_optional_int(value: Any) -> Optional[int]:
             return None
 
 
+def _looks_like_complete_html_document(text: str) -> bool:
+    rendered = _strip_think_tags(text or "")
+    if not rendered:
+        return False
+
+    lower = rendered.lower()
+    if "<html" not in lower or "<body" not in lower:
+        return False
+    if "</body>" not in lower or "</html>" not in lower:
+        return False
+
+    if len(re.findall(r"<script\b", lower)) != len(re.findall(r"</script>", lower)):
+        return False
+
+    if len(re.findall(r"<style\b", lower)) != len(re.findall(r"</style>", lower)):
+        return False
+
+    return True
+
+
 def _extract_openai_usage(data: Any) -> LLMUsageSnapshot:
     usage = data.get("usage") if isinstance(data, dict) else None
     if not isinstance(usage, dict):
@@ -317,6 +337,14 @@ def _apply_request_timeout_override(route: Any, request_timeout_s: Optional[int]
         "request_timeout_override_s": overridden.request_timeout_s,
     }
     return overridden
+
+
+def _apply_route_max_tokens_limit(route: Any, requested_max_tokens: int) -> int:
+    provider_max_tokens = _coerce_optional_int(getattr(route, "max_tokens", None))
+    requested = max(1, int(requested_max_tokens))
+    if provider_max_tokens is None:
+        return requested
+    return max(1, min(requested, provider_max_tokens))
 
 
 class LLMClient:
@@ -464,11 +492,16 @@ class LLMClient:
                 )
 
             route = _apply_request_timeout_override(resolved_route, effective_request_timeout_s)
+            effective_max_tokens = _apply_route_max_tokens_limit(route, max_tokens)
             route.route_snapshot = {
                 **dict(getattr(route, "route_snapshot", {}) or {}),
                 "attempt": attempt_index,
                 "attempt_count": total_attempts,
                 "provider_fallback_from": previous_provider_id,
+                "requested_max_tokens": int(max_tokens),
+                "effective_max_tokens": int(effective_max_tokens),
+                "provider_max_tokens": _coerce_optional_int(getattr(route, "max_tokens", None)),
+                "provider_context_window": _coerce_optional_int(getattr(route, "context_window", None)),
                 **(
                     {"overall_timeout_s": int(overall_timeout_s)}
                     if overall_timeout_s is not None
@@ -479,7 +512,7 @@ class LLMClient:
                 return await self._complete_with_route(
                     route=route,
                     messages=messages,
-                    max_tokens=max_tokens,
+                    max_tokens=effective_max_tokens,
                     system=system,
                     step_key=step_key,
                     stage=stage,
@@ -768,6 +801,11 @@ class LLMClient:
         stop_reason = str(getattr(response, "stop_reason", "") or "").strip().lower()
         usage_snapshot = _extract_anthropic_usage(getattr(response, "usage", None))
         if stop_reason == "max_tokens":
+            if _looks_like_complete_html_document(rendered):
+                logger.warning(
+                    "Anthropic-compatible provider reported max_tokens but returned a complete HTML document; accepting response"
+                )
+                return LLMCompletionResult(text=rendered, usage=usage_snapshot)
             raise LLMResponseTruncatedError(
                 "Anthropic response hit max_tokens and may be truncated",
                 response_excerpt=rendered[:1000] or None,
@@ -839,6 +877,12 @@ class LLMClient:
         usage_snapshot = _extract_openai_usage(data)
         finish_reason = str(choice.get("finish_reason") or "").strip().lower()
         if finish_reason in {"length", "max_tokens"}:
+            if _looks_like_complete_html_document(text):
+                logger.warning(
+                    "OpenAI-compatible provider reported %s but returned a complete HTML document; accepting response",
+                    finish_reason,
+                )
+                return LLMCompletionResult(text=text, usage=usage_snapshot)
             excerpt = text[:1000] or _summarize_openai_response_excerpt(data)
             raise LLMResponseTruncatedError(
                 "OpenAI-compatible response hit the output length limit and may be truncated",
