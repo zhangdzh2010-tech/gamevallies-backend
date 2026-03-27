@@ -86,6 +86,33 @@ GAME_TYPE_NUMERICS: Dict[str, Dict[str, Any]] = {
         "score_per_collect": 10,
         "expected_survival_s": 90,
     },
+    "tower_defense": {
+        "player_speed": 0.0,
+        "base_obstacle_speed": 1.5,
+        "speed_formula": "base + 0.1 * wave_number",
+        "spawn_interval_ms": 2000,
+        "score_per_second": 0,
+        "score_per_collect": 0,
+        "expected_survival_s": 180,
+    },
+    "idle": {
+        "player_speed": 0.0,
+        "base_obstacle_speed": 0.0,
+        "speed_formula": "0",
+        "spawn_interval_ms": 0,
+        "score_per_second": 5,
+        "score_per_collect": 0,
+        "expected_survival_s": 300,
+    },
+    "rpg": {
+        "player_speed": 3.0,
+        "base_obstacle_speed": 2.0,
+        "speed_formula": "base",
+        "spawn_interval_ms": 3000,
+        "score_per_second": 0,
+        "score_per_collect": 25,
+        "expected_survival_s": 120,
+    },
 }
 
 DEFAULT_NUMERICS: Dict[str, Any] = {

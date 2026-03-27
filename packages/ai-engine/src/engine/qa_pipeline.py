@@ -285,23 +285,6 @@ class QAPipeline:
         return min(ceiling, max(floor, approx_tokens + buffer))
 
     @staticmethod
-    def _errors_look_like_truncation(errors: List[QACheckError]) -> bool:
-        markers = (
-            "unexpected end of input",
-            "html appears truncated",
-            "unbalanced <script>",
-            "unbalanced <html>",
-            "unbalanced <body>",
-            "unbalanced <head>",
-            "missing required html tag",
-        )
-        for error in errors:
-            message = re.sub(r"\s+", " ", (error.message or "").strip().lower())
-            if any(marker in message for marker in markers):
-                return True
-        return False
-
-    @staticmethod
     def _estimate_syntax_repair_max_tokens(code: str, *, truncation_risk: bool) -> int:
         approx_tokens = max(2048, len((code or "").encode("utf-8")) // 3)
         buffer = 4096 if truncation_risk else 3072
@@ -674,6 +657,7 @@ class QAPipeline:
         previous_error_signature: Optional[Tuple[str, ...]] = None
         repeated_single_issue_rounds = 0
         previous_code_hash = self._code_hash(code)
+        error_count_history: List[int] = []
 
         for attempt in range(max_retries + 1):
             result = self.check(code, runtime_contract=runtime_contract)
@@ -715,6 +699,16 @@ class QAPipeline:
                     last_errors=final.errors,
                     needs_regeneration=True,
                 )
+
+            error_count_history.append(len(result.errors))
+            if len(error_count_history) >= 3:
+                last3 = error_count_history[-3:]
+                if last3[-1] >= last3[-2] >= last3[-3]:
+                    logger.warning(
+                        "Fix loop showing diminishing returns (error counts: %s); exiting early",
+                        last3,
+                    )
+                    break
 
             if retry_cb:
                 try:
@@ -1047,6 +1041,8 @@ class QAPipeline:
 
         if "</html>" not in lower:
             repaired += "\n</html>"
+
+        repaired = self._strip_storage_apis(repaired)
 
         return repaired.strip()
 
@@ -1649,6 +1645,9 @@ class QAPipeline:
             repaired = self._inject_input_bridge(repaired)
         if repair_family == "forbidden_api":
             repaired = self._sanitize_forbidden_api_usage(repaired, errors)
+            repaired = self._strip_storage_apis(repaired)
+        if repair_family == "terminal_state":
+            repaired = self._inject_terminal_state_fallback(repaired)
         return repaired
 
     @classmethod
@@ -1967,6 +1966,45 @@ class QAPipeline:
                 flags=re.IGNORECASE,
             )
         return code + "\n" + bridge
+
+    @staticmethod
+    def _strip_storage_apis(code: str) -> str:
+        """Deterministically remove localStorage/sessionStorage usage."""
+        repaired = code
+        # Replace getItem calls with empty string
+        repaired = re.sub(r'localStorage\.getItem\([^)]*\)', '""', repaired)
+        repaired = re.sub(r'sessionStorage\.getItem\([^)]*\)', '""', repaired)
+        # Remove setItem / removeItem / clear calls entirely
+        repaired = re.sub(r'localStorage\.(?:setItem|removeItem|clear)\([^)]*\)\s*;?', '', repaired)
+        repaired = re.sub(r'sessionStorage\.(?:setItem|removeItem|clear)\([^)]*\)\s*;?', '', repaired)
+        # Remove remaining bare references used as conditions
+        repaired = re.sub(r'localStorage\b', '({})', repaired)
+        repaired = re.sub(r'sessionStorage\b', '({})', repaired)
+        return repaired
+
+    @staticmethod
+    def _inject_terminal_state_fallback(code: str) -> str:
+        """If gameOver is declared but never set to true, inject a timeout fallback."""
+        if "__playforgeTerminalFallback" in code:
+            return code
+        # Check: gameOver declared as false but never assigned true
+        has_decl = bool(re.search(r'\bgameOver\s*=\s*false\b', code, re.IGNORECASE))
+        has_set_true = bool(re.search(r'\bgameOver\s*=\s*true\b', code, re.IGNORECASE))
+        if not has_decl or has_set_true:
+            return code
+        # Inject a 60-second timeout that sets gameOver = true
+        fallback = (
+            '\n<script>'
+            '/* __playforgeTerminalFallback */'
+            'setTimeout(function(){'
+            'if(typeof gameOver!=="undefined"&&!gameOver){gameOver=true;}'
+            '},60000);'
+            '</script>\n'
+        )
+        # Insert before </body>
+        if re.search(r'</body>', code, re.IGNORECASE):
+            return re.sub(r'(</body>)', fallback + r'\1', code, count=1, flags=re.IGNORECASE)
+        return code + fallback
 
     @staticmethod
     def _sanitize_forbidden_api_usage(code: str, errors: List[QACheckError]) -> str:

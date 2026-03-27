@@ -8,6 +8,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..api.models import (
+    EnrichedGDD,
     GDD,
     GameRuntimeContract,
     GameSpec,
@@ -18,6 +19,7 @@ from ..api.models import (
 from ..config.settings import settings
 from ..config.timeout_store import get_int as get_timeout_int
 from ..services.llm_client import LLMClient
+from .code_template_cache import CodeTemplateCache
 from .prompt_store import get_active_prompt_bundle, require_prompt
 
 logger = logging.getLogger(__name__)
@@ -102,6 +104,7 @@ class CodeGenerator:
     def __init__(self, llm_mode: str = "real") -> None:
         self.llm_mode = llm_mode
         self._client = LLMClient()
+        self.template_cache = CodeTemplateCache()
 
     @staticmethod
     def _long_generation_timeout_s() -> int:
@@ -226,6 +229,18 @@ class CodeGenerator:
         )
         if request_text:
             full_prompt += "\n\n" + require_prompt("prompt.generate_alignment_reminder")
+
+        enriched_block = self._build_enriched_design_block(gdd)
+        if enriched_block:
+            full_prompt += "\n\n" + enriched_block
+
+        skeleton = self.template_cache.get_skeleton(spec.game_type, runtime_profile or "")
+        if skeleton:
+            full_prompt = (
+                "REFERENCE SKELETON (follow this HTML structure, replace game-specific content):\n"
+                f"```html\n{skeleton}\n```\n\n"
+                + full_prompt
+            )
 
         try:
             long_generation_timeout_s = self._long_generation_timeout_s()
@@ -852,6 +867,55 @@ class CodeGenerator:
         except Exception as exc:
             logger.error("LLM iterate failed: %s", exc)
             raise RuntimeError(f"LLM iterate failed: {exc}") from exc
+
+    @staticmethod
+    def _build_enriched_design_block(gdd: GDD) -> str:
+        """Build a prompt block from EnrichedGDD fields, if present."""
+        if not isinstance(gdd, EnrichedGDD):
+            return ""
+        parts: List[str] = []
+        if gdd.gameplay_phases and isinstance(gdd.gameplay_phases, list):
+            phases_str = "\n".join(
+                f"  - {p.get('name', '?')}: {p.get('description', '')}"
+                for p in gdd.gameplay_phases
+                if isinstance(p, dict)
+            )
+            if phases_str:
+                parts.append(f"GAMEPLAY PHASES (implement in order):\n{phases_str}")
+        if gdd.level_design and isinstance(gdd.level_design, list):
+            levels_str = "\n".join(
+                f"  - Level {l.get('level', i+1)}: {l.get('enemy_count', '?')} enemies, "
+                f"speed×{l.get('speed_mult', 1.0)}, {l.get('spawn_pattern', 'sequential')}, "
+                f"{l.get('duration_s', '?')}s"
+                for i, l in enumerate(gdd.level_design)
+                if isinstance(l, dict)
+            )
+            if levels_str:
+                parts.append(f"LEVEL DESIGN:\n{levels_str}")
+        if gdd.enemy_behaviors and isinstance(gdd.enemy_behaviors, list):
+            behaviors_str = "\n".join(
+                f"  - {b.get('name', '?')}: {b.get('description', '')}"
+                for b in gdd.enemy_behaviors
+                if isinstance(b, dict)
+            )
+            if behaviors_str:
+                parts.append(f"ENEMY BEHAVIORS (implement these patterns):\n{behaviors_str}")
+        if gdd.difficulty_curve_params and isinstance(gdd.difficulty_curve_params, dict):
+            dc = gdd.difficulty_curve_params
+            parts.append(
+                f"DIFFICULTY CURVE:\n"
+                f"  - Ramp formula: {dc.get('ramp_formula', 'linear')}\n"
+                f"  - Plateau at: {dc.get('plateau_at_s', 'N/A')}s\n"
+                f"  - Spike at: {dc.get('spike_at_s', 'N/A')}s\n"
+                f"  - Max speed multiplier: {dc.get('max_speed_mult', 2.0)}"
+            )
+        if gdd.visual_effects and isinstance(gdd.visual_effects, list):
+            effects = [e for e in gdd.visual_effects if isinstance(e, str)]
+            if effects:
+                parts.append(f"VISUAL EFFECTS (implement these):\n  - " + "\n  - ".join(effects))
+        if not parts:
+            return ""
+        return "ENRICHED GAME DESIGN (follow this design closely):\n\n" + "\n\n".join(parts)
 
 
 def _extract_html(text: str) -> str:

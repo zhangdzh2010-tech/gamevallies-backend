@@ -15,7 +15,9 @@ from src.services import llm_client as llm_client_module
 from src.services.llm_client import (
     LLMClient,
     EmptyOpenAICompatibleTextError,
+    LLMCompletionResult,
     LLMResponseTruncatedError,
+    LLMUsageSnapshot,
     _build_anthropic_base_url,
     _build_openai_compatible_chat_url,
     _extract_openai_choice_text,
@@ -85,7 +87,10 @@ def test_complete_emits_task_activity_heartbeats_for_long_running_calls():
     try:
         async def fake_complete_openai(**_kwargs):
             await asyncio.sleep(0.03)
-            return "pong"
+            return LLMCompletionResult(
+                text="pong",
+                usage=LLMUsageSnapshot(input_tokens=111, output_tokens=222, total_tokens=333),
+            )
 
         with patch.object(llm_client_module.gateway, "has_enabled_provider", return_value=True), patch.object(
             llm_client_module.gateway,
@@ -122,6 +127,9 @@ def test_complete_emits_task_activity_heartbeats_for_long_running_calls():
         assert activity_states[-1] == "completed"
         assert emit_log.await_count == 1
         assert emit_log.await_args_list[0].args[0]["success"] is True
+        assert emit_log.await_args_list[0].args[0]["inputTokens"] == 111
+        assert emit_log.await_args_list[0].args[0]["outputTokens"] == 222
+        assert emit_log.await_args_list[0].args[0]["totalTokens"] == 333
     finally:
         settings.LLM_MODE = old_mode
 
@@ -397,6 +405,9 @@ def test_complete_fails_over_when_openai_provider_returns_no_usable_text():
                     "OpenAI-compatible response contained no usable text",
                     response_excerpt='{"choices":[{"message":{"content":[]}}]}',
                     upstream_request_id="req-empty",
+                    input_tokens=321,
+                    output_tokens=123,
+                    total_tokens=444,
                 )
             return "<html>fallback-ok</html>"
 
@@ -434,6 +445,9 @@ def test_complete_fails_over_when_openai_provider_returns_no_usable_text():
         assert failure_payload["errorCode"] == "EmptyOpenAICompatibleTextError"
         assert failure_payload["upstreamRequestId"] == "req-empty"
         assert failure_payload["errorBodyExcerpt"] == '{"choices":[{"message":{"content":[]}}]}'
+        assert failure_payload["inputTokens"] == 321
+        assert failure_payload["outputTokens"] == 123
+        assert failure_payload["totalTokens"] == 444
         assert success_payload["success"] is True
         assert success_payload["providerId"] == "provider-secondary"
     finally:
@@ -488,7 +502,9 @@ def test_complete_fails_over_when_provider_response_is_truncated():
                     response_excerpt="<html><body><script>function draw(){",
                     upstream_request_id="msg-truncated",
                     stop_reason="max_tokens",
+                    input_tokens=2048,
                     output_tokens=4096,
+                    total_tokens=6144,
                 )
             return "<html>fallback-ok</html>"
 

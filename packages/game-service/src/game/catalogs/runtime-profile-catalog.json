@@ -123,6 +123,66 @@
     }
   },
   {
+    "id": "topdown_dodge",
+    "displayName": "Topdown Dodge",
+    "skeletonVersion": "v1",
+    "parentProfile": "topdown_action",
+    "contractSchema": {
+      "runtimeProfile": "topdown_dodge",
+      "inputContract": {
+        "requiredModes": ["pointer", "touch"],
+        "gestures": ["drag"]
+      },
+      "stateContract": {
+        "requiredStates": ["boot", "ready", "playing", "game_over"],
+        "restartable": true
+      },
+      "renderContract": {
+        "requiresCanvas2D": true,
+        "mustRenderWithinMs": 1500
+      },
+      "mobileLayoutContract": {
+        "orientation": "portrait_first",
+        "uiScaleMode": "short_edge"
+      }
+    },
+    "fewShotPrompt": "Focus on evasion mechanics. The player moves by dragging to avoid incoming hazards from all directions. No shooting or attacking — survival is the only objective. Render the player and a clear danger zone before input. The first drag should immediately move the player and start spawning hazards.",
+    "metadata": {
+      "category": "action",
+      "subtype": "dodge"
+    }
+  },
+  {
+    "id": "topdown_shooter",
+    "displayName": "Topdown Shooter",
+    "skeletonVersion": "v1",
+    "parentProfile": "topdown_action",
+    "contractSchema": {
+      "runtimeProfile": "topdown_shooter",
+      "inputContract": {
+        "requiredModes": ["pointer", "touch"],
+        "gestures": ["drag", "tap"]
+      },
+      "stateContract": {
+        "requiredStates": ["boot", "ready", "playing", "game_over"],
+        "restartable": true
+      },
+      "renderContract": {
+        "requiresCanvas2D": true,
+        "mustRenderWithinMs": 1500
+      },
+      "mobileLayoutContract": {
+        "orientation": "portrait_first",
+        "uiScaleMode": "short_edge"
+      }
+    },
+    "fewShotPrompt": "Focus on aiming and firing. The player has a weapon that fires projectiles on tap while drag controls movement. Show crosshair or aim indicator. Render the player with a visible weapon and the arena before input. The first tap should fire a projectile and the first drag should move the player.",
+    "metadata": {
+      "category": "action",
+      "subtype": "shooter"
+    }
+  },
+  {
     "id": "tap_timing",
     "displayName": "Tap Timing",
     "skeletonVersion": "v1",

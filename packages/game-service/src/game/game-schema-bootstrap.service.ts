@@ -86,6 +86,21 @@ const TABLE_COLUMN_PATCHES: ColumnPatch[] = [
     name: 'primary_artifact_id',
     sql: 'ALTER TABLE generation_tasks ADD COLUMN primary_artifact_id VARCHAR(36) NULL AFTER failure_family',
   },
+  {
+    table: 'llm_call_logs',
+    name: 'input_tokens',
+    sql: 'ALTER TABLE llm_call_logs ADD COLUMN input_tokens INT NULL AFTER http_status',
+  },
+  {
+    table: 'llm_call_logs',
+    name: 'output_tokens',
+    sql: 'ALTER TABLE llm_call_logs ADD COLUMN output_tokens INT NULL AFTER input_tokens',
+  },
+  {
+    table: 'llm_call_logs',
+    name: 'total_tokens',
+    sql: 'ALTER TABLE llm_call_logs ADD COLUMN total_tokens INT NULL AFTER output_tokens',
+  },
 ];
 
 const GAME_SCHEMA_STATEMENTS = [
@@ -312,6 +327,9 @@ const GAME_SCHEMA_STATEMENTS = [
     connect_timeout_s INT NULL,
     latency_ms INT NULL,
     http_status INT NULL,
+    input_tokens INT NULL,
+    output_tokens INT NULL,
+    total_tokens INT NULL,
     success BOOLEAN NOT NULL DEFAULT FALSE,
     upstream_request_id VARCHAR(128) NULL,
     error_code VARCHAR(128) NULL,

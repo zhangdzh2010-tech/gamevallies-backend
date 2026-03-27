@@ -105,6 +105,9 @@ type LlmCallLogParams = {
   connectTimeoutS?: number | null;
   latencyMs?: number | null;
   httpStatus?: number | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  totalTokens?: number | null;
   success?: boolean;
   upstreamRequestId?: string | null;
   errorCode?: string | null;
@@ -508,6 +511,9 @@ export class GenerationTaskService {
         connectTimeoutS: params.connectTimeoutS ?? undefined,
         latencyMs: params.latencyMs ?? undefined,
         httpStatus: params.httpStatus ?? undefined,
+        inputTokens: params.inputTokens ?? undefined,
+        outputTokens: params.outputTokens ?? undefined,
+        totalTokens: params.totalTokens ?? undefined,
         success: params.success ?? false,
         upstreamRequestId: params.upstreamRequestId ?? undefined,
         errorCode: params.errorCode ?? undefined,
@@ -897,6 +903,11 @@ export class GenerationTaskService {
     const providerLabel = params.providerName || params.providerType || 'LLM';
     const httpStatus = typeof params.httpStatus === 'number' ? params.httpStatus : null;
     const latencyMs = typeof params.latencyMs === 'number' ? params.latencyMs : null;
+    const inputTokens = typeof params.inputTokens === 'number' ? params.inputTokens : null;
+    const outputTokens = typeof params.outputTokens === 'number' ? params.outputTokens : null;
+    const totalTokens = typeof params.totalTokens === 'number'
+      ? params.totalTokens
+      : (inputTokens !== null && outputTokens !== null ? inputTokens + outputTokens : null);
     const isFailure = params.success === false
       || !!params.errorCode
       || !!params.errorMessage
@@ -915,6 +926,9 @@ export class GenerationTaskService {
           model: params.model ?? null,
           latencyMs,
           httpStatus,
+          inputTokens,
+          outputTokens,
+          totalTokens,
           errorCode: params.errorCode ?? null,
           success: params.success ?? false,
         },
@@ -935,6 +949,9 @@ export class GenerationTaskService {
           model: params.model ?? null,
           latencyMs,
           httpStatus,
+          inputTokens,
+          outputTokens,
+          totalTokens,
           success: params.success ?? true,
         },
       };

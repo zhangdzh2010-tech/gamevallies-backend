@@ -7,10 +7,12 @@ Score components:
   - QA retries: each retry means first attempt was bad
   - Runtime QA (optional): bonus for clean runtime
   - LLM review (optional): fun_score and gameplay richness
+  - Gameplay depth (optional): bonus for levels, effects, multiple entities
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -64,6 +66,7 @@ class QualityScoreBreakdown:
     retry_penalty: float
     runtime_bonus: float
     review_bonus: float
+    gameplay_depth_bonus: float
     final_score: float
     details: dict
 
@@ -84,6 +87,7 @@ class QualityScorer:
         static: QAStaticResult,
         runtime: Optional[RuntimeQAResult] = None,
         review: Optional[LLMReviewResult] = None,
+        code: str = "",
     ) -> QualityScoreBreakdown:
         base = 7.0
 
@@ -140,7 +144,10 @@ class QualityScorer:
             # fun_score: 5 = neutral, each point above/below = ±0.2
             review_bonus += (review.fun_score - 5.0) * 0.2
 
-        final = base - qa_penalty + strategy_bonus + size_bonus - retry_penalty + runtime_bonus + review_bonus
+        # ── Gameplay depth bonus ──────────────────────────────────────
+        gameplay_depth_bonus = self._compute_gameplay_depth_bonus(code) if code else 0.0
+
+        final = base - qa_penalty + strategy_bonus + size_bonus - retry_penalty + runtime_bonus + review_bonus + gameplay_depth_bonus
         final = round(max(0.0, min(10.0, final)), 2)
 
         return QualityScoreBreakdown(
@@ -151,6 +158,7 @@ class QualityScorer:
             retry_penalty=round(retry_penalty, 2),
             runtime_bonus=round(runtime_bonus, 2),
             review_bonus=round(review_bonus, 2),
+            gameplay_depth_bonus=round(gameplay_depth_bonus, 2),
             final_score=final,
             details={
                 "errors": static.error_count,
@@ -162,6 +170,22 @@ class QualityScorer:
                 "review_ran": review.ran if review else False,
             },
         )
+
+    @staticmethod
+    def _compute_gameplay_depth_bonus(code: str) -> float:
+        """Bonus for gameplay depth indicators in generated code."""
+        bonus = 0.0
+        code_lower = code.lower()
+        # Level/wave system
+        if re.search(r'\b(?:level|wave|stage|round)\b', code_lower):
+            bonus += 0.5
+        # Visual feedback effects
+        if re.search(r'\b(?:particle|shake|flash|glow|trail|explod)', code_lower):
+            bonus += 0.3
+        # Audio integration
+        if re.search(r'\b(?:audiocontext|playsound|playaudio|oscillator|audio)', code_lower):
+            bonus += 0.2
+        return min(2.0, bonus)
 
     def compute_from_behavior(
         self,

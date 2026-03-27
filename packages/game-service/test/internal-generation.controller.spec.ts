@@ -7,6 +7,7 @@ describe('InternalGenerationController', () => {
   let generationTaskService: {
     recordProgress: jest.Mock;
     ingestLlmCallLog: jest.Mock;
+    persistLlmCallLog: jest.Mock;
     recordActivity: jest.Mock;
     recordTaskFailure: jest.Mock;
   };
@@ -21,6 +22,7 @@ describe('InternalGenerationController', () => {
     generationTaskService = {
       recordProgress: jest.fn(),
       ingestLlmCallLog: jest.fn(),
+      persistLlmCallLog: jest.fn(),
       recordActivity: jest.fn(),
       recordTaskFailure: jest.fn(),
     };
@@ -168,6 +170,37 @@ describe('InternalGenerationController', () => {
     }));
     expect(result).toEqual(expect.objectContaining({
       data: expect.objectContaining({ relayed: true }),
+    }));
+  });
+
+  it('relays precise token usage in llm call logs', async () => {
+    generationTaskService.persistLlmCallLog.mockResolvedValue({ id: 'log-1' });
+
+    const result = await controller.ingestLlmCallLog('unit-test-token', {
+      taskId: 'task-1',
+      userId: 'user-1',
+      gameId: 'game-1',
+      stage: 'intent_parsing',
+      stepKey: 'intent_parse',
+      inputTokens: 120,
+      outputTokens: 34,
+      totalTokens: 154,
+      success: true,
+    });
+
+    expect(generationTaskService.persistLlmCallLog).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'task-1',
+      userId: 'user-1',
+      gameId: 'game-1',
+      stage: 'intent_parsing',
+      stepKey: 'intent_parse',
+      inputTokens: 120,
+      outputTokens: 34,
+      totalTokens: 154,
+      success: true,
+    }));
+    expect(result).toEqual(expect.objectContaining({
+      data: expect.objectContaining({ relayed: true, id: 'log-1' }),
     }));
   });
 });

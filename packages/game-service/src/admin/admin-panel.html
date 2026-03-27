@@ -1311,6 +1311,7 @@ function buildTaskDetailMarkup(task, options = {}) {
   const sourceSection = renderTaskSourceSection(task, sourceCacheKey);
   const events = renderTaskEvents(task.events || []);
   const llmLogs = renderLlmLogs(task.llmCallLogs || []);
+  const llmUsageSummary = renderLlmUsageSummary(task.llmCallLogs || []);
   const durationMs = task.startedAt && task.completedAt
     ? new Date(task.completedAt).getTime() - new Date(task.startedAt).getTime()
     : null;
@@ -1374,6 +1375,7 @@ function buildTaskDetailMarkup(task, options = {}) {
       <div class="section-title">阶段时间线</div>
       <div style="display:flex;flex-direction:column;gap:12px">${events}</div>
       <div class="section-title">LLM 调用明细</div>
+      ${llmUsageSummary}
       <div style="display:flex;flex-direction:column;gap:12px">${llmLogs}</div>
     </div>
   `;
@@ -3092,12 +3094,82 @@ function renderLlmLogs(logs) {
         <div class="log-kv"><div class="k">Timeout</div><div class="v">${escHtml(String(log.requestTimeoutS || '-'))}s / connect ${escHtml(String(log.connectTimeoutS || '-'))}s</div></div>
         <div class="log-kv"><div class="k">HTTP</div><div class="v">${log.httpStatus ?? '-'}</div></div>
         <div class="log-kv"><div class="k">Request ID</div><div class="v"><code>${escHtml(log.upstreamRequestId || '-')}</code></div></div>
+        <div class="log-kv"><div class="k">Input Tokens</div><div class="v">${escHtml(fmtTokenCount(getLlmLogTokenStats(log).inputTokens))}</div></div>
+        <div class="log-kv"><div class="k">Output Tokens</div><div class="v">${escHtml(fmtTokenCount(getLlmLogTokenStats(log).outputTokens))}</div></div>
+        <div class="log-kv"><div class="k">Total Tokens</div><div class="v">${escHtml(fmtTokenCount(getLlmLogTokenStats(log).totalTokens))}</div></div>
       </div>
       ${log.errorMessage ? `<div class="log-alert" style="margin-top:10px">${escHtml(log.errorMessage)}</div>` : ''}
       ${log.errorBodyExcerpt ? `<pre class="log-code" style="max-height:180px;margin-top:10px">${escHtml(log.errorBodyExcerpt)}</pre>` : ''}
       ${log.routeSnapshot ? `<div style="margin-top:10px">${renderRouteSnapshotPanel(log.routeSnapshot)}</div>` : ''}
     </div>
   `).join('');
+}
+
+function normalizeTokenCount(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const num = Number(value);
+  if (!Number.isFinite(num) || num < 0) return null;
+  return Math.round(num);
+}
+
+function fmtTokenCount(value) {
+  const normalized = normalizeTokenCount(value);
+  if (normalized === null) return '-';
+  return new Intl.NumberFormat('en-US').format(normalized);
+}
+
+function getLlmLogTokenStats(log) {
+  const inputTokens = normalizeTokenCount(log?.inputTokens);
+  const outputTokens = normalizeTokenCount(log?.outputTokens);
+  const totalTokens = normalizeTokenCount(log?.totalTokens);
+  if (inputTokens === null && outputTokens === null && totalTokens === null) {
+    return { inputTokens: null, outputTokens: null, totalTokens: null, hasUsage: false };
+  }
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens: totalTokens !== null
+      ? totalTokens
+      : (inputTokens !== null && outputTokens !== null ? inputTokens + outputTokens : null),
+    hasUsage: true,
+  };
+}
+
+function summarizeLlmLogs(logs) {
+  const summary = { callCount: Array.isArray(logs) ? logs.length : 0, usageCount: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+  (logs || []).forEach(log => {
+    const usage = getLlmLogTokenStats(log);
+    if (!usage.hasUsage) return;
+    summary.usageCount += 1;
+    if (usage.inputTokens !== null) summary.inputTokens += usage.inputTokens;
+    if (usage.outputTokens !== null) summary.outputTokens += usage.outputTokens;
+    if (usage.totalTokens !== null) summary.totalTokens += usage.totalTokens;
+  });
+  return summary;
+}
+
+function renderLlmUsageSummary(logs) {
+  const summary = summarizeLlmLogs(logs);
+  if (!summary.callCount) return '<div class="log-empty">暂无 LLM Token 统计</div>';
+  if (!summary.usageCount) {
+    return '<div class="log-card" style="padding:14px 16px;margin-bottom:12px"><div class="log-empty">当前这些 Provider 没有返回精确 token usage，后台暂时无法汇总。</div></div>';
+  }
+  return `
+    <div class="log-card" style="padding:14px 16px;margin-bottom:12px">
+      <div class="log-card-title" style="margin-bottom:8px">
+        <div>
+          <strong style="font-size:14px;color:#0f172a">Token 汇总</strong>
+          <div class="log-card-sub">已覆盖 ${escHtml(String(summary.usageCount))} / ${escHtml(String(summary.callCount))} 次 LLM 调用</div>
+        </div>
+        <span class="badge badge-generating">精确 Usage</span>
+      </div>
+      <div class="log-kv-grid">
+        <div class="log-kv"><div class="k">输入 Tokens</div><div class="v">${escHtml(fmtTokenCount(summary.inputTokens))}</div></div>
+        <div class="log-kv"><div class="k">输出 Tokens</div><div class="v">${escHtml(fmtTokenCount(summary.outputTokens))}</div></div>
+        <div class="log-kv"><div class="k">总 Tokens</div><div class="v">${escHtml(fmtTokenCount(summary.totalTokens))}</div></div>
+      </div>
+    </div>
+  `;
 }
 
 async function showTaskDetail(taskId, options = {}) {
