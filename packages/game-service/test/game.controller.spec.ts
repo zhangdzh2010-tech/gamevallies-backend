@@ -93,4 +93,14 @@ describe('GameController', () => {
       }),
     );
   });
+
+  it('returns the supported game types from a static route handler', async () => {
+    const result = await controller.getGameTypes();
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        data: ['casual', 'puzzle', 'education'],
+      }),
+    );
+  });
 });
