@@ -26,6 +26,7 @@ from .code_generator import CodeGenerator
 from .code_reviewer import CodeReviewer
 from .dialogue_engine import DialogueEngine, SlotExtractionFailure, _looks_like_educational_request
 from .game_designer import GameDesigner
+from .llm_game_designer import LLMGameDesigner
 from .pipeline_orchestrator import PipelineExecutionError
 from .pre_generation_validator import PreGenerationValidator
 from .prompt_store import get_default_runtime_profile, require_prompt
@@ -50,11 +51,14 @@ PROFILE_BY_GAME_TYPE: dict[str, str] = {
     "grid puzzle": "grid_puzzle",
     "match3": "grid_puzzle",
     "merge": "grid_puzzle",
-    "shooter": "topdown_action",
-    "top down shooter": "topdown_action",
-    "top-down shooter": "topdown_action",
-    "dodge": "topdown_action",
+    "shooter": "topdown_shooter",
+    "top down shooter": "topdown_shooter",
+    "top-down shooter": "topdown_shooter",
+    "dodge": "topdown_dodge",
     "rhythm": "tap_timing",
+    "tower_defense": "grid_puzzle",
+    "idle": "portrait_arcade",
+    "rpg": "topdown_action",
 }
 
 PROFILE_TO_GAME_TYPE_HINT: dict[str, str] = {
@@ -62,6 +66,8 @@ PROFILE_TO_GAME_TYPE_HINT: dict[str, str] = {
     "lane_runner": "runner",
     "grid_puzzle": "puzzle",
     "topdown_action": "dodge",
+    "topdown_dodge": "dodge",
+    "topdown_shooter": "shooter",
     "tap_timing": "rhythm",
 }
 
@@ -110,6 +116,7 @@ class V2PipelineRunner:
     def __init__(self) -> None:
         self.dialogue_engine = DialogueEngine()
         self.game_designer = GameDesigner()
+        self.llm_designer = LLMGameDesigner()
         self.code_generator = CodeGenerator(llm_mode=settings.LLM_MODE)
         self.qa_pipeline = QAPipeline()
         self.quality_scorer = QualityScorer()
@@ -212,6 +219,15 @@ class V2PipelineRunner:
         )
         gdd = await self._build_gdd(spec, runtime_contract)
 
+        if settings.ENABLE_LLM_DESIGN_PASS:
+            self._notify(progress_cb, "llm_design", 50, "Enriching game design with LLM", {
+                "gameId": request.game_id,
+                "userId": request.user_id,
+                "runtimeProfile": runtime_profile,
+            })
+            stage_context["stage"] = "llm_design"
+            gdd = await self.llm_designer.design(spec, gdd, runtime_contract)
+
         pre_issues = self.pre_gen_validator.validate(spec, gdd, runtime_contract)
         if pre_issues:
             logger.warning("Pre-generation issues detected: %s", pre_issues)
@@ -275,7 +291,13 @@ class V2PipelineRunner:
             ),
             runtime=runtime_qa,
             review=review,
+            code=qa_result.code,
         )
+
+        if qa_result.success and quality.final_score >= 5.0:
+            self.code_generator.template_cache.store(
+                spec.game_type, runtime_profile, qa_result.code,
+            )
 
         stage_context["stage"] = "completed"
         self._notify(progress_cb, "completed", 100, "V2 pipeline completed", {
@@ -304,6 +326,7 @@ class V2PipelineRunner:
                 "retry_penalty": quality.retry_penalty,
                 "runtime_bonus": quality.runtime_bonus,
                 "review_bonus": quality.review_bonus,
+                "gameplay_depth_bonus": quality.gameplay_depth_bonus,
                 "runtime_profile": runtime_profile,
                 "contract_version": runtime_contract.version,
             },
@@ -777,15 +800,24 @@ class V2PipelineRunner:
             "userId": user_id,
             "runtimeProfile": runtime_contract.runtime_profile,
         })
-        qa_result = await self._run_contract_qa_loop(
-            code=code,
-            spec=spec,
-            runtime_contract=runtime_contract,
-            prompt_bundle_snapshot=prompt_bundle_snapshot,
-            progress_cb=progress_cb,
-            game_id=game_id,
-            user_id=user_id,
-        )
+
+        # Fast-path: if code passes static QA + contract on first check, skip repair loop
+        pre_repaired = self.qa_pipeline._apply_deterministic_repairs(code)
+        static_check = self.qa_pipeline.check(pre_repaired, runtime_contract=runtime_contract)
+        contract_errors = self._validate_contract_bundle(pre_repaired, runtime_contract)
+        if static_check.passed and not contract_errors:
+            logger.info("Code passed all checks on first attempt; skipping repair loop")
+            qa_result = QAResult(success=True, code=pre_repaired, retries=0)
+        else:
+            qa_result = await self._run_contract_qa_loop(
+                code=code,
+                spec=spec,
+                runtime_contract=runtime_contract,
+                prompt_bundle_snapshot=prompt_bundle_snapshot,
+                progress_cb=progress_cb,
+                game_id=game_id,
+                user_id=user_id,
+            )
         if not qa_result.success and qa_result.needs_regeneration:
             return qa_result, RuntimeQAResult(), 0, []
         if not qa_result.success:

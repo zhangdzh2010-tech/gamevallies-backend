@@ -40,7 +40,7 @@ class PreGenerationValidator:
         if not (spec.rules.win_condition or "").strip():
             issues.append("no_win_condition")
 
-        if hasattr(runtime_contract, "input") and runtime_contract.input:
+        if runtime_contract.input:
             modes = getattr(runtime_contract.input, "required_modes", None) or []
             if not modes:
                 issues.append("no_input_modes")
@@ -53,19 +53,22 @@ class PreGenerationValidator:
         gdd: GDD,
         issues: List[str],
     ) -> Tuple[GameSpec, GDD]:
-        """Patch obvious gaps in-place and return the updated spec/gdd."""
+        """Patch obvious spec gaps and return updated copies. GDD is returned unchanged."""
         spec = spec.model_copy(deep=True)
         gdd = gdd.model_copy(deep=True)
 
         for issue in issues:
-            if issue == "no_player_entity":
-                logger.info("Pre-gen fix: injecting default player entity")
-                spec.entities.insert(
-                    0,
-                    GameEntity(name="player", role="player", shape="circle", color="#6366f1"),
-                )
-            elif issue == "no_win_condition":
-                logger.info("Pre-gen fix: setting default win condition to 'survive'")
-                spec.rules.win_condition = "survive"
+            try:
+                if issue == "no_player_entity":
+                    logger.info("Pre-gen fix: injecting default player entity")
+                    spec.entities.insert(
+                        0,
+                        GameEntity(name="player", role="player", shape="circle", color="#6366f1"),
+                    )
+                elif issue == "no_win_condition":
+                    logger.info("Pre-gen fix: setting default win condition to 'survive'")
+                    spec.rules.win_condition = "survive"
+            except Exception as exc:
+                logger.warning("Pre-gen auto_fix failed for %s: %s", issue, exc)
 
         return spec, gdd

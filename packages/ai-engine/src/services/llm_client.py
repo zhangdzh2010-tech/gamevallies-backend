@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from copy import copy
+from dataclasses import dataclass, field
 import json
 import logging
 import re
@@ -23,6 +24,20 @@ logger = logging.getLogger(__name__)
 Message = Dict[str, str]
 
 
+@dataclass
+class LLMUsageSnapshot:
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class LLMCompletionResult:
+    text: str
+    usage: LLMUsageSnapshot = field(default_factory=LLMUsageSnapshot)
+
+
 class OpenAICompatibleResponseParseError(ValueError):
     def __init__(
         self,
@@ -30,10 +45,16 @@ class OpenAICompatibleResponseParseError(ValueError):
         *,
         response_excerpt: Optional[str] = None,
         upstream_request_id: Optional[str] = None,
+        input_tokens: Optional[int] = None,
+        output_tokens: Optional[int] = None,
+        total_tokens: Optional[int] = None,
     ) -> None:
         super().__init__(message)
         self.response_excerpt = response_excerpt
         self.upstream_request_id = upstream_request_id
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.total_tokens = total_tokens
 
 
 class EmptyOpenAICompatibleTextError(OpenAICompatibleResponseParseError):
@@ -48,13 +69,17 @@ class LLMResponseTruncatedError(ValueError):
         response_excerpt: Optional[str] = None,
         upstream_request_id: Optional[str] = None,
         stop_reason: Optional[str] = None,
+        input_tokens: Optional[int] = None,
         output_tokens: Optional[int] = None,
+        total_tokens: Optional[int] = None,
     ) -> None:
         super().__init__(message)
         self.response_excerpt = response_excerpt
         self.upstream_request_id = upstream_request_id
         self.stop_reason = stop_reason
+        self.input_tokens = input_tokens
         self.output_tokens = output_tokens
+        self.total_tokens = total_tokens
 
 
 def _build_openai_compatible_chat_url(base_url: str) -> str:
@@ -167,6 +192,87 @@ def _response_request_id(headers: httpx.Headers) -> Optional[str]:
         if value:
             return value
     return None
+
+
+def _coerce_optional_int(value: Any) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return None
+
+
+def _extract_openai_usage(data: Any) -> LLMUsageSnapshot:
+    usage = data.get("usage") if isinstance(data, dict) else None
+    if not isinstance(usage, dict):
+        return LLMUsageSnapshot()
+
+    input_tokens = _coerce_optional_int(usage.get("prompt_tokens"))
+    if input_tokens is None:
+        input_tokens = _coerce_optional_int(usage.get("input_tokens"))
+
+    output_tokens = _coerce_optional_int(usage.get("completion_tokens"))
+    if output_tokens is None:
+        output_tokens = _coerce_optional_int(usage.get("output_tokens"))
+
+    total_tokens = _coerce_optional_int(usage.get("total_tokens"))
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
+
+    return LLMUsageSnapshot(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+        raw=usage,
+    )
+
+
+def _extract_anthropic_usage(usage: Any) -> LLMUsageSnapshot:
+    if usage is None:
+        return LLMUsageSnapshot()
+
+    raw = {}
+    for key in (
+        "input_tokens",
+        "output_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+    ):
+        value = getattr(usage, key, None)
+        if value is not None:
+            raw[key] = value
+
+    base_input_tokens = _coerce_optional_int(getattr(usage, "input_tokens", None))
+    cache_creation_tokens = _coerce_optional_int(getattr(usage, "cache_creation_input_tokens", None)) or 0
+    cache_read_tokens = _coerce_optional_int(getattr(usage, "cache_read_input_tokens", None)) or 0
+    output_tokens = _coerce_optional_int(getattr(usage, "output_tokens", None))
+
+    input_tokens = None
+    if base_input_tokens is not None:
+        input_tokens = base_input_tokens + cache_creation_tokens + cache_read_tokens
+
+    total_tokens = None
+    if input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
+
+    return LLMUsageSnapshot(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+        raw=raw,
+    )
+
+
+def _normalize_completion_result(result: Any) -> LLMCompletionResult:
+    if isinstance(result, LLMCompletionResult):
+        return result
+    if isinstance(result, str):
+        return LLMCompletionResult(text=result)
+    raise TypeError(f"Unsupported LLM completion result type: {type(result)!r}")
 
 
 def _is_anthropic_protocol_mismatch(exc: Exception) -> bool:
@@ -428,21 +534,22 @@ class LLMClient:
         try:
             effective_provider_type = route.provider_type
             route_snapshot = dict(route.route_snapshot or {})
+            completion_result: LLMCompletionResult
             if route.provider_type == "anthropic":
-                text = await self._run_anthropic_with_timeout(
+                completion_result = _normalize_completion_result(await self._run_anthropic_with_timeout(
                     route=route,
                     messages=messages,
                     max_tokens=max_tokens,
                     system=system,
-                )
+                ))
             elif route.provider_type == "openai_compatible":
                 try:
-                    text = await self._complete_openai_compatible(
+                    completion_result = _normalize_completion_result(await self._complete_openai_compatible(
                         route=route,
                         messages=messages,
                         max_tokens=max_tokens,
                         system=system,
-                    )
+                    ))
                 except Exception as exc:
                     if not _is_anthropic_protocol_mismatch(exc):
                         raise
@@ -453,12 +560,12 @@ class LLMClient:
                     )
                     effective_provider_type = "anthropic"
                     route_snapshot["protocol_fallback"] = "anthropic"
-                    text = await self._run_anthropic_with_timeout(
+                    completion_result = _normalize_completion_result(await self._run_anthropic_with_timeout(
                         route=route,
                         messages=messages,
                         max_tokens=max_tokens,
                         system=system,
-                    )
+                    ))
             else:
                 raise RuntimeError(f"Unsupported provider type: {route.provider_type}")
 
@@ -484,10 +591,13 @@ class LLMClient:
                 "connectTimeoutS": route.connect_timeout_s,
                 "latencyMs": latency_ms,
                 "success": True,
+                "inputTokens": completion_result.usage.input_tokens,
+                "outputTokens": completion_result.usage.output_tokens,
+                "totalTokens": completion_result.usage.total_tokens,
                 "configVersion": route.config_version,
                 "routeSnapshot": route_snapshot,
             })
-            return text
+            return completion_result.text
         except asyncio.CancelledError:
             latency_ms = int((time.time() - started_at) * 1000)
             await self._finish_heartbeat(stop_event=stop_event, heartbeat_task=heartbeat_task)
@@ -521,6 +631,9 @@ class LLMClient:
             http_status = None
             upstream_request_id = None
             error_body_excerpt = None
+            input_tokens = None
+            output_tokens = None
+            total_tokens = None
 
             if isinstance(exc, httpx.HTTPStatusError):
                 http_status = exc.response.status_code
@@ -529,9 +642,15 @@ class LLMClient:
             elif isinstance(exc, LLMResponseTruncatedError):
                 upstream_request_id = exc.upstream_request_id
                 error_body_excerpt = exc.response_excerpt
+                input_tokens = exc.input_tokens
+                output_tokens = exc.output_tokens
+                total_tokens = exc.total_tokens
             elif isinstance(exc, OpenAICompatibleResponseParseError):
                 upstream_request_id = exc.upstream_request_id
                 error_body_excerpt = exc.response_excerpt
+                input_tokens = exc.input_tokens
+                output_tokens = exc.output_tokens
+                total_tokens = exc.total_tokens
             elif isinstance(exc, httpx.RequestError):
                 error_body_excerpt = str(exc)
 
@@ -563,6 +682,9 @@ class LLMClient:
                 "errorCode": exc.__class__.__name__,
                 "errorMessage": str(exc),
                 "errorBodyExcerpt": error_body_excerpt,
+                "inputTokens": input_tokens,
+                "outputTokens": output_tokens,
+                "totalTokens": total_tokens,
                 "configVersion": route.config_version,
                 "routeSnapshot": route.route_snapshot,
             })
@@ -589,7 +711,7 @@ class LLMClient:
         messages: List[Message],
         max_tokens: int,
         system: Optional[str],
-    ) -> str:
+    ) -> LLMCompletionResult:
         timeout_s = max(1, int(getattr(route, "request_timeout_s", 0) or 1))
         try:
             return await asyncio.wait_for(
@@ -623,7 +745,7 @@ class LLMClient:
         messages: List[Message],
         max_tokens: int,
         system: Optional[str],
-    ) -> str:
+    ) -> LLMCompletionResult:
         client = self._get_anthropic_client(
             api_key=route.api_key,
             base_url=route.base_url,
@@ -644,16 +766,18 @@ class LLMClient:
                 parts.append(text)
         rendered = _strip_think_tags("\n".join(parts).strip())
         stop_reason = str(getattr(response, "stop_reason", "") or "").strip().lower()
+        usage_snapshot = _extract_anthropic_usage(getattr(response, "usage", None))
         if stop_reason == "max_tokens":
-            usage = getattr(response, "usage", None)
             raise LLMResponseTruncatedError(
                 "Anthropic response hit max_tokens and may be truncated",
                 response_excerpt=rendered[:1000] or None,
                 upstream_request_id=getattr(response, "id", None),
                 stop_reason=stop_reason,
-                output_tokens=getattr(usage, "output_tokens", None),
+                input_tokens=usage_snapshot.input_tokens,
+                output_tokens=usage_snapshot.output_tokens,
+                total_tokens=usage_snapshot.total_tokens,
             )
-        return rendered
+        return LLMCompletionResult(text=rendered, usage=usage_snapshot)
 
     async def _complete_openai_compatible(
         self,
@@ -662,7 +786,7 @@ class LLMClient:
         messages: List[Message],
         max_tokens: int,
         system: Optional[str],
-    ) -> str:
+    ) -> LLMCompletionResult:
         payload_messages: List[Message] = []
         if system:
             payload_messages.append({"role": "system", "content": system})
@@ -700,14 +824,19 @@ class LLMClient:
             choice = data["choices"][0]
         except (KeyError, IndexError, TypeError) as exc:
             excerpt = _summarize_openai_response_excerpt(data)
+            usage_snapshot = _extract_openai_usage(data)
             logger.error("Unexpected OpenAI-compatible response: %s", excerpt)
             raise OpenAICompatibleResponseParseError(
                 "Unexpected LLM response payload",
                 response_excerpt=excerpt,
                 upstream_request_id=upstream_request_id,
+                input_tokens=usage_snapshot.input_tokens,
+                output_tokens=usage_snapshot.output_tokens,
+                total_tokens=usage_snapshot.total_tokens,
             ) from exc
 
         text = _extract_openai_choice_text(choice)
+        usage_snapshot = _extract_openai_usage(data)
         finish_reason = str(choice.get("finish_reason") or "").strip().lower()
         if finish_reason in {"length", "max_tokens"}:
             excerpt = text[:1000] or _summarize_openai_response_excerpt(data)
@@ -716,6 +845,9 @@ class LLMClient:
                 response_excerpt=excerpt,
                 upstream_request_id=upstream_request_id,
                 stop_reason=finish_reason,
+                input_tokens=usage_snapshot.input_tokens,
+                output_tokens=usage_snapshot.output_tokens,
+                total_tokens=usage_snapshot.total_tokens,
             )
         if not text:
             excerpt = _summarize_openai_response_excerpt(data)
@@ -724,6 +856,9 @@ class LLMClient:
                 "OpenAI-compatible response contained no usable text",
                 response_excerpt=excerpt,
                 upstream_request_id=upstream_request_id,
+                input_tokens=usage_snapshot.input_tokens,
+                output_tokens=usage_snapshot.output_tokens,
+                total_tokens=usage_snapshot.total_tokens,
             )
 
-        return text
+        return LLMCompletionResult(text=text, usage=usage_snapshot)

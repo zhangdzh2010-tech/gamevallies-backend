@@ -235,4 +235,33 @@ describe('GenerationTaskService', () => {
       }),
     }));
   });
+  it('persists exact token usage on llm call logs', async () => {
+    prisma.llmCallLog.create.mockResolvedValue({ id: 'log-usage-1' });
+    prisma.generationTask.update.mockResolvedValue({});
+
+    await service.persistLlmCallLog({
+      taskId: 'task-usage-1',
+      gameId: 'game-usage-1',
+      userId: 'user-usage-1',
+      stage: 'intent_parsing',
+      stepKey: 'intent_parse',
+      providerName: 'DeepSeek Shanghai',
+      model: 'deepseek-chat',
+      success: true,
+      inputTokens: 123,
+      outputTokens: 45,
+      totalTokens: 168,
+    });
+
+    expect(prisma.llmCallLog.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        taskId: 'task-usage-1',
+        gameId: 'game-usage-1',
+        userId: 'user-usage-1',
+        inputTokens: 123,
+        outputTokens: 45,
+        totalTokens: 168,
+      }),
+    }));
+  });
 });

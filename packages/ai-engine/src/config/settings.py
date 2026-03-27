@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     MAX_ITERATIONS: int = 20
     PIPELINE_UPGRADE_LEGACY_ENDPOINTS_TO_V2: bool = True
 
+    # Phase 3: Two-pass generation (design then code)
+    ENABLE_LLM_DESIGN_PASS: bool = False
+    LLM_DESIGN_PASS_MAX_TOKENS: int = 4096
+    LLM_DESIGN_PASS_TIMEOUT_S: int = 60
+
     # Slot Filling
     SLOT_MIN_FILL_PCT: float = 0.6   # >=60% required slots → move to clarifying
 

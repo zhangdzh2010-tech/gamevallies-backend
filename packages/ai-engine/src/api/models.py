@@ -168,6 +168,15 @@ class GDD(BaseModel):
     raw_description: str = ""
 
 
+class EnrichedGDD(GDD):
+    """Extended GDD with LLM-generated design details for deeper gameplay."""
+    level_design: List[Dict[str, Any]] = Field(default_factory=list)
+    enemy_behaviors: List[Dict[str, Any]] = Field(default_factory=list)
+    difficulty_curve_params: Dict[str, Any] = Field(default_factory=dict)
+    visual_effects: List[str] = Field(default_factory=list)
+    gameplay_phases: List[Dict[str, Any]] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # Stage 04 – Template Matcher
 # ---------------------------------------------------------------------------
