@@ -12,15 +12,37 @@ describe('AdminService', () => {
   beforeEach(() => {
     process.env.ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'admin123';
     prisma = {
+      $transaction: jest.fn(),
       game: {
         findMany: jest.fn(),
         update: jest.fn(),
         count: jest.fn(),
+        aggregate: jest.fn(),
+        groupBy: jest.fn(),
       },
       user: {
         findUnique: jest.fn(),
         create: jest.fn(),
         update: jest.fn(),
+        count: jest.fn(),
+      },
+      subscriptionPlan: {
+        count: jest.fn(),
+        findMany: jest.fn(),
+        upsert: jest.fn(),
+        findUnique: jest.fn(),
+        update: jest.fn(),
+        delete: jest.fn(),
+        updateMany: jest.fn(),
+      },
+      userSubscription: {
+        count: jest.fn(),
+        groupBy: jest.fn(),
+      },
+      subscriptionOrder: {
+        aggregate: jest.fn(),
+        groupBy: jest.fn(),
+        count: jest.fn(),
       },
       cloudProviderAccount: {
         findUnique: jest.fn(),
@@ -67,6 +89,7 @@ describe('AdminService', () => {
         upsert: jest.fn(),
       },
     };
+    prisma.$transaction.mockImplementation(async (callback: (tx: any) => any) => callback(prisma));
     configService = {
       get: jest.fn((key: string, defaultValue?: string) => {
         const values: Record<string, string> = {
@@ -235,6 +258,144 @@ describe('AdminService', () => {
         process.env.ADMIN_TOKEN = originalAdminToken;
       }
     }
+  });
+
+  it('returns dashboard subscription overview with a date range filter', async () => {
+    prisma.game.count.mockResolvedValue(12);
+    prisma.user.count.mockResolvedValue(5);
+    prisma.game.aggregate
+      .mockResolvedValueOnce({ _sum: { playCount: 1234, likeCount: 88, forkCount: 12 } })
+      .mockResolvedValueOnce({ _avg: { qualityScore: 91.2, retryCount: 0.8 } });
+    prisma.game.findMany.mockResolvedValue([
+      { status: 'published', qualityScore: 96, failedStage: null, failedReason: null, retryCount: 0 },
+      { status: 'failed', qualityScore: 68, failedStage: 'contract_qa', failedReason: 'syntax error', retryCount: 2 },
+    ]);
+    prisma.game.groupBy.mockResolvedValue([
+      { status: 'published', _count: { id: 9 } },
+      { status: 'failed', _count: { id: 3 } },
+    ]);
+    prisma.subscriptionPlan.count
+      .mockResolvedValueOnce(4)
+      .mockResolvedValueOnce(3);
+    prisma.userSubscription.count.mockResolvedValue(18);
+    prisma.subscriptionOrder.aggregate.mockResolvedValue({
+      _sum: { amount: 128800 },
+      _count: { id: 27 },
+    });
+
+    const result = await service.getStats('2026-03-01', '2026-03-31');
+
+    expect(prisma.subscriptionOrder.aggregate).toHaveBeenCalledWith({
+      where: {
+        status: 'paid',
+        paidAt: {
+          gte: new Date('2026-03-01'),
+          lte: new Date('2026-03-31'),
+        },
+      },
+      _sum: { amount: true },
+      _count: { id: true },
+    });
+    expect(result.subscriptionOverview).toEqual({
+      totalPlans: 4,
+      activePlans: 3,
+      activeSubscribers: 18,
+      paidOrderCount: 27,
+      totalRevenueCents: 128800,
+      totalRevenueYuan: 1288,
+      range: {
+        from: new Date('2026-03-01'),
+        to: new Date('2026-03-31'),
+      },
+    });
+  });
+
+  it('lists subscription plans with usage summary', async () => {
+    prisma.subscriptionPlan.findMany.mockResolvedValue([
+      {
+        id: 'plan_pro',
+        name: '专业月卡',
+        description: '每月 30 次额度',
+        price: 1990,
+        currency: 'CNY',
+        period: 'monthly',
+        quota: 30,
+        features: ['每月30次创建', '无限AI迭代'],
+        recommended: true,
+        badge: '推荐',
+        sortOrder: 20,
+        active: true,
+        createdAt: new Date('2026-03-01T00:00:00.000Z'),
+        updatedAt: new Date('2026-03-02T00:00:00.000Z'),
+      },
+    ]);
+    prisma.subscriptionOrder.groupBy.mockResolvedValue([
+      { planId: 'plan_pro', _count: { _all: 7 }, _sum: { amount: 13930 } },
+    ]);
+    prisma.userSubscription.groupBy.mockResolvedValue([
+      { planId: 'plan_pro', _count: { _all: 5 } },
+    ]);
+    prisma.userSubscription.count.mockResolvedValue(5);
+    prisma.subscriptionOrder.aggregate.mockResolvedValue({
+      _sum: { amount: 13930 },
+      _count: { id: 7 },
+    });
+
+    const result = await service.listSubscriptionPlans('2026-03-01', '2026-03-31');
+
+    expect(result.summary).toEqual({
+      totalPlans: 1,
+      activePlans: 1,
+      activeSubscribers: 5,
+      paidOrderCount: 7,
+      totalRevenueCents: 13930,
+      totalRevenueYuan: 139.3,
+      range: {
+        from: new Date('2026-03-01'),
+        to: new Date('2026-03-31'),
+      },
+    });
+    expect(result.items[0]).toEqual(expect.objectContaining({
+      id: 'plan_pro',
+      name: '专业月卡',
+      priceYuan: 19.9,
+      quotaLabel: '30次/月',
+      orderCount: 7,
+      revenueYuan: 139.3,
+      activeSubscribers: 5,
+      recommended: true,
+    }));
+  });
+
+  it('archives subscription plans with historical orders instead of deleting them', async () => {
+    prisma.subscriptionPlan.findUnique.mockResolvedValue({
+      id: 'plan_basic',
+      name: '基础月卡',
+      active: true,
+      recommended: true,
+    });
+    prisma.subscriptionOrder.count.mockResolvedValue(2);
+    prisma.userSubscription.count.mockResolvedValue(1);
+    prisma.subscriptionPlan.update.mockResolvedValue({
+      id: 'plan_basic',
+      active: false,
+      recommended: false,
+    });
+
+    const result = await service.deleteSubscriptionPlan('plan_basic');
+
+    expect(prisma.subscriptionPlan.update).toHaveBeenCalledWith({
+      where: { id: 'plan_basic' },
+      data: {
+        active: false,
+        recommended: false,
+      },
+    });
+    expect(result).toEqual({
+      deleted: false,
+      deactivated: true,
+      reason: 'Plan has historical orders or subscriptions and was archived instead of deleted',
+    });
   });
 
   it('backfills legacy preview-only games to published unlisted without touching tokenized tasks', async () => {
@@ -802,6 +963,8 @@ describe('AdminService', () => {
       description: null,
       extraConfig: {
         vendorPreset: 'modelverse',
+        contextWindow: 128000,
+        maxTokens: 16384,
         modelCatalog: {
           mode: 'custom',
           apiUrl: 'https://api.modelverse.cn/v1/models',
@@ -821,6 +984,8 @@ describe('AdminService', () => {
       model: 'MiniMax-M2.5',
       fastModel: 'MiniMax-M2.5-fast',
       vendorPreset: 'modelverse',
+      contextWindow: 128000,
+      maxTokens: 16384,
       catalogMode: 'custom',
       catalogApiUrl: 'https://api.modelverse.cn/v1/models',
       catalogAuthMode: 'bearer_token',
@@ -836,6 +1001,8 @@ describe('AdminService', () => {
           region: 'cn_shanghai',
           extraConfig: expect.objectContaining({
             vendorPreset: 'modelverse',
+            contextWindow: 128000,
+            maxTokens: 16384,
             modelCatalog: expect.objectContaining({
               mode: 'custom',
               apiUrl: 'https://api.modelverse.cn/v1/models',
@@ -849,6 +1016,8 @@ describe('AdminService', () => {
     expect(result.region).toBe('cn_shanghai');
     expect(result.apiKeyMasked).toBe('sk-t...1234');
     expect(result.vendorPreset).toBe('modelverse');
+    expect(result.contextWindow).toBe(128000);
+    expect(result.maxTokens).toBe(16384);
     expect(result.catalogApiKeyMasked).toBe('cata...1234');
     expect(result.extraConfig).toBeUndefined();
   });

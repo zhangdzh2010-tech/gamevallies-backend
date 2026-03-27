@@ -29,8 +29,10 @@ from ..api.models import GameRuntimeContract, GameSpec, QACheckError, QACheckRes
 from ..config.settings import settings
 from ..config.timeout_store import get_int as get_timeout_int
 from ..services.llm_client import LLMClient, LLMResponseTruncatedError
+from .mobile_layout import MOBILE_LAYOUT_BRIDGE_MARKER, has_portrait_short_edge_scaling
 from .prompt_store import require_prompt
 from .restart_entry import has_restart_entry
+from .scoring_loop import has_visible_scoring_loop
 from .terminal_state import has_terminal_state_transition
 
 logger = logging.getLogger(__name__)
@@ -100,6 +102,7 @@ _INPUT_EVENT_FAMILIES: Dict[str, Tuple[str, ...]] = {
 REPAIR_SLOT_BY_FAMILY: Dict[str, str] = {
     "forbidden_api": "repair_forbidden_api",
     "input_contract": "repair_input_contract",
+    "score_feedback": "repair_generic",
     "syntax_structural": "repair_syntax_structural",
     "terminal_state": "repair_terminal_state",
     "mobile_layout": "repair_mobile_layout",
@@ -111,6 +114,7 @@ REPAIR_FAMILY_PRIORITY: Tuple[str, ...] = (
     "syntax_structural",
     "forbidden_api",
     "input_contract",
+    "score_feedback",
     "terminal_state",
     "mobile_layout",
     "runtime_startup",
@@ -238,6 +242,12 @@ class QAPipeline:
         return handles
 
     def _has_canvas_dimensions_set(self, code: str) -> bool:
+        if re.search(
+            r"<canvas\b[^>]*\bwidth\s*=\s*['\"]?\d+['\"]?[^>]*\bheight\s*=\s*['\"]?\d+['\"]?",
+            code,
+            re.IGNORECASE,
+        ):
+            return True
         for handle in self._extract_canvas_handles(code):
             if re.search(rf"\b{re.escape(handle)}\.(width|height)\s*=", code):
                 return True
@@ -394,6 +404,27 @@ class QAPipeline:
                     instructions,
                     "prompt.qa_instruction_mobile_layout",
                 )
+                instructions.extend([
+                    "- Read both viewport width and viewport height inside a resize or orientation-change handler.",
+                    "- Keep a portrait reference canvas and compute scaleX and scaleY against that reference size.",
+                    "- Derive uiScale from Math.min(scaleX, scaleY) or an equivalent short-edge fit, then center the canvas.",
+                    "- Do not size HUD text from screen width alone on wide mobile screens.",
+                ])
+            elif any(
+                token in message
+                for token in (
+                    "visible scoring loop",
+                    "visible score",
+                    "score display",
+                    "score hud",
+                    "scoreboard",
+                )
+            ):
+                instructions.extend([
+                    "- Keep a visible score HUD, timer, or points display on screen during active play.",
+                    "- Bind the HUD to real score-like state when available, and make it update inside the gameplay loop or an animation frame callback.",
+                    "- Reset the visible score/timer display when the player restarts or returns to the ready state.",
+                ])
             elif any(
                 token in message
                 for token in (
@@ -444,6 +475,10 @@ class QAPipeline:
         )
         if "terminal/completion state aliases" not in block.lower():
             block += f"\n- Accepted terminal/completion state aliases: {terminal_state_aliases}"
+        if "mobile orientation" not in block.lower():
+            block += f"\n- Mobile orientation: {runtime_contract.mobile_layout.orientation}"
+        if "ui scale mode" not in block.lower():
+            block += f"\n- UI scale mode: {runtime_contract.mobile_layout.ui_scale_mode}"
         return "\n" + block
 
     @staticmethod
@@ -502,6 +537,18 @@ class QAPipeline:
             )
         ):
             return "input_contract"
+
+        if any(
+            token in message
+            for token in (
+                "visible scoring loop",
+                "visible score",
+                "score display",
+                "score hud",
+                "scoreboard",
+            )
+        ) or (error_type in {"contract_gameplay"} and "scor" in message):
+            return "score_feedback"
 
         if any(
             token in message
@@ -609,6 +656,7 @@ class QAPipeline:
                     "canvas never rendered",
                     "runtime js error",
                     "visible state change after user interaction",
+                    "visible scoring loop",
                 )
             ):
                 known_issue_count += 1
@@ -638,7 +686,8 @@ class QAPipeline:
             msg = error.message.lower()
             if any(signal in msg for signal in truncation_signals):
                 return True
-            if error.error_type == "l1_syntax" and "tag" in msg and "missing" in msg:
+            error_type = (getattr(error, "type", None) or getattr(error, "error_type", "") or "").lower()
+            if error_type == "l1_syntax" and "tag" in msg and "missing" in msg:
                 return True
         return False
 
@@ -1643,11 +1692,18 @@ class QAPipeline:
         repaired = code
         if repair_family == "input_contract" and self._needs_input_bridge(errors):
             repaired = self._inject_input_bridge(repaired)
+        if repair_family == "score_feedback" and self._needs_score_feedback(errors):
+            repaired = self._inject_score_feedback_bridge(repaired)
+        if repair_family == "runtime_startup" and self._needs_touch_coordinate_guard(errors):
+            repaired = self._inject_touch_coordinate_guard(repaired)
         if repair_family == "forbidden_api":
             repaired = self._sanitize_forbidden_api_usage(repaired, errors)
             repaired = self._strip_storage_apis(repaired)
         if repair_family == "terminal_state":
             repaired = self._inject_terminal_state_fallback(repaired)
+        if repair_family == "mobile_layout":
+            repaired = self._ensure_mobile_viewport_meta(repaired)
+            repaired = self._inject_mobile_layout_bridge(repaired)
         return repaired
 
     @classmethod
@@ -1667,6 +1723,14 @@ class QAPipeline:
         repair_family: str,
     ) -> bool:
         if repair_family != "input_contract" or not errors:
+            if repair_family == "score_feedback" and errors:
+                return self._has_score_bridge_marker(code) or has_visible_scoring_loop(code)
+            if repair_family == "mobile_layout" and errors:
+                return self._has_mobile_viewport_meta(code) and (
+                    has_portrait_short_edge_scaling(code) and not self._has_width_only_font_scaling(code)
+                )
+            if repair_family == "runtime_startup" and errors and self._needs_touch_coordinate_guard(errors):
+                return not self._still_has_unsafe_touch_coordinate_access(code)
             if repair_family == "forbidden_api" and errors:
                 return not self._still_contains_forbidden_api(code, errors)
             return False
@@ -1710,8 +1774,77 @@ class QAPipeline:
         )
 
     @staticmethod
+    def _needs_score_feedback(errors: List[QACheckError]) -> bool:
+        return any(
+            any(
+                token in (error.message or "").lower()
+                for token in (
+                    "visible scoring loop",
+                    "visible score",
+                    "score display",
+                    "score hud",
+                    "scoreboard",
+                )
+            )
+            for error in errors
+        )
+
+    @staticmethod
+    def _needs_touch_coordinate_guard(errors: List[QACheckError]) -> bool:
+        return any(
+            any(
+                token in (error.message or "").lower()
+                for token in (
+                    "reading 'clientx'",
+                    "reading 'clienty'",
+                    "touches[0]",
+                )
+            )
+            for error in errors
+        )
+
+    @staticmethod
     def _has_input_bridge_marker(code: str) -> bool:
         return "__playforgeInputBridgeInstalled" in (code or "")
+
+    @staticmethod
+    def _has_score_bridge_marker(code: str) -> bool:
+        return "__playforgeScoreBridgeInstalled" in (code or "")
+
+    @staticmethod
+    def _has_touch_coordinate_guard_marker(code: str) -> bool:
+        return "__playforgeResolveTouchPointInstalled" in (code or "")
+
+    @staticmethod
+    def _has_mobile_layout_bridge_marker(code: str) -> bool:
+        return MOBILE_LAYOUT_BRIDGE_MARKER in (code or "")
+
+    @staticmethod
+    def _has_mobile_viewport_meta(code: str) -> bool:
+        return re.search(
+            r"<meta\b[^>]*name\s*=\s*['\"]viewport['\"]",
+            code or "",
+            re.IGNORECASE,
+        ) is not None
+
+    @classmethod
+    def _ensure_mobile_viewport_meta(cls, code: str) -> str:
+        if cls._has_mobile_viewport_meta(code):
+            return code
+
+        meta_tag = (
+            '<meta name="viewport" content="width=device-width, initial-scale=1.0, '
+            'maximum-scale=1.0, user-scalable=no">'
+        )
+        if re.search(r"<head\b[^>]*>", code, re.IGNORECASE):
+            return re.sub(
+                r"(<head\b[^>]*>)",
+                rf"\1\n    {meta_tag}",
+                code,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+        return code
 
     @staticmethod
     def _inject_input_bridge(code: str) -> str:
@@ -1966,6 +2099,250 @@ class QAPipeline:
                 flags=re.IGNORECASE,
             )
         return code + "\n" + bridge
+
+    @classmethod
+    def _inject_mobile_layout_bridge(cls, code: str) -> str:
+        if cls._has_mobile_layout_bridge_marker(code) or has_portrait_short_edge_scaling(code):
+            return code
+        if not re.search(r"<canvas\b", code, re.IGNORECASE):
+            return code
+
+        bridge = r"""
+<script>
+(() => {
+  if (window.__playforgeMobileLayoutBridgeInstalled) return;
+  window.__playforgeMobileLayoutBridgeInstalled = true;
+  const canvas = document.getElementById('gameCanvas') || document.querySelector('canvas');
+  if (!canvas) return;
+  const designWidth = Math.max(1, Number(canvas.width) || Number(canvas.getAttribute('width')) || 360);
+  const designHeight = Math.max(1, Number(canvas.height) || Number(canvas.getAttribute('height')) || 640);
+  const applyPortraitLayout = () => {
+    const docEl = document.documentElement || document.body;
+    const viewportWidth = Math.max((docEl && docEl.clientWidth) || 0, window.innerWidth || 0);
+    const viewportHeight = Math.max((docEl && docEl.clientHeight) || 0, window.innerHeight || 0);
+    const scaleX = viewportWidth / designWidth;
+    const scaleY = viewportHeight / designHeight;
+    const uiScale = Math.min(scaleX, scaleY);
+    const shortEdge = Math.min(viewportWidth, viewportHeight);
+    const renderWidth = Math.max(1, Math.round(designWidth * uiScale));
+    const renderHeight = Math.max(1, Math.round(designHeight * uiScale));
+    if (document.body) {
+      document.body.style.margin = '0';
+      document.body.style.minHeight = '100vh';
+      document.body.style.overflow = 'hidden';
+      document.body.style.position = 'relative';
+      document.body.style.display = 'block';
+    }
+    canvas.style.position = 'absolute';
+    canvas.style.width = renderWidth + 'px';
+    canvas.style.height = renderHeight + 'px';
+    canvas.style.left = Math.max(0, Math.round((viewportWidth - renderWidth) / 2)) + 'px';
+    canvas.style.top = Math.max(0, Math.round((viewportHeight - renderHeight) / 2)) + 'px';
+    canvas.style.maxWidth = 'none';
+    canvas.style.maxHeight = 'none';
+    window.__playforgePortraitUiScale = uiScale;
+    window.__playforgePortraitShortEdge = shortEdge;
+  };
+  applyPortraitLayout();
+  window.addEventListener('resize', applyPortraitLayout, { passive: true });
+  window.addEventListener('orientationchange', applyPortraitLayout, { passive: true });
+})();
+</script>
+"""
+
+        if re.search(r"</html>", code, re.IGNORECASE):
+            return re.sub(
+                r"</html>",
+                lambda _: bridge + "\n</html>",
+                code,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+        return code + "\n" + bridge
+
+    @staticmethod
+    def _inject_score_feedback_bridge(code: str) -> str:
+        marker = "__playforgeScoreBridgeInstalled"
+        if marker in (code or ""):
+            return code
+
+        bridge = r"""
+<script>
+(() => {
+  if (window.__playforgeScoreBridgeInstalled) return;
+  window.__playforgeScoreBridgeInstalled = true;
+  window.__playforgeScoreBridgeStartedAt = Date.now();
+  const scoreKeys = ['score', 'points', 'point', 'combo', 'multiplier', 'coins', 'coin', 'time', 'timer', 'moves', 'steps'];
+  const rootKeys = ['game', 'state', 'player', 'world', 'session', 'hud', 'ui', 'stats', 'runtime'];
+
+  const ensureHud = () => {
+    let hud = document.getElementById('playforgeScoreHud');
+    if (hud) return hud;
+    hud = document.createElement('div');
+    hud.id = 'playforgeScoreHud';
+    hud.style.position = 'fixed';
+    hud.style.left = '12px';
+    hud.style.top = '12px';
+    hud.style.zIndex = '99998';
+    hud.style.padding = '8px 12px';
+    hud.style.borderRadius = '12px';
+    hud.style.background = 'rgba(15, 23, 42, 0.88)';
+    hud.style.color = '#f8fafc';
+    hud.style.font = '700 14px/1.2 sans-serif';
+    hud.style.letterSpacing = '0.02em';
+    hud.style.boxShadow = '0 8px 24px rgba(15, 23, 42, 0.22)';
+    hud.style.pointerEvents = 'none';
+    (document.body || document.documentElement).appendChild(hud);
+    return hud;
+  };
+
+  const normalizeValue = (value) => {
+    if (typeof value === 'number' && Number.isFinite(value)) return Math.round(value);
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    return null;
+  };
+
+  const probeObject = (root, labelPrefix = '') => {
+    if (!root || typeof root !== 'object') return null;
+    for (const key of scoreKeys) {
+      try {
+        const value = normalizeValue(root[key]);
+        if (value !== null) {
+          return { label: labelPrefix || key, value };
+        }
+      } catch (err) {
+        /* ignore score probe errors */
+      }
+    }
+    return null;
+  };
+
+  const readScoreSample = () => {
+    for (const key of scoreKeys) {
+      try {
+        const value = normalizeValue(window[key]);
+        if (value !== null) {
+          return { label: key, value };
+        }
+      } catch (err) {
+        /* ignore direct score probe errors */
+      }
+    }
+
+    for (const rootKey of rootKeys) {
+      try {
+        const sample = probeObject(window[rootKey], rootKey);
+        if (sample) return sample;
+      } catch (err) {
+        /* ignore nested score probe errors */
+      }
+    }
+
+    const elapsedSeconds = Math.max(0, Math.floor((Date.now() - window.__playforgeScoreBridgeStartedAt) / 1000));
+    return { label: 'time', value: elapsedSeconds };
+  };
+
+  const formatLabel = (label) => {
+    const normalized = String(label || 'score').toLowerCase();
+    if (normalized === 'time' || normalized === 'timer') return 'Time';
+    if (normalized === 'coin' || normalized === 'coins') return 'Coins';
+    if (normalized === 'moves' || normalized === 'steps') return 'Moves';
+    if (normalized === 'combo') return 'Combo';
+    return 'Score';
+  };
+
+  const tick = () => {
+    try {
+      const hud = ensureHud();
+      const sample = readScoreSample();
+      hud.textContent = formatLabel(sample.label) + ': ' + sample.value;
+    } catch (err) {
+      /* ignore score bridge render errors */
+    }
+    window.requestAnimationFrame(tick);
+  };
+
+  tick();
+})();
+</script>
+""".strip()
+
+        if re.search(r"</body>", code, re.IGNORECASE):
+            return re.sub(
+                r"</body>",
+                lambda _: bridge + "\n</body>",
+                code,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+        if re.search(r"</html>", code, re.IGNORECASE):
+            return re.sub(
+                r"</html>",
+                lambda _: bridge + "\n</html>",
+                code,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+        return code + "\n" + bridge
+
+    @staticmethod
+    def _inject_touch_coordinate_guard(code: str) -> str:
+        marker = "__playforgeResolveTouchPointInstalled"
+        if marker in (code or ""):
+            return code
+
+        repaired = re.sub(
+            r"\b([A-Za-z_$][\w$]*)\.touches\s*\?\s*\1\.touches\s*\[\s*0\s*\]\s*:\s*\1\b",
+            r"window.__playforgeResolveTouchPoint(\1)",
+            code,
+        )
+        repaired = re.sub(
+            r"\b([A-Za-z_$][\w$]*)\.touches\s*\[\s*0\s*\]",
+            r"window.__playforgeResolveTouchPoint(\1)",
+            repaired,
+        )
+
+        helper = r"""
+<script>
+(() => {
+  if (window.__playforgeResolveTouchPointInstalled) return;
+  window.__playforgeResolveTouchPointInstalled = true;
+  window.__playforgeResolveTouchPoint = function(evt) {
+    return (evt && evt.touches && evt.touches[0])
+      || (evt && evt.changedTouches && evt.changedTouches[0])
+      || evt
+      || { clientX: 0, clientY: 0 };
+  };
+})();
+</script>
+""".strip()
+
+        if re.search(r"</body>", repaired, re.IGNORECASE):
+            return re.sub(
+                r"</body>",
+                lambda _: helper + "\n</body>",
+                repaired,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+        if re.search(r"</html>", repaired, re.IGNORECASE):
+            return re.sub(
+                r"</html>",
+                lambda _: helper + "\n</html>",
+                repaired,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+        return repaired + "\n" + helper
+
+    @staticmethod
+    def _still_has_unsafe_touch_coordinate_access(code: str) -> bool:
+        if "__playforgeResolveTouchPointInstalled" in (code or ""):
+            return False
+        return bool(
+            re.search(r"\b[A-Za-z_$][\w$]*\.touches\s*\[\s*0\s*\]", code)
+            or re.search(r"\b([A-Za-z_$][\w$]*)\.touches\s*\?\s*\1\.touches\s*\[\s*0\s*\]\s*:\s*\1\b", code)
+        )
 
     @staticmethod
     def _strip_storage_apis(code: str) -> str:

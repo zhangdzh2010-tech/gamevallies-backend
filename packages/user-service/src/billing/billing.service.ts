@@ -46,6 +46,8 @@ const DEFAULT_PLANS = [
   },
 ] as const;
 
+const PLAN_BOOTSTRAP_MARKER_KEY = 'billing.subscription_plans_bootstrapped_at';
+
 type BillingDbClient = PrismaService | Prisma.TransactionClient;
 
 @Injectable()
@@ -610,29 +612,50 @@ export class BillingService {
   }
 
   private async ensurePlansSeeded() {
-    await Promise.all(
-      DEFAULT_PLANS.map((plan) => this.prisma.subscriptionPlan.upsert({
-        where: { id: plan.id },
+    const marker = await this.prisma.systemConfig.findUnique({
+      where: { configKey: PLAN_BOOTSTRAP_MARKER_KEY },
+      select: { id: true },
+    });
+    if (marker) {
+      return;
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      const existingMarker = await tx.systemConfig.findUnique({
+        where: { configKey: PLAN_BOOTSTRAP_MARKER_KEY },
+        select: { id: true },
+      });
+      if (existingMarker) {
+        return;
+      }
+
+      const existingPlanCount = await tx.subscriptionPlan.count();
+      if (existingPlanCount === 0) {
+        await tx.subscriptionPlan.createMany({
+          data: DEFAULT_PLANS.map((plan) => ({
+            ...plan,
+            features: plan.features as unknown as Prisma.InputJsonValue,
+            active: true,
+          })),
+          skipDuplicates: true,
+        });
+      }
+
+      await tx.systemConfig.upsert({
+        where: { configKey: PLAN_BOOTSTRAP_MARKER_KEY },
         update: {
-          name: plan.name,
-          description: plan.description,
-          price: plan.price,
-          currency: plan.currency,
-          period: plan.period,
-          quota: plan.quota,
-          features: plan.features as unknown as Prisma.InputJsonValue,
-          recommended: plan.recommended,
-          badge: plan.badge,
-          sortOrder: plan.sortOrder,
-          active: true,
+          configValue: new Date().toISOString(),
+          description: 'Subscription plans bootstrap marker',
+          category: 'billing',
         },
         create: {
-          ...plan,
-          features: plan.features as unknown as Prisma.InputJsonValue,
-          active: true,
+          configKey: PLAN_BOOTSTRAP_MARKER_KEY,
+          configValue: new Date().toISOString(),
+          description: 'Subscription plans bootstrap marker',
+          category: 'billing',
         },
-      })),
-    );
+      });
+    });
   }
 
   private async ensureUserQuota(client: BillingDbClient, userId: string) {

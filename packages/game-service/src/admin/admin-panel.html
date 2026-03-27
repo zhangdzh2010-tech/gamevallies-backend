@@ -6,7 +6,7 @@
 <title>GameVallies 管理后台</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;background:#f5f7fa;color:#333;font-size:14px}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;background:radial-gradient(circle at top left,rgba(96,165,250,.12),transparent 28%),linear-gradient(180deg,#f6f9ff 0%,#f8fafc 32%,#f5f7fa 100%);color:#333;font-size:14px}
 a{color:#2563eb;text-decoration:none}
 
 /* Login */
@@ -21,29 +21,46 @@ a{color:#2563eb;text-decoration:none}
 
 /* Layout */
 .app{display:none;min-height:100vh}
-.header{background:#fff;border-bottom:1px solid #e5e7eb;padding:0 24px;height:56px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
-.header h1{font-size:18px;color:#1e293b;font-weight:600}
+.header{background:rgba(255,255,255,.86);backdrop-filter:blur(14px);border-bottom:1px solid rgba(219,228,240,.85);box-shadow:0 12px 28px rgba(15,23,42,.05);padding:0 24px;height:60px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+.header h1{font-size:18px;color:#0f172a;font-weight:800;letter-spacing:-.02em}
 .header .right{display:flex;align-items:center;gap:12px}
-.header .logout-btn{padding:6px 14px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-size:13px;color:#64748b}
-.header .logout-btn:hover{background:#f9fafb;color:#ef4444}
+.header .logout-btn{padding:8px 14px;border:1px solid #dbe4f0;border-radius:12px;background:#fff;cursor:pointer;font-size:13px;color:#64748b;font-weight:700}
+.header .logout-btn:hover{background:#f8fafc;color:#ef4444}
 
 /* Tabs */
-.tabs{display:flex;background:#fff;border-bottom:1px solid #e5e7eb;padding:0 24px;gap:0}
-.tab{padding:12px 20px;cursor:pointer;border-bottom:2px solid transparent;color:#64748b;font-size:14px;font-weight:500;transition:.2s}
-.tab:hover{color:#2563eb}
-.tab.active{color:#2563eb;border-bottom-color:#2563eb}
+.tabs{display:flex;flex-wrap:wrap;background:rgba(255,255,255,.76);backdrop-filter:blur(12px);border-bottom:1px solid rgba(219,228,240,.9);padding:12px 24px 0;gap:8px;position:sticky;top:60px;z-index:95}
+.tab{padding:10px 14px;cursor:pointer;border:1px solid transparent;border-radius:14px;color:#64748b;font-size:14px;font-weight:700;transition:.18s;box-shadow:0 0 0 rgba(0,0,0,0);margin-bottom:12px}
+.tab:hover{color:#1d4ed8;background:#f8fbff;border-color:#dbe4f0}
+.tab.active{color:#1d4ed8;border-color:#bfdbfe;background:linear-gradient(180deg,#eff6ff 0%,#ffffff 100%);box-shadow:0 10px 18px rgba(37,99,235,.08)}
 
 /* Content */
-.content{padding:24px;max-width:1400px;margin:0 auto}
+.content{padding:28px 24px 40px;max-width:1480px;margin:0 auto}
 .page{display:none}
 .page.active{display:block}
 
 /* Cards */
-.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px}
-.stat-card{background:#fff;border-radius:10px;padding:20px;border:1px solid #e5e7eb}
-.stat-card .label{font-size:13px;color:#64748b;margin-bottom:4px}
-.stat-card .value{font-size:28px;font-weight:700;color:#1e293b}
-.stat-card .sub{font-size:12px;color:#94a3b8;margin-top:4px}
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:16px;margin-bottom:24px}
+.stat-card{position:relative;background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%);border-radius:22px;padding:20px 20px 18px;border:1px solid #dbe4f0;box-shadow:0 18px 34px rgba(15,23,42,.06);overflow:hidden}
+.stat-card::after{content:'';position:absolute;right:-18px;top:-24px;width:110px;height:110px;border-radius:999px;background:rgba(96,165,250,.12)}
+.stat-card .stat-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:18px}
+.stat-card .label{font-size:11px;font-weight:800;color:#64748b;letter-spacing:.08em;text-transform:uppercase}
+.stat-card .value{font-size:32px;font-weight:800;color:#0f172a;letter-spacing:-.03em;line-height:1.05}
+.stat-card .sub{font-size:12px;color:#64748b;margin-top:10px;line-height:1.6;max-width:180px}
+.stat-card .stat-pill{display:inline-flex;align-items:center;padding:7px 12px;border-radius:999px;background:#eff6ff;color:#1d4ed8;font-size:11px;font-weight:800;letter-spacing:.04em;white-space:nowrap}
+.stat-card-blue::after{background:rgba(59,130,246,.14)}
+.stat-card-cyan::after{background:rgba(6,182,212,.13)}
+.stat-card-violet::after{background:rgba(139,92,246,.14)}
+.stat-card-slate::after{background:rgba(148,163,184,.18)}
+.stat-card-emerald::after{background:rgba(16,185,129,.14)}
+.stat-card-amber::after{background:rgba(245,158,11,.16)}
+.stat-card-rose::after{background:rgba(244,63,94,.14)}
+.stat-card-blue .stat-pill{background:#eff6ff;color:#1d4ed8}
+.stat-card-cyan .stat-pill{background:#ecfeff;color:#0f766e}
+.stat-card-violet .stat-pill{background:#f5f3ff;color:#6d28d9}
+.stat-card-slate .stat-pill{background:#f1f5f9;color:#475569}
+.stat-card-emerald .stat-pill{background:#ecfdf5;color:#15803d}
+.stat-card-amber .stat-pill{background:#fffbeb;color:#b45309}
+.stat-card-rose .stat-pill{background:#fff1f2;color:#be123c}
 
 /* Toolbar */
 .toolbar{display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
@@ -217,11 +234,153 @@ tbody tr:hover{background:#f8fafc}
 #page-llm .table-wrap tbody td{padding:15px 16px;vertical-align:top}
 #page-llm .table-wrap tbody tr:hover{background:rgba(248,250,252,.9)}
 
+/* Shared workspace layout */
+.workspace-page{display:flex;flex-direction:column;gap:18px}
+.workspace-hero{display:flex;align-items:flex-start;justify-content:space-between;gap:22px;flex-wrap:wrap;padding:24px 26px;border-radius:24px;border:1px solid #d7e3f4;background:radial-gradient(circle at top left,rgba(96,165,250,.18),transparent 38%),linear-gradient(135deg,#eff6ff 0%,#ffffff 48%,#f8fafc 100%);box-shadow:0 18px 40px rgba(15,23,42,.08)}
+.workspace-hero-copy{flex:1;min-width:min(100%,520px)}
+.workspace-eyebrow{display:inline-flex;align-items:center;padding:6px 12px;border-radius:999px;background:rgba(255,255,255,.84);border:1px solid rgba(191,219,254,.92);font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#2563eb}
+.workspace-hero h2{font-size:28px;font-weight:900;color:#0f172a;letter-spacing:-.03em;margin-top:14px}
+.workspace-hero p{max-width:760px;font-size:13px;color:#475569;margin-top:10px;line-height:1.8}
+.workspace-meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:16px}
+.workspace-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;border-radius:18px;background:rgba(255,255,255,.84);border:1px solid rgba(148,163,184,.22);backdrop-filter:blur(10px)}
+.workspace-actions .btn{padding:10px 16px;border-radius:14px;font-size:13px;font-weight:700;box-shadow:0 10px 18px rgba(15,23,42,.06)}
+.workspace-actions .btn-primary{background:linear-gradient(135deg,#2563eb 0%,#1d4ed8 100%)}
+.workspace-actions .btn-primary:hover{background:linear-gradient(135deg,#1d4ed8 0%,#1e40af 100%)}
+.workspace-actions .btn-secondary{background:#fff;color:#334155;border:1px solid #dbe4f0}
+.workspace-actions .btn-secondary:hover{background:#eff6ff;border-color:#bfdbfe}
+.workspace-toolbar-label{font-size:11px;font-weight:800;color:#64748b;text-transform:uppercase;letter-spacing:.08em}
+.workspace-actions input[type=text],.workspace-actions input[type=date],.workspace-actions input[type=number],.workspace-actions select{height:42px;min-width:140px;padding:0 14px;border-radius:14px;border:1px solid #cbd5e1;background:#fff;font-size:13px;font-weight:600;color:#0f172a;outline:none;font-family:inherit}
+.workspace-actions input[type=text]{min-width:220px}
+.workspace-actions input:focus,.workspace-actions select:focus{border-color:#2563eb;box-shadow:0 0 0 4px rgba(37,99,235,.08)}
+.workspace-actions .range-sep{font-size:12px;font-weight:700;color:#64748b}
+.workspace-surface{background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);border:1px solid #dbe4f0;border-radius:22px;box-shadow:0 16px 34px rgba(15,23,42,.06);overflow:hidden}
+.workspace-surface-header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;padding:18px 20px;border-bottom:1px solid #e2e8f0}
+.workspace-surface-header.no-border{border-bottom:none}
+.workspace-surface-title{font-size:17px;font-weight:800;color:#0f172a;letter-spacing:-.01em}
+.workspace-surface-sub{font-size:12px;color:#64748b;line-height:1.7;margin-top:4px}
+.workspace-summary-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.workspace-kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px}
+.workspace-kpi{position:relative;padding:16px 18px;border-radius:18px;border:1px solid #dbe4f0;background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%);box-shadow:0 10px 22px rgba(15,23,42,.05);overflow:hidden}
+.workspace-kpi::after{content:'';position:absolute;right:-18px;top:-20px;width:96px;height:96px;border-radius:999px;background:rgba(59,130,246,.12)}
+.workspace-kpi .k{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#64748b}
+.workspace-kpi .v{font-size:28px;font-weight:900;line-height:1.08;color:#0f172a;margin-top:12px;letter-spacing:-.03em}
+.workspace-kpi .sub{font-size:12px;color:#64748b;line-height:1.6;margin-top:10px}
+.workspace-kpi-slate::after{background:rgba(148,163,184,.18)}
+.workspace-kpi-cyan::after{background:rgba(6,182,212,.13)}
+.workspace-kpi-emerald::after{background:rgba(16,185,129,.14)}
+.workspace-kpi-amber::after{background:rgba(245,158,11,.15)}
+.workspace-table-wrap{padding:0 0 2px}
+.workspace-empty{padding:36px 20px;text-align:center;color:#94a3b8;font-size:13px;line-height:1.7}
+.workspace-quick-actions{display:flex;gap:8px;flex-wrap:wrap}
+.workspace-quick-actions .btn{padding:8px 12px;border-radius:999px;font-size:12px;font-weight:800}
+.workspace-page .table-wrap{border-radius:22px;overflow:hidden;border:1px solid #dbe4f0;box-shadow:none;background:transparent}
+.workspace-page .table-wrap table{border-collapse:separate;border-spacing:0}
+.workspace-page .table-wrap thead th{padding:14px 16px;border-bottom:1px solid #e2e8f0;background:#f8fafc;font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.08em}
+.workspace-page .table-wrap tbody td{padding:15px 16px;vertical-align:top}
+.workspace-page .table-wrap tbody tr:hover{background:rgba(248,250,252,.92)}
+#page-games .abtn,#page-logs .abtn,#page-users .abtn,#page-subscriptions .abtn{padding:7px 12px;border-radius:999px;font-size:11px;font-weight:800;box-shadow:0 8px 14px rgba(15,23,42,.05)}
+#page-games .abtn-preview,#page-logs .abtn-preview,#page-users .abtn-preview,#page-subscriptions .abtn-preview{background:#eff6ff;color:#1d4ed8;border-color:#bfdbfe}
+#page-games .abtn-preview:hover,#page-logs .abtn-preview:hover,#page-users .abtn-preview:hover,#page-subscriptions .abtn-preview:hover{background:#dbeafe}
+#page-games .abtn-edit,#page-logs .abtn-edit,#page-users .abtn-edit,#page-subscriptions .abtn-edit{background:#f8fafc;color:#334155;border-color:#dbe4f0}
+#page-games .abtn-edit:hover,#page-logs .abtn-edit:hover,#page-users .abtn-edit:hover,#page-subscriptions .abtn-edit:hover{background:#e2e8f0}
+#page-games .abtn-delete,#page-logs .abtn-delete,#page-users .abtn-delete,#page-subscriptions .abtn-delete{background:#fff1f2;color:#be123c;border-color:#fecdd3}
+#page-games .abtn-delete:hover,#page-logs .abtn-delete:hover,#page-users .abtn-delete:hover,#page-subscriptions .abtn-delete:hover{background:#ffe4e6}
+#page-games .abtn-play{background:#ecfdf5;color:#15803d;border-color:#bbf7d0}
+#page-games .abtn-play:hover{background:#dcfce7}
+#page-games .abtn-publish,#page-users .abtn-success,#page-subscriptions .abtn-success{background:#ecfdf5;color:#15803d;border-color:#bbf7d0}
+#page-games .abtn-publish:hover,#page-users .abtn-success:hover,#page-subscriptions .abtn-success:hover{background:#dcfce7}
+#page-games .abtn-unpublish,#page-subscriptions .abtn-warning{background:#fffbeb;color:#b45309;border-color:#fde68a}
+#page-games .abtn-unpublish:hover,#page-subscriptions .abtn-warning:hover{background:#fef3c7}
+.workspace-detail-shell{display:flex;flex-direction:column;gap:18px}
+.workspace-detail-shell .back-btn{display:inline-flex;align-items:center;gap:8px;padding:10px 14px;border-radius:999px;background:#fff;border:1px solid #dbe4f0;color:#475569;font-size:12px;font-weight:800;box-shadow:0 8px 18px rgba(15,23,42,.05)}
+.workspace-detail-shell .detail-header{padding:22px 24px;border-radius:24px;border:1px solid #d7e3f4;background:radial-gradient(circle at top left,rgba(96,165,250,.16),transparent 36%),linear-gradient(135deg,#eff6ff 0%,#ffffff 48%,#f8fafc 100%);box-shadow:0 18px 34px rgba(15,23,42,.08)}
+.workspace-detail-shell .detail-header h2{font-size:28px;font-weight:900;color:#0f172a;letter-spacing:-.03em}
+.workspace-detail-shell .detail-stats{gap:14px}
+.workspace-detail-shell .detail-stat{padding:16px 14px;border-radius:18px;border:1px solid #dbe4f0;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);box-shadow:0 10px 22px rgba(15,23,42,.05)}
+.workspace-detail-shell .detail-stat .v{font-size:24px;font-weight:800;color:#0f172a}
+.workspace-detail-shell .detail-stat .l{font-size:12px;color:#64748b}
+.workspace-detail-shell .section-title{font-size:15px;font-weight:800;color:#0f172a;margin:4px 0 0;padding-bottom:10px;border-bottom:1px solid #e2e8f0}
+.workspace-detail-shell .form-grid{gap:14px}
+.workspace-detail-shell .form-group{padding:14px 16px;border-radius:18px;border:1px solid #dbe4f0;background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%);box-shadow:inset 0 1px 0 rgba(255,255,255,.85)}
+.workspace-detail-shell .form-group label{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:#64748b}
+.workspace-detail-shell .form-group input,.workspace-detail-shell .form-group select,.workspace-detail-shell .form-group textarea{padding:12px 14px;border:1px solid #cbd5e1;border-radius:14px;font-size:13px;line-height:1.6;background:#fff}
+.workspace-detail-shell .code-editor{border-radius:18px}
+.subscription-plan-features{display:flex;flex-wrap:wrap;gap:6px}
+.subscription-plan-features .llm-pill{box-shadow:none}
+.subscription-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.subscription-form-grid .full{grid-column:1/-1}
+.subscription-form-grid .llm-field textarea{min-height:120px}
+.subscription-inline-note{font-size:12px;color:#64748b;line-height:1.7}
+
+/* Dashboard workspace */
+.dashboard-page{display:flex;flex-direction:column;gap:18px}
+.dashboard-hero{display:flex;align-items:flex-start;justify-content:space-between;gap:22px;flex-wrap:wrap;padding:26px;border-radius:26px;border:1px solid #d7e3f4;background:radial-gradient(circle at top left,rgba(59,130,246,.18),transparent 34%),linear-gradient(135deg,#eff6ff 0%,#ffffff 48%,#f8fafc 100%);box-shadow:0 18px 40px rgba(15,23,42,.08)}
+.dashboard-hero-copy{flex:1;min-width:min(100%,520px)}
+.dashboard-eyebrow{display:inline-flex;align-items:center;padding:6px 12px;border-radius:999px;background:rgba(255,255,255,.82);border:1px solid rgba(191,219,254,.9);font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#2563eb}
+.dashboard-title{font-size:30px;font-weight:900;color:#0f172a;letter-spacing:-.03em;margin-top:14px}
+.dashboard-subtitle{max-width:780px;font-size:13px;line-height:1.8;color:#475569;margin-top:10px}
+.dashboard-meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:16px}
+.dashboard-meta .llm-pill strong{font-weight:800;color:#0f172a}
+.dashboard-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;border-radius:18px;background:rgba(255,255,255,.82);border:1px solid rgba(148,163,184,.22);backdrop-filter:blur(10px)}
+.dashboard-actions .btn{padding:10px 16px;border-radius:14px;font-size:13px;font-weight:700;box-shadow:0 10px 18px rgba(15,23,42,.06)}
+.dashboard-actions .btn-primary{background:linear-gradient(135deg,#2563eb 0%,#1d4ed8 100%)}
+.dashboard-actions .btn-primary:hover{background:linear-gradient(135deg,#1d4ed8 0%,#1e40af 100%)}
+.dashboard-actions .btn-secondary{background:#fff;color:#334155;border:1px solid #dbe4f0}
+.dashboard-actions .btn-secondary:hover{background:#eff6ff;border-color:#bfdbfe}
+.dashboard-filter-card{display:flex;flex-direction:column;gap:10px;min-width:min(100%,360px);padding:14px 16px;border-radius:18px;background:#fff;border:1px solid #dbe4f0;box-shadow:0 8px 18px rgba(15,23,42,.05)}
+.dashboard-filter-title{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#64748b}
+.dashboard-filter-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.dashboard-filter-row input[type=date]{height:40px;min-width:148px;padding:0 12px;border-radius:12px;border:1px solid #cbd5e1;background:#fff;font-size:13px;color:#0f172a;outline:none}
+.dashboard-filter-row input[type=date]:focus{border-color:#2563eb;box-shadow:0 0 0 4px rgba(37,99,235,.08)}
+.dashboard-filter-row .btn{padding:9px 12px;border-radius:12px;font-size:12px}
+.dashboard-filter-row .btn.btn-secondary{box-shadow:none}
+.dashboard-filter-row .range-sep{font-size:12px;font-weight:700;color:#64748b}
+.dashboard-filter-hint{font-size:12px;color:#64748b;line-height:1.7}
+.dashboard-filter-hint strong{color:#0f172a}
+.dashboard-subscription-meta{display:flex;gap:10px;flex-wrap:wrap}
+.dashboard-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.dashboard-card{background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);border:1px solid #dbe4f0;border-radius:22px;padding:20px 22px;box-shadow:0 16px 34px rgba(15,23,42,.05)}
+.dashboard-card-wide{grid-column:1/-1}
+.dashboard-card-header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+.dashboard-card-title{font-size:17px;font-weight:800;color:#0f172a;letter-spacing:-.01em}
+.dashboard-card-sub{font-size:12px;color:#64748b;line-height:1.7;margin-top:6px}
+.dashboard-chip-row{display:flex;gap:10px;flex-wrap:wrap}
+.dashboard-chip{display:inline-flex;align-items:center;gap:8px;padding:10px 14px;border-radius:999px;border:1px solid #dbe4f0;background:#fff;font-size:12px;color:#334155;box-shadow:0 8px 14px rgba(15,23,42,.04)}
+.dashboard-chip .k{font-weight:700}
+.dashboard-chip .v{font-weight:800;color:#0f172a}
+.dashboard-chip.badge-published{background:#ecfdf5;border-color:#bbf7d0;color:#15803d}
+.dashboard-chip.badge-published .v{color:#166534}
+.dashboard-chip.badge-draft{background:#f8fafc;border-color:#dbe4f0;color:#475569}
+.dashboard-chip.badge-draft .v{color:#334155}
+.dashboard-chip.badge-banned,.dashboard-chip.badge-failed{background:#fff1f2;border-color:#fecdd3;color:#be123c}
+.dashboard-chip.badge-banned .v,.dashboard-chip.badge-failed .v{color:#9f1239}
+.dashboard-chip.badge-review{background:#fffbeb;border-color:#fde68a;color:#b45309}
+.dashboard-chip.badge-review .v{color:#92400e}
+.dashboard-chip.badge-generating{background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8}
+.dashboard-chip.badge-generating .v{color:#1e40af}
+.dashboard-empty{padding:18px 16px;border-radius:16px;border:1px dashed #cbd5e1;background:#f8fafc;color:#94a3b8;font-size:13px;line-height:1.7}
+.dashboard-reason-list{display:flex;flex-direction:column;gap:12px}
+.dashboard-reason-item{padding:14px 16px;border-radius:18px;border:1px solid #fecdd3;background:linear-gradient(180deg,#fff1f2 0%,#ffffff 100%);box-shadow:0 10px 22px rgba(244,63,94,.06)}
+.dashboard-reason-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.dashboard-reason-stage{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#be123c}
+.dashboard-reason-text{font-size:13px;color:#475569;line-height:1.7;margin-top:6px;word-break:break-word}
+.dashboard-reason-count{display:inline-flex;align-items:center;padding:6px 10px;border-radius:999px;background:#fff;border:1px solid #fecdd3;font-size:11px;font-weight:800;color:#9f1239;white-space:nowrap}
+
+#page-dashboard .stats-grid{margin-bottom:0}
+
 @media (max-width: 900px){
-  .sheet-grid,.llm-kv-grid{grid-template-columns:1fr}
+  .sheet-grid,.llm-kv-grid,.workspace-kpi-grid,.subscription-form-grid{grid-template-columns:1fr}
   .llm-hero{padding:20px}
   .llm-tools{width:100%}
   .llm-chat-send-row{align-items:flex-start}
+  .workspace-hero{padding:20px}
+  .workspace-actions{width:100%}
+  .workspace-actions input[type=text],.workspace-actions input[type=date],.workspace-actions input[type=number],.workspace-actions select{width:100%;min-width:0}
+  .dashboard-grid{grid-template-columns:1fr}
+  .dashboard-hero{padding:22px}
+  .dashboard-title{font-size:26px}
+  .dashboard-actions{width:100%}
+  .dashboard-filter-card{width:100%;min-width:0}
 }
 
 /* Form */
@@ -414,6 +573,7 @@ tbody tr:hover{background:#f8fafc}
     <div class="tab" data-tab="logs" onclick="switchTab('logs')">生成记录</div>
     <div class="tab" data-tab="tasks" onclick="switchTab('tasks')">异步任务</div>
     <div class="tab" data-tab="users" onclick="switchTab('users')">用户管理</div>
+    <div class="tab" data-tab="subscriptions" onclick="switchTab('subscriptions')">订阅套餐</div>
     <div class="tab" data-tab="prompts" onclick="switchTab('prompts')">Prompt 配置</div>
     <div class="tab" data-tab="timeouts" onclick="switchTab('timeouts')">超时配置</div>
     <div class="tab" data-tab="llm" onclick="switchTab('llm')">LLM 网关</div>
@@ -423,79 +583,240 @@ tbody tr:hover{background:#f8fafc}
   <div class="content">
     <!-- Dashboard -->
     <div id="page-dashboard" class="page active">
-      <div class="stats-grid" id="statsGrid">
-        <div class="stat-card"><div class="label">总游戏数</div><div class="value" id="s-games">-</div></div>
-        <div class="stat-card"><div class="label">总播放次数</div><div class="value" id="s-plays">-</div></div>
-        <div class="stat-card"><div class="label">总点赞数</div><div class="value" id="s-likes">-</div></div>
-        <div class="stat-card"><div class="label">总用户数</div><div class="value" id="s-users">-</div></div>
-        <div class="stat-card"><div class="label">总 Fork 数</div><div class="value" id="s-forks">-</div></div>
-        <div class="stat-card"><div class="label">平均质量分</div><div class="value" id="s-quality">-</div></div>
-        <div class="stat-card"><div class="label">平均重试次数</div><div class="value" id="s-retries">-</div></div>
-      </div>
-      <div style="margin-bottom:16px">
-        <h3 style="font-size:16px;font-weight:600;color:#1e293b;margin-bottom:12px">状态分布</h3>
-        <div id="statusBars" style="display:flex;gap:8px;flex-wrap:wrap"></div>
-      </div>
-      <div style="margin-bottom:16px">
-        <h3 style="font-size:16px;font-weight:600;color:#1e293b;margin-bottom:12px">失败阶段分布</h3>
-        <div id="failureStageBars" style="display:flex;gap:8px;flex-wrap:wrap"></div>
-      </div>
-      <div style="margin-bottom:16px">
-        <h3 style="font-size:16px;font-weight:600;color:#1e293b;margin-bottom:12px">重试次数分布</h3>
-        <div id="retryBars" style="display:flex;gap:8px;flex-wrap:wrap"></div>
-      </div>
-      <div style="margin-bottom:16px">
-        <h3 style="font-size:16px;font-weight:600;color:#1e293b;margin-bottom:12px">质量分分布</h3>
-        <div id="qualityBars" style="display:flex;gap:8px;flex-wrap:wrap"></div>
-      </div>
-      <div style="margin-bottom:16px">
-        <h3 style="font-size:16px;font-weight:600;color:#1e293b;margin-bottom:12px">高频失败原因</h3>
-        <div id="failureReasonList" style="display:flex;flex-direction:column;gap:8px"></div>
-      </div>
-      <div style="display:flex;gap:10px">
-        <button class="btn btn-primary" onclick="switchTab('create')">+ 添加游戏</button>
-        <button class="btn btn-secondary" onclick="loadStats()">刷新数据</button>
+      <div class="dashboard-page">
+        <div class="dashboard-hero">
+          <div class="dashboard-hero-copy">
+            <div class="dashboard-eyebrow">Admin Workspace</div>
+            <h2 class="dashboard-title">运营仪表盘</h2>
+            <p class="dashboard-subtitle">把内容供给、生成质量、订阅收入和异常热点放在同一屏里，方便你巡检平台状态，并且快速回到需要处理的游戏、任务、订阅配置和创建入口。</p>
+            <div class="dashboard-meta">
+              <span class="llm-pill">生产环境</span>
+              <span class="llm-pill">gamevallies.com</span>
+              <span class="llm-pill">最近刷新 <strong id="dashboardLastRefreshed">尚未加载</strong></span>
+            </div>
+          </div>
+          <div class="dashboard-actions">
+            <button class="btn btn-primary" onclick="switchTab('create')">+ 添加游戏</button>
+            <button class="btn btn-secondary" onclick="loadStats()">刷新数据</button>
+            <button class="btn btn-secondary" onclick="switchTab('subscriptions')">管理套餐</button>
+            <div class="dashboard-filter-card">
+              <div class="dashboard-filter-title">收入时间段</div>
+              <div class="dashboard-filter-row">
+                <input type="date" id="dashboardRangeFrom">
+                <span class="range-sep">至</span>
+                <input type="date" id="dashboardRangeTo">
+              </div>
+              <div class="dashboard-filter-row">
+                <button class="btn btn-secondary" onclick="applyRangePreset('dashboard','7d')">近 7 天</button>
+                <button class="btn btn-secondary" onclick="applyRangePreset('dashboard','30d')">近 30 天</button>
+                <button class="btn btn-secondary" onclick="applyRangePreset('dashboard','month')">本月</button>
+                <button class="btn btn-secondary" onclick="applyRangePreset('dashboard','all')">全部</button>
+                <button class="btn btn-primary" onclick="loadStats()">应用</button>
+              </div>
+              <div class="dashboard-filter-hint">当前收入口径：<strong id="dashboardRangeSummary">全部时间</strong></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="stats-grid" id="statsGrid">
+          <div class="stat-card stat-card-blue">
+            <div class="stat-head"><div class="label">总游戏数</div><div class="stat-pill">内容池</div></div>
+            <div class="value" id="s-games">-</div>
+            <div class="sub">当前平台累计可管理的作品库存。</div>
+          </div>
+          <div class="stat-card stat-card-cyan">
+            <div class="stat-head"><div class="label">总播放次数</div><div class="stat-pill">活跃度</div></div>
+            <div class="value" id="s-plays">-</div>
+            <div class="sub">用户整体试玩与消费内容的热度。</div>
+          </div>
+          <div class="stat-card stat-card-violet">
+            <div class="stat-head"><div class="label">总点赞数</div><div class="stat-pill">反馈</div></div>
+            <div class="value" id="s-likes">-</div>
+            <div class="sub">正向反馈是否在持续累积。</div>
+          </div>
+          <div class="stat-card stat-card-slate">
+            <div class="stat-head"><div class="label">总用户数</div><div class="stat-pill">用户池</div></div>
+            <div class="value" id="s-users">-</div>
+            <div class="sub">当前后台可见的总用户规模。</div>
+          </div>
+          <div class="stat-card stat-card-emerald">
+            <div class="stat-head"><div class="label">总 Fork 数</div><div class="stat-pill">创作链</div></div>
+            <div class="value" id="s-forks">-</div>
+            <div class="sub">社区二创和延展创作的活跃程度。</div>
+          </div>
+          <div class="stat-card stat-card-amber">
+            <div class="stat-head"><div class="label">平均质量分</div><div class="stat-pill">质量</div></div>
+            <div class="value" id="s-quality">-</div>
+            <div class="sub">生成结果整体质量的稳定水平。</div>
+          </div>
+          <div class="stat-card stat-card-rose">
+            <div class="stat-head"><div class="label">平均重试次数</div><div class="stat-pill">风险</div></div>
+            <div class="value" id="s-retries">-</div>
+            <div class="sub">生成修复成本与异常波动的体感指标。</div>
+          </div>
+          <div class="stat-card stat-card-cyan">
+            <div class="stat-head"><div class="label">订阅套餐数</div><div class="stat-pill">订阅</div></div>
+            <div class="value" id="s-sub-plans">-</div>
+            <div class="sub">当前后台可配置的套餐总数，包含启用和归档套餐。</div>
+          </div>
+          <div class="stat-card stat-card-emerald">
+            <div class="stat-head"><div class="label">总收入金额</div><div class="stat-pill">营收</div></div>
+            <div class="value" id="s-revenue">-</div>
+            <div class="sub" id="s-revenue-sub">按所选时间段统计的已支付订阅收入。</div>
+          </div>
+        </div>
+
+        <div class="dashboard-grid">
+          <section class="dashboard-card">
+            <div class="dashboard-card-header">
+              <div>
+                <div class="dashboard-card-title">订阅概览</div>
+                <div class="dashboard-card-sub">结合时间段查看套餐数、有效订阅与收入，方便快速感知商业化状态。</div>
+              </div>
+            </div>
+            <div class="dashboard-subscription-meta">
+              <span class="llm-pill">活跃套餐 <strong id="dashboardActivePlans">-</strong></span>
+              <span class="llm-pill">有效订阅 <strong id="dashboardActiveSubscribers">-</strong></span>
+              <span class="llm-pill">已支付订单 <strong id="dashboardPaidOrders">-</strong></span>
+            </div>
+          </section>
+
+          <section class="dashboard-card">
+            <div class="dashboard-card-header">
+              <div>
+                <div class="dashboard-card-title">状态分布</div>
+                <div class="dashboard-card-sub">快速感知当前作品池里发布、草稿、生成中和失败状态的占比。</div>
+              </div>
+            </div>
+            <div id="statusBars" class="dashboard-chip-row"></div>
+          </section>
+
+          <section class="dashboard-card">
+            <div class="dashboard-card-header">
+              <div>
+                <div class="dashboard-card-title">失败阶段分布</div>
+                <div class="dashboard-card-sub">把当前最常见的卡点直接拉出来，方便优先追 pipeline 和 QA 问题。</div>
+              </div>
+            </div>
+            <div id="failureStageBars" class="dashboard-chip-row"></div>
+          </section>
+
+          <section class="dashboard-card">
+            <div class="dashboard-card-header">
+              <div>
+                <div class="dashboard-card-title">重试次数分布</div>
+                <div class="dashboard-card-sub">观察生成任务是否开始变重，或者修复轮次是否突然抬升。</div>
+              </div>
+            </div>
+            <div id="retryBars" class="dashboard-chip-row"></div>
+          </section>
+
+          <section class="dashboard-card">
+            <div class="dashboard-card-header">
+              <div>
+                <div class="dashboard-card-title">质量分分布</div>
+                <div class="dashboard-card-sub">看高质量和低质量产物是否在持续分化，辅助评估当前模型与 prompt 状态。</div>
+              </div>
+            </div>
+            <div id="qualityBars" class="dashboard-chip-row"></div>
+          </section>
+
+          <section class="dashboard-card dashboard-card-wide">
+            <div class="dashboard-card-header">
+              <div>
+                <div class="dashboard-card-title">高频失败原因</div>
+                <div class="dashboard-card-sub">按失败次数聚合最常见的 stage 和错误摘要，便于直接挑出结构性问题。</div>
+              </div>
+            </div>
+            <div id="failureReasonList" class="dashboard-reason-list"></div>
+          </section>
+        </div>
       </div>
     </div>
 
     <!-- Game List -->
     <div id="page-games" class="page">
-      <div id="gameListView">
-        <div class="toolbar">
-          <input type="text" id="searchInput" placeholder="搜索游戏名称..." oninput="debouncedSearch()">
-          <select id="statusFilter" onchange="loadGames()">
-            <option value="all">全部状态</option>
-            <option value="published">已发布</option>
-            <option value="draft">草稿</option>
-            <option value="banned">已封禁</option>
-            <option value="review">审核中</option>
-            <option value="generating">生成中</option>
-            <option value="failed">失败</option>
-          </select>
-          <button class="btn btn-secondary" onclick="loadGames()">刷新</button>
-          <button class="btn btn-primary" onclick="switchTab('create')">+ 添加游戏</button>
+      <div class="workspace-page" id="gameWorkspace">
+        <div id="gameListView">
+          <div class="workspace-hero">
+            <div class="workspace-hero-copy">
+              <div class="workspace-eyebrow">Content Operations</div>
+              <h2>游戏管理</h2>
+              <p>集中处理作品上下架、预览试玩、作者信息和源码编辑，把内容巡检和手工运营操作放在同一个工作区里。</p>
+              <div class="workspace-meta">
+                <span class="llm-pill">后台主控台</span>
+                <span class="llm-pill" id="gamesSummaryPill">等待加载</span>
+              </div>
+            </div>
+            <div class="workspace-actions">
+              <input type="text" id="searchInput" placeholder="搜索游戏名称..." oninput="debouncedSearch()">
+              <select id="statusFilter" onchange="loadGames()">
+                <option value="all">全部状态</option>
+                <option value="published">已发布</option>
+                <option value="draft">草稿</option>
+                <option value="banned">已封禁</option>
+                <option value="review">审核中</option>
+                <option value="generating">生成中</option>
+                <option value="failed">失败</option>
+              </select>
+              <button class="btn btn-secondary" onclick="loadGames()">刷新</button>
+              <button class="btn btn-primary" onclick="switchTab('create')">+ 添加游戏</button>
+            </div>
+          </div>
+
+          <div class="workspace-surface">
+            <div class="workspace-surface-header">
+              <div>
+                <div class="workspace-surface-title">作品列表</div>
+                <div class="workspace-surface-sub">支持搜索、状态筛选、预览试玩和内容编辑。</div>
+              </div>
+              <div class="workspace-summary-row" id="gamesSummary"></div>
+            </div>
+            <div class="workspace-table-wrap" id="gameTableWrap"></div>
+          </div>
         </div>
-        <div id="gameTableWrap"></div>
+        <div id="gameDetailView" style="display:none"></div>
       </div>
-      <div id="gameDetailView" style="display:none"></div>
     </div>
 
     <!-- Generation Logs -->
     <div id="page-logs" class="page">
-      <h2 style="font-size:18px;font-weight:600;color:#1e293b;margin-bottom:16px">游戏生成记录</h2>
-      <div class="toolbar">
-        <input type="text" id="log-search" placeholder="搜索用户名/标题/描述..." onkeyup="if(event.key==='Enter'){logPage=1;loadLogs()}">
-        <select id="log-status" onchange="logPage=1;loadLogs()">
-          <option value="all">全部状态</option>
-          <option value="generating">生成中</option>
-          <option value="draft">草稿</option>
-          <option value="published">已发布</option>
-          <option value="failed">失败</option>
-          <option value="banned">已封禁</option>
-        </select>
-        <button class="btn btn-secondary" onclick="logPage=1;loadLogs()">搜索</button>
+      <div class="workspace-page">
+        <div class="workspace-hero">
+          <div class="workspace-hero-copy">
+            <div class="workspace-eyebrow">Generation Intelligence</div>
+            <h2>生成记录</h2>
+            <p>围绕每次生成的结果页视角查看状态、失败原因、策略、QA 情况和源码详情，帮助你快速甄别结构性问题。</p>
+            <div class="workspace-meta">
+              <span class="llm-pill">任务结果聚合</span>
+              <span class="llm-pill" id="logsSummaryPill">等待加载</span>
+            </div>
+          </div>
+          <div class="workspace-actions">
+            <input type="text" id="log-search" placeholder="搜索用户名/标题/描述..." onkeyup="if(event.key==='Enter'){logPage=1;loadLogs()}">
+            <select id="log-status" onchange="logPage=1;loadLogs()">
+              <option value="all">全部状态</option>
+              <option value="generating">生成中</option>
+              <option value="draft">草稿</option>
+              <option value="published">已发布</option>
+              <option value="failed">失败</option>
+              <option value="banned">已封禁</option>
+            </select>
+            <button class="btn btn-secondary" onclick="logPage=1;loadLogs()">搜索</button>
+          </div>
+        </div>
+
+        <div class="workspace-surface">
+          <div class="workspace-surface-header">
+            <div>
+              <div class="workspace-surface-title">结果列表</div>
+              <div class="workspace-surface-sub">按游戏结果维度聚合，支持快速进入任务详情和源码查看。</div>
+            </div>
+            <div class="workspace-summary-row" id="logsSummary"></div>
+          </div>
+          <div class="workspace-table-wrap" id="logTableWrap"></div>
+        </div>
       </div>
-      <div id="logTableWrap"></div>
     </div>
 
     <!-- Async Tasks -->
@@ -526,22 +847,179 @@ tbody tr:hover{background:#f8fafc}
 
     <!-- User Management -->
     <div id="page-users" class="page">
-      <div id="userListView">
-        <div class="toolbar">
-          <input type="text" id="userSearchInput" placeholder="搜索用户名/邮箱..." oninput="debouncedUserSearch()">
-          <select id="roleFilter" onchange="loadUsers()">
-            <option value="all">全部角色</option>
-            <option value="admin">管理员</option>
-            <option value="creator">创作者</option>
-            <option value="user">普通用户</option>
-            <option value="moderator">版主</option>
-          </select>
-          <button class="btn btn-secondary" onclick="loadUsers()">刷新</button>
-          <button class="btn btn-primary" onclick="showCreateUser()">+ 新建用户</button>
+      <div class="workspace-page" id="userWorkspace">
+        <div id="userListView">
+          <div class="workspace-hero">
+            <div class="workspace-hero-copy">
+              <div class="workspace-eyebrow">User Operations</div>
+              <h2>用户管理</h2>
+              <p>统一查看用户规模、角色分布、创作者体量和 Pro 状态，支持快速编辑资料、重置密码和进行后台运营处理。</p>
+              <div class="workspace-meta">
+                <span class="llm-pill">账号运营</span>
+                <span class="llm-pill" id="usersSummaryPill">等待加载</span>
+              </div>
+            </div>
+            <div class="workspace-actions">
+              <input type="text" id="userSearchInput" placeholder="搜索用户名/邮箱..." oninput="debouncedUserSearch()">
+              <select id="roleFilter" onchange="loadUsers()">
+                <option value="all">全部角色</option>
+                <option value="admin">管理员</option>
+                <option value="creator">创作者</option>
+                <option value="user">普通用户</option>
+                <option value="moderator">版主</option>
+              </select>
+              <button class="btn btn-secondary" onclick="loadUsers()">刷新</button>
+              <button class="btn btn-primary" onclick="showCreateUser()">+ 新建用户</button>
+            </div>
+          </div>
+
+          <div class="workspace-surface">
+            <div class="workspace-surface-header">
+              <div>
+                <div class="workspace-surface-title">用户列表</div>
+                <div class="workspace-surface-sub">支持按角色和关键字段筛选，进入用户详情继续编辑。</div>
+              </div>
+              <div class="workspace-summary-row" id="usersSummary"></div>
+            </div>
+            <div class="workspace-table-wrap" id="userTableWrap"></div>
+          </div>
         </div>
-        <div id="userTableWrap"></div>
+        <div id="userDetailView" style="display:none"></div>
       </div>
-      <div id="userDetailView" style="display:none"></div>
+    </div>
+
+    <!-- Subscription Plans -->
+    <div id="page-subscriptions" class="page">
+      <div class="workspace-page">
+        <div class="workspace-hero">
+          <div class="workspace-hero-copy">
+            <div class="workspace-eyebrow">Monetization Workspace</div>
+            <h2>订阅套餐</h2>
+            <p>在这里配置套餐价格、额度、推荐位与启用状态，并按时间段查看套餐销售表现和收入汇总。</p>
+            <div class="workspace-meta">
+              <span class="llm-pill">订阅配置是后台事实源</span>
+              <span class="llm-pill" id="subscriptionSummaryPill">等待加载</span>
+            </div>
+          </div>
+          <div class="workspace-actions">
+            <span class="workspace-toolbar-label">收入时间段</span>
+            <input type="date" id="subscriptionRangeFrom">
+            <span class="range-sep">至</span>
+            <input type="date" id="subscriptionRangeTo">
+            <button class="btn btn-secondary" onclick="applyRangePreset('subscriptions','7d')">近 7 天</button>
+            <button class="btn btn-secondary" onclick="applyRangePreset('subscriptions','30d')">近 30 天</button>
+            <button class="btn btn-secondary" onclick="applyRangePreset('subscriptions','month')">本月</button>
+            <button class="btn btn-secondary" onclick="applyRangePreset('subscriptions','all')">全部</button>
+            <button class="btn btn-secondary" onclick="loadSubscriptionPlans()">刷新</button>
+            <button class="btn btn-primary" onclick="openSubscriptionPlanSheet()">新建套餐</button>
+          </div>
+        </div>
+
+        <div class="workspace-kpi-grid" id="subscriptionSummaryGrid">
+          <div class="workspace-kpi">
+            <div class="k">套餐总数</div>
+            <div class="v" id="subscriptionTotalPlans">-</div>
+            <div class="sub">当前后台可管理的套餐总数，包含启用和归档。</div>
+          </div>
+          <div class="workspace-kpi workspace-kpi-cyan">
+            <div class="k">活跃套餐</div>
+            <div class="v" id="subscriptionActivePlans">-</div>
+            <div class="sub">仍在对外售卖或可继续复用的套餐数量。</div>
+          </div>
+          <div class="workspace-kpi workspace-kpi-emerald">
+            <div class="k">有效订阅</div>
+            <div class="v" id="subscriptionActiveSubscribers">-</div>
+            <div class="sub">当前仍在有效期内的订阅数。</div>
+          </div>
+          <div class="workspace-kpi workspace-kpi-amber">
+            <div class="k">收入金额</div>
+            <div class="v" id="subscriptionTotalRevenue">-</div>
+            <div class="sub" id="subscriptionRevenueHint">按所选时间段统计的已支付订阅收入。</div>
+          </div>
+        </div>
+
+        <div class="workspace-surface">
+          <div class="workspace-surface-header">
+            <div>
+              <div class="workspace-surface-title">套餐列表</div>
+              <div class="workspace-surface-sub">支持直接查看价格、额度、推荐位、历史订单与收入。</div>
+            </div>
+            <div class="workspace-summary-row" id="subscriptionTableSummary"></div>
+          </div>
+          <div class="workspace-table-wrap" id="subscriptionPlanTableWrap"></div>
+        </div>
+      </div>
+
+      <div id="subscriptionPlanSheet" class="sheet-overlay" onclick="closeSheetOnBackdrop(event, 'subscriptionPlanSheet')">
+        <div class="sheet-panel llm-sheet-panel">
+          <div class="sheet-header">
+            <div>
+              <h3 id="subscriptionPlanSheetTitle">新建订阅套餐</h3>
+              <p id="subscriptionPlanSheetDesc">配置价格、额度、推荐标签和启用状态。历史上已经成交的套餐删除时会自动归档。</p>
+            </div>
+            <button class="modal-close" onclick="closeSubscriptionPlanSheet()">&times;</button>
+          </div>
+          <div class="sheet-body">
+            <div class="sheet-section">
+              <h4>套餐配置</h4>
+              <div class="subscription-form-grid">
+                <div class="llm-field">
+                  <label>套餐名称</label>
+                  <input type="text" id="subscriptionPlanName" placeholder="例如 专业月卡">
+                </div>
+                <div class="llm-field">
+                  <label>计费周期</label>
+                  <select id="subscriptionPlanPeriod">
+                    <option value="monthly">monthly</option>
+                    <option value="yearly">yearly</option>
+                  </select>
+                </div>
+                <div class="llm-field">
+                  <label>价格（元）</label>
+                  <input type="number" step="0.01" min="0" id="subscriptionPlanPriceYuan" placeholder="19.90">
+                </div>
+                <div class="llm-field">
+                  <label>额度</label>
+                  <input type="number" min="0" id="subscriptionPlanQuota" placeholder="30">
+                </div>
+                <div class="llm-field">
+                  <label>徽标</label>
+                  <input type="text" id="subscriptionPlanBadge" placeholder="例如 推荐">
+                </div>
+                <div class="llm-field">
+                  <label>排序</label>
+                  <input type="number" id="subscriptionPlanSortOrder" placeholder="20">
+                </div>
+                <div class="llm-field llm-field-toggle">
+                  <label>推荐位</label>
+                  <label class="llm-toggle-line"><input type="checkbox" id="subscriptionPlanRecommended" style="width:auto"> 设为推荐套餐</label>
+                </div>
+                <div class="llm-field llm-field-toggle">
+                  <label>启用状态</label>
+                  <label class="llm-toggle-line"><input type="checkbox" id="subscriptionPlanActive" checked style="width:auto"> 套餐可对外售卖</label>
+                </div>
+                <div class="llm-field full">
+                  <label>描述</label>
+                  <textarea id="subscriptionPlanDescription" rows="3" placeholder="例如 每月 30 次创建额度 + 无限 AI 迭代"></textarea>
+                </div>
+                <div class="llm-field full">
+                  <label>特性列表</label>
+                  <textarea id="subscriptionPlanFeatures" rows="5" placeholder="每行一条特性，例如：&#10;每月30次创建&#10;无限AI迭代&#10;优先生成"></textarea>
+                  <div class="hint">支持换行或逗号分隔，保存时会自动整理为数组。</div>
+                </div>
+              </div>
+            </div>
+            <div class="sheet-section">
+              <h4>说明</h4>
+              <div class="subscription-inline-note">这里保存的是平台真实套餐配置。用户侧套餐列表和下单逻辑会读取同一套数据，默认种子只在首次空库时初始化，不会再覆盖后台编辑结果。</div>
+            </div>
+          </div>
+          <div class="sheet-footer">
+            <button class="btn btn-secondary" onclick="closeSubscriptionPlanSheet()">取消</button>
+            <button class="btn btn-primary" onclick="saveSubscriptionPlan()">保存套餐</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Settings -->
@@ -742,6 +1220,16 @@ tbody tr:hover{background:#f8fafc}
                 <div class="llm-field">
                   <label>连接超时（秒）</label>
                   <input type="number" id="llm2-provider-connect-timeout" placeholder="15">
+                </div>
+                <div class="llm-field">
+                  <label>Context</label>
+                  <input type="number" id="llm2-provider-context-window" placeholder="例如 128000" min="1" step="1">
+                  <div class="hint">可选。用于记录 provider 的总上下文窗口。</div>
+                </div>
+                <div class="llm-field">
+                  <label>MaxTokens</label>
+                  <input type="number" id="llm2-provider-max-tokens" placeholder="例如 16384" min="1" step="1">
+                  <div class="hint">可选。网关会把实际请求的 max_tokens 限制在该值以内。</div>
                 </div>
                 <div class="llm-field full">
                   <label>描述</label>
@@ -982,6 +1470,7 @@ tbody tr:hover{background:#f8fafc}
         <div id="llmRouteTableWrap"></div>
       </div>
     </div>
+    </div>
 
     <!-- Create Game -->
     <div id="page-create" class="page">
@@ -1095,6 +1584,8 @@ let currentTestProvider = null;
 let llmTestMessages = [];
 let currentTaskDetailId = null;
 let taskDetailRefreshTimer = null;
+let subscriptionPlans = [];
+let currentSubscriptionPlanId = null;
 
 // ===================== Auth =====================
 function checkAuth() {
@@ -1403,6 +1894,7 @@ function switchTab(tab) {
   if (tab === 'logs') loadLogs();
   if (tab === 'tasks') loadTasks();
   if (tab === 'users') { showUserList(); loadUsers(); }
+  if (tab === 'subscriptions') loadSubscriptionPlans();
   if (tab === 'prompts') loadConfigs();
   if (tab === 'timeouts') loadTimeoutConfigs();
   if (tab === 'llm') loadLlmGateway();
@@ -1410,9 +1902,112 @@ function switchTab(tab) {
 }
 
 // ===================== Dashboard =====================
+function localDateInputValue(date) {
+  const d = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(d.getTime())) return '';
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function getRangeInputIds(scope) {
+  if (scope === 'dashboard') {
+    return { from: 'dashboardRangeFrom', to: 'dashboardRangeTo' };
+  }
+  if (scope === 'subscriptions') {
+    return { from: 'subscriptionRangeFrom', to: 'subscriptionRangeTo' };
+  }
+  throw new Error('Unknown range scope: ' + scope);
+}
+
+function applyRangePreset(scope, preset, shouldLoad = true) {
+  const { from, to } = getRangeInputIds(scope);
+  const fromInput = document.getElementById(from);
+  const toInput = document.getElementById(to);
+  if (!fromInput || !toInput) return;
+
+  const today = new Date();
+  const end = localDateInputValue(today);
+  const startDate = new Date(today);
+
+  if (preset === 'all') {
+    fromInput.value = '';
+    toInput.value = '';
+  } else if (preset === '7d') {
+    startDate.setDate(startDate.getDate() - 6);
+    fromInput.value = localDateInputValue(startDate);
+    toInput.value = end;
+  } else if (preset === '30d') {
+    startDate.setDate(startDate.getDate() - 29);
+    fromInput.value = localDateInputValue(startDate);
+    toInput.value = end;
+  } else if (preset === 'month') {
+    startDate.setDate(1);
+    fromInput.value = localDateInputValue(startDate);
+    toInput.value = end;
+  }
+
+  if (shouldLoad) {
+    if (scope === 'dashboard') loadStats();
+    if (scope === 'subscriptions') loadSubscriptionPlans();
+  }
+}
+
+function buildRangeQuery(scope) {
+  const { from, to } = getRangeInputIds(scope);
+  const fromValue = document.getElementById(from)?.value?.trim() || '';
+  const toValue = document.getElementById(to)?.value?.trim() || '';
+  const params = new URLSearchParams();
+  if (fromValue) params.set('from', fromValue);
+  if (toValue) params.set('to', toValue);
+  const query = params.toString();
+  return query ? `?${query}` : '';
+}
+
+function getRangeLabel(scope) {
+  const { from, to } = getRangeInputIds(scope);
+  const fromValue = document.getElementById(from)?.value?.trim() || '';
+  const toValue = document.getElementById(to)?.value?.trim() || '';
+  if (!fromValue && !toValue) return '全部时间';
+  if (fromValue && toValue) return `${fromValue} 至 ${toValue}`;
+  if (fromValue) return `${fromValue} 起`;
+  return `截至 ${toValue}`;
+}
+
+function fmtCurrencyYuan(value) {
+  const amount = Number(value || 0);
+  return `¥${amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function setHtml(id, html) {
+  const el = document.getElementById(id);
+  if (el) el.innerHTML = html;
+}
+
+function renderDashboardChips(containerId, rows, options = {}) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  const list = Array.isArray(rows) ? rows : Object.entries(rows || {});
+  if (!list.length) {
+    container.innerHTML = `<div class="dashboard-empty">${escHtml(options.emptyText || '暂无数据')}</div>`;
+    return;
+  }
+  container.innerHTML = list.map(([key, value]) => {
+    const item = options.mapItem ? options.mapItem(key, value) : {
+      label: key,
+      value: fmtNum(value),
+      className: 'badge-draft'
+    };
+    return `<div class="dashboard-chip ${item.className || ''}"><span class="k">${escHtml(item.label || key)}</span><span class="v">${escHtml(String(item.value ?? value))}</span></div>`;
+  }).join('');
+}
+
 async function loadStats() {
   try {
-    const d = await api('/stats');
+    const d = await api('/stats' + buildRangeQuery('dashboard'));
+    const subscription = d.subscriptionOverview || {};
+    const rangeLabel = getRangeLabel('dashboard');
     document.getElementById('s-games').textContent = fmtNum(d.totalGames);
     document.getElementById('s-plays').textContent = fmtNum(d.totalPlays);
     document.getElementById('s-likes').textContent = fmtNum(d.totalLikes);
@@ -1420,51 +2015,51 @@ async function loadStats() {
     document.getElementById('s-forks').textContent = fmtNum(d.totalForks);
     document.getElementById('s-quality').textContent = Number(d.avgQualityScore || 0).toFixed(1);
     document.getElementById('s-retries').textContent = Number(d.avgRetryCount || 0).toFixed(1);
+    document.getElementById('s-sub-plans').textContent = fmtNum(subscription.totalPlans || 0);
+    document.getElementById('s-revenue').textContent = fmtCurrencyYuan(subscription.totalRevenueYuan || 0);
+    document.getElementById('s-revenue-sub').textContent = `${rangeLabel} 已支付 ${fmtNum(subscription.paidOrderCount || 0)} 单`;
+    document.getElementById('dashboardRangeSummary').textContent = rangeLabel;
+    document.getElementById('dashboardActivePlans').textContent = fmtNum(subscription.activePlans || 0);
+    document.getElementById('dashboardActiveSubscribers').textContent = fmtNum(subscription.activeSubscribers || 0);
+    document.getElementById('dashboardPaidOrders').textContent = fmtNum(subscription.paidOrderCount || 0);
+    const refreshedAt = document.getElementById('dashboardLastRefreshed');
+    if (refreshedAt) refreshedAt.textContent = new Date().toLocaleString('zh-CN', { hour12: false });
 
-    const bars = document.getElementById('statusBars');
-    bars.innerHTML = '';
     const statusLabels = { published: '已发布', draft: '草稿', banned: '已封禁', review: '审核中', generating: '生成中', failed: '失败' };
-    for (const [k, v] of Object.entries(d.byStatus || {})) {
-      bars.innerHTML += `<div class="badge badge-${k}" style="font-size:13px;padding:6px 14px">${statusLabels[k] || k}: ${v}</div>`;
-    }
+    renderDashboardChips('statusBars', Object.entries(d.byStatus || {}), {
+      emptyText: '暂无状态数据',
+      mapItem: (k, v) => ({ label: statusLabels[k] || k, value: fmtNum(v), className: `badge-${k}` })
+    });
 
-    const failureBars = document.getElementById('failureStageBars');
-    failureBars.innerHTML = '';
-    const failedByStage = d.failedByStage || {};
-    if (!Object.keys(failedByStage).length) {
-      failureBars.innerHTML = '<div style="font-size:13px;color:#94a3b8">暂无失败阶段数据</div>';
-    } else {
-      for (const [k, v] of Object.entries(failedByStage)) {
-        failureBars.innerHTML += `<div class="badge badge-failed" style="font-size:13px;padding:6px 14px">${escHtml(k)}: ${v}</div>`;
-      }
-    }
+    renderDashboardChips('failureStageBars', Object.entries(d.failedByStage || {}), {
+      emptyText: '暂无失败阶段数据',
+      mapItem: (k, v) => ({ label: k, value: fmtNum(v), className: 'badge-failed' })
+    });
 
-    const retryBars = document.getElementById('retryBars');
-    retryBars.innerHTML = '';
-    for (const [k, v] of Object.entries(d.retryBuckets || {})) {
-      retryBars.innerHTML += `<div class="badge badge-review" style="font-size:13px;padding:6px 14px">${escHtml(k)}: ${v}</div>`;
-    }
+    renderDashboardChips('retryBars', Object.entries(d.retryBuckets || {}), {
+      emptyText: '暂无重试分布数据',
+      mapItem: (k, v) => ({ label: k, value: fmtNum(v), className: 'badge-review' })
+    });
 
-    const qualityBars = document.getElementById('qualityBars');
-    qualityBars.innerHTML = '';
-    for (const [k, v] of Object.entries(d.qualityBuckets || {})) {
-      qualityBars.innerHTML += `<div class="badge badge-published" style="font-size:13px;padding:6px 14px">${escHtml(k)}: ${v}</div>`;
-    }
+    renderDashboardChips('qualityBars', Object.entries(d.qualityBuckets || {}), {
+      emptyText: '暂无质量分数据',
+      mapItem: (k, v) => ({ label: k, value: fmtNum(v), className: 'badge-published' })
+    });
 
     const failureReasonList = document.getElementById('failureReasonList');
     failureReasonList.innerHTML = '';
     const topFailureReasons = d.topFailureReasons || [];
     if (!topFailureReasons.length) {
-      failureReasonList.innerHTML = '<div style="font-size:13px;color:#94a3b8">暂无高频失败原因</div>';
+      failureReasonList.innerHTML = '<div class="dashboard-empty">暂无高频失败原因</div>';
     } else {
       failureReasonList.innerHTML = topFailureReasons.map(item => (
-        `<div style="background:#fff;border:1px solid #fecdd3;border-radius:10px;padding:10px 12px">` +
-        `<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start">` +
+        `<div class="dashboard-reason-item">` +
+        `<div class="dashboard-reason-top">` +
         `<div>` +
-        `<div style="font-size:12px;color:#9f1239;font-weight:600">${escHtml(item.stage || 'unknown')}</div>` +
-        `<div style="font-size:13px;color:#475569;margin-top:4px">${escHtml(item.reason || 'unknown error')}</div>` +
+        `<div class="dashboard-reason-stage">${escHtml(item.stage || 'unknown')}</div>` +
+        `<div class="dashboard-reason-text">${escHtml(item.reason || 'unknown error')}</div>` +
         `</div>` +
-        `<div style="font-size:12px;color:#9f1239;white-space:nowrap">x${Number(item.count || 0)}</div>` +
+        `<div class="dashboard-reason-count">x${fmtNum(Number(item.count || 0))}</div>` +
         `</div>` +
         `</div>`
       )).join('');
@@ -1484,7 +2079,7 @@ async function loadGames() {
   const search = document.getElementById('searchInput').value.trim();
   const status = document.getElementById('statusFilter').value;
   const wrap = document.getElementById('gameTableWrap');
-  wrap.innerHTML = '<div class="loading"><div class="spinner"></div><div style="margin-top:8px">加载中...</div></div>';
+  wrap.innerHTML = '<div class="workspace-empty"><div class="spinner"></div><div style="margin-top:8px">加载中...</div></div>';
 
   try {
     const d = await api(`/games?page=${currentPage}&limit=20&search=${encodeURIComponent(search)}&status=${status}`);
@@ -1497,8 +2092,15 @@ async function loadGames() {
 
 function renderGameTable(d) {
   const wrap = document.getElementById('gameTableWrap');
+  setHtml('gamesSummary', `<span class="llm-pill">共 ${fmtNum(d.total || 0)} 款作品</span><span class="llm-pill">第 ${fmtNum(d.page || 1)} / ${fmtNum(d.totalPages || 1)} 页</span>`);
+  const search = document.getElementById('searchInput')?.value?.trim() || '';
+  const status = document.getElementById('statusFilter')?.value || 'all';
+  const summaryPill = document.getElementById('gamesSummaryPill');
+  if (summaryPill) {
+    summaryPill.textContent = `${status === 'all' ? '全部状态' : statusLabel(status)} · ${search ? `关键词「${search}」` : '默认排序'}`;
+  }
   if (!d.items || d.items.length === 0) {
-    wrap.innerHTML = '<div class="loading">暂无游戏数据</div>';
+    wrap.innerHTML = '<div class="workspace-empty">暂无游戏数据</div>';
     return;
   }
   let html = '<div class="table-wrap"><table><thead><tr><th>标题</th><th>类型</th><th>状态</th><th>播放</th><th>点赞</th><th>质量分</th><th>大小</th><th style="min-width:240px">操作</th></tr></thead><tbody>';
@@ -1642,7 +2244,8 @@ function renderGameDetail(g) {
   const bundle = g.bundles && g.bundles[0];
   const dv = document.getElementById('gameDetailView');
 
-  let html = `<div class="back-btn" onclick="showGameList()">&#8592; 返回列表</div>`;
+  let html = '<div class="workspace-detail-shell">';
+  html += `<div class="back-btn" onclick="showGameList()">&#8592; 返回列表</div>`;
   html += `<div class="detail-header"><h2>${escHtml(g.title)}</h2><div style="display:flex;gap:8px;flex-wrap:wrap">`;
   html += `<button class="btn btn-secondary btn-sm" onclick="previewGame('${g.id}','${escAttr(g.title)}','${escAttr(g.previewUrl || '')}')">预览</button>`;
   html += `<button class="btn btn-success btn-sm" onclick="playGame('${g.id}','${escAttr(g.title)}','${escAttr(g.previewUrl || '')}')">试玩</button>`;
@@ -1716,6 +2319,7 @@ function renderGameDetail(g) {
 
   // Preview
   html += '<div id="editPreviewWrap" style="display:none;margin-top:16px"><div class="section-title">预览</div><iframe id="editPreviewFrame" class="preview-frame" sandbox="allow-scripts allow-same-origin"></iframe></div>';
+  html += '</div>';
 
   dv.innerHTML = html;
 }
@@ -1890,22 +2494,29 @@ async function loadUsers() {
   const search = document.getElementById('userSearchInput').value.trim();
   const role = document.getElementById('roleFilter').value;
   const wrap = document.getElementById('userTableWrap');
-  wrap.innerHTML = '<div class="loading"><div class="spinner"></div><div style="margin-top:8px">加载中...</div></div>';
+  wrap.innerHTML = '<div class="workspace-empty"><div class="spinner"></div><div style="margin-top:8px">加载中...</div></div>';
   try {
     const d = await api(`/users?page=${userPage}&limit=20&search=${encodeURIComponent(search)}&role=${role}`);
     renderUserTable(d);
   } catch (e) {
-    wrap.innerHTML = `<div class="loading" style="color:#dc2626">加载失败: ${escHtml(e.message)}</div>`;
+    wrap.innerHTML = `<div class="workspace-empty" style="color:#dc2626">加载失败: ${escHtml(e.message)}</div>`;
   }
 }
 
 function renderUserTable(d) {
   const wrap = document.getElementById('userTableWrap');
+  setHtml('usersSummary', `<span class="llm-pill">共 ${fmtNum(d.total || 0)} 位用户</span><span class="llm-pill">第 ${fmtNum(d.page || 1)} / ${fmtNum(d.totalPages || 1)} 页</span>`);
+  const search = document.getElementById('userSearchInput')?.value?.trim() || '';
+  const role = document.getElementById('roleFilter')?.value || 'all';
+  const roleLabels = { all: '全部角色', admin: '管理员', creator: '创作者', user: '普通用户', moderator: '版主' };
+  const summaryPill = document.getElementById('usersSummaryPill');
+  if (summaryPill) {
+    summaryPill.textContent = `${roleLabels[role] || role} · ${search ? `关键词「${search}」` : '默认排序'}`;
+  }
   if (!d.items || d.items.length === 0) {
-    wrap.innerHTML = '<div class="loading">暂无用户</div>';
+    wrap.innerHTML = '<div class="workspace-empty">暂无用户</div>';
     return;
   }
-  const roleLabels = { admin: '管理员', creator: '创作者', user: '用户', moderator: '版主' };
   const roleBadge = (r) => `<span class="badge badge-${r === 'admin' ? 'published' : r === 'creator' ? 'review' : 'draft'}">${roleLabels[r] || r}</span>`;
   let html = '<div class="table-wrap"><table><thead><tr><th>用户名</th><th>昵称</th><th>邮箱</th><th>角色</th><th>游戏数</th><th>注册时间</th><th style="min-width:200px">操作</th></tr></thead><tbody>';
   for (const u of d.items) {
@@ -1951,7 +2562,8 @@ async function showUserDetail(id) {
 
 function renderUserDetail(u) {
   const dv = document.getElementById('userDetailView');
-  let html = `<div class="back-btn" onclick="showUserList()">← 返回列表</div>`;
+  let html = '<div class="workspace-detail-shell">';
+  html += `<div class="back-btn" onclick="showUserList()">← 返回列表</div>`;
   html += `<div class="detail-header"><h2>${escHtml(u.displayName || u.username)}</h2></div>`;
   html += '<div class="detail-stats">';
   html += `<div class="detail-stat"><div class="v">${u.gameCount||0}</div><div class="l">游戏</div></div>`;
@@ -1982,6 +2594,7 @@ function renderUserDetail(u) {
     <button class="btn btn-secondary" onclick="resetPasswordDialog('${u.id}','${escAttr(u.username)}')">重置密码</button>
     <button class="btn btn-danger" onclick="deleteUserConfirm('${u.id}','${escAttr(u.username)}')">删除用户</button>
   </div>`;
+  html += '</div>';
   dv.innerHTML = html;
 }
 
@@ -2105,11 +2718,18 @@ async function loadLogs() {
     const d = await api('/genlog?' + params);
     renderLogs(d);
   } catch(e) {
-    document.getElementById('logTableWrap').innerHTML = '<div style="color:#dc2626;padding:20px">加载失败: ' + e.message + '</div>';
+    document.getElementById('logTableWrap').innerHTML = '<div class="workspace-empty" style="color:#dc2626">加载失败: ' + escHtml(e.message) + '</div>';
   }
 }
 
 function renderLogs(d) {
+  setHtml('logsSummary', `<span class="llm-pill">共 ${fmtNum(d.total || 0)} 条记录</span><span class="llm-pill">第 ${fmtNum(d.page || 1)} / ${fmtNum(d.totalPages || 1)} 页</span>`);
+  const search = document.getElementById('log-search')?.value?.trim() || '';
+  const status = document.getElementById('log-status')?.value || 'all';
+  const summaryPill = document.getElementById('logsSummaryPill');
+  if (summaryPill) {
+    summaryPill.textContent = `${status === 'all' ? '全部状态' : statusLabel(status)} · ${search ? `关键词「${search}」` : '默认排序'}`;
+  }
   const statusLabels = { generating: '生成中', draft: '草稿', published: '已发布', failed: '失败', banned: '已封禁', review: '审核中' };
   const statusColors = { generating: 'generating', draft: 'draft', published: 'published', failed: 'failed', banned: 'banned', review: 'review' };
   const gameBaseUrl = window.location.origin;
@@ -2156,9 +2776,11 @@ function renderLogs(d) {
       '<td>' + qaSummary + '</td>' +
       '<td>' + time + '</td>' +
       '<td>' +
-        '<a href="' + previewUrl + '" target="_blank" class="btn btn-sm btn-secondary" style="margin-right:4px">预览</a>' +
-        '<button class="btn btn-sm btn-secondary" style="margin-right:4px" onclick="showLogDetail(\'' + g.gameId + '\', \'source\')">源码</button>' +
-        '<button class="btn btn-sm btn-secondary" onclick="showLogDetail(\'' + g.gameId + '\')">详情</button>' +
+        '<div class="action-cell">' +
+        '<a href="' + previewUrl + '" target="_blank" class="abtn abtn-preview" style="text-decoration:none">预览</a>' +
+        '<button class="abtn abtn-edit" onclick="showLogDetail(\'' + g.gameId + '\', \'source\')">源码</button>' +
+        '<button class="abtn abtn-edit" onclick="showLogDetail(\'' + g.gameId + '\')">详情</button>' +
+        '</div>' +
       '</td>' +
       '</tr>';
   }
@@ -3641,6 +4263,8 @@ function renderProviderTable() {
   }
   let html = '<table><thead><tr><th>名称</th><th>类型 / 预设</th><th>Region</th><th>模型</th><th>超时</th><th>优先级</th><th>最近测试</th><th>状态</th><th>操作</th></tr></thead><tbody>';
   for (const provider of llmProviders) {
+    const contextWindowLabel = provider.contextWindow ? String(provider.contextWindow) : '-';
+    const maxTokensLabel = provider.maxTokens ? String(provider.maxTokens) : '-';
     const latestTest = provider.latestTest;
     const latestTestHtml = latestTest
       ? `<div class="${latestTest.success ? 'llm-badge-ok' : 'llm-badge-err'}">${latestTest.success ? '成功' : '失败'}</div><div class="llm-row-sub" style="margin-top:8px">${escHtml(summarizeLatestTest(latestTest))}</div><div class="llm-row-sub">${escHtml(fmtDateTime(latestTest.testedAt))}</div>`
@@ -3649,7 +4273,7 @@ function renderProviderTable() {
       <td><div class="llm-row-title">${escHtml(provider.name)}</div><div class="llm-row-sub">${escHtml(provider.apiKeyMasked || '已设置密钥')}</div></td>
       <td><div><span class="llm-table-badge">${escHtml(provider.providerType)}</span></div><div class="llm-row-sub">${escHtml(provider.vendorPreset || 'generic')}</div></td>
       <td><div class="llm-row-title">${escHtml(provider.regionDisplayName || provider.region)}</div><div class="llm-row-sub">${escHtml(provider.cloudRegionCode || '')}</div></td>
-      <td><div class="llm-row-title">${escHtml(provider.model || '-')}</div>${provider.fastModel ? `<div class="llm-row-sub">fast · ${escHtml(provider.fastModel)}</div>` : '<div class="llm-row-sub">无快模型</div>'}</td>
+      <td><div class="llm-row-title">${escHtml(provider.model || '-')}</div>${provider.fastModel ? `<div class="llm-row-sub">fast · ${escHtml(provider.fastModel)}</div>` : '<div class="llm-row-sub">无快模型</div>'}<div class="llm-row-sub">context ${escHtml(contextWindowLabel)}</div><div class="llm-row-sub">max_tokens ${escHtml(maxTokensLabel)}</div></td>
       <td><div class="llm-row-title">${provider.requestTimeoutS}s</div><div class="llm-row-sub">connect ${provider.connectTimeoutS}s</div></td>
       <td><span class="llm-table-badge llm-table-badge-muted">P${escHtml(String(provider.priority))}</span></td>
       <td>${latestTestHtml}</td>
@@ -3755,6 +4379,8 @@ function resetProviderForm() {
   document.getElementById('llm2-provider-fast-model').value = '';
   document.getElementById('llm2-provider-timeout').value = '600';
   document.getElementById('llm2-provider-connect-timeout').value = '15';
+  document.getElementById('llm2-provider-context-window').value = '';
+  document.getElementById('llm2-provider-max-tokens').value = '';
   document.getElementById('llm2-provider-description').value = '';
   document.getElementById('llm2-provider-enabled').checked = true;
   document.getElementById('llm2-provider-catalog-mode').value = 'auto';
@@ -3786,6 +4412,8 @@ function populateProviderForm(provider) {
   document.getElementById('llm2-provider-fast-model').value = provider.fastModel || '';
   document.getElementById('llm2-provider-timeout').value = provider.requestTimeoutS ?? 600;
   document.getElementById('llm2-provider-connect-timeout').value = provider.connectTimeoutS ?? 15;
+  document.getElementById('llm2-provider-context-window').value = provider.contextWindow ?? '';
+  document.getElementById('llm2-provider-max-tokens').value = provider.maxTokens ?? '';
   document.getElementById('llm2-provider-description').value = provider.description || '';
   document.getElementById('llm2-provider-enabled').checked = provider.enabled !== false;
   document.getElementById('llm2-provider-catalog-mode').value = provider.catalogMode || 'auto';
@@ -3807,6 +4435,235 @@ function populateProviderForm(provider) {
 function closeSheetOnBackdrop(event, sheetId) {
   if (event.target?.id !== sheetId) return;
   document.getElementById(sheetId)?.classList.remove('active');
+}
+
+// ===================== Subscription Plans =====================
+function resetSubscriptionPlanForm() {
+  currentSubscriptionPlanId = null;
+  document.getElementById('subscriptionPlanSheetTitle').textContent = '新建订阅套餐';
+  document.getElementById('subscriptionPlanSheetDesc').textContent = '配置价格、额度、推荐标签和启用状态。历史上已经成交的套餐删除时会自动归档。';
+  document.getElementById('subscriptionPlanName').value = '';
+  document.getElementById('subscriptionPlanPeriod').value = 'monthly';
+  document.getElementById('subscriptionPlanPriceYuan').value = '';
+  document.getElementById('subscriptionPlanQuota').value = '';
+  document.getElementById('subscriptionPlanBadge').value = '';
+  document.getElementById('subscriptionPlanSortOrder').value = '0';
+  document.getElementById('subscriptionPlanRecommended').checked = false;
+  document.getElementById('subscriptionPlanActive').checked = true;
+  document.getElementById('subscriptionPlanDescription').value = '';
+  document.getElementById('subscriptionPlanFeatures').value = '';
+}
+
+function openSubscriptionPlanSheet(id) {
+  if (!id) {
+    resetSubscriptionPlanForm();
+  } else {
+    const plan = subscriptionPlans.find(item => item.id === id);
+    if (!plan) {
+      toast('未找到套餐', 'error');
+      return;
+    }
+    currentSubscriptionPlanId = plan.id;
+    document.getElementById('subscriptionPlanSheetTitle').textContent = '编辑订阅套餐';
+    document.getElementById('subscriptionPlanSheetDesc').textContent = `正在编辑 ${plan.name}，保存后会立即作为用户侧套餐配置生效。`;
+    document.getElementById('subscriptionPlanName').value = plan.name || '';
+    document.getElementById('subscriptionPlanPeriod').value = plan.period || 'monthly';
+    document.getElementById('subscriptionPlanPriceYuan').value = Number(plan.priceYuan || 0).toFixed(2);
+    document.getElementById('subscriptionPlanQuota').value = String(plan.quota ?? '');
+    document.getElementById('subscriptionPlanBadge').value = plan.badge || '';
+    document.getElementById('subscriptionPlanSortOrder').value = String(plan.sortOrder ?? 0);
+    document.getElementById('subscriptionPlanRecommended').checked = Boolean(plan.recommended);
+    document.getElementById('subscriptionPlanActive').checked = Boolean(plan.active);
+    document.getElementById('subscriptionPlanDescription').value = plan.description || '';
+    document.getElementById('subscriptionPlanFeatures').value = Array.isArray(plan.features) ? plan.features.join('\n') : '';
+  }
+  document.getElementById('subscriptionPlanSheet').classList.add('active');
+}
+
+function closeSubscriptionPlanSheet() {
+  document.getElementById('subscriptionPlanSheet').classList.remove('active');
+}
+
+function renderSubscriptionPlanSummary(summary) {
+  const totalPlans = Number(summary?.totalPlans || 0);
+  const activePlans = Number(summary?.activePlans || 0);
+  const activeSubscribers = Number(summary?.activeSubscribers || 0);
+  const paidOrders = Number(summary?.paidOrderCount || 0);
+  const revenueYuan = Number(summary?.totalRevenueYuan || 0);
+  const rangeLabel = getRangeLabel('subscriptions');
+
+  document.getElementById('subscriptionTotalPlans').textContent = fmtNum(totalPlans);
+  document.getElementById('subscriptionActivePlans').textContent = fmtNum(activePlans);
+  document.getElementById('subscriptionActiveSubscribers').textContent = fmtNum(activeSubscribers);
+  document.getElementById('subscriptionTotalRevenue').textContent = fmtCurrencyYuan(revenueYuan);
+  document.getElementById('subscriptionRevenueHint').textContent = `${rangeLabel} 已支付 ${fmtNum(paidOrders)} 单`;
+  setHtml('subscriptionTableSummary', `<span class="llm-pill">时间段：${escHtml(rangeLabel)}</span><span class="llm-pill">已支付订单 ${fmtNum(paidOrders)} 笔</span><span class="llm-pill">收入 ${escHtml(fmtCurrencyYuan(revenueYuan))}</span>`);
+  const summaryPill = document.getElementById('subscriptionSummaryPill');
+  if (summaryPill) summaryPill.textContent = `${rangeLabel} · 收入 ${fmtCurrencyYuan(revenueYuan)}`;
+}
+
+function renderSubscriptionPlanTable(items) {
+  const wrap = document.getElementById('subscriptionPlanTableWrap');
+  if (!items || !items.length) {
+    wrap.innerHTML = '<div class="workspace-empty">暂无订阅套餐</div>';
+    return;
+  }
+
+  let html = '<div class="table-wrap"><table><thead><tr>' +
+    '<th>套餐</th><th>价格 / 周期</th><th>额度</th><th>有效订阅</th><th>收入</th><th>状态</th><th>特性</th><th style="min-width:220px">操作</th>' +
+    '</tr></thead><tbody>';
+
+  for (const plan of items) {
+    const featureHtml = Array.isArray(plan.features) && plan.features.length
+      ? `<div class="subscription-plan-features">${plan.features.slice(0, 3).map((feature) => `<span class="llm-pill">${escHtml(feature)}</span>`).join('')}</div>`
+      : '<span style="color:#94a3b8">-</span>';
+    const statusBits = [
+      `<span class="badge badge-${plan.active ? 'published' : 'draft'}">${plan.active ? '启用中' : '已归档'}</span>`,
+      plan.recommended ? '<span class="badge badge-review">推荐</span>' : '',
+    ].filter(Boolean).join(' ');
+    html += `<tr>
+      <td>
+        <strong>${escHtml(plan.name)}</strong>
+        <div style="font-size:11px;color:#94a3b8;margin-top:4px">${escHtml(plan.description || '暂无描述')}</div>
+        <div style="font-size:11px;color:#94a3b8;margin-top:4px">ID: ${escHtml(plan.id)}</div>
+      </td>
+      <td>
+        <div style="font-weight:800;color:#0f172a">${escHtml(fmtCurrencyYuan(plan.priceYuan || 0))}</div>
+        <div style="font-size:11px;color:#64748b;margin-top:4px">${escHtml(plan.periodLabel || plan.period || '-')} / ${escHtml(plan.currency || 'CNY')}</div>
+      </td>
+      <td>
+        <div style="font-weight:700;color:#0f172a">${fmtNum(plan.quota || 0)} 次</div>
+        <div style="font-size:11px;color:#64748b;margin-top:4px">${escHtml(plan.quotaLabel || '-')}</div>
+      </td>
+      <td>
+        <div style="font-weight:700;color:#0f172a">${fmtNum(plan.activeSubscribers || 0)}</div>
+        <div style="font-size:11px;color:#64748b;margin-top:4px">当前有效订阅</div>
+      </td>
+      <td>
+        <div style="font-weight:700;color:#0f172a">${escHtml(fmtCurrencyYuan(plan.revenueYuan || 0))}</div>
+        <div style="font-size:11px;color:#64748b;margin-top:4px">订单 ${fmtNum(plan.orderCount || 0)} 笔</div>
+      </td>
+      <td>${statusBits}</td>
+      <td>${featureHtml}</td>
+      <td>
+        <div class="action-cell">
+          <button class="abtn abtn-edit" onclick="openSubscriptionPlanSheet('${plan.id}')">编辑</button>
+          <button class="abtn ${plan.active ? 'abtn-warning' : 'abtn-success'}" onclick="toggleSubscriptionPlanActive('${plan.id}')">${plan.active ? '归档' : '启用'}</button>
+          <button class="abtn abtn-delete" onclick="deleteSubscriptionPlanConfirm('${plan.id}','${escAttr(plan.name)}')">删除</button>
+        </div>
+      </td>
+    </tr>`;
+  }
+
+  html += '</tbody></table></div>';
+  wrap.innerHTML = html;
+}
+
+async function loadSubscriptionPlans() {
+  const wrap = document.getElementById('subscriptionPlanTableWrap');
+  if (wrap) {
+    wrap.innerHTML = '<div class="workspace-empty"><div class="spinner"></div><div style="margin-top:8px">加载中...</div></div>';
+  }
+  try {
+    const data = await api('/subscription/plans' + buildRangeQuery('subscriptions'));
+    subscriptionPlans = Array.isArray(data?.items) ? data.items : [];
+    renderSubscriptionPlanSummary(data?.summary || {});
+    renderSubscriptionPlanTable(subscriptionPlans);
+  } catch (e) {
+    if (wrap) {
+      wrap.innerHTML = `<div class="workspace-empty" style="color:#dc2626">加载失败: ${escHtml(e.message)}</div>`;
+    }
+  }
+}
+
+function buildSubscriptionPlanPayload() {
+  return {
+    name: document.getElementById('subscriptionPlanName').value.trim(),
+    period: document.getElementById('subscriptionPlanPeriod').value,
+    priceYuan: document.getElementById('subscriptionPlanPriceYuan').value.trim(),
+    quota: document.getElementById('subscriptionPlanQuota').value.trim(),
+    badge: document.getElementById('subscriptionPlanBadge').value.trim(),
+    sortOrder: document.getElementById('subscriptionPlanSortOrder').value.trim(),
+    recommended: document.getElementById('subscriptionPlanRecommended').checked,
+    active: document.getElementById('subscriptionPlanActive').checked,
+    description: document.getElementById('subscriptionPlanDescription').value.trim(),
+    features: document.getElementById('subscriptionPlanFeatures').value,
+  };
+}
+
+async function saveSubscriptionPlan() {
+  const payload = buildSubscriptionPlanPayload();
+  if (!payload.name) {
+    toast('套餐名称不能为空', 'error');
+    return;
+  }
+  if (payload.priceYuan === '') {
+    toast('请填写价格（元）', 'error');
+    return;
+  }
+  if (payload.quota === '') {
+    toast('请填写额度', 'error');
+    return;
+  }
+
+  try {
+    if (currentSubscriptionPlanId) {
+      await api('/subscription/plans/' + currentSubscriptionPlanId, { method: 'PUT', body: payload });
+    } else {
+      await api('/subscription/plans', { method: 'POST', body: payload });
+    }
+    toast('订阅套餐已保存');
+    closeSubscriptionPlanSheet();
+    loadSubscriptionPlans();
+  } catch (e) {
+    toast('保存失败: ' + e.message, 'error');
+  }
+}
+
+async function toggleSubscriptionPlanActive(id) {
+  const plan = subscriptionPlans.find(item => item.id === id);
+  if (!plan) {
+    toast('未找到套餐', 'error');
+    return;
+  }
+  const actionLabel = plan.active ? '归档' : '启用';
+  try {
+    await api('/subscription/plans/' + id, {
+      method: 'PUT',
+      body: {
+        name: plan.name,
+        description: plan.description || '',
+        priceYuan: plan.priceYuan,
+        period: plan.period,
+        quota: plan.quota,
+        features: Array.isArray(plan.features) ? plan.features : [],
+        recommended: plan.recommended,
+        badge: plan.badge || '',
+        sortOrder: plan.sortOrder,
+        active: !plan.active,
+      },
+    });
+    toast(`套餐已${actionLabel}`);
+    loadSubscriptionPlans();
+  } catch (e) {
+    toast(`${actionLabel}失败: ` + e.message, 'error');
+  }
+}
+
+async function deleteSubscriptionPlanConfirm(id, name) {
+  const yes = await confirmDialog('确认删除套餐', `确定要删除套餐「${name}」吗？如果已有历史订单或订阅，系统会自动改为归档。`);
+  if (!yes) return;
+  try {
+    const result = await api('/subscription/plans/' + id, { method: 'DELETE' });
+    if (result?.deactivated) {
+      toast('套餐存在历史订单，已自动归档');
+    } else {
+      toast('套餐已删除');
+    }
+    loadSubscriptionPlans();
+  } catch (e) {
+    toast('删除失败: ' + e.message, 'error');
+  }
 }
 
 function openProviderSheet(id) {
@@ -3909,27 +4766,39 @@ async function loadProviderCatalogPreview() {
   }
 }
 
+function readOptionalPositiveIntegerInput(id, fieldLabel) {
+  const rawValue = document.getElementById(id)?.value?.trim() || '';
+  if (!rawValue) return null;
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed) || parsed <= 0 || Math.floor(parsed) !== parsed) {
+    throw new Error(`${fieldLabel} must be a positive integer`);
+  }
+  return Math.floor(parsed);
+}
+
 async function saveProvider() {
-  const body = {
-    name: document.getElementById('llm2-provider-name').value.trim(),
-    providerType: document.getElementById('llm2-provider-type').value,
-    vendorPreset: document.getElementById('llm2-provider-vendor-preset').value,
-    regionTargetId: document.getElementById('llm2-provider-region-target').value,
-    priority: Number(document.getElementById('llm2-provider-priority').value || 100),
-    baseUrl: document.getElementById('llm2-provider-base-url').value.trim(),
-    apiKey: document.getElementById('llm2-provider-api-key').value.trim(),
-    model: document.getElementById('llm2-provider-model').value.trim(),
-    fastModel: document.getElementById('llm2-provider-fast-model').value.trim(),
-    requestTimeoutS: Number(document.getElementById('llm2-provider-timeout').value || 600),
-    connectTimeoutS: Number(document.getElementById('llm2-provider-connect-timeout').value || 15),
-    description: document.getElementById('llm2-provider-description').value.trim(),
-    enabled: document.getElementById('llm2-provider-enabled').checked,
-    catalogMode: document.getElementById('llm2-provider-catalog-mode').value,
-    catalogApiUrl: document.getElementById('llm2-provider-catalog-api-url').value.trim(),
-    catalogAuthMode: document.getElementById('llm2-provider-catalog-auth-mode').value,
-    catalogApiKey: document.getElementById('llm2-provider-catalog-api-key').value.trim(),
-  };
   try {
+    const body = {
+      name: document.getElementById('llm2-provider-name').value.trim(),
+      providerType: document.getElementById('llm2-provider-type').value,
+      vendorPreset: document.getElementById('llm2-provider-vendor-preset').value,
+      regionTargetId: document.getElementById('llm2-provider-region-target').value,
+      priority: Number(document.getElementById('llm2-provider-priority').value || 100),
+      baseUrl: document.getElementById('llm2-provider-base-url').value.trim(),
+      apiKey: document.getElementById('llm2-provider-api-key').value.trim(),
+      model: document.getElementById('llm2-provider-model').value.trim(),
+      fastModel: document.getElementById('llm2-provider-fast-model').value.trim(),
+      requestTimeoutS: Number(document.getElementById('llm2-provider-timeout').value || 600),
+      connectTimeoutS: Number(document.getElementById('llm2-provider-connect-timeout').value || 15),
+      contextWindow: readOptionalPositiveIntegerInput('llm2-provider-context-window', 'Context'),
+      maxTokens: readOptionalPositiveIntegerInput('llm2-provider-max-tokens', 'MaxTokens'),
+      description: document.getElementById('llm2-provider-description').value.trim(),
+      enabled: document.getElementById('llm2-provider-enabled').checked,
+      catalogMode: document.getElementById('llm2-provider-catalog-mode').value,
+      catalogApiUrl: document.getElementById('llm2-provider-catalog-api-url').value.trim(),
+      catalogAuthMode: document.getElementById('llm2-provider-catalog-auth-mode').value,
+      catalogApiKey: document.getElementById('llm2-provider-catalog-api-key').value.trim(),
+    };
     await api(currentProviderId ? '/llm/providers/' + currentProviderId : '/llm/providers', {
       method: currentProviderId ? 'PUT' : 'POST',
       body,
@@ -4265,6 +5134,8 @@ function escAttr(s) {
 
 // ===================== Init =====================
 function init() {
+  applyRangePreset('dashboard', '30d', false);
+  applyRangePreset('subscriptions', '30d', false);
   loadStats();
 }
 

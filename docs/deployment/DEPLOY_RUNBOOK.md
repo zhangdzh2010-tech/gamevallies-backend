@@ -38,7 +38,7 @@ Legacy note:
 
 - `AI_ENGINE_URL` is now a compatibility fallback only.
 - The current China production path is `gv-ai-engine-cn`.
-- `gv-ai-engine` should be treated as a rollback-only legacy instance until final retirement.
+- This release runbook only covers the current China production path.
 
 ## 2. Required variables
 
@@ -81,13 +81,6 @@ VOLCENGINE_TOS_BUCKET=gamevallies-deploy
 IMAGE_TAG=<unique-tag>
 
 ```
-### VOLCENGINE_REGISTRY_JOHOR
-VOLCENGINE_REGISTRY=gv-respo-johor-ap-southeast-1.cr.volces.com
-VOLCENGINE_REGISTRY_NAMESPACE=gamevallies
-VOLCENGINE_REGISTRY_USERNAME="6448手机用户#UeaqaB@21129707855"
-VOLCENGINE_REGISTRY_PASSWORD="Gamevallies@2026"
-
-
 Source:
 
 - `NODE_ENV`: fixed as `production`
@@ -96,7 +89,7 @@ Source:
 - `REDIS_URL`: production Redis instance
 - `JWT_SECRET`, `JWT_REFRESH_SECRET`: current production auth secrets from `.env.deploy`
 - `PUBLIC_API_BASE_URL`, `USER_SERVICE_URL`, `GAME_SERVICE_URL`, `FEED_SERVICE_URL`: current public domain routing values
-- `AI_ENGINE_URL_CN_SHANGHAI`, `AI_ENGINE_URL_AP_SOUTHEAST_JOHOR`, `GAME_SERVICE_UPSTREAM_URL`, `FEED_SERVICE_UPSTREAM_URL`: internal APIG upstream addresses from the current production `.env.deploy` and Volcengine APIG console
+- `AI_ENGINE_URL_CN_SHANGHAI`, `GAME_SERVICE_UPSTREAM_URL`, `FEED_SERVICE_UPSTREAM_URL`: internal APIG upstream addresses from the current production `.env.deploy` and Volcengine APIG console
 - `AI_ENGINE_URL`: compatibility fallback only; do not use as the primary China routing value for new deployments
 
 ```bash
@@ -113,7 +106,6 @@ GAME_SERVICE_URL=https://gamevallies.com
 FEED_SERVICE_URL=https://gamevallies.com
 AI_ENGINE_URL=https://sd6vrn9api80atrf10evg.apigateway-cn-shanghai-inner.volceapi.com
 AI_ENGINE_URL_CN_SHANGHAI=https://sd6vrn9api80atrf10evg.apigateway-cn-shanghai-inner.volceapi.com
-AI_ENGINE_URL_AP_SOUTHEAST_JOHOR=
 AI_ENGINE_DEFAULT_REGION=cn_shanghai
 GAME_SERVICE_UPSTREAM_URL=https://sd6n8j9fmqc3q4mg90pr0.apigateway-cn-shanghai-inner.volceapi.com
 FEED_SERVICE_UPSTREAM_URL=https://sd6n8kcmp8bgiaakgorig.apigateway-cn-shanghai-inner.volceapi.com
@@ -246,7 +238,7 @@ Important:
 python scripts/deploy.py user-service
 python scripts/deploy.py game-service
 python scripts/deploy.py feed-service
-python scripts/deploy.py ai-engine
+python scripts/deploy.py ai-engine-cn
 ```
 
 Or deploy all supported services:
@@ -272,9 +264,6 @@ If you deploy multiple services in one command, pass them explicitly:
 ```bash
 python scripts/deploy.py game-service feed-service ai-engine-cn
 ```
-
-The script now supports multiple service targets in one invocation and dedupes
-expanded targets such as `ai-engine`.
 
 ## 4. Post-deploy validation
 

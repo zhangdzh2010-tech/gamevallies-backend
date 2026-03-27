@@ -146,6 +146,16 @@ class TestL3Startup:
         errors, _ = qa._check_l3_startup(code)
         assert any("width" in e.message.lower() or "0" in e.message for e in errors)
 
+    def test_canvas_html_width_and_height_attributes_count_as_dimensions(self):
+        code = (
+            VALID_GAME
+            .replace("<canvas id=\"gameCanvas\"></canvas>", "<canvas id=\"gameCanvas\" width=\"360\" height=\"640\"></canvas>")
+            .replace("canvas.width = 420;", "// dimension comes from markup")
+            .replace("canvas.height = 600;", "// dimension comes from markup")
+        )
+        errors, _ = qa._check_l3_startup(code)
+        assert not any("renders at 0" in e.message.lower() for e in errors)
+
     def test_canvas_alias_width_and_height_assignment_is_accepted(self):
         code = (
             VALID_GAME
@@ -862,6 +872,101 @@ def test_repair_code_short_circuits_with_deterministic_visible_feedback_bridge()
     assert mock_complete.await_count == 0
 
 
+def test_classify_visible_scoring_loop_as_score_feedback():
+    error = QACheckError(
+        type="contract_gameplay",
+        message="Runtime contract requires a visible scoring loop",
+        severity="error",
+    )
+
+    assert QAPipeline._classify_error_family(error) == "score_feedback"
+
+
+def test_repair_code_short_circuits_with_deterministic_score_bridge():
+    pipeline = QAPipeline()
+    errors = [
+        QACheckError(
+            type="contract_gameplay",
+            message="Runtime contract requires a visible scoring loop",
+            severity="error",
+        )
+    ]
+
+    with patch.object(
+        pipeline._client,
+        "is_enabled",
+        return_value=True,
+    ), patch.object(
+        pipeline._client,
+        "complete",
+        new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
+    ) as mock_complete:
+        repaired = asyncio.run(
+            pipeline.repair_code(
+                "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas></body></html>",
+                errors,
+                GameSpec(game_type="runner"),
+            )
+    )
+
+    assert "__playforgeScoreBridgeInstalled" in repaired
+    assert "playforgeScoreHud" in repaired
+    assert "formatLabel(sample.label) + ': ' + sample.value" in repaired
+    assert mock_complete.await_count == 0
+
+
+def test_repair_code_short_circuits_with_deterministic_mobile_layout_bridge():
+    pipeline = QAPipeline()
+    errors = [
+        QACheckError(
+            type="contract_mobile",
+            message="Runtime contract requires portrait-first short-edge UI scaling",
+            severity="error",
+        )
+    ]
+    code = """
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      </head>
+      <body>
+        <canvas id="gameCanvas"></canvas>
+        <script>
+          const canvas = document.getElementById('gameCanvas');
+          const ctx = canvas.getContext('2d');
+          const W = 360;
+          const H = 640;
+          canvas.width = W;
+          canvas.height = H;
+        </script>
+      </body>
+    </html>
+    """
+
+    with patch.object(
+        pipeline._client,
+        "is_enabled",
+        return_value=True,
+    ), patch.object(
+        pipeline._client,
+        "complete",
+        new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
+    ) as mock_complete:
+        repaired = asyncio.run(
+            pipeline.repair_code(
+                code,
+                errors,
+                GameSpec(game_type="runner"),
+            )
+        )
+
+    assert "__playforgeMobileLayoutBridgeInstalled" in repaired
+    assert "const uiScale = Math.min(scaleX, scaleY);" in repaired
+    assert "const shortEdge = Math.min(viewportWidth, viewportHeight);" in repaired
+    assert mock_complete.await_count == 0
+
+
 def test_repair_code_short_circuits_with_deterministic_forbidden_api_cleanup():
     pipeline = QAPipeline()
     errors = [
@@ -891,6 +996,43 @@ def test_repair_code_short_circuits_with_deterministic_forbidden_api_cleanup():
 
     assert "new Function(" not in repaired
     assert "const fn = ('return 1');" in repaired
+
+
+def test_repair_code_short_circuits_with_touch_coordinate_guard_for_runtime_clientx_error():
+    pipeline = QAPipeline()
+    errors = [
+        QACheckError(
+            type="runtime_qa",
+            message="Runtime JS error: Cannot read properties of undefined (reading 'clientX')",
+            severity="error",
+        )
+    ]
+    code = (
+        "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas><script>"
+        "function getPos(e){ const touch = e.touches ? e.touches[0] : e; return touch.clientX; }"
+        "</script></body></html>"
+    )
+
+    with patch.object(
+        pipeline._client,
+        "is_enabled",
+        return_value=True,
+    ), patch.object(
+        pipeline._client,
+        "complete",
+        new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
+    ) as mock_complete:
+        repaired = asyncio.run(
+            pipeline.repair_code(
+                code,
+                errors,
+                GameSpec(game_type="runner"),
+            )
+        )
+
+    assert "__playforgeResolveTouchPointInstalled" in repaired
+    assert "window.__playforgeResolveTouchPoint(e)" in repaired
+    assert mock_complete.await_count == 0
 
 
 def test_repair_code_uses_bundle_prompt_for_syntax_structural_family():

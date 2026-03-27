@@ -19,6 +19,7 @@ import re
 from typing import Optional
 
 from ..services.llm_client import LLMClient
+from .prompt_format import safe_format_prompt
 from .prompt_store import require_prompt
 from .quality_scorer import LLMReviewResult
 
@@ -55,7 +56,7 @@ class CodeReviewer:
             return LLMReviewResult(ran=False)
 
         code_preview = _build_code_preview(html_code)
-        prompt = require_prompt("prompt.code_review_template").format(code_preview=code_preview)
+        prompt = safe_format_prompt(require_prompt("prompt.code_review_template"), code_preview=code_preview)
         system = require_prompt("prompt.code_review_system")
 
         try:

@@ -1,7 +1,14 @@
 import { Injectable, NotFoundException, BadRequestException, BadGatewayException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
-import { GameStatus, GenerationTaskStatus, Prisma } from '@prisma/client';
+import {
+  GameStatus,
+  GenerationTaskStatus,
+  Prisma,
+  SubscriptionOrderStatus,
+  SubscriptionPeriod,
+  UserSubscriptionStatus,
+} from '@prisma/client';
 import { randomUUID } from 'crypto';
 import * as bcrypt from 'bcryptjs';
 import axios from 'axios';
@@ -25,7 +32,14 @@ interface LlmProviderCatalogConfig {
 interface NormalizedLlmProviderExtraConfig {
   vendorPreset: string;
   modelCatalog: LlmProviderCatalogConfig;
+  contextWindow: number | null;
+  maxTokens: number | null;
   [key: string]: any;
+}
+
+interface DashboardDateRange {
+  from: Date | null;
+  to: Date | null;
 }
 
 @Injectable()
@@ -139,6 +153,112 @@ export class AdminService {
   private getOptionalAdminToken(): string | null {
     const token = (process.env.ADMIN_TOKEN || '').trim();
     return token || null;
+  }
+
+  private parseDashboardDateRange(from?: string, to?: string): DashboardDateRange {
+    const parseValue = (value?: string, label?: string) => {
+      if (!value || !value.trim()) {
+        return null;
+      }
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) {
+        throw new BadRequestException(`${label || 'date'} is invalid`);
+      }
+      return parsed;
+    };
+
+    const resolvedFrom = parseValue(from, 'from');
+    const resolvedTo = parseValue(to, 'to');
+    if (resolvedFrom && resolvedTo && resolvedFrom > resolvedTo) {
+      throw new BadRequestException('from must be earlier than to');
+    }
+    return {
+      from: resolvedFrom,
+      to: resolvedTo,
+    };
+  }
+
+  private buildPaidSubscriptionOrderWhere(range: DashboardDateRange): Prisma.SubscriptionOrderWhereInput {
+    return {
+      status: SubscriptionOrderStatus.paid,
+      ...(range.from || range.to
+        ? {
+            paidAt: {
+              ...(range.from ? { gte: range.from } : {}),
+              ...(range.to ? { lte: range.to } : {}),
+            },
+          }
+        : {}),
+    };
+  }
+
+  private normalizeSubscriptionFeatures(input: unknown): string[] {
+    if (Array.isArray(input)) {
+      return input
+        .map((item) => (typeof item === 'string' ? item.trim() : ''))
+        .filter(Boolean);
+    }
+    if (typeof input === 'string') {
+      return input
+        .split(/\r?\n|,/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+    return [];
+  }
+
+  private buildSubscriptionPlanId(name: string): string {
+    const stamp = Date.now().toString(36);
+    return `plan_${stamp}_${randomUUID().slice(0, 8)}`;
+  }
+
+  private parseSubscriptionPlanPrice(body: any): number {
+    if (body?.priceYuan !== undefined && body?.priceYuan !== null && String(body.priceYuan).trim() !== '') {
+      const yuan = Number.parseFloat(String(body.priceYuan));
+      if (!Number.isFinite(yuan) || yuan < 0) {
+        throw new BadRequestException('priceYuan must be a non-negative number');
+      }
+      return Math.round(yuan * 100);
+    }
+    const cents = Number.parseInt(String(body?.price ?? ''), 10);
+    if (!Number.isFinite(cents) || cents < 0) {
+      throw new BadRequestException('price must be a non-negative integer');
+    }
+    return cents;
+  }
+
+  private presentSubscriptionPlan(plan: any, usage?: {
+    orderCount?: number;
+    revenueCents?: number;
+    activeSubscribers?: number;
+  }) {
+    const features = Array.isArray(plan.features) ? plan.features : [];
+    const periodLabel = plan.period === SubscriptionPeriod.yearly ? '年' : '月';
+    const priceYuan = Number(plan.price || 0) / 100;
+    return {
+      id: plan.id,
+      name: plan.name,
+      description: plan.description || null,
+      price: Number(plan.price || 0),
+      priceYuan,
+      priceDisplay: priceYuan.toFixed(2),
+      currency: plan.currency,
+      period: plan.period,
+      periodLabel,
+      quota: plan.quota,
+      quotaLabel: `${plan.quota}次/${periodLabel}`,
+      features,
+      recommended: Boolean(plan.recommended),
+      badge: plan.badge || null,
+      sortOrder: plan.sortOrder,
+      active: Boolean(plan.active),
+      createdAt: plan.createdAt,
+      updatedAt: plan.updatedAt,
+      orderCount: Number(usage?.orderCount || 0),
+      revenueCents: Number(usage?.revenueCents || 0),
+      revenueYuan: Number((Number(usage?.revenueCents || 0) / 100).toFixed(2)),
+      activeSubscribers: Number(usage?.activeSubscribers || 0),
+    };
   }
 
   private stringifyAiEngineErrorDetail(detail: any): string {
@@ -268,11 +388,45 @@ export class AdminService {
       authMode: rawCatalog.authMode === 'bearer_token' ? 'bearer_token' : 'inherit_provider',
       apiKey: typeof rawCatalog.apiKey === 'string' ? rawCatalog.apiKey.trim() : '',
     };
+    const contextWindow = this.coerceOptionalPositiveInteger(normalized.contextWindow);
+    const maxTokens = this.coerceOptionalPositiveInteger(normalized.maxTokens);
     return {
       ...normalized,
       vendorPreset,
       modelCatalog,
+      contextWindow,
+      maxTokens,
     };
+  }
+
+  private resolveOptionalPositiveInteger(
+    value: unknown,
+    fallback: number | null,
+    fieldName: string,
+  ): number | null {
+    if (value === undefined) {
+      return fallback;
+    }
+    if (value === null || value === '') {
+      return null;
+    }
+    const normalized = this.coerceOptionalPositiveInteger(value);
+    if (normalized === null) {
+      throw new BadRequestException(`${fieldName} must be a positive integer`);
+    }
+    return normalized;
+  }
+
+  private coerceOptionalPositiveInteger(value: unknown): number | null {
+    if (value === null || value === undefined || value === '') {
+      return null;
+    }
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) {
+      return null;
+    }
+    const rounded = Math.floor(parsed);
+    return rounded > 0 ? rounded : null;
   }
 
   private buildLlmProviderExtraConfig(body: any, existing?: any): NormalizedLlmProviderExtraConfig {
@@ -290,6 +444,16 @@ export class AdminService {
     const nextCatalogAuthMode = body?.catalogAuthMode === 'bearer_token'
       ? 'bearer_token'
       : 'inherit_provider';
+    const contextWindow = this.resolveOptionalPositiveInteger(
+      body?.contextWindow,
+      current.contextWindow,
+      'contextWindow',
+    );
+    const maxTokens = this.resolveOptionalPositiveInteger(
+      body?.maxTokens,
+      current.maxTokens,
+      'maxTokens',
+    );
     return {
       ...current,
       vendorPreset,
@@ -299,6 +463,8 @@ export class AdminService {
         authMode: nextCatalogAuthMode,
         apiKey: nextCatalogApiKey,
       },
+      contextWindow,
+      maxTokens,
     };
   }
 
@@ -334,6 +500,8 @@ export class AdminService {
       catalogApiKey: undefined,
       catalogApiKeySet: Boolean(extraConfig.modelCatalog.apiKey),
       catalogApiKeyMasked,
+      contextWindow: extraConfig.contextWindow,
+      maxTokens: extraConfig.maxTokens,
       latestTest: latestTest
         ? {
             success: latestTest.success,
@@ -965,6 +1133,176 @@ export class AdminService {
       },
     });
     return this.getUser(user.id);
+  }
+
+  async listSubscriptionPlans(from?: string, to?: string) {
+    const range = this.parseDashboardDateRange(from, to);
+    const paidOrderWhere = this.buildPaidSubscriptionOrderWhere(range);
+    const now = new Date();
+
+    const [plans, orderGroups, activeSubscriberGroups, activeSubscriberCount, paidOrderAggregate] = await Promise.all([
+      this.prisma.subscriptionPlan.findMany({
+        orderBy: [{ sortOrder: 'asc' }, { price: 'asc' }, { createdAt: 'asc' }],
+      }),
+      this.prisma.subscriptionOrder.groupBy({
+        by: ['planId'],
+        where: paidOrderWhere,
+        _count: { _all: true },
+        _sum: { amount: true },
+      }),
+      this.prisma.userSubscription.groupBy({
+        by: ['planId'],
+        where: {
+          status: UserSubscriptionStatus.active,
+          expiresAt: { gt: now },
+        },
+        _count: { _all: true },
+      }),
+      this.prisma.userSubscription.count({
+        where: {
+          status: UserSubscriptionStatus.active,
+          expiresAt: { gt: now },
+        },
+      }),
+      this.prisma.subscriptionOrder.aggregate({
+        where: paidOrderWhere,
+        _sum: { amount: true },
+        _count: { id: true },
+      }),
+    ]);
+
+    const orderMap = new Map(
+      orderGroups.map((group) => [
+        group.planId,
+        {
+          orderCount: group._count?._all || 0,
+          revenueCents: Number(group._sum?.amount || 0),
+        },
+      ]),
+    );
+    const activeMap = new Map(
+      activeSubscriberGroups.map((group) => [group.planId, group._count?._all || 0]),
+    );
+
+    const items = plans.map((plan) => this.presentSubscriptionPlan(plan, {
+      ...orderMap.get(plan.id),
+      activeSubscribers: activeMap.get(plan.id) || 0,
+    }));
+
+    return {
+      items,
+      summary: {
+        totalPlans: plans.length,
+        activePlans: plans.filter((plan) => plan.active).length,
+        activeSubscribers: activeSubscriberCount,
+        paidOrderCount: paidOrderAggregate._count.id || 0,
+        totalRevenueCents: Number(paidOrderAggregate._sum.amount || 0),
+        totalRevenueYuan: Number((Number(paidOrderAggregate._sum.amount || 0) / 100).toFixed(2)),
+        range: {
+          from: range.from,
+          to: range.to,
+        },
+      },
+    };
+  }
+
+  async upsertSubscriptionPlan(id: string | undefined, body: any) {
+    if (!body?.name || !String(body.name).trim()) {
+      throw new BadRequestException('name is required');
+    }
+
+    const planId = id || this.buildSubscriptionPlanId(String(body.name).trim());
+    const price = this.parseSubscriptionPlanPrice(body);
+    const quota = Number.parseInt(String(body?.quota ?? ''), 10);
+    const sortOrder = Number.parseInt(String(body?.sortOrder ?? '0'), 10);
+    const period = body?.period === SubscriptionPeriod.yearly ? SubscriptionPeriod.yearly : SubscriptionPeriod.monthly;
+    const currency = (body?.currency || 'CNY').toString().trim().toUpperCase() || 'CNY';
+    const features = this.normalizeSubscriptionFeatures(body?.features);
+    const recommended = body?.recommended === true;
+    const active = body?.active !== false;
+    const badge = body?.badge === '' ? null : (body?.badge || null);
+
+    if (!Number.isFinite(quota) || quota < 0) {
+      throw new BadRequestException('quota must be a non-negative integer');
+    }
+    if (!Number.isFinite(sortOrder)) {
+      throw new BadRequestException('sortOrder must be an integer');
+    }
+
+    const plan = await this.prisma.$transaction(async (tx) => {
+      if (recommended) {
+        await tx.subscriptionPlan.updateMany({
+          where: { NOT: { id: planId } },
+          data: { recommended: false },
+        });
+      }
+
+      return tx.subscriptionPlan.upsert({
+        where: { id: planId },
+        create: {
+          id: planId,
+          name: String(body.name).trim(),
+          description: body?.description ? String(body.description).trim() : null,
+          price,
+          currency,
+          period,
+          quota,
+          features: features as unknown as Prisma.InputJsonValue,
+          recommended,
+          badge,
+          sortOrder,
+          active,
+        },
+        update: {
+          name: String(body.name).trim(),
+          description: body?.description ? String(body.description).trim() : null,
+          price,
+          currency,
+          period,
+          quota,
+          features: features as unknown as Prisma.InputJsonValue,
+          recommended,
+          badge,
+          sortOrder,
+          active,
+        },
+      });
+    });
+
+    return this.presentSubscriptionPlan(plan);
+  }
+
+  async deleteSubscriptionPlan(id: string) {
+    const [plan, orderCount, subscriptionCount] = await Promise.all([
+      this.prisma.subscriptionPlan.findUnique({ where: { id } }),
+      this.prisma.subscriptionOrder.count({ where: { planId: id } }),
+      this.prisma.userSubscription.count({ where: { planId: id } }),
+    ]);
+
+    if (!plan) {
+      throw new NotFoundException('Subscription plan not found');
+    }
+
+    if (orderCount > 0 || subscriptionCount > 0) {
+      await this.prisma.subscriptionPlan.update({
+        where: { id },
+        data: {
+          active: false,
+          recommended: false,
+        },
+      });
+      return {
+        deleted: false,
+        deactivated: true,
+        reason: 'Plan has historical orders or subscriptions and was archived instead of deleted',
+      };
+    }
+
+    await this.prisma.subscriptionPlan.delete({ where: { id } });
+    return {
+      deleted: true,
+      deactivated: false,
+    };
   }
 
   // ===================== Admin Token Management =====================
@@ -2148,8 +2486,12 @@ export class AdminService {
 
   // ===================== Stats =====================
 
-  async getStats() {
-    const [totalGames, totalUsers, gamesAgg, averages, gameMetrics] = await Promise.all([
+  async getStats(from?: string, to?: string) {
+    const range = this.parseDashboardDateRange(from, to);
+    const paidOrderWhere = this.buildPaidSubscriptionOrderWhere(range);
+    const now = new Date();
+
+    const [totalGames, totalUsers, gamesAgg, averages, gameMetrics, planCount, activePlanCount, activeSubscriberCount, paidOrderAggregate] = await Promise.all([
       this.prisma.game.count(),
       this.prisma.user.count(),
       this.prisma.game.aggregate({
@@ -2173,6 +2515,19 @@ export class AdminService {
           failedReason: true,
           retryCount: true,
         },
+      }),
+      this.prisma.subscriptionPlan.count(),
+      this.prisma.subscriptionPlan.count({ where: { active: true } }),
+      this.prisma.userSubscription.count({
+        where: {
+          status: UserSubscriptionStatus.active,
+          expiresAt: { gt: now },
+        },
+      }),
+      this.prisma.subscriptionOrder.aggregate({
+        where: paidOrderWhere,
+        _sum: { amount: true },
+        _count: { id: true },
       }),
     ]);
 
@@ -2256,6 +2611,18 @@ export class AdminService {
       retryBuckets,
       qualityBuckets,
       topFailureReasons,
+      subscriptionOverview: {
+        totalPlans: planCount,
+        activePlans: activePlanCount,
+        activeSubscribers: activeSubscriberCount,
+        paidOrderCount: paidOrderAggregate._count.id || 0,
+        totalRevenueCents: Number(paidOrderAggregate._sum.amount || 0),
+        totalRevenueYuan: Number((Number(paidOrderAggregate._sum.amount || 0) / 100).toFixed(2)),
+        range: {
+          from: range.from,
+          to: range.to,
+        },
+      },
     };
   }
 

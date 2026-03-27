@@ -230,6 +230,7 @@ services:
       - social-service
       - feed-service
       - ai-engine
+      - frontend
     networks:
       - gamevallies-network
 

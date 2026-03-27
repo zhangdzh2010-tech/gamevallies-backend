@@ -27,6 +27,7 @@ from .code_reviewer import CodeReviewer
 from .dialogue_engine import DialogueEngine, SlotExtractionFailure, _looks_like_educational_request
 from .game_designer import GameDesigner
 from .llm_game_designer import LLMGameDesigner
+from .mobile_layout import has_portrait_short_edge_scaling
 from .pipeline_orchestrator import PipelineExecutionError
 from .pre_generation_validator import PreGenerationValidator
 from .prompt_store import get_default_runtime_profile, require_prompt
@@ -34,6 +35,7 @@ from .qa_pipeline import QAPipeline
 from .quality_scorer import LLMReviewResult, QAStaticResult, QualityScorer, RuntimeQAResult
 from .restart_entry import has_restart_entry
 from .runtime_qa import run_runtime_qa
+from .scoring_loop import has_visible_scoring_loop
 from .terminal_state import has_required_state_presence, has_terminal_state_transition
 
 logger = logging.getLogger(__name__)
@@ -1165,17 +1167,7 @@ class V2PipelineRunner:
             ))
 
         if runtime_contract.mobile_layout.orientation == "portrait_first":
-            has_portrait_guard = any(token in code for token in (
-                "Math.min(scaleX, scaleY)",
-                "shortEdge",
-                "portrait",
-                "uiScale",
-            )) or bool(re.search(
-                r"Math\.min\s*\([^)]*(?:scaleX|containerWidth|innerWidth|width)[^)]*,[^)]*(?:scaleY|containerHeight|innerHeight|height)[^)]*\)",
-                code,
-                re.IGNORECASE,
-            ))
-            if not has_portrait_guard:
+            if not has_portrait_short_edge_scaling(code):
                 errors.append(QACheckError(
                     type="contract_mobile",
                     message="Runtime contract requires portrait-first short-edge UI scaling",
@@ -1206,25 +1198,8 @@ class V2PipelineRunner:
                     severity="error",
                 ))
 
-        has_visible_scoring_loop = bool(re.search(
-            r"\b(score|points?|combo|multiplier|coins?)\b",
-            lower,
-            re.IGNORECASE,
-        ))
-        if not has_visible_scoring_loop:
-            has_visible_scoring_loop = bool(re.search(
-                r"(getelementbyid|queryselector)\s*\(\s*['\"#.]?(score|points?|combo|multiplier|coins?|time|timer)",
-                code,
-                re.IGNORECASE,
-            ))
-        if not has_visible_scoring_loop:
-            has_visible_scoring_loop = bool(re.search(
-                r"(score|points?|combo|multiplier|coins?|time|timer)\w*\.(textcontent|innertext|innerhtml)\s*=",
-                lower,
-                re.IGNORECASE,
-            ))
-
-        if runtime_contract.gameplay.requires_scoring and not has_visible_scoring_loop:
+        has_scoring_loop = has_visible_scoring_loop(code)
+        if runtime_contract.gameplay.requires_scoring and not has_scoring_loop:
             errors.append(QACheckError(
                 type="contract_gameplay",
                 message="Runtime contract requires a visible scoring loop",

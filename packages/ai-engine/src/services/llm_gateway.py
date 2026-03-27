@@ -97,6 +97,30 @@ def _loads_json(value: Any, default: Any) -> Any:
     return default
 
 
+def _coerce_optional_positive_int(value: Any) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        try:
+            parsed = int(float(value))
+        except (TypeError, ValueError):
+            return None
+    return parsed if parsed > 0 else None
+
+
+def _extract_provider_numeric_cap(extra_config: Any, *keys: str) -> Optional[int]:
+    if not isinstance(extra_config, dict):
+        return None
+    for key in keys:
+        if key in extra_config:
+            normalized = _coerce_optional_positive_int(extra_config.get(key))
+            if normalized is not None:
+                return normalized
+    return None
+
+
 def _is_anthropic_protocol_mismatch_response(response: httpx.Response) -> bool:
     if response.status_code != 400:
         return False
@@ -179,6 +203,8 @@ class ProviderRecord:
     priority: int
     description: Optional[str]
     extra_config: dict[str, Any]
+    context_window: Optional[int]
+    max_tokens: Optional[int]
     updated_at: float
 
 
@@ -209,6 +235,8 @@ class ResolvedRoute:
     fast_model: Optional[str]
     request_timeout_s: int
     connect_timeout_s: int
+    context_window: Optional[int]
+    max_tokens: Optional[int]
     step_key: str
     config_version: int
     route_snapshot: dict[str, Any]
@@ -295,6 +323,8 @@ class LLMGateway:
                 priority=int(row.get("priority") or 100),
                 description=row.get("description"),
                 extra_config=_loads_json(row.get("extra_config"), {}),
+                context_window=_extract_provider_numeric_cap(_loads_json(row.get("extra_config"), {}), "contextWindow", "context_window"),
+                max_tokens=_extract_provider_numeric_cap(_loads_json(row.get("extra_config"), {}), "maxTokens", "max_tokens"),
                 updated_at=float(updated_ts),
             )
 
@@ -385,12 +415,16 @@ class LLMGateway:
                 15,
                 min_value=1,
             ),
+            context_window=None,
+            max_tokens=None,
             step_key=step_key,
             config_version=self._config_version,
             route_snapshot={
                 "step_key": step_key,
                 "source": "env",
                 "region": settings.SERVICE_REGION or "cn_shanghai",
+                "context_window": None,
+                "max_tokens": None,
             },
         )
 
@@ -492,6 +526,8 @@ class LLMGateway:
             fast_model=provider.fast_model,
             request_timeout_s=int(route.request_timeout_s if route and route.request_timeout_s is not None else provider.request_timeout_s),
             connect_timeout_s=int(route.connect_timeout_s if route and route.connect_timeout_s is not None else provider.connect_timeout_s),
+            context_window=provider.context_window,
+            max_tokens=provider.max_tokens,
             step_key=step_key,
             config_version=self._config_version,
             route_snapshot={
@@ -507,6 +543,8 @@ class LLMGateway:
                 "matched_step_key": matched_step_key or step_key,
                 "route_match_strategy": route_match_strategy or ("exact" if route else "none"),
                 "explicit_fallback_only": route is not None,
+                "context_window": provider.context_window,
+                "max_tokens": provider.max_tokens,
             },
         )
 
@@ -650,9 +688,16 @@ class LLMGateway:
             fast_model=provider.fast_model,
             request_timeout_s=provider.request_timeout_s,
             connect_timeout_s=provider.connect_timeout_s,
+            context_window=provider.context_window,
+            max_tokens=provider.max_tokens,
             step_key="admin.test",
             config_version=self._config_version,
-            route_snapshot={"provider_id": provider.id, "provider_name": provider.name},
+            route_snapshot={
+                "provider_id": provider.id,
+                "provider_name": provider.name,
+                "context_window": provider.context_window,
+                "max_tokens": provider.max_tokens,
+            },
         )
 
     async def _invoke_test_completion(
@@ -663,13 +708,14 @@ class LLMGateway:
         max_tokens: int,
         system: Optional[str] = None,
     ) -> tuple[str, Optional[int], str]:
+        effective_max_tokens = max(1, min(max_tokens, route.max_tokens)) if route.max_tokens else max_tokens
         if route.provider_type == "anthropic":
             from anthropic import Anthropic
 
             client = Anthropic(api_key=route.api_key, base_url=_build_anthropic_base_url(route.base_url))
             kwargs: dict[str, Any] = {
                 "model": route.model,
-                "max_tokens": max_tokens,
+                "max_tokens": effective_max_tokens,
                 "messages": messages,
             }
             if system:
@@ -689,7 +735,7 @@ class LLMGateway:
         payload = {
             "model": route.model,
             "messages": payload_messages,
-            "max_tokens": max_tokens,
+            "max_tokens": effective_max_tokens,
         }
         headers = {
             "Authorization": f"Bearer {route.api_key}",
@@ -707,7 +753,7 @@ class LLMGateway:
                 client = Anthropic(api_key=route.api_key, base_url=_build_anthropic_base_url(route.base_url))
                 kwargs = {
                     "model": route.model,
-                    "max_tokens": max_tokens,
+                    "max_tokens": effective_max_tokens,
                     "messages": messages,
                 }
                 if system:

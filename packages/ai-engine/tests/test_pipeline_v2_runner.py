@@ -366,7 +366,7 @@ def test_select_runtime_profile_normalizes_descriptive_game_type_labels():
     runner = V2PipelineRunner()
 
     assert runner._select_runtime_profile(GameSpec(game_type="endless runner"), "portrait_arcade") == "lane_runner"
-    assert runner._select_runtime_profile(GameSpec(game_type="top-down shooter"), "portrait_arcade") == "topdown_action"
+    assert runner._select_runtime_profile(GameSpec(game_type="top-down shooter"), "portrait_arcade") == "topdown_shooter"
     assert runner._select_runtime_profile(GameSpec(game_type="grid puzzle"), "portrait_arcade") == "grid_puzzle"
 
 
@@ -423,6 +423,70 @@ def test_validate_runtime_contract_accepts_generic_short_edge_scaling_patterns()
     )
 
 
+def test_validate_runtime_contract_accepts_aspect_ratio_fit_without_explicit_ui_scale_token():
+    runner = V2PipelineRunner()
+    contract = GameRuntimeContract()
+    code = """
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      </head>
+      <body>
+        <canvas id="gameCanvas"></canvas>
+        <script>
+          const canvas = document.getElementById('gameCanvas');
+          const ctx = canvas.getContext('2d');
+          const REF_W = 360;
+          const REF_H = 640;
+          let renderW = REF_W;
+          let renderH = REF_H;
+          let state = 'boot';
+          let score = 0;
+
+          function resizeCanvas() {
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+            const ratio = REF_W / REF_H;
+            const viewportRatio = vw / vh;
+            if (viewportRatio > ratio) {
+              renderH = vh;
+              renderW = Math.floor(renderH * ratio);
+            } else {
+              renderW = vw;
+              renderH = Math.floor(renderW / ratio);
+            }
+            canvas.width = renderW;
+            canvas.height = renderH;
+            canvas.style.width = renderW + 'px';
+            canvas.style.height = renderH + 'px';
+          }
+
+          function restartGame() { state = 'ready'; }
+          function startGame() { state = 'playing'; }
+          function finishGame() { state = 'game_over'; }
+
+          window.addEventListener('resize', resizeCanvas);
+          resizeCanvas();
+          canvas.addEventListener('pointerdown', function handleTap() {
+            startGame();
+            score += 1;
+            finishGame();
+          });
+        </script>
+      </body>
+    </html>
+    """
+
+    errors = runner._validate_runtime_contract(code, contract)
+
+    assert not any(
+        error.type == "contract_mobile"
+        and "portrait-first short-edge UI scaling" in error.message
+        for error in errors
+    )
+
+
 def test_validate_runtime_contract_accepts_visible_combo_hud_as_scoring_loop():
     runner = V2PipelineRunner()
     contract = GameRuntimeContract()
@@ -456,6 +520,114 @@ def test_validate_runtime_contract_accepts_visible_combo_hud_as_scoring_loop():
     assert not any(
         error.type == "contract_gameplay"
         and "visible scoring loop" in error.message
+        for error in errors
+    )
+
+
+def test_validate_runtime_contract_accepts_playforge_score_bridge_as_scoring_loop():
+    runner = V2PipelineRunner()
+    contract = GameRuntimeContract()
+    code = """
+    <!DOCTYPE html>
+    <html>
+      <body>
+        <canvas id="gameCanvas"></canvas>
+        <script>
+          window.__playforgeScoreBridgeInstalled = true;
+          const playforgeScoreHud = document.createElement('div');
+          playforgeScoreHud.id = 'playforgeScoreHud';
+          playforgeScoreHud.textContent = 'Score: 0';
+          document.body.appendChild(playforgeScoreHud);
+          function restartGame() {}
+          window.gameState = 'playing';
+        </script>
+      </body>
+    </html>
+    """
+
+    errors = runner._validate_runtime_contract(code, contract)
+
+    assert not any(
+        error.type == "contract_gameplay"
+        and "visible scoring loop" in error.message
+        for error in errors
+    )
+
+
+def test_validate_runtime_contract_accepts_object_mode_terminal_state_transition():
+    runner = V2PipelineRunner()
+    contract = GameRuntimeContract()
+    code = """
+    <!DOCTYPE html>
+    <html>
+      <body>
+        <canvas id="gameCanvas"></canvas>
+        <script>
+          const state = { mode: 'ready', score: 0 };
+          function restartGame() {}
+          function startGame() { state.mode = 'playing'; }
+          function finishRun() { state.mode = 'game_over'; }
+          const canvas = document.getElementById('gameCanvas');
+          canvas.width = 360;
+          canvas.height = 640;
+          canvas.addEventListener('pointerdown', function handleTap() {
+            startGame();
+            state.score += 1;
+            finishRun();
+          });
+        </script>
+      </body>
+    </html>
+    """
+
+    errors = runner._validate_runtime_contract(code, contract)
+
+    assert not any(
+        error.type == "contract_gameplay"
+        and "terminal or completion state" in error.message.lower()
+        for error in errors
+    )
+
+
+def test_validate_runtime_contract_accepts_object_phase_completion_state_transition():
+    runner = V2PipelineRunner()
+    contract = GameRuntimeContract(
+        runtime_profile="grid_puzzle",
+        gameplay={
+            "requires_player_entity": False,
+            "requires_scoring": False,
+            "requires_terminal_state": True,
+            "requires_restart_entry": True,
+            "terminal_state_aliases": ["level_complete", "complete", "completed"],
+        },
+    )
+    code = """
+    <!DOCTYPE html>
+    <html>
+      <body>
+        <canvas id="gameCanvas"></canvas>
+        <script>
+          const state = { phase: 'ready', moves: 0 };
+          function restartLevel() { state.phase = 'ready'; }
+          function startLevel() { state.phase = 'playing'; }
+          function completeLevel() { state.phase = 'level_complete'; }
+          const canvas = document.getElementById('gameCanvas');
+          canvas.width = 360;
+          canvas.height = 640;
+          canvas.addEventListener('touchstart', function handleTouch() {
+            startLevel();
+            completeLevel();
+          });
+        </script>
+      </body>
+    </html>
+    """
+
+    errors = runner._validate_runtime_contract(code, contract)
+
+    assert not any(
+        error.type == "contract_gameplay"
+        and "terminal or completion state" in error.message.lower()
         for error in errors
     )
 
