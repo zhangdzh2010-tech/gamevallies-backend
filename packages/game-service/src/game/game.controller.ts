@@ -22,6 +22,9 @@ import { JwtAuthGuard } from '../common/jwt-auth.guard';
 import { ok, toPage } from '../common/api-response';
 import { presentGame } from '../common/game-presenter';
 
+const SUPPORTED_GAME_TYPES = ['casual', 'puzzle', 'education'] as const;
+const GAME_ID_ROUTE = ':id([0-9a-fA-F-]{36})';
+
 @Controller('games')
 export class GameController {
   private readonly logger = new Logger(GameController.name);
@@ -148,6 +151,12 @@ export class GameController {
     }
   }
 
+  @Get('/game-types')
+  @HttpCode(HttpStatus.OK)
+  async getGameTypes() {
+    return ok([...SUPPORTED_GAME_TYPES]);
+  }
+
   @Get(':id/generation-status')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
@@ -221,7 +230,7 @@ export class GameController {
     return ok(await this.gameService.cancelTask(taskId, userId));
   }
 
-  @Get(':id')
+  @Get(GAME_ID_ROUTE)
   @HttpCode(HttpStatus.OK)
   async getGame(@Param('id') id: string) {
     try {
