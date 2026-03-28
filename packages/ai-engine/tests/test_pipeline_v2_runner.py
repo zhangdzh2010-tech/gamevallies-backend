@@ -382,6 +382,26 @@ def test_select_runtime_profile_biases_educational_requests_to_grid_puzzle():
     assert runner._select_runtime_profile(spec, "portrait_arcade") == "grid_puzzle"
 
 
+def test_select_runtime_profile_can_vary_for_sparse_diversity_seed():
+    runner = V2PipelineRunner()
+    spec = GameSpec(
+        game_type="dodge",
+        source_description="avoid asteroids",
+        intent_summary="avoid hazards and stay alive",
+        special_rules=[
+            "Favor a distinctive gameplay loop instead of the most common default for this genre.",
+        ],
+    )
+
+    with patch("src.engine.pipeline_v2_runner._default_runtime_profile_id", return_value="portrait_arcade"):
+        first = runner._select_runtime_profile(spec, "portrait_arcade", variation_seed="game-a")
+        second = runner._select_runtime_profile(spec, "portrait_arcade", variation_seed="game-b")
+
+    assert first in {"topdown_action", "portrait_arcade", "topdown_dodge"}
+    assert second in {"topdown_action", "portrait_arcade", "topdown_dodge"}
+    assert first != second
+
+
 def test_validate_runtime_contract_accepts_generic_short_edge_scaling_patterns():
     runner = V2PipelineRunner()
     contract = GameRuntimeContract()
@@ -421,6 +441,78 @@ def test_validate_runtime_contract_accepts_generic_short_edge_scaling_patterns()
         and "portrait-first short-edge UI scaling" in error.message
         for error in errors
     )
+
+
+def test_validate_runtime_contract_requires_landscape_short_edge_scaling_when_requested():
+    runner = V2PipelineRunner()
+    contract = GameRuntimeContract(
+        canvas={"orientation": "landscape_first"},
+        mobile_layout={"orientation": "landscape_first"},
+    )
+    code = """
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      </head>
+      <body>
+        <canvas id="gameCanvas"></canvas>
+        <script>
+          const canvas = document.getElementById('gameCanvas');
+          const ctx = canvas.getContext('2d');
+          canvas.width = 640;
+          canvas.height = 360;
+          let gameOver = false;
+          let score = 0;
+          function restartGame() {}
+          canvas.addEventListener('pointerdown', function() {
+            score += 1;
+            gameOver = true;
+          });
+        </script>
+      </body>
+    </html>
+    """
+
+    errors = runner._validate_runtime_contract(code, contract)
+
+    assert any(
+        error.type == "contract_mobile"
+        and "landscape-first short-edge UI scaling" in error.message
+        for error in errors
+    )
+
+
+def test_compose_runtime_contract_preserves_landscape_orientation():
+    runner = V2PipelineRunner()
+    contract = runner._compose_runtime_contract(
+        base_contract=GameRuntimeContract(
+            canvas={"orientation": "landscape_first"},
+            mobile_layout={"orientation": "landscape_first"},
+        ),
+        spec=GameSpec(game_type="runner"),
+        runtime_profile="lane_runner",
+        entrypoint="create",
+    )
+
+    assert contract.canvas.orientation == "landscape_first"
+    assert contract.mobile_layout.orientation == "landscape_first"
+    assert contract.metadata["orientation"] == "landscape_first"
+
+
+def test_build_gdd_uses_landscape_canvas_for_landscape_contracts():
+    runner = V2PipelineRunner()
+    gdd = asyncio.run(
+        runner._build_gdd(
+            GameSpec(game_type="runner"),
+            GameRuntimeContract(
+                canvas={"orientation": "landscape_first"},
+                mobile_layout={"orientation": "landscape_first"},
+            ),
+        )
+    )
+
+    assert gdd.canvas.width > gdd.canvas.height
 
 
 def test_validate_runtime_contract_accepts_aspect_ratio_fit_without_explicit_ui_scale_token():

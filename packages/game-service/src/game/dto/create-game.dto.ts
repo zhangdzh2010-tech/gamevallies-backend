@@ -9,7 +9,11 @@ import {
   IsInt,
   Min,
   Max,
+  IsIn,
 } from 'class-validator';
+
+export const CREATE_GAME_ORIENTATIONS = ['portrait', 'landscape'] as const;
+export type CreateGameOrientation = (typeof CREATE_GAME_ORIENTATIONS)[number];
 
 export class CreateGameDto {
   @ValidateIf((dto) => !dto.prompt)
@@ -33,6 +37,11 @@ export class CreateGameDto {
   @IsOptional()
   @IsString()
   regionHint?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(CREATE_GAME_ORIENTATIONS)
+  orientation?: CreateGameOrientation;
 
   @IsOptional()
   @Type(() => Number)

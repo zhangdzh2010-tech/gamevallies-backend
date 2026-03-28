@@ -519,7 +519,31 @@ CONTEXT_THEME_RULES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("fantasy", ("fantasy", "magic", "dragon", "\u5947\u5e7b", "\u9b54\u6cd5", "\u9f99")),
 )
 
-SPARSE_DEFAULT_GAME_TYPES = ("puzzle", "runner", "platformer", "dodge")
+EXPLICIT_GAME_TYPE_MARKERS: Dict[str, Tuple[str, ...]] = {
+    "dodge": ("dodge", "\u8e32\u907f", "\u95ea\u907f"),
+    "runner": ("runner", "endless runner", "\u8dd1\u9177"),
+    "platformer": ("platformer", "\u5e73\u53f0\u8df3\u8dc3"),
+    "shooter": ("shooter", "shoot", "\u5c04\u51fb"),
+    "puzzle": ("puzzle", "match-3", "merge", "\u8c1c\u9898"),
+    "rhythm": ("rhythm", "beat game", "\u97f3\u4e50\u8282\u594f"),
+    "idle": ("idle", "incremental", "\u653e\u7f6e"),
+    "rpg": ("rpg", "role playing", "\u89d2\u8272\u626e\u6f14"),
+    "tower_defense": ("tower defense", "\u5854\u9632"),
+}
+
+SPARSE_GAME_TYPE_VARIANTS: Dict[str, Tuple[str, ...]] = {
+    "dodge": ("dodge", "shooter", "runner", "rhythm"),
+    "runner": ("runner", "platformer", "dodge", "rhythm"),
+    "platformer": ("platformer", "runner", "dodge"),
+    "shooter": ("shooter", "dodge", "runner"),
+    "puzzle": ("puzzle", "idle", "rhythm"),
+    "rhythm": ("rhythm", "runner", "puzzle"),
+    "idle": ("idle", "puzzle", "rpg"),
+    "rpg": ("rpg", "dodge", "idle"),
+}
+
+SPARSE_DEFAULT_GAME_TYPES = ("puzzle", "runner", "platformer", "dodge", "shooter", "rhythm", "idle", "rpg")
+SPARSE_DEFAULT_THEMES = ("arcade", "neon", "fantasy", "ocean", "forest", "city", "food", "toy")
 
 
 class SlotExtractionFailure(ValueError):
@@ -842,6 +866,10 @@ def _contains_marker(text: str, marker: str) -> bool:
     return marker in text
 
 
+def _contains_any_marker(text: str, markers: Tuple[str, ...]) -> bool:
+    return any(_contains_marker(text, marker) for marker in markers)
+
+
 def _looks_like_sparse_request(text: str) -> bool:
     normalized = _normalize_free_text(text)
     if not normalized:
@@ -872,14 +900,22 @@ def _build_intent_parse_input(description: str, *, title: Optional[str] = None) 
     if _looks_like_sparse_request(normalized_description):
         lines.append(
             "Treat short change-style requests as requirements for a full mobile game spec. "
-            "Infer the missing base loop conservatively from the title and request."
+            "Infer a grounded mobile-friendly base loop, but keep room for a less common mechanic when the brief is open-ended."
         )
     return "\n".join(lines)
+
+
+def _has_explicit_game_type_marker(text: str, game_type: str) -> bool:
+    markers = EXPLICIT_GAME_TYPE_MARKERS.get(game_type, ())
+    if not markers:
+        return False
+    return _contains_any_marker(text, markers)
 
 
 def _infer_game_type_from_sparse_context(
     *texts: str,
     preferred_game_type: Optional[str] = None,
+    variation_seed: Optional[str] = None,
 ) -> Optional[str]:
     normalized_texts = [_normalize_free_text(text) for text in texts if _normalize_free_text(text)]
     combined = " ".join(normalized_texts)
@@ -889,9 +925,23 @@ def _infer_game_type_from_sparse_context(
     if _looks_like_educational_request(*normalized_texts):
         return "puzzle"
 
+    sparse = any(_looks_like_sparse_request(text) for text in normalized_texts) or _looks_like_sparse_request(combined)
     for game_type, markers in CONTEXT_GAME_TYPE_RULES:
-        if any(_contains_marker(combined, marker) for marker in markers):
-            return game_type
+        if not _contains_any_marker(combined, markers):
+            continue
+        if preferred_game_type and preferred_game_type == game_type:
+            return preferred_game_type
+        if sparse and not _has_explicit_game_type_marker(combined, game_type):
+            variants = SPARSE_GAME_TYPE_VARIANTS.get(game_type)
+            if variants:
+                index = _stable_variant_index(
+                    *normalized_texts,
+                    preferred_game_type or "",
+                    variation_seed or "",
+                    count=len(variants),
+                )
+                return variants[index]
+        return game_type
 
     if preferred_game_type:
         return preferred_game_type
@@ -904,7 +954,12 @@ def _infer_game_type_from_sparse_context(
             return "runner"
         return "puzzle"
 
-    index = _stable_variant_index(*normalized_texts, count=len(SPARSE_DEFAULT_GAME_TYPES))
+    index = _stable_variant_index(
+        *normalized_texts,
+        preferred_game_type or "",
+        variation_seed or "",
+        count=len(SPARSE_DEFAULT_GAME_TYPES),
+    )
     return SPARSE_DEFAULT_GAME_TYPES[index]
 
 
@@ -915,9 +970,27 @@ def _infer_theme_from_context(*texts: str) -> Optional[str]:
         return None
 
     for theme, markers in CONTEXT_THEME_RULES:
-        if any(_contains_marker(combined, marker) for marker in markers):
+        if _contains_any_marker(combined, markers):
             return theme
     return None
+
+
+def _select_sparse_theme(
+    *texts: str,
+    game_type: str,
+    variation_seed: Optional[str] = None,
+) -> str:
+    normalized_texts = [_normalize_free_text(text) for text in texts if _normalize_free_text(text)]
+    explicit = _infer_theme_from_context(*normalized_texts)
+    if explicit:
+        return explicit
+    index = _stable_variant_index(
+        game_type,
+        *normalized_texts,
+        variation_seed or "",
+        count=len(SPARSE_DEFAULT_THEMES),
+    )
+    return SPARSE_DEFAULT_THEMES[index]
 
 
 def _extract_sparse_special_rules(text: str, *, ui_language: str) -> List[str]:
@@ -949,6 +1022,24 @@ def _extract_sparse_special_rules(text: str, *, ui_language: str) -> List[str]:
     return deduped
 
 
+def _build_sparse_diversity_rules(game_type: str) -> List[str]:
+    shared = [
+        "Favor a distinctive gameplay loop instead of the most common default for this genre.",
+    ]
+    genre_specific = {
+        "dodge": "Avoid the stock meteor-survival setup unless the brief explicitly asks for it.",
+        "runner": "Avoid defaulting to a plain three-lane endless runner when another readable loop can fit.",
+        "platformer": "Avoid a generic left-to-right jump course if a more novel traversal loop fits the brief.",
+        "shooter": "Avoid a stock top-down wave-survival arena unless the request explicitly asks for it.",
+        "puzzle": "Avoid turning every open brief into a match-3 clone.",
+        "rhythm": "Avoid a bare tap-on-beat lane if a more characterful rhythm loop still reads clearly on mobile.",
+        "idle": "Avoid a bare number-increment loop if a clearer fantasy or objective can be surfaced.",
+        "rpg": "Avoid reducing the loop to simple survive-and-score arcade play when a light quest structure can fit.",
+    }
+    rule = genre_specific.get(game_type)
+    return shared + ([rule] if rule else [])
+
+
 def _build_sparse_slot_fallback(
     *,
     source_text: str,
@@ -956,6 +1047,7 @@ def _build_sparse_slot_fallback(
     raw_text: str,
     repaired_text: str,
     preferred_game_type: Optional[str],
+    variation_seed: Optional[str] = None,
 ) -> Dict[str, Any]:
     normalized_source = _normalize_free_text(source_text)
     normalized_title = _normalize_free_text(title or "")
@@ -974,10 +1066,18 @@ def _build_sparse_slot_fallback(
             raw_text,
             repaired_text,
             preferred_game_type=preferred_game_type,
+            variation_seed=variation_seed,
         )
 
     if not merged.get("theme"):
-        merged["theme"] = _infer_theme_from_context(normalized_title, normalized_source, raw_text, repaired_text)
+        merged["theme"] = _select_sparse_theme(
+            normalized_title,
+            normalized_source,
+            raw_text,
+            repaired_text,
+            game_type=str(merged.get("game_type") or ""),
+            variation_seed=variation_seed,
+        )
 
     game_type = str(merged.get("game_type") or "").strip()
     if not game_type:
@@ -988,12 +1088,23 @@ def _build_sparse_slot_fallback(
     merged.setdefault("win_condition", defaults.get("win_condition") or "")
     merged.setdefault("input_method", defaults.get("input_method") or "touch")
     merged.setdefault("difficulty", "progressive")
-    merged.setdefault("theme", "arcade")
+    merged.setdefault("theme", _select_sparse_theme(
+        normalized_title,
+        normalized_source,
+        raw_text,
+        repaired_text,
+        game_type=game_type,
+        variation_seed=variation_seed,
+    ))
 
     special_rules = list(merged.get("special_rules") or [])
     for item in _extract_sparse_special_rules(normalized_source, ui_language=ui_language):
         if item not in special_rules:
             special_rules.append(item)
+    if _looks_like_sparse_request(normalized_source):
+        for item in _build_sparse_diversity_rules(game_type):
+            if item not in special_rules:
+                special_rules.append(item)
     if special_rules:
         merged["special_rules"] = special_rules
 
@@ -1040,9 +1151,15 @@ def _localized_game_type_defaults(game_type: str, ui_language: str) -> Dict[str,
     return defaults.get("en-US", {})
 
 
-def _select_entity_variant(game_type: str, *, source_description: str, theme: str) -> List[Dict[str, Any]]:
+def _select_entity_variant(
+    game_type: str,
+    *,
+    source_description: str,
+    theme: str,
+    variation_seed: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     variants = ENTITY_VARIANTS.get(game_type, GENERIC_ENTITY_VARIANTS)
-    index = _stable_variant_index(game_type, theme, source_description, count=len(variants))
+    index = _stable_variant_index(game_type, theme, source_description, variation_seed or "", count=len(variants))
     return variants[index]
 
 
@@ -1052,6 +1169,7 @@ def _select_visual_variant(
     explicit_theme: str,
     explicit_art_style: str,
     source_description: str,
+    variation_seed: Optional[str] = None,
 ) -> Dict[str, Any]:
     normalized_theme = (explicit_theme or "").strip().lower()
     if normalized_theme in THEME_STYLE_PRESETS:
@@ -1074,7 +1192,13 @@ def _select_visual_variant(
             "effects": [],
         }
 
-    index = _stable_variant_index(game_type, normalized_theme, source_description, count=len(variants))
+    index = _stable_variant_index(
+        game_type,
+        normalized_theme,
+        source_description,
+        variation_seed or "",
+        count=len(variants),
+    )
     preset = variants[index]
     return {
         "theme": normalized_theme or preset["theme"],
@@ -1249,6 +1373,7 @@ class DialogueEngine:
         return _build_game_spec(
             session.slots,
             source_description=_source_description_from_history(session.history),
+            variation_seed=session_id,
         )
 
     async def parse_description_to_spec(
@@ -1258,6 +1383,7 @@ class DialogueEngine:
         *,
         title: Optional[str] = None,
         preferred_game_type: Optional[str] = None,
+        variation_seed: Optional[str] = None,
     ) -> GameSpec:
         if not self._client.is_enabled():
             raise RuntimeError("Real LLM mode is required for intent parsing")
@@ -1280,9 +1406,14 @@ class DialogueEngine:
             allow_fallback=allow_fallback,
             title=title,
             preferred_game_type=preferred_game_type,
+            variation_seed=variation_seed,
         )
         slots = SlotState(**slot_data)
-        return _build_game_spec(slots, source_description=description)
+        return _build_game_spec(
+            slots,
+            source_description=description,
+            variation_seed=variation_seed,
+        )
 
     async def _llm_process(self, session: DialogueSession) -> Tuple[str, List[str]]:
         old_slots = session.slots.model_copy()
@@ -1345,6 +1476,7 @@ class DialogueEngine:
         allow_fallback: bool = False,
         title: Optional[str] = None,
         preferred_game_type: Optional[str] = None,
+        variation_seed: Optional[str] = None,
     ) -> Dict[str, Any]:
         heuristic_slot_data = _normalize_slot_payload({
             **_infer_slots_from_text(raw_text),
@@ -1393,6 +1525,7 @@ class DialogueEngine:
                 raw_text=raw_text,
                 repaired_text=repaired_text,
                 preferred_game_type=preferred_game_type,
+                variation_seed=variation_seed,
             )
             merged_fallback_slot_data = _merge_slot_payloads(fallback_slot_data, repaired_slot_data)
             if _has_minimum_viable_slot_payload(merged_fallback_slot_data):
@@ -1427,7 +1560,12 @@ class DialogueEngine:
         return current
 
 
-def _build_game_spec(slots: SlotState, *, source_description: str = "") -> GameSpec:
+def _build_game_spec(
+    slots: SlotState,
+    *,
+    source_description: str = "",
+    variation_seed: Optional[str] = None,
+) -> GameSpec:
     normalized_description = re.sub(r"\s+", " ", source_description.strip()) if source_description else ""
     game_type = _coerce_game_type_for_request((slots.game_type or "").strip(), normalized_description)
     if not game_type:
@@ -1449,11 +1587,13 @@ def _build_game_spec(slots: SlotState, *, source_description: str = "") -> GameS
         explicit_theme=theme,
         explicit_art_style=(slots.visual_style or "").strip(),
         source_description=normalized_description,
+        variation_seed=variation_seed,
     )
     entity_defs = _select_entity_variant(
         game_type,
         source_description=normalized_description,
         theme=visual_variant["theme"],
+        variation_seed=variation_seed,
     )
     entities = [GameEntity(**entity) for entity in entity_defs]
 

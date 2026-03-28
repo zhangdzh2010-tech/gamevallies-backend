@@ -964,6 +964,65 @@ def test_repair_code_short_circuits_with_deterministic_mobile_layout_bridge():
     assert "__playforgeMobileLayoutBridgeInstalled" in repaired
     assert "const uiScale = Math.min(scaleX, scaleY);" in repaired
     assert "const shortEdge = Math.min(viewportWidth, viewportHeight);" in repaired
+    assert "const applyResponsiveLayout = () => {" in repaired
+    assert "window.__playforgeUiScale = uiScale;" in repaired
+    assert mock_complete.await_count == 0
+
+
+def test_repair_code_short_circuits_with_deterministic_landscape_mobile_layout_bridge():
+    pipeline = QAPipeline()
+    errors = [
+        QACheckError(
+            type="contract_mobile",
+            message="Runtime contract requires landscape-first short-edge UI scaling",
+            severity="error",
+        )
+    ]
+    code = """
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      </head>
+      <body>
+        <canvas id="gameCanvas"></canvas>
+        <script>
+          const canvas = document.getElementById('gameCanvas');
+          const ctx = canvas.getContext('2d');
+          const W = 640;
+          const H = 360;
+          canvas.width = W;
+          canvas.height = H;
+        </script>
+      </body>
+    </html>
+    """
+
+    with patch.object(
+        pipeline._client,
+        "is_enabled",
+        return_value=True,
+    ), patch.object(
+        pipeline._client,
+        "complete",
+        new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
+    ) as mock_complete:
+        repaired = asyncio.run(
+            pipeline.repair_code(
+                code,
+                errors,
+                GameSpec(game_type="runner"),
+                runtime_contract=GameRuntimeContract(
+                    canvas={"orientation": "landscape_first"},
+                    mobile_layout={"orientation": "landscape_first"},
+                ),
+            )
+        )
+
+    assert "__playforgeMobileLayoutBridgeInstalled" in repaired
+    assert "const designWidth = Math.max(1, Number(canvas.width) || Number(canvas.getAttribute('width')) || 360);" in repaired
+    assert "const applyResponsiveLayout = () => {" in repaired
+    assert "window.__playforgeUiScale = uiScale;" in repaired
     assert mock_complete.await_count == 0
 
 

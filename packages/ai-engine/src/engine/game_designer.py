@@ -193,9 +193,9 @@ UI_LABELS_BY_LANGUAGE = {
 class GameDesigner:
     """Stage 03: Converts GameSpec → GDD with numerical balance."""
 
-    async def design(self, spec: GameSpec) -> GDD:
+    async def design(self, spec: GameSpec, orientation: str = "portrait_first") -> GDD:
         """Main entry point. Returns a fully-specified GDD."""
-        canvas = self._build_canvas(spec)
+        canvas = self._build_canvas(spec, orientation)
         numerics = self._derive_numerics(spec)
         collision = self._build_collision(spec)
         ui_layout = self._build_ui_layout(spec, canvas)
@@ -216,11 +216,15 @@ class GameDesigner:
     # Canvas
     # ------------------------------------------------------------------
 
-    def _build_canvas(self, spec: GameSpec) -> CanvasConfig:
+    def _build_canvas(self, spec: GameSpec, orientation: str = "portrait_first") -> CanvasConfig:
         platform = spec.platform_constraints.platform
         if platform == "wechat_webview":
-            return CanvasConfig(width=360, height=640, dpr_adaptive=True, target_fps=60)
-        return CanvasConfig(width=390, height=693, dpr_adaptive=True, target_fps=60)
+            width, height = 360, 640
+        else:
+            width, height = 390, 693
+        if orientation == "landscape_first":
+            width, height = height, width
+        return CanvasConfig(width=width, height=height, dpr_adaptive=True, target_fps=60)
 
     @staticmethod
     def _compose_raw_description(spec: GameSpec) -> str:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 import time
@@ -24,10 +25,14 @@ from ..config.settings import settings
 from ..config.timeout_store import get_float as get_timeout_float, get_int as get_timeout_int
 from .code_generator import CodeGenerator
 from .code_reviewer import CodeReviewer
-from .dialogue_engine import DialogueEngine, SlotExtractionFailure, _looks_like_educational_request
+from .dialogue_engine import (
+    DialogueEngine,
+    SlotExtractionFailure,
+    _looks_like_educational_request,
+)
 from .game_designer import GameDesigner
 from .llm_game_designer import LLMGameDesigner
-from .mobile_layout import has_portrait_short_edge_scaling
+from .mobile_layout import has_short_edge_scaling
 from .pipeline_orchestrator import PipelineExecutionError
 from .pre_generation_validator import PreGenerationValidator
 from .prompt_store import get_default_runtime_profile, require_prompt
@@ -43,25 +48,40 @@ logger = logging.getLogger(__name__)
 DEFAULT_STAGE_TOTAL_ATTEMPTS = 3
 ProgressCallback = Optional[Callable[[str, int, str, Optional[dict[str, Any]]], None]]
 
-PROFILE_BY_GAME_TYPE: dict[str, str] = {
-    "runner": "lane_runner",
-    "endless runner": "lane_runner",
-    "lane runner": "lane_runner",
-    "racing": "lane_runner",
-    "platformer": "lane_runner",
-    "puzzle": "grid_puzzle",
-    "grid puzzle": "grid_puzzle",
-    "match3": "grid_puzzle",
-    "merge": "grid_puzzle",
-    "shooter": "topdown_shooter",
-    "top down shooter": "topdown_shooter",
-    "top-down shooter": "topdown_shooter",
-    "dodge": "topdown_dodge",
-    "rhythm": "tap_timing",
-    "tower_defense": "grid_puzzle",
-    "idle": "portrait_arcade",
-    "rpg": "topdown_action",
+PROFILE_CANDIDATES_BY_GAME_TYPE: dict[str, tuple[str, ...]] = {
+    "runner": ("lane_runner", "portrait_arcade"),
+    "endless runner": ("lane_runner", "portrait_arcade"),
+    "lane runner": ("lane_runner", "portrait_arcade"),
+    "racing": ("lane_runner", "portrait_arcade"),
+    "platformer": ("portrait_arcade", "lane_runner"),
+    "puzzle": ("grid_puzzle",),
+    "grid puzzle": ("grid_puzzle",),
+    "match3": ("grid_puzzle",),
+    "merge": ("grid_puzzle",),
+    "shooter": ("topdown_shooter", "topdown_action", "portrait_arcade"),
+    "top down shooter": ("topdown_shooter", "topdown_action"),
+    "top-down shooter": ("topdown_shooter", "topdown_action"),
+    "dodge": ("topdown_action", "portrait_arcade", "topdown_dodge"),
+    "rhythm": ("tap_timing", "portrait_arcade"),
+    "tower_defense": ("grid_puzzle",),
+    "idle": ("portrait_arcade", "grid_puzzle"),
+    "rpg": ("topdown_action", "portrait_arcade"),
 }
+
+PROFILE_KEYWORD_FALLBACKS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("runner", ("lane_runner", "portrait_arcade")),
+    ("race", ("lane_runner", "portrait_arcade")),
+    ("platform", ("portrait_arcade", "lane_runner")),
+    ("puzzle", ("grid_puzzle",)),
+    ("match", ("grid_puzzle",)),
+    ("merge", ("grid_puzzle",)),
+    ("shooter", ("topdown_shooter", "topdown_action")),
+    ("top down", ("topdown_shooter", "topdown_action")),
+    ("dodge", ("topdown_action", "portrait_arcade", "topdown_dodge")),
+    ("action", ("topdown_action", "portrait_arcade")),
+    ("rhythm", ("tap_timing", "portrait_arcade")),
+    ("timing", ("tap_timing", "portrait_arcade")),
+)
 
 PROFILE_TO_GAME_TYPE_HINT: dict[str, str] = {
     "portrait_arcade": "runner",
@@ -205,7 +225,11 @@ class V2PipelineRunner:
             "gameType": spec.game_type,
         })
         stage_context["stage"] = "runtime_profile_select"
-        runtime_profile = self._select_runtime_profile(spec, request.runtime_contract.runtime_profile)
+        runtime_profile = self._select_runtime_profile(
+            spec,
+            request.runtime_contract.runtime_profile,
+            variation_seed=request.game_id,
+        )
 
         self._notify(progress_cb, "contract_compose", 40, "Composing runtime contract", {
             "gameId": request.game_id,
@@ -298,7 +322,9 @@ class V2PipelineRunner:
 
         if qa_result.success and quality.final_score >= 5.0:
             self.code_generator.template_cache.store(
-                spec.game_type, runtime_profile, qa_result.code,
+                spec,
+                runtime_profile,
+                qa_result.code,
             )
 
         stage_context["stage"] = "completed"
@@ -354,7 +380,11 @@ class V2PipelineRunner:
             "gameType": spec.game_type,
         })
         stage_context["stage"] = "runtime_profile_select"
-        runtime_profile = self._select_runtime_profile(spec, request.runtime_contract.runtime_profile)
+        runtime_profile = self._select_runtime_profile(
+            spec,
+            request.runtime_contract.runtime_profile,
+            variation_seed=request.game_id,
+        )
 
         self._notify(progress_cb, "contract_compose", 40, "Refreshing runtime contract", {
             "gameId": request.game_id,
@@ -432,6 +462,7 @@ class V2PipelineRunner:
             preferred_game_type=PROFILE_TO_GAME_TYPE_HINT.get(
                 (request.runtime_contract.runtime_profile or "").strip(),
             ),
+            variation_seed=request.game_id,
         )
 
     async def _build_iteration_spec(self, request: IterateV2Request) -> GameSpec:
@@ -470,6 +501,7 @@ class V2PipelineRunner:
                 stage="spec_build",
                 title=title,
                 preferred_game_type=preferred_game_type,
+                variation_seed=request.game_id,
             )
         except PipelineExecutionError as exc:
             if base_spec and self._should_fallback_iteration_spec(exc):
@@ -496,6 +528,7 @@ class V2PipelineRunner:
         stage: str,
         title: Optional[str],
         preferred_game_type: Optional[str] = None,
+        variation_seed: Optional[str] = None,
     ) -> GameSpec:
         last_exc: Exception | None = None
         for attempt in range(1, DEFAULT_STAGE_TOTAL_ATTEMPTS + 1):
@@ -505,6 +538,7 @@ class V2PipelineRunner:
                     allow_fallback=True,
                     title=title,
                     preferred_game_type=preferred_game_type,
+                    variation_seed=variation_seed,
                 )
                 spec.source_description = description
                 if title and spec.intent_summary:
@@ -540,7 +574,13 @@ class V2PipelineRunner:
 
         return "llm slot extraction returned no valid json" in str(exc).lower()
 
-    def _select_runtime_profile(self, spec: GameSpec, requested_profile: Optional[str]) -> str:
+    def _select_runtime_profile(
+        self,
+        spec: GameSpec,
+        requested_profile: Optional[str],
+        *,
+        variation_seed: Optional[str] = None,
+    ) -> str:
         requested = (requested_profile or "").strip()
         if requested:
             try:
@@ -556,27 +596,104 @@ class V2PipelineRunner:
         ):
             return "grid_puzzle"
         normalized = re.sub(r"[^a-z0-9]+", " ", (spec.game_type or "").lower()).strip()
-        if normalized in PROFILE_BY_GAME_TYPE:
-            return PROFILE_BY_GAME_TYPE[normalized]
-        for token, profile in (
-            ("runner", "lane_runner"),
-            ("race", "lane_runner"),
-            ("platform", "lane_runner"),
-            ("puzzle", "grid_puzzle"),
-            ("match", "grid_puzzle"),
-            ("merge", "grid_puzzle"),
-            ("shooter", "topdown_action"),
-            ("top down", "topdown_action"),
-            ("dodge", "topdown_action"),
-            ("action", "topdown_action"),
-            ("rhythm", "tap_timing"),
-            ("timing", "tap_timing"),
-        ):
-            if token in normalized:
-                return profile
+        candidates = list(PROFILE_CANDIDATES_BY_GAME_TYPE.get(normalized, ()))
+        if not candidates:
+            for token, fallback_candidates in PROFILE_KEYWORD_FALLBACKS:
+                if token in normalized:
+                    candidates = list(fallback_candidates)
+                    break
+        if candidates:
+            ranked = self._rank_runtime_profile_candidates(spec, candidates)
+            if len(ranked) == 1 or not self._should_allow_profile_variation(spec):
+                return ranked[0]
+            pool = ranked[: min(3, len(ranked))]
+            return pool[self._profile_variant_index(spec, variation_seed=variation_seed, count=len(pool))]
         if requested:
             return requested
         return _default_runtime_profile_id()
+
+    def _rank_runtime_profile_candidates(
+        self,
+        spec: GameSpec,
+        candidates: list[str],
+    ) -> list[str]:
+        ordered: list[tuple[int, int, str]] = []
+        for index, profile in enumerate(candidates):
+            ordered.append((self._score_runtime_profile_candidate(spec, profile), -index, profile))
+        ordered.sort(reverse=True)
+        return [profile for _, _, profile in ordered]
+
+    def _score_runtime_profile_candidate(self, spec: GameSpec, profile: str) -> int:
+        combined = " ".join([
+            spec.source_description or "",
+            spec.intent_summary or "",
+            spec.rules.win_condition or "",
+            " ".join(spec.special_rules or []),
+        ]).lower()
+        input_mode = (spec.platform_constraints.input_mode or "").lower()
+        sparse = self._should_allow_profile_variation(spec)
+        score = 0
+
+        base_scores = (
+            ("grid_puzzle", {"puzzle", "tower_defense"}, 8),
+            ("lane_runner", {"runner", "platformer"}, 7),
+            ("topdown_shooter", {"shooter"}, 8),
+            ("topdown_action", {"dodge", "shooter", "rpg"}, 6),
+            ("topdown_dodge", {"dodge"}, 7),
+            ("tap_timing", {"rhythm"}, 8),
+            ("portrait_arcade", {"runner", "platformer", "dodge", "idle"}, 5),
+        )
+        for candidate, game_types, value in base_scores:
+            if profile == candidate and spec.game_type in game_types:
+                score += value
+
+        if "swipe" in input_mode and profile == "lane_runner":
+            score += 3
+        if "drag" in input_mode and profile in {"topdown_action", "topdown_dodge", "grid_puzzle"}:
+            score += 2
+        if "tap" in input_mode and profile in {"portrait_arcade", "tap_timing", "grid_puzzle"}:
+            score += 2
+
+        if any(token in combined for token in ("shoot", "projectile", "weapon", "fire")) and profile == "topdown_shooter":
+            score += 3
+        if any(token in combined for token in ("avoid", "survive", "escape", "hazard")) and profile == "topdown_dodge":
+            score += 2
+        if any(token in combined for token in ("collect", "rescue", "delivery", "escort")) and profile in {"portrait_arcade", "topdown_action"}:
+            score += 2
+        if any(token in combined for token in ("boss", "arena", "combat", "battle")) and profile == "topdown_action":
+            score += 2
+
+        if sparse and profile in {"portrait_arcade", "topdown_action"}:
+            score += 2
+        if sparse and profile == "topdown_dodge":
+            score -= 2
+
+        return score
+
+    @staticmethod
+    def _should_allow_profile_variation(spec: GameSpec) -> bool:
+        return any(
+            "Favor a distinctive gameplay loop" in rule
+            for rule in (spec.special_rules or [])
+        )
+
+    @staticmethod
+    def _profile_variant_index(spec: GameSpec, *, variation_seed: Optional[str], count: int) -> int:
+        if count <= 1:
+            return 0
+        seed = "|".join(
+            item.strip()
+            for item in [
+                spec.game_type or "",
+                spec.source_description or "",
+                spec.intent_summary or "",
+                spec.visual_style.theme or "",
+                variation_seed or "",
+            ]
+            if item and item.strip()
+        )
+        digest = hashlib.sha256(seed.encode("utf-8")).digest()
+        return digest[0] % count
 
     def _compose_runtime_contract(
         self,
@@ -588,10 +705,11 @@ class V2PipelineRunner:
     ) -> GameRuntimeContract:
         contract = base_contract.model_copy(deep=True)
         contract.runtime_profile = runtime_profile
+        requested_orientation = self._resolve_contract_orientation(base_contract)
         contract.canvas = contract.canvas.model_copy(
             update={
                 "requires_canvas_2d": True,
-                "orientation": "portrait_first",
+                "orientation": requested_orientation,
                 "ui_scale_mode": "short_edge",
                 "target_fps": spec.platform_constraints.target_fps or contract.canvas.target_fps,
             }
@@ -610,8 +728,20 @@ class V2PipelineRunner:
             "entrypoint": entrypoint,
             "game_type": spec.game_type,
             "difficulty_curve": spec.difficulty_curve,
+            "orientation": requested_orientation,
         }
         return contract
+
+    @staticmethod
+    def _resolve_contract_orientation(base_contract: GameRuntimeContract) -> str:
+        orientation = str(
+            getattr(base_contract.mobile_layout, "orientation", None)
+            or getattr(base_contract.canvas, "orientation", None)
+            or "portrait_first"
+        ).strip()
+        if orientation == "landscape_first":
+            return "landscape_first"
+        return "portrait_first"
 
     def _profile_input_overrides(self, runtime_profile: str) -> dict[str, Any]:
         if runtime_profile == "grid_puzzle":
@@ -689,7 +819,10 @@ class V2PipelineRunner:
 
     async def _build_gdd(self, spec: GameSpec, runtime_contract: GameRuntimeContract) -> GDD:
         try:
-            gdd = await self.game_designer.design(spec)
+            gdd = await self.game_designer.design(
+                spec,
+                orientation=runtime_contract.mobile_layout.orientation,
+            )
         except Exception as exc:
             raise PipelineExecutionError(
                 f"Contract-aware design failed: {exc}",
@@ -733,7 +866,6 @@ class V2PipelineRunner:
                     spec=spec,
                     gdd=gdd,
                     description=request.raw_user_input,
-                    allow_fallback=False,
                     runtime_contract=runtime_contract,
                     runtime_profile=runtime_contract.runtime_profile,
                     prompt_bundle_snapshot=request.prompt_bundle_snapshot.model_dump(),
@@ -764,7 +896,6 @@ class V2PipelineRunner:
                     current_code=request.current_code,
                     feedback=request.iteration_intent.feedback,
                     conversation=request.iteration_intent.conversation,
-                    allow_fallback=False,
                     runtime_contract=runtime_contract,
                     runtime_profile=runtime_contract.runtime_profile,
                     prompt_bundle_snapshot=request.prompt_bundle_snapshot.model_dump(),
@@ -1166,13 +1297,14 @@ class V2PipelineRunner:
                 severity="error",
             ))
 
-        if runtime_contract.mobile_layout.orientation == "portrait_first":
-            if not has_portrait_short_edge_scaling(code):
-                errors.append(QACheckError(
-                    type="contract_mobile",
-                    message="Runtime contract requires portrait-first short-edge UI scaling",
-                    severity="error",
-                ))
+        orientation = self._resolve_contract_orientation(runtime_contract)
+        if not has_short_edge_scaling(code, orientation=orientation):
+            requirement = "landscape-first" if orientation == "landscape_first" else "portrait-first"
+            errors.append(QACheckError(
+                type="contract_mobile",
+                message=f"Runtime contract requires {requirement} short-edge UI scaling",
+                severity="error",
+            ))
 
         if any(mode in ("touch", "pointer") for mode in runtime_contract.input.required_modes):
             has_primary_input = any(

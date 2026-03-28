@@ -95,7 +95,7 @@ class GameRules(BaseModel):
 
 
 class VisualStyle(BaseModel):
-    theme: str = "space"
+    theme: str = "arcade"
     palette: List[str] = Field(default_factory=lambda: ["#0a0a2e", "#6366f1", "#22c55e", "#f43f5e", "#ffffff"])
     art_style: str = "geometric"
     background: str = "gradient"
@@ -180,12 +180,6 @@ class EnrichedGDD(GDD):
 # ---------------------------------------------------------------------------
 # Stage 04 – Template Matcher
 # ---------------------------------------------------------------------------
-
-class TemplateMatchResult(BaseModel):
-    template_id: Optional[str] = None
-    confidence: float = 0.0
-    path: str = "llm"
-
 
 # ---------------------------------------------------------------------------
 # Stage 05 – Code Generator

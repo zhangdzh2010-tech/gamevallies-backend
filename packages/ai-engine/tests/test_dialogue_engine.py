@@ -134,6 +134,48 @@ class TestDialogueEngine(unittest.TestCase):
         )
         self.assertEqual(game_type, "puzzle")
 
+    def test_sparse_non_explicit_action_prompt_can_vary_by_seed(self):
+        first = _infer_game_type_from_sparse_context(
+            "avoid asteroids",
+            variation_seed="game-a",
+        )
+        second = _infer_game_type_from_sparse_context(
+            "avoid asteroids",
+            variation_seed="game-b",
+        )
+
+        self.assertIn(first, {"dodge", "shooter", "runner", "rhythm"})
+        self.assertIn(second, {"dodge", "shooter", "runner", "rhythm"})
+        self.assertNotEqual(first, second)
+
+    def test_sparse_parse_adds_diversity_rules_for_open_briefs(self):
+        engine = DialogueEngine()
+
+        def fake_get_prompt(key: str, default=None):
+            if key in {"prompt.intent_parse_system", "prompt.slot_json_repair_system"}:
+                return "INTENT_PARSE_PROMPT_FROM_DB"
+            return DIALOGUE_TEST_PROMPTS.get(key, default)
+
+        with patch.object(engine._client, "is_enabled", return_value=True), patch(
+            "src.engine.dialogue_engine.require_prompt",
+            side_effect=fake_get_prompt,
+        ), patch.object(
+            engine._client,
+            "complete",
+            new=AsyncMock(side_effect=["not json", "still not json"]),
+        ):
+            spec = asyncio.run(
+                engine.parse_description_to_spec(
+                    "avoid asteroids",
+                    variation_seed="game-a",
+                )
+            )
+
+        self.assertTrue(
+            any("distinctive gameplay loop" in rule.lower() for rule in spec.special_rules)
+        )
+        self.assertIn(spec.game_type, {"dodge", "shooter", "runner", "rhythm"})
+
     def test_parse_description_to_spec_coerces_educational_runner_prompt_to_puzzle(self):
         engine = DialogueEngine()
 

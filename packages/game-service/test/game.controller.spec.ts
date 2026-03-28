@@ -37,6 +37,7 @@ describe('GameController', () => {
       {
         title: 'Runner',
         description: 'make a runner game',
+        orientation: 'landscape',
         timeoutS: 900,
       } as any,
     );
@@ -44,6 +45,7 @@ describe('GameController', () => {
     expect(gameService.create).toHaveBeenCalledWith('user-1', {
       title: 'Runner',
       description: 'make a runner game',
+      orientation: 'landscape',
       timeoutS: 900,
     });
     expect(result).toEqual(

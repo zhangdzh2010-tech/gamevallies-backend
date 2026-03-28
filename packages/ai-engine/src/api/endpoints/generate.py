@@ -65,6 +65,7 @@ from ...engine.prompt_store import (
     refresh as refresh_prompt_cache,
 )
 from ...engine.qa_pipeline import QAPipeline
+from ...engine.runtime_qa import capture_cover_artifact
 from ...config.settings import settings
 from ...config.timeout_store import (
     cached_count as cached_timeout_count,
@@ -182,6 +183,45 @@ async def _relay_artifact_to_game_service(
     except Exception as exc:
         logger.debug("Failed to relay artifact %s to game-service: %s", artifact_type, exc)
     return None
+
+
+async def _maybe_capture_cover_artifact(
+    *,
+    html_code: str,
+    orientation: Optional[str],
+    timeout_s: Optional[int],
+    title: Optional[str] = None,
+    game_type: Optional[str] = None,
+    theme: Optional[str] = None,
+    runtime_profile: Optional[str] = None,
+    updated: bool = False,
+) -> Optional[dict[str, Any]]:
+    if not settings.GAME_SERVICE_UPSTREAM_URL.rstrip("/"):
+        return None
+    if not isinstance(html_code, str) or not html_code.strip():
+        return None
+
+    capture_timeout_s = max(
+        get_timeout_float("timeout.ai_engine.cover_capture_s", 4.0, min_value=0.1),
+        0.1,
+    )
+    if timeout_s is not None:
+        capture_timeout_s = min(capture_timeout_s, max(float(timeout_s), 0.1))
+
+    try:
+        return await capture_cover_artifact(
+            html_code,
+            orientation=orientation,
+            timeout_s=capture_timeout_s,
+            title=title,
+            game_type=game_type,
+            theme=theme,
+            runtime_profile=runtime_profile,
+            updated=updated,
+        )
+    except Exception as exc:
+        logger.debug("Failed to capture cover artifact: %s", exc)
+        return None
 
 
 async def _relay_stage_summary_to_game_service(
@@ -897,6 +937,30 @@ async def _run_pipeline_v2_internal(
                 "entrypoint": resolved_request.request_context.entrypoint,
             },
         )
+        cover_artifact_id = None
+        cover_artifact = await _maybe_capture_cover_artifact(
+            html_code=response.html_code,
+            orientation=getattr(getattr(resolved_request.runtime_contract, "canvas", None), "orientation", None),
+            timeout_s=resolved_request.timeout_s,
+            title=resolved_request.title,
+            game_type=getattr(response.game_spec, "game_type", None),
+            theme=getattr(getattr(response.game_spec, "visual_style", None), "theme", None),
+            runtime_profile=response.runtime_profile,
+        )
+        if cover_artifact:
+            cover_artifact_id = await _relay_artifact_to_game_service(
+                task_id=effective_task_id,
+                game_id=resolved_request.game_id,
+                user_id=resolved_request.user_id,
+                artifact_type="cover_image",
+                content_type=str(cover_artifact.get("content_type") or "image/jpeg"),
+                payload=cover_artifact.get("payload"),
+                metadata={
+                    "pipelineVersion": "v2",
+                    "entrypoint": resolved_request.request_context.entrypoint,
+                    **dict(cover_artifact.get("metadata") or {}),
+                },
+            )
         await _relay_stage_summary_to_game_service(
             task_id=effective_task_id,
             stage="completed",
@@ -908,7 +972,7 @@ async def _run_pipeline_v2_internal(
             },
             artifact_ids=[
                 artifact_id
-                for artifact_id in [spec_artifact_id, profile_artifact_id, primary_artifact_id]
+                for artifact_id in [spec_artifact_id, profile_artifact_id, primary_artifact_id, cover_artifact_id]
                 if artifact_id
             ],
         )
@@ -1075,6 +1139,35 @@ async def _run_iteration_v2_internal(
                 "entrypoint": resolved_request.request_context.entrypoint,
             },
         )
+        cover_artifact_id = None
+        cover_game_spec = response.game_spec or resolved_request.source_spec
+        cover_artifact = await _maybe_capture_cover_artifact(
+            html_code=response.html_code,
+            orientation=getattr(getattr(resolved_request.runtime_contract, "canvas", None), "orientation", None),
+            timeout_s=resolved_request.timeout_s,
+            title=resolved_request.source_bundle_context.title,
+            game_type=(
+                getattr(cover_game_spec, "game_type", None)
+                or getattr(resolved_request.source_bundle_context, "latest_game_type", None)
+            ),
+            theme=getattr(getattr(cover_game_spec, "visual_style", None), "theme", None),
+            runtime_profile=response.runtime_profile,
+            updated=True,
+        )
+        if cover_artifact:
+            cover_artifact_id = await _relay_artifact_to_game_service(
+                task_id=effective_task_id,
+                game_id=resolved_request.game_id,
+                user_id=resolved_request.user_id,
+                artifact_type="cover_image",
+                content_type=str(cover_artifact.get("content_type") or "image/jpeg"),
+                payload=cover_artifact.get("payload"),
+                metadata={
+                    "pipelineVersion": "v2",
+                    "entrypoint": resolved_request.request_context.entrypoint,
+                    **dict(cover_artifact.get("metadata") or {}),
+                },
+            )
         await _relay_stage_summary_to_game_service(
             task_id=effective_task_id,
             stage="completed",
@@ -1086,7 +1179,7 @@ async def _run_iteration_v2_internal(
             },
             artifact_ids=[
                 artifact_id
-                for artifact_id in [spec_artifact_id, profile_artifact_id, primary_artifact_id]
+                for artifact_id in [spec_artifact_id, profile_artifact_id, primary_artifact_id, cover_artifact_id]
                 if artifact_id
             ],
         )

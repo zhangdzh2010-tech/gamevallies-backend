@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.api.models import GDD, GameSpec, GenerateCodeResult, QACheckError, QAResult, TemplateMatchResult
+from src.api.models import GDD, GameSpec, GenerateCodeResult, QACheckError, QAResult
 from src.engine.pipeline_orchestrator import PipelineExecutionError, PipelineOrchestrator
 from src.engine.quality_scorer import RuntimeQAResult
 
@@ -88,7 +88,8 @@ class TestPipelineOrchestratorP0(unittest.TestCase):
         orchestrator = PipelineOrchestrator()
         attempts = []
 
-        async def fail_parse(_description: str, allow_fallback: bool = True):
+        async def fail_parse(_description: str, allow_fallback: bool = True, variation_seed: str | None = None):
+            del variation_seed
             attempts.append(allow_fallback)
             raise RuntimeError("parser unavailable")
 
@@ -109,7 +110,7 @@ class TestPipelineOrchestratorP0(unittest.TestCase):
                 )
 
         self.assertIn("Intent parsing failed after 3 attempts", str(ctx.exception))
-        self.assertEqual(attempts, [False, False, False])
+        self.assertEqual(attempts, [True, True, True])
         self.assertEqual(
             [event["message"] for event in events if "重试中" in event["message"]],
             [
@@ -120,31 +121,16 @@ class TestPipelineOrchestratorP0(unittest.TestCase):
         self.assertEqual(events[-1]["message"], "意图解析失败，生成已终止")
         self.assertEqual(events[-1]["details"]["failedStage"], "intent_parsing")
 
-    def test_stage_match_template_forces_full_llm_path(self):
-        orchestrator = PipelineOrchestrator()
-        events, callback = make_progress_sink()
-
-        result = orchestrator._stage_match_template(make_spec(), "game-2", "user-2", callback)
-
-        self.assertEqual(result.path, "llm")
-        self.assertEqual(
-            [event["message"] for event in events],
-            [
-                "Full LLM generation only",
-            ],
-        )
-        self.assertTrue(all(event["stage"] == "template_matching" for event in events))
-
     def test_stage_generate_code_retries_three_times_without_fallback(self):
         import src.engine.pipeline_orchestrator as orchestrator_module
 
         orchestrator = PipelineOrchestrator()
         events, callback = make_progress_sink()
-        allow_fallback_values = []
+        call_kwargs = []
 
         async def fake_generate(**kwargs):
-            allow_fallback_values.append(kwargs["allow_fallback"])
-            if len(allow_fallback_values) < 3:
+            call_kwargs.append(kwargs)
+            if len(call_kwargs) < 3:
                 raise RuntimeError("temporary upstream timeout")
             return GenerateCodeResult(
                 html_code="<html></html>",
@@ -167,7 +153,6 @@ class TestPipelineOrchestratorP0(unittest.TestCase):
                 orchestrator._stage_generate_code(
                     make_spec(),
                     GDD(),
-                    TemplateMatchResult(path="llm"),
                     "game-3",
                     "user-3",
                     callback,
@@ -176,7 +161,10 @@ class TestPipelineOrchestratorP0(unittest.TestCase):
             )
 
         self.assertEqual(result.html_code, "<html></html>")
-        self.assertEqual(allow_fallback_values, [False, False, False])
+        self.assertEqual(len(call_kwargs), 3)
+        self.assertTrue(all("allow_fallback" not in kwargs for kwargs in call_kwargs))
+        self.assertTrue(all("template_id" not in kwargs for kwargs in call_kwargs))
+        self.assertTrue(all("confidence" not in kwargs for kwargs in call_kwargs))
         self.assertEqual(
             [event["message"] for event in events if "重试中" in event["message"]],
             [
@@ -199,7 +187,6 @@ class TestPipelineOrchestratorP0(unittest.TestCase):
                     orchestrator._stage_generate_code(
                         make_spec(),
                         GDD(),
-                        TemplateMatchResult(path="llm"),
                         "game-no-retry",
                         "user-no-retry",
                         callback,
@@ -344,11 +331,11 @@ class TestPipelineOrchestratorP0(unittest.TestCase):
 
         orchestrator = PipelineOrchestrator()
         events, callback = make_progress_sink()
-        allow_fallback_values = []
+        call_kwargs = []
 
         async def fake_iterate(**kwargs):
-            allow_fallback_values.append(kwargs["allow_fallback"])
-            if len(allow_fallback_values) < 3:
+            call_kwargs.append(kwargs)
+            if len(call_kwargs) < 3:
                 raise RuntimeError("temporary iteration timeout")
             return "<html>updated</html>", IterationType.element_change
 
@@ -384,7 +371,8 @@ class TestPipelineOrchestratorP0(unittest.TestCase):
         self.assertEqual(result["iteration_type"], "element_change")
         self.assertEqual(result["qa_retries"], 1)
         self.assertEqual(result["iteration_retries"], 2)
-        self.assertEqual(allow_fallback_values, [False, False, False])
+        self.assertEqual(len(call_kwargs), 3)
+        self.assertTrue(all("allow_fallback" not in kwargs for kwargs in call_kwargs))
         self.assertIn("代码修改失败，正在重试（1/2）", [event["message"] for event in events])
         self.assertIn("代码修改失败，正在重试（2/2）", [event["message"] for event in events])
         self.assertIn("修改后的质量检查未通过，正在修复（1/3）", [event["message"] for event in events])

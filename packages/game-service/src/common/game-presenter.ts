@@ -32,6 +32,47 @@ function buildIndexUrl(gameId: string, previewUrl?: string) {
   }
 }
 
+function normalizeAssetUrl(gameId: string, assetUrl: string | undefined, fallbackPath: string) {
+  const baseUrl = getPublicBaseUrl();
+  if (!assetUrl) {
+    return `${baseUrl}${fallbackPath}`;
+  }
+
+  try {
+    const parsed = new URL(assetUrl);
+    return `${baseUrl}${parsed.pathname}${parsed.search}`;
+  } catch {
+    if (assetUrl.startsWith('/')) {
+      return `${baseUrl}${assetUrl}`;
+    }
+
+    return `${baseUrl}${fallbackPath}`;
+  }
+}
+
+function buildCoverUrl(gameId: string, thumbnailUrl: string | undefined, previewUrl: string, gameUrl: string) {
+  if (!thumbnailUrl) {
+    return gameUrl;
+  }
+
+  const normalizedCoverUrl = normalizeAssetUrl(gameId, thumbnailUrl, `/games/${gameId}/cover`);
+
+  try {
+    const preview = new URL(previewUrl);
+    const previewToken = preview.searchParams.get('previewToken');
+    const cover = new URL(normalizedCoverUrl);
+    const isLocalCoverPath = cover.pathname.endsWith(`/games/${gameId}/cover`);
+
+    if (previewToken && isLocalCoverPath && !cover.searchParams.has('previewToken')) {
+      cover.searchParams.set('previewToken', previewToken);
+    }
+
+    return cover.toString();
+  } catch {
+    return normalizedCoverUrl;
+  }
+}
+
 function normalizeStatus(status?: string) {
   if (status === 'draft') {
     return 'ready';
@@ -60,6 +101,7 @@ function presentAuthor(author?: {
 export function presentGame(game: any) {
   const previewUrl = normalizePreviewUrl(game.id, game.previewUrl);
   const gameUrl = buildIndexUrl(game.id, previewUrl);
+  const coverUrl = buildCoverUrl(game.id, game.thumbnailUrl, previewUrl, gameUrl);
 
   return {
     id: game.id,
@@ -68,7 +110,7 @@ export function presentGame(game: any) {
     status: normalizeStatus(game.status),
     gameUrl,
     previewUrl,
-    coverUrl: game.thumbnailUrl || gameUrl,
+    coverUrl,
     tags: game.tags || [],
     type: game.gameType || 'casual',
     plays: Number(game.playCount || game.plays || 0),

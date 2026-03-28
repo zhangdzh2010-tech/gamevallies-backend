@@ -26,7 +26,12 @@ import { PrismaService } from '../prisma/prisma.service';
 import { BundleService } from '../bundle/bundle.service';
 import { StatsService } from '../stats/stats.service';
 import { GameWebSocketGateway } from '../websocket/websocket.gateway';
-import { CreateGameDto, PublishGameDto, IterateGameDto } from './dto';
+import {
+  CreateGameDto,
+  CreateGameOrientation,
+  PublishGameDto,
+  IterateGameDto,
+} from './dto';
 import { GenerationTaskService } from './generation-task.service';
 import {
   TIMEOUT_CONFIG_CATALOG,
@@ -55,6 +60,8 @@ const STAGE_PCT: Record<string, number> = {
   completed: 100,
   failed: -1,
 };
+
+type RuntimeOrientation = 'portrait_first' | 'landscape_first';
 
 interface RetryContext {
   retry: number;
@@ -105,6 +112,11 @@ interface PreviewLinkOptions {
   previewToken?: string;
 }
 
+interface CoverLinkOptions extends PreviewLinkOptions {
+  taskId?: string;
+  version?: number | string;
+}
+
 type PipelineVersion = 'v1' | 'v2';
 type PipelineEntrypoint = 'create' | 'iterate';
 
@@ -134,6 +146,7 @@ interface SourceBundleContextPayload {
   title?: string | null;
   latest_bundle_version?: number | null;
   latest_game_type?: string | null;
+  latest_orientation?: CreateGameOrientation | null;
   latest_feedback?: string | null;
   latest_iteration_type?: string | null;
   summary?: string | null;
@@ -143,6 +156,7 @@ interface SourceBundleContextPayload {
 interface CreateExecutionOptions {
   pipelineVersion?: PipelineVersion;
   title?: string;
+  orientation?: CreateGameOrientation;
   access?: AccessGrantDecision;
   promptBundleSnapshot?: PromptBundleSnapshotPayload | null;
   runtimeContract?: RuntimeContractPayload | null;
@@ -152,6 +166,7 @@ interface IterateExecutionOptions {
   pipelineVersion?: PipelineVersion;
   promptBundleSnapshot?: PromptBundleSnapshotPayload | null;
   runtimeContract?: RuntimeContractPayload | null;
+  orientation?: CreateGameOrientation;
   sourceSpec?: Record<string, unknown> | null;
   sourceBundleContext?: SourceBundleContextPayload | null;
   game?: {
@@ -692,16 +707,135 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   private async buildDefaultRuntimeContract(
     entrypoint: PipelineEntrypoint,
     runtimeProfile?: string,
+    requestedOrientation?: CreateGameOrientation,
   ): Promise<RuntimeContractPayload> {
     const profile = await this.resolveRuntimeProfile(runtimeProfile);
     const normalizedContract = this.normalizeRuntimeContractSchema(profile.id, profile.contractSchema);
 
-    return {
+    return this.applyRequestedCreateOrientation({
       ...normalizedContract,
       metadata: {
         ...((normalizedContract.metadata as Record<string, unknown> | undefined) ?? {}),
         entrypoint,
         source: 'game-service',
+      },
+    }, requestedOrientation);
+  }
+
+  private resolveRuntimeOrientation(
+    orientation?: CreateGameOrientation | null,
+  ): RuntimeOrientation | undefined {
+    if (orientation === 'landscape') {
+      return 'landscape_first';
+    }
+    if (orientation === 'portrait') {
+      return 'portrait_first';
+    }
+    return undefined;
+  }
+
+  private normalizeRequestedOrientation(
+    orientation?: unknown,
+  ): CreateGameOrientation | undefined {
+    if (orientation === 'landscape') {
+      return 'landscape';
+    }
+    if (orientation === 'portrait') {
+      return 'portrait';
+    }
+    return undefined;
+  }
+
+  private resolveRequestedOrientationFromRuntime(
+    orientation?: unknown,
+  ): CreateGameOrientation | undefined {
+    if (orientation === 'landscape_first') {
+      return 'landscape';
+    }
+    if (orientation === 'portrait_first') {
+      return 'portrait';
+    }
+    return undefined;
+  }
+
+  private resolveRuntimeOrientationFromContract(
+    runtimeContract?: RuntimeContractPayload | null,
+  ): RuntimeOrientation | undefined {
+    if (!runtimeContract || typeof runtimeContract !== 'object') {
+      return undefined;
+    }
+
+    const mobileLayout = runtimeContract.mobile_layout && typeof runtimeContract.mobile_layout === 'object'
+      ? runtimeContract.mobile_layout as Record<string, unknown>
+      : null;
+    const canvas = runtimeContract.canvas && typeof runtimeContract.canvas === 'object'
+      ? runtimeContract.canvas as Record<string, unknown>
+      : null;
+    const metadata = runtimeContract.metadata && typeof runtimeContract.metadata === 'object'
+      ? runtimeContract.metadata as Record<string, unknown>
+      : null;
+
+    const runtimeOrientation = [
+      mobileLayout?.orientation,
+      canvas?.orientation,
+      metadata?.orientation,
+      metadata?.runtimeOrientation,
+      metadata?.runtime_orientation,
+    ].find((value) => value === 'portrait_first' || value === 'landscape_first');
+
+    return runtimeOrientation as RuntimeOrientation | undefined;
+  }
+
+  private buildPersistedOrientationMetadata(params: {
+    orientation?: CreateGameOrientation | null;
+    runtimeContract?: RuntimeContractPayload | null;
+  }): Record<string, unknown> {
+    const requestedOrientation = this.normalizeRequestedOrientation(params.orientation)
+      ?? this.resolveRequestedOrientationFromRuntime(
+        this.resolveRuntimeOrientationFromContract(params.runtimeContract),
+      );
+    const runtimeOrientation = this.resolveRuntimeOrientationFromContract(params.runtimeContract)
+      ?? this.resolveRuntimeOrientation(requestedOrientation);
+
+    return {
+      ...(requestedOrientation ? { requestedOrientation } : {}),
+      ...(runtimeOrientation ? { runtimeOrientation } : {}),
+    };
+  }
+
+  private applyRequestedCreateOrientation(
+    runtimeContract: RuntimeContractPayload,
+    orientation?: CreateGameOrientation | null,
+  ): RuntimeContractPayload {
+    const runtimeOrientation = this.resolveRuntimeOrientation(orientation);
+    if (!runtimeOrientation) {
+      return runtimeContract;
+    }
+
+    const canvas = runtimeContract.canvas && typeof runtimeContract.canvas === 'object'
+      ? runtimeContract.canvas as Record<string, unknown>
+      : {};
+    const mobileLayout = runtimeContract.mobile_layout && typeof runtimeContract.mobile_layout === 'object'
+      ? runtimeContract.mobile_layout as Record<string, unknown>
+      : {};
+    const metadata = runtimeContract.metadata && typeof runtimeContract.metadata === 'object'
+      ? runtimeContract.metadata as Record<string, unknown>
+      : {};
+
+    return {
+      ...runtimeContract,
+      canvas: {
+        ...canvas,
+        orientation: runtimeOrientation,
+      },
+      mobile_layout: {
+        ...mobileLayout,
+        orientation: runtimeOrientation,
+      },
+      metadata: {
+        ...metadata,
+        requested_orientation: orientation,
+        orientation: runtimeOrientation,
       },
     };
   }
@@ -761,6 +895,34 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     return null;
   }
 
+  private extractBundleOrientation(bundleHistory: any[]): CreateGameOrientation | undefined {
+    for (const bundle of [...bundleHistory].reverse()) {
+      const metadata = bundle?.metadata && typeof bundle.metadata === 'object'
+        ? bundle.metadata as Record<string, unknown>
+        : null;
+      if (!metadata) {
+        continue;
+      }
+
+      const requestedOrientation = this.normalizeRequestedOrientation(
+        metadata.requestedOrientation ?? metadata.orientation ?? metadata.requested_orientation,
+      );
+      if (requestedOrientation) {
+        return requestedOrientation;
+      }
+
+      const runtimeOrientation = metadata.runtimeOrientation
+        ?? metadata.runtime_orientation
+        ?? metadata.orientation;
+      const recoveredOrientation = this.resolveRequestedOrientationFromRuntime(runtimeOrientation);
+      if (recoveredOrientation) {
+        return recoveredOrientation;
+      }
+    }
+
+    return undefined;
+  }
+
   private buildIterationSourceBundleContext(params: {
     game: any;
     latestBundle: any | null;
@@ -806,8 +968,13 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           ? latestMetadata.gameSpec.game_type.trim()
           : null
       );
+    const latestOrientation = this.extractBundleOrientation([
+      ...bundleHistory,
+      ...(latestBundle ? [latestBundle] : []),
+    ]) ?? null;
     const summaryParts = [
       latestGameType ? `game_type=${latestGameType}` : '',
+      latestOrientation ? `orientation=${latestOrientation}` : '',
       latestFeedback ? `latest_feedback=${latestFeedback}` : '',
       latestIterationType ? `latest_iteration=${latestIterationType}` : '',
       latestBundle?.htmlCode ? `code_size=${Buffer.byteLength(String(latestBundle.htmlCode), 'utf8')}B` : '',
@@ -819,6 +986,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         ? latestBundle.version
         : (typeof game?.version === 'number' ? game.version : null),
       latest_game_type: latestGameType,
+      latest_orientation: latestOrientation,
       latest_feedback: latestFeedback || null,
       latest_iteration_type: latestIterationType || null,
       summary: summaryParts.length > 0 ? summaryParts.join('; ') : null,
@@ -834,6 +1002,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     executionRegion: string;
     timeoutS: number;
     taskId?: string;
+    orientation?: CreateGameOrientation;
     access?: AccessGrantDecision;
     promptBundleSnapshot: PromptBundleSnapshotPayload;
     runtimeContract: RuntimeContractPayload;
@@ -853,6 +1022,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         pipeline_version: 'v2',
         metadata: {
           game_id: params.gameId,
+          ...(params.orientation ? { orientation: params.orientation } : {}),
         },
       },
       entitlement: this.buildEntitlementSnapshot({
@@ -875,10 +1045,12 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         title: params.title || null,
         region: params.executionRegion,
         entrypoint: 'create',
+        ...(params.orientation ? { orientation: params.orientation } : {}),
       },
       metadata: {
         adapter: 'compat_v1',
         pipeline_version: 'v2',
+        ...(params.orientation ? { orientation: params.orientation } : {}),
       },
     };
   }
@@ -893,12 +1065,17 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     timeoutS: number;
     taskId?: string;
     game?: IterateExecutionOptions['game'];
+    orientation?: CreateGameOrientation;
     sourceSpec?: Record<string, unknown> | null;
     sourceBundleContext?: SourceBundleContextPayload | null;
     promptBundleSnapshot: PromptBundleSnapshotPayload;
     runtimeContract: RuntimeContractPayload;
   }): Record<string, unknown> {
     const game = params.game || {};
+    const orientation = this.normalizeRequestedOrientation(params.orientation)
+      ?? this.resolveRequestedOrientationFromRuntime(
+        this.resolveRuntimeOrientationFromContract(params.runtimeContract),
+      );
 
     return {
       game_id: params.gameId,
@@ -915,6 +1092,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         metadata: {
           game_id: params.gameId,
           live_bundle_version: game.version ?? null,
+          ...(orientation ? { orientation } : {}),
         },
       },
       iteration_intent: {
@@ -951,10 +1129,12 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         feedback: params.feedback,
         region: params.executionRegion,
         entrypoint: 'iterate',
+        ...(orientation ? { orientation } : {}),
       },
       metadata: {
         adapter: 'compat_v1',
         pipeline_version: 'v2',
+        ...(orientation ? { orientation } : {}),
       },
     };
   }
@@ -1084,6 +1264,20 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       gameUrl.searchParams.set('previewToken', options.previewToken);
     }
     return gameUrl.toString();
+  }
+
+  private buildCoverUrl(gameId: string, options: CoverLinkOptions = {}): string {
+    const coverUrl = new URL(`${this.getPublicBaseUrl()}/games/${gameId}/cover`);
+    if (options.taskId) {
+      coverUrl.searchParams.set('taskId', options.taskId);
+    }
+    if (typeof options.version !== 'undefined' && options.version !== null) {
+      coverUrl.searchParams.set('v', String(options.version));
+    }
+    if (options.previewToken) {
+      coverUrl.searchParams.set('previewToken', options.previewToken);
+    }
+    return coverUrl.toString();
   }
 
   private resolvePreviewTokenTtlSeconds(): number {
@@ -2254,6 +2448,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           description: String(task.metadata?.description || ''),
           taskId: task.id,
           responseData: snapshot.result || {},
+          orientation: this.normalizeRequestedOrientation(task.metadata?.orientation),
         });
       } else {
         const latestBundle = await Promise.resolve(this.bundleService.getLatestBundle(task.gameId))
@@ -2267,6 +2462,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           taskId: task.id,
           currentCode: latestBundle?.htmlCode || '',
           responseData: snapshot.result || {},
+          orientation: this.normalizeRequestedOrientation(task.metadata?.orientation),
         });
       }
       return this.prisma.generationTask.findUnique({ where: { id: task.id } });
@@ -2524,7 +2720,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         ? await this.buildPromptBundleSnapshot('create', runtimeProfileHint)
         : null;
       const runtimeContract = pipelineVersion === 'v2'
-        ? await this.buildDefaultRuntimeContract('create', runtimeProfileHint)
+        ? await this.buildDefaultRuntimeContract('create', runtimeProfileHint, dto.orientation)
         : null;
       const { access, task } = await this.prisma.$transaction(async (tx) => {
         await this.markExpiredSubscriptions(tx, userId);
@@ -2603,6 +2799,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
             description,
             region: executionRegion,
             pipelineVersion,
+            orientation: dto.orientation ?? null,
           },
           client: tx,
         });
@@ -2637,6 +2834,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           {
             pipelineVersion,
             title,
+            orientation: dto.orientation,
             access,
             promptBundleSnapshot,
             runtimeContract,
@@ -2896,6 +3094,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     description: string;
     taskId?: string;
     responseData: Record<string, any>;
+    orientation?: CreateGameOrientation;
+    runtimeContract?: RuntimeContractPayload | null;
     allowFinalTaskRecovery?: boolean;
   }): Promise<void> {
     const {
@@ -2904,6 +3104,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       description,
       taskId,
       responseData,
+      orientation,
+      runtimeContract,
       allowFinalTaskRecovery = false,
     } = params;
     const {
@@ -2931,6 +3133,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     }
 
     const bundlePreviewUrl = this.buildPreviewUrl(gameId);
+    const coverUrl = await this.resolvePersistedCoverUrl({
+      taskId,
+      gameId,
+      version: 1,
+    });
     const htmlTitleMatch = htmlCode.match(/<title>([^<]{1,60})<\/title>/i);
     const aiTitle = htmlTitleMatch ? htmlTitleMatch[1].trim() : null;
     const gameTitle = (aiTitle && aiTitle.length > 2) ? aiTitle : this.deriveTitle(gameSpec, description);
@@ -2955,6 +3162,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         qaPassed,
         qaRetries,
         gameSpec,
+        ...this.buildPersistedOrientationMetadata({ orientation, runtimeContract }),
         genTimeMs,
         codeSizeBytes,
         qualityScore,
@@ -2967,6 +3175,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         status: 'draft',
         version: 1,
         gameType: gameSpec?.game_type || null,
+        ...(coverUrl ? { thumbnailUrl: coverUrl } : {}),
         qualityScore,
         failedStage: null,
         failedReason: null,
@@ -2992,6 +3201,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           generationTimeMs: genTimeMs,
           codeSizeBytes,
           qualityScore,
+          ...(coverUrl ? { coverGenerated: true } : {}),
           ...runtimeQaSummary,
         },
       });
@@ -3249,6 +3459,41 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     return this.parseArtifactPayload<Record<string, any>>(artifact);
   }
 
+  private async resolvePersistedCoverUrl(params: {
+    taskId?: string;
+    gameId: string;
+    version: number;
+  }): Promise<string | null> {
+    const { taskId, gameId, version } = params;
+    if (!taskId) {
+      return null;
+    }
+
+    const artifact = await this.generationTaskService.findLatestArtifactForTask(taskId, 'cover_image');
+    if (!artifact || artifact.gameId !== gameId) {
+      return null;
+    }
+
+    const truncated = Boolean(
+      artifact.metadata
+      && typeof artifact.metadata === 'object'
+      && !Array.isArray(artifact.metadata)
+      && (artifact.metadata as Record<string, unknown>).truncated,
+    );
+    if (truncated) {
+      return null;
+    }
+
+    if (typeof artifact.payloadText !== 'string' || !artifact.payloadText.trim()) {
+      return null;
+    }
+    if (typeof artifact.contentType !== 'string' || !artifact.contentType.startsWith('image/')) {
+      return null;
+    }
+
+    return this.buildCoverUrl(gameId, { taskId, version });
+  }
+
   private async assertTaskCanRecoverResult(
     taskId?: string,
     gameId?: string,
@@ -3320,6 +3565,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         description: String(task.metadata?.description || ''),
         taskId: task.id,
         responseData,
+        orientation: this.normalizeRequestedOrientation(task.metadata?.orientation),
         allowFinalTaskRecovery,
       });
     } else {
@@ -3334,6 +3580,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         taskId: task.id,
         currentCode: latestBundle?.htmlCode || '',
         responseData,
+        orientation: this.normalizeRequestedOrientation(task.metadata?.orientation),
         baseStatus: this.getIterationBaseStatus(task, currentGame),
         allowFinalTaskRecovery,
       });
@@ -3351,6 +3598,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     taskId?: string;
     currentCode: string;
     responseData: Record<string, any>;
+    orientation?: CreateGameOrientation;
+    runtimeContract?: RuntimeContractPayload | null;
     baseStatus?: GameStatus;
     allowFinalTaskRecovery?: boolean;
   }): Promise<void> {
@@ -3363,6 +3612,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       taskId,
       currentCode,
       responseData,
+      orientation,
+      runtimeContract,
       baseStatus,
       allowFinalTaskRecovery = false,
     } = params;
@@ -3388,6 +3639,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     }
 
     const bundlePreviewUrl = this.buildPreviewUrl(gameId);
+    const coverUrl = await this.resolvePersistedCoverUrl({
+      taskId,
+      gameId,
+      version: nextVersion,
+    });
     this.emitStage(userId, gameId, 'publishing', {
       stage: 'publishing',
       attempt: 1,
@@ -3405,6 +3661,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         feedback,
         iterationType,
         ...(gameSpec ? { gameSpec } : {}),
+        ...this.buildPersistedOrientationMetadata({ orientation, runtimeContract }),
         genTimeMs,
         qaRetries,
         iterationRetries,
@@ -3421,6 +3678,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         ...(baseStatus === GameStatus.published
           ? {}
           : (gameSpec?.game_type ? { gameType: gameSpec.game_type } : {})),
+        ...(coverUrl ? { thumbnailUrl: coverUrl } : {}),
         failedStage: null,
         failedReason: null,
         retryCount: 0,
@@ -3444,6 +3702,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           qaRetries,
           iterationRetries,
           version: nextVersion,
+          ...(coverUrl ? { coverGenerated: true } : {}),
           ...runtimeQaSummary,
         },
       });
@@ -3555,7 +3814,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         ? (options.promptBundleSnapshot ?? await this.buildPromptBundleSnapshot('create', runtimeProfileHint))
         : null;
       const runtimeContract = pipelineVersion === 'v2'
-        ? (options.runtimeContract ?? await this.buildDefaultRuntimeContract('create', runtimeProfileHint))
+        ? (options.runtimeContract ?? await this.buildDefaultRuntimeContract('create', runtimeProfileHint, options.orientation))
         : null;
       if (taskId) {
         await this.generationTaskService.markRunning(taskId!);
@@ -3575,6 +3834,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
             executionRegion: resolvedRegion,
             timeoutS: resolvedTimeoutS,
             taskId,
+            orientation: options.orientation,
             access: options.access,
             promptBundleSnapshot: promptBundleSnapshot!,
             runtimeContract: runtimeContract!,
@@ -3623,6 +3883,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         description,
         taskId,
         responseData: snapshot.result || {},
+        orientation: options.orientation,
+        runtimeContract,
       });
     } catch (error) {
       if (error instanceof TaskSupersededError) {
@@ -3649,7 +3911,10 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
             gameId,
             userId,
             taskType: GenerationTaskType.pipeline_run,
-            metadata: { description },
+            metadata: {
+              description,
+              orientation: options.orientation ?? null,
+            },
           },
         }).catch((recoveryError) => {
           this.logger.warn(
@@ -3693,7 +3958,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         ? (options.promptBundleSnapshot ?? await this.buildPromptBundleSnapshot('iterate', runtimeProfileHint))
         : null;
       const runtimeContract = pipelineVersion === 'v2'
-        ? (options.runtimeContract ?? await this.buildDefaultRuntimeContract('iterate', runtimeProfileHint))
+        ? (options.runtimeContract ?? await this.buildDefaultRuntimeContract('iterate', runtimeProfileHint, options.orientation))
         : null;
       if (taskId) {
         await this.generationTaskService.markRunning(taskId!);
@@ -3715,6 +3980,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
             timeoutS: resolvedTimeoutS,
             taskId,
             game: options.game,
+            orientation: options.orientation,
             sourceSpec: options.sourceSpec,
             sourceBundleContext: options.sourceBundleContext,
             promptBundleSnapshot: promptBundleSnapshot!,
@@ -3768,6 +4034,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         taskId,
         currentCode,
         responseData: snapshot.result || {},
+        orientation: options.orientation,
+        runtimeContract,
         baseStatus: taskId
           ? this.getIterationBaseStatus(
             await this.prisma.generationTask.findUnique({
@@ -3808,6 +4076,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
               feedback,
               conversation: conversationHistory,
               baseStatus: options.game?.status || null,
+              orientation: options.orientation ?? null,
             },
           },
         }).catch((recoveryError) => {
@@ -4297,6 +4566,81 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  async getGameCoverContent(
+    id: string,
+    options: { previewToken?: string; taskId?: string } = {},
+  ): Promise<{ buffer: Buffer; contentType: string; cacheControl: string }> {
+    try {
+      const game = await this.prisma.game.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          authorId: true,
+          status: true,
+          visibility: true,
+        },
+      });
+      if (!game) {
+        throw new NotFoundException('Game not found');
+      }
+
+      const hasPrivilegedPreviewAccess =
+        this.hasAdminPreviewAccess(game.id, options.previewToken)
+        || Boolean(this.resolveAuthorPreviewAccess(game, options.previewToken));
+
+      if (hasPrivilegedPreviewAccess) {
+        if (game.status === 'banned') {
+          throw new ForbiddenException('This game is unavailable');
+        }
+      } else {
+        this.assertPublicPreviewAllowed(game);
+      }
+
+      let artifact = null;
+      if (options.taskId) {
+        artifact = await this.generationTaskService.findLatestArtifactForTask(options.taskId, 'cover_image');
+        if (artifact && artifact.gameId !== id) {
+          artifact = null;
+        }
+      }
+      if (!artifact && !options.taskId) {
+        artifact = await this.generationTaskService.findLatestArtifactForGame(id, 'cover_image');
+      }
+
+      if (!artifact || artifact.gameId !== id) {
+        throw new NotFoundException('Game cover not found');
+      }
+
+      const truncated = Boolean(
+        artifact.metadata
+        && typeof artifact.metadata === 'object'
+        && !Array.isArray(artifact.metadata)
+        && (artifact.metadata as Record<string, unknown>).truncated,
+      );
+      if (truncated || typeof artifact.payloadText !== 'string' || !artifact.payloadText.trim()) {
+        throw new NotFoundException('Game cover not found');
+      }
+
+      const buffer = Buffer.from(artifact.payloadText, 'base64');
+      if (!buffer.length) {
+        throw new NotFoundException('Game cover not found');
+      }
+
+      return {
+        buffer,
+        contentType: typeof artifact.contentType === 'string' && artifact.contentType.startsWith('image/')
+          ? artifact.contentType
+          : 'image/jpeg',
+        cacheControl: options.previewToken
+          ? 'private, no-store'
+          : (options.taskId ? 'public, max-age=31536000, immutable' : 'public, max-age=300'),
+      };
+    } catch (error) {
+      this.logger.error(`Failed to get game cover: ${error.message}`);
+      throw error;
+    }
+  }
+
   async getPlayableHtml(id: string, userId: string): Promise<string> {
     try {
       const game = await this.prisma.game.findUnique({ where: { id } });
@@ -4533,6 +4877,10 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         const feedback = String(bundleVersion.metadata?.feedback || '').trim();
         return feedback ? [{ role: 'user', content: feedback }] : [];
       });
+      const requestedOrientation = this.extractBundleOrientation([
+        ...bundleHistory,
+        ...(bundle ? [bundle] : []),
+      ]);
       const sourceSpec = this.extractBundleGameSpec([
         ...bundleHistory,
         ...(bundle ? [bundle] : []),
@@ -4556,7 +4904,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         ? await this.buildPromptBundleSnapshot('iterate', this.inferRuntimeProfileHint(game.gameType, dto.feedback))
         : null;
       const runtimeContract = pipelineVersion === 'v2'
-        ? await this.buildDefaultRuntimeContract('iterate', this.inferRuntimeProfileHint(game.gameType, dto.feedback))
+        ? await this.buildDefaultRuntimeContract(
+          'iterate',
+          this.inferRuntimeProfileHint(game.gameType, dto.feedback),
+          requestedOrientation,
+        )
         : null;
       const baseStatus = this.getIterationBaseStatus(null, game);
       const inFlightStatus = this.getInFlightIterationStatus(baseStatus);
@@ -4605,6 +4957,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
             conversation: conversationHistory,
             baseStatus,
             pipelineVersion,
+            orientation: requestedOrientation ?? null,
           },
           client: tx,
         });
@@ -4625,6 +4978,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
             pipelineVersion,
             promptBundleSnapshot,
             runtimeContract,
+            orientation: requestedOrientation,
             game,
             sourceSpec,
             sourceBundleContext,

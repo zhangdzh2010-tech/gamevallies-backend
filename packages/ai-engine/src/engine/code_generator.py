@@ -20,7 +20,7 @@ from ..config.settings import settings
 from ..config.timeout_store import get_int as get_timeout_int
 from ..services.llm_client import LLMClient
 from .code_template_cache import CodeTemplateCache
-from .prompt_store import get_active_prompt_bundle, require_prompt
+from .prompt_store import get_active_prompt_bundle, get_runtime_profile, require_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -142,16 +142,12 @@ class CodeGenerator:
         self,
         spec: GameSpec,
         gdd: GDD,
-        template_id: Optional[str] = None,
-        confidence: float = 0.0,
         description: str = "",
-        allow_fallback: bool = True,
         runtime_contract: Optional[GameRuntimeContract] = None,
         runtime_profile: Optional[str] = None,
         prompt_bundle_snapshot: Optional[Dict[str, Any]] = None,
         budget_override: Optional[str] = None,
     ) -> GenerateCodeResult:
-        del template_id, confidence, allow_fallback
         if self.llm_mode != "real" or not self._client.is_enabled():
             raise RuntimeError("Real LLM mode is required for game generation")
 
@@ -209,8 +205,13 @@ class CodeGenerator:
             else ""
         )
         logic_generate_policy = self._resolved_bundle_prompt(prompt_bundle_snapshot, "logic_generate")
-        profile_few_shot = self._resolved_bundle_prompt(prompt_bundle_snapshot, "profile_few_shot")
+        profile_few_shot = self._resolve_profile_few_shot(
+            prompt_bundle_snapshot,
+            runtime_profile,
+            runtime_contract=runtime_contract,
+        )
         implementation_budget = self._build_implementation_budget_block(spec, request_text)
+        mechanic_diversity = self._build_mechanic_diversity_block(spec, request_text, runtime_profile)
         full_prompt = "\n\n".join(
             part
             for part in [
@@ -219,10 +220,11 @@ class CodeGenerator:
                 profile_few_shot,
                 structured_design,
                 self._build_critical_intent_block(spec, request_text),
+                mechanic_diversity,
                 self._build_ui_language_block(spec.ui_language),
                 self._build_runtime_contract_block(runtime_contract, runtime_profile, prompt_bundle_snapshot),
                 implementation_budget,
-                self._build_mobile_layout_guardrails(gdd),
+                self._build_mobile_layout_guardrails(gdd, runtime_contract),
                 require_prompt("prompt.platform_standard"),
             ]
             if part
@@ -234,7 +236,7 @@ class CodeGenerator:
         if enriched_block:
             full_prompt += "\n\n" + enriched_block
 
-        skeleton = self.template_cache.get_skeleton(spec.game_type, runtime_profile or "")
+        skeleton = self.template_cache.get_skeleton(spec, runtime_profile or "")
         if skeleton:
             full_prompt = (
                 "REFERENCE SKELETON (follow this HTML structure, replace game-specific content):\n"
@@ -418,6 +420,32 @@ class CodeGenerator:
             "- Do not silently fall back to English UI copy unless the visible UI language itself is English."
         )
 
+    @staticmethod
+    def _build_mechanic_diversity_block(
+        spec: GameSpec,
+        request_text: str,
+        runtime_profile: Optional[str],
+    ) -> str:
+        diversity_rules = [
+            rule for rule in (spec.special_rules or [])
+            if "distinctive gameplay loop" in rule.lower() or "avoid the stock" in rule.lower()
+        ]
+        if not diversity_rules:
+            return ""
+        prompt_lines = [
+            "MECHANIC DIVERSITY GOAL:",
+            "- Treat this brief as intentionally open-ended.",
+            "- Do not fall back to the most common stock implementation for the selected genre/profile unless the request explicitly requires it.",
+            "- Vary the objective loop, pacing, failure condition, and spatial structure while staying readable on mobile.",
+        ]
+        if runtime_profile in {"portrait_arcade", "topdown_action"}:
+            prompt_lines.append(
+                "- Prefer a more distinctive loop such as rescue, delivery, orbit control, area capture, chase, escort, or combo routing if it still fits the brief."
+            )
+        if request_text.strip():
+            prompt_lines.append(f"- Keep alignment with the user brief: {request_text.strip()[:160]}")
+        return "\n".join(prompt_lines + [f"- {rule}" for rule in diversity_rules])
+
     @classmethod
     def _looks_like_educational_request(cls, *texts: str) -> bool:
         combined = " ".join((text or "").strip().lower() for text in texts if (text or "").strip())
@@ -515,23 +543,82 @@ class CodeGenerator:
             labels = defaults.get(ui_language, defaults["en-US"])
         return ", ".join(f"{key}={value}" for key, value in labels.items())
 
-    def _build_mobile_layout_guardrails(self, gdd: GDD) -> str:
+    def _build_mobile_layout_guardrails(
+        self,
+        gdd: GDD,
+        runtime_contract: Optional[GameRuntimeContract] = None,
+    ) -> str:
         score_layout = gdd.ui_layout.get("score", {}) if isinstance(gdd.ui_layout, dict) else {}
         score_font = str(score_layout.get("font", "bold 16px Arial"))
         match = re.search(r"(\d+)", score_font)
         hud_font = int(match.group(1)) if match else 16
         hud_font = max(14, min(hud_font, 18))
+        orientation = self._resolve_layout_orientation(runtime_contract)
+        reference_label = self._layout_reference_label(orientation)
         prompt = require_prompt("prompt.mobile_layout_guardrails").format(
             canvas_w=gdd.canvas.width,
             canvas_h=gdd.canvas.height,
             hud_font=hud_font,
+            reference_orientation=reference_label,
+            orientation_label=reference_label,
         )
+        prompt = self._rewrite_layout_prompt_for_orientation(prompt, orientation)
         supplement = (
             "MOBILE LAYOUT CONTRACT SUPPLEMENT\n"
-            f"- Keep the reference playfield portrait-first at {gdd.canvas.width}x{gdd.canvas.height}.\n"
+            f"- Keep the reference playfield {reference_label} at {gdd.canvas.width}x{gdd.canvas.height}.\n"
             "- Add a resize or orientation-change handler that reads both viewport width and viewport height.\n"
-            "- Compute scaleX and scaleY from the viewport against the portrait reference size.\n"
+            "- Compute scaleX and scaleY from the viewport against the reference size.\n"
             "- Derive uiScale from Math.min(scaleX, scaleY) or an equivalent short-edge fit, then center the canvas."
+        )
+        return "\n".join([prompt, supplement])
+
+    @staticmethod
+    def _resolve_layout_orientation(runtime_contract: Optional[GameRuntimeContract]) -> str:
+        orientation = (
+            runtime_contract.mobile_layout.orientation
+            if runtime_contract and runtime_contract.mobile_layout
+            else "portrait_first"
+        )
+        return "landscape_first" if orientation == "landscape_first" else "portrait_first"
+
+    @staticmethod
+    def _layout_reference_label(orientation: str) -> str:
+        return "landscape-first" if orientation == "landscape_first" else "portrait-first"
+
+    @staticmethod
+    def _rewrite_layout_prompt_for_orientation(prompt: str, orientation: str) -> str:
+        if orientation != "landscape_first":
+            return prompt
+        replacements = (
+            ("portrait-first", "landscape-first"),
+            ("portrait first", "landscape first"),
+            ("portrait reference playfield", "landscape reference playfield"),
+            ("portrait reference size", "landscape reference size"),
+            ("portrait reference", "landscape reference"),
+            ("portrait layout", "landscape layout"),
+            ("portrait sizing", "landscape sizing"),
+        )
+        updated = prompt
+        for source, target in replacements:
+            updated = updated.replace(source, target)
+        return updated
+
+    def _build_iteration_mobile_layout_guardrails(
+        self,
+        runtime_contract: Optional[GameRuntimeContract] = None,
+    ) -> str:
+        orientation = self._resolve_layout_orientation(runtime_contract)
+        reference_label = self._layout_reference_label(orientation)
+        prompt = require_prompt("prompt.iteration_mobile_layout_guardrails").format(
+            reference_orientation=reference_label,
+            orientation_label=reference_label,
+        )
+        prompt = self._rewrite_layout_prompt_for_orientation(prompt, orientation)
+        supplement = (
+            "MOBILE LAYOUT CONTRACT SUPPLEMENT\n"
+            f"- Preserve {reference_label} sizing during iteration.\n"
+            "- Read both viewport width and viewport height inside resize logic.\n"
+            "- Compute scaleX and scaleY, then derive uiScale from Math.min(scaleX, scaleY) or an equivalent short-edge fit."
         )
         return "\n".join([prompt, supplement])
 
@@ -612,6 +699,52 @@ class CodeGenerator:
         if isinstance(entry, str):
             return entry.strip()
         return ""
+
+    @classmethod
+    def _resolve_profile_few_shot(
+        cls,
+        prompt_bundle_snapshot: Optional[Dict[str, Any]],
+        runtime_profile: Optional[str],
+        *,
+        runtime_contract: Optional[GameRuntimeContract] = None,
+    ) -> str:
+        prompt = ""
+        profile_id = (runtime_profile or "").strip()
+        if profile_id:
+            profile = get_runtime_profile(profile_id)
+            if isinstance(profile, dict):
+                prompt = str(profile.get("few_shot_prompt") or "").strip()
+        if not prompt:
+            prompt = cls._resolved_bundle_prompt(prompt_bundle_snapshot, "profile_few_shot")
+        orientation = cls._resolve_layout_orientation(runtime_contract)
+        return cls._rewrite_profile_few_shot_for_orientation(prompt, orientation)
+
+    @classmethod
+    def _rewrite_profile_few_shot_for_orientation(cls, prompt: str, orientation: str) -> str:
+        normalized = (prompt or "").strip()
+        if not normalized:
+            return ""
+        if orientation != "landscape_first":
+            return normalized
+
+        replacements = (
+            ("centered portrait canvas", "centered landscape canvas"),
+            ("portrait canvas", "landscape canvas"),
+            ("portrait playfield", "landscape playfield"),
+            ("portrait-first", "landscape-first"),
+            ("portrait first", "landscape first"),
+            ("portrait", "landscape"),
+        )
+        updated = normalized
+        for source, target in replacements:
+            updated = updated.replace(source, target)
+
+        if "landscape" not in updated.lower():
+            updated += (
+                " Adapt the same interaction model to a landscape-first playfield, "
+                "wider camera framing, and side-friendly HUD placement."
+            )
+        return updated
 
     def _build_system_prompt(self, prompt_bundle_snapshot: Optional[Dict[str, Any]]) -> str:
         sections = [
@@ -706,14 +839,12 @@ class CodeGenerator:
         current_code: str,
         feedback: str,
         conversation: List[dict],
-        allow_fallback: bool = True,
         runtime_contract: Optional[GameRuntimeContract] = None,
         runtime_profile: Optional[str] = None,
         prompt_bundle_snapshot: Optional[Dict[str, Any]] = None,
         game_spec: Optional[GameSpec] = None,
         source_bundle_context: Optional[SourceBundleContext] = None,
     ) -> Tuple[str, IterationType]:
-        del allow_fallback
         if self.llm_mode != "real" or not self._client.is_enabled():
             raise RuntimeError("Real LLM mode is required for game iteration")
 
@@ -813,15 +944,7 @@ class CodeGenerator:
             f"{item.get('role', 'user')}: {item.get('content', '')}"
             for item in conversation[-4:]
         )
-        mobile_guardrails = "\n".join([
-            require_prompt("prompt.iteration_mobile_layout_guardrails"),
-            (
-                "MOBILE LAYOUT CONTRACT SUPPLEMENT\n"
-                "- Preserve portrait-first sizing during iteration.\n"
-                "- Read both viewport width and viewport height inside resize logic.\n"
-                "- Compute scaleX and scaleY, then derive uiScale from Math.min(scaleX, scaleY) or an equivalent short-edge fit."
-            ),
-        ])
+        mobile_guardrails = self._build_iteration_mobile_layout_guardrails(runtime_contract)
 
         if iter_type == IterationType.param_adjust:
             prompt = require_prompt("prompt.param_adjust").format(
@@ -850,7 +973,11 @@ class CodeGenerator:
         spec_block = self._build_critical_intent_block(game_spec, feedback) if game_spec else ""
         source_context_block = self._build_source_bundle_context_block(source_bundle_context)
         logic_generate_policy = self._resolved_bundle_prompt(prompt_bundle_snapshot, "logic_generate")
-        profile_few_shot = self._resolved_bundle_prompt(prompt_bundle_snapshot, "profile_few_shot")
+        profile_few_shot = self._resolve_profile_few_shot(
+            prompt_bundle_snapshot,
+            runtime_profile,
+            runtime_contract=runtime_contract,
+        )
         prompt = "\n\n".join(
             part
             for part in [
