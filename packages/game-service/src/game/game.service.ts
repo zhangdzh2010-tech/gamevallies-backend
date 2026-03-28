@@ -1280,6 +1280,80 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     return coverUrl.toString();
   }
 
+  private extractPersistedCoverUrl(metadata: unknown): string | null {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      return null;
+    }
+
+    const rawCoverUrl = (metadata as Record<string, unknown>).coverUrl
+      ?? (metadata as Record<string, unknown>).cover_url;
+    return typeof rawCoverUrl === 'string' && rawCoverUrl.trim()
+      ? rawCoverUrl.trim()
+      : null;
+  }
+
+  private extractCoverTaskIdFromUrl(gameId: string, coverUrl?: string | null): string | null {
+    if (typeof coverUrl !== 'string' || !coverUrl.trim()) {
+      return null;
+    }
+
+    try {
+      const parsed = new URL(coverUrl, this.getPublicBaseUrl());
+      if (!parsed.pathname.endsWith(`/games/${gameId}/cover`)) {
+        return null;
+      }
+      const taskId = parsed.searchParams.get('taskId');
+      return typeof taskId === 'string' && taskId.trim() ? taskId.trim() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private extractPersistedCoverTaskId(gameId: string, metadata: unknown): string | null {
+    if (metadata && typeof metadata === 'object' && !Array.isArray(metadata)) {
+      const rawTaskId = (metadata as Record<string, unknown>).coverTaskId
+        ?? (metadata as Record<string, unknown>).cover_task_id;
+      if (typeof rawTaskId === 'string' && rawTaskId.trim()) {
+        return rawTaskId.trim();
+      }
+    }
+
+    return this.extractCoverTaskIdFromUrl(gameId, this.extractPersistedCoverUrl(metadata));
+  }
+
+  private buildPersistedCoverMetadata(params: {
+    gameId: string;
+    coverUrl?: string | null;
+    taskId?: string;
+  }): Record<string, unknown> {
+    const persistedCoverUrl = typeof params.coverUrl === 'string' && params.coverUrl.trim()
+      ? params.coverUrl.trim()
+      : null;
+    const persistedCoverTaskId = typeof params.taskId === 'string' && params.taskId.trim()
+      ? params.taskId.trim()
+      : this.extractCoverTaskIdFromUrl(params.gameId, persistedCoverUrl);
+
+    return {
+      ...(persistedCoverUrl ? { coverUrl: persistedCoverUrl } : {}),
+      ...(persistedCoverTaskId ? { coverTaskId: persistedCoverTaskId } : {}),
+    };
+  }
+
+  private resolvePersistedCoverUrlForBundle(
+    gameId: string,
+    bundle?: { version?: number | string | null; metadata?: unknown } | null,
+  ): string | null {
+    const coverTaskId = this.extractPersistedCoverTaskId(gameId, bundle?.metadata);
+    if (coverTaskId) {
+      return this.buildCoverUrl(gameId, {
+        taskId: coverTaskId,
+        version: bundle?.version ?? undefined,
+      });
+    }
+
+    return this.extractPersistedCoverUrl(bundle?.metadata);
+  }
+
   private resolvePreviewTokenTtlSeconds(): number {
     const raw = Number.parseInt(this.configService.get<string>('GAME_PREVIEW_TOKEN_TTL_S', '2592000'), 10);
     return Number.isFinite(raw) && raw > 0 ? raw : 2_592_000;
@@ -3163,6 +3237,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         qaRetries,
         gameSpec,
         ...this.buildPersistedOrientationMetadata({ orientation, runtimeContract }),
+        ...this.buildPersistedCoverMetadata({ gameId, coverUrl, taskId }),
         genTimeMs,
         codeSizeBytes,
         qualityScore,
@@ -3662,6 +3737,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         iterationType,
         ...(gameSpec ? { gameSpec } : {}),
         ...this.buildPersistedOrientationMetadata({ orientation, runtimeContract }),
+        ...this.buildPersistedCoverMetadata({ gameId, coverUrl, taskId }),
         genTimeMs,
         qaRetries,
         iterationRetries,
@@ -3678,7 +3754,9 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         ...(baseStatus === GameStatus.published
           ? {}
           : (gameSpec?.game_type ? { gameType: gameSpec.game_type } : {})),
-        ...(coverUrl ? { thumbnailUrl: coverUrl } : {}),
+        ...(baseStatus === GameStatus.published
+          ? {}
+          : (coverUrl ? { thumbnailUrl: coverUrl } : {})),
         failedStage: null,
         failedReason: null,
         retryCount: 0,
@@ -4578,6 +4656,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           authorId: true,
           status: true,
           visibility: true,
+          version: true,
+          thumbnailUrl: true,
         },
       });
       if (!game) {
@@ -4597,13 +4677,26 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       }
 
       let artifact = null;
-      if (options.taskId) {
-        artifact = await this.generationTaskService.findLatestArtifactForTask(options.taskId, 'cover_image');
+      const explicitTaskId = typeof options.taskId === 'string' && options.taskId.trim()
+        ? options.taskId.trim()
+        : null;
+      let artifactTaskId = explicitTaskId;
+
+      if (!artifactTaskId) {
+        const bundle = await this.loadBundleForGame(game, {
+          preferLiveVersion: !hasPrivilegedPreviewAccess,
+        });
+        artifactTaskId = this.extractPersistedCoverTaskId(id, bundle?.metadata)
+          ?? this.extractCoverTaskIdFromUrl(id, game.thumbnailUrl);
+      }
+
+      if (artifactTaskId) {
+        artifact = await this.generationTaskService.findLatestArtifactForTask(artifactTaskId, 'cover_image');
         if (artifact && artifact.gameId !== id) {
           artifact = null;
         }
       }
-      if (!artifact && !options.taskId) {
+      if (!artifact && !artifactTaskId && hasPrivilegedPreviewAccess) {
         artifact = await this.generationTaskService.findLatestArtifactForGame(id, 'cover_image');
       }
 
@@ -4633,7 +4726,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           : 'image/jpeg',
         cacheControl: options.previewToken
           ? 'private, no-store'
-          : (options.taskId ? 'public, max-age=31536000, immutable' : 'public, max-age=300'),
+          : (explicitTaskId ? 'public, max-age=31536000, immutable' : 'public, max-age=300'),
       };
     } catch (error) {
       this.logger.error(`Failed to get game cover: ${error.message}`);
@@ -4765,6 +4858,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         : Number.isFinite(game.version) && Number(game.version) > 0
           ? Number(game.version)
           : 1;
+      const promotedCoverUrl = this.resolvePersistedCoverUrlForBundle(id, bundle);
 
       const publishedGame = await this.prisma.game.update({
         where: { id },
@@ -4774,6 +4868,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           tags: dto.tags ?? game.tags ?? [],
           gameType: dto.gameType || game.gameType,
           version: liveVersion,
+          ...(promotedCoverUrl ? { thumbnailUrl: promotedCoverUrl } : {}),
           status: 'published',
           visibility: publishVisibility,
           publishedAt: new Date(),

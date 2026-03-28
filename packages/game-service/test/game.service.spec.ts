@@ -1958,6 +1958,50 @@ describe('GameService', () => {
     expect(cover.buffer.toString()).toBe('fake-image');
   });
 
+  it('serves the live bundle cover artifact instead of the newest game artifact for public cover requests', async () => {
+    prisma.game.findUnique.mockResolvedValue({
+      id: 'game-cover-live',
+      authorId: 'user-cover-live',
+      status: 'published',
+      visibility: 'public',
+      version: 2,
+      thumbnailUrl: 'https://gamevallies.com/games/game-cover-live/cover?taskId=task-old&v=1',
+    });
+    bundleService.getBundle.mockResolvedValue({
+      gameId: 'game-cover-live',
+      version: 2,
+      htmlCode: '<!DOCTYPE html><html><body>live</body></html>',
+      metadata: {
+        coverTaskId: 'task-live',
+        coverUrl: 'https://gamevallies.com/games/game-cover-live/cover?taskId=task-live&v=2',
+      },
+    });
+    generationTaskService.findLatestArtifactForTask.mockImplementation(async (taskId: string) => (
+      taskId === 'task-live'
+        ? {
+            gameId: 'game-cover-live',
+            contentType: 'image/jpeg',
+            payloadText: Buffer.from('live-cover').toString('base64'),
+            metadata: { encoding: 'base64', truncated: false },
+          }
+        : null
+    ));
+    generationTaskService.findLatestArtifactForGame.mockResolvedValue({
+      gameId: 'game-cover-live',
+      contentType: 'image/jpeg',
+      payloadText: Buffer.from('candidate-cover').toString('base64'),
+      metadata: { encoding: 'base64', truncated: false },
+    });
+
+    const cover = await service.getGameCoverContent('game-cover-live');
+
+    expect(cover.buffer.toString()).toBe('live-cover');
+    expect(cover.cacheControl).toBe('public, max-age=300');
+    expect(bundleService.getBundle).toHaveBeenCalledWith('game-cover-live', 2);
+    expect(generationTaskService.findLatestArtifactForTask).toHaveBeenCalledWith('task-live', 'cover_image');
+    expect(generationTaskService.findLatestArtifactForGame).not.toHaveBeenCalled();
+  });
+
   it('supports the published v2 iterate journey with live version promotion on publish', async () => {
     let gameState: any = {
       id: 'game-v2-journey-iter',
@@ -2593,6 +2637,47 @@ describe('GameService', () => {
     }));
   });
 
+  it('updates thumbnailUrl to the promoted bundle cover when the author publishes a newer version', async () => {
+    prisma.game.findUnique.mockResolvedValue({
+      id: 'game-republish-cover',
+      authorId: 'user-publish',
+      status: 'published',
+      visibility: 'public',
+      version: 2,
+      thumbnailUrl: 'https://gamevallies.com/games/game-republish-cover/cover?taskId=task-old&v=2',
+      forkedFrom: null,
+      title: 'Published Game',
+      description: 'Published description',
+      tags: ['runner'],
+      gameType: 'runner',
+    });
+    prisma.generationTask.findFirst.mockResolvedValue(null);
+    bundleService.getLatestBundle.mockResolvedValue({
+      gameId: 'game-republish-cover',
+      version: 3,
+      htmlCode: '<!DOCTYPE html><html><body>candidate</body></html>',
+      metadata: {
+        coverTaskId: 'task-new',
+        coverUrl: 'https://gamevallies.com/games/game-republish-cover/cover?taskId=task-new&v=3',
+      },
+    });
+    prisma.game.update.mockResolvedValue({
+      id: 'game-republish-cover',
+      author: { id: 'user-publish', username: 'publisher', avatarUrl: '' },
+    });
+
+    await service.publish('game-republish-cover', 'user-publish', {} as any);
+
+    expect(prisma.game.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'game-republish-cover' },
+      data: expect.objectContaining({
+        version: 3,
+        thumbnailUrl: 'https://gamevallies.com/games/game-republish-cover/cover?taskId=task-new&v=3',
+        status: 'published',
+      }),
+    }));
+  });
+
   it('rejects iteration when the source game has no playable bundle', async () => {
     prisma.game.findUnique.mockResolvedValue({
       id: 'game-no-bundle',
@@ -2931,6 +3016,12 @@ describe('GameService', () => {
     const assertTaskCanPersistResultSpy = jest
       .spyOn(service as any, 'assertTaskCanPersistResult')
       .mockResolvedValue(undefined);
+    generationTaskService.findLatestArtifactForTask.mockResolvedValue({
+      gameId: 'game-published-live',
+      contentType: 'image/jpeg',
+      payloadText: 'ZmFrZS1pbWFnZS1kYXRh',
+      metadata: { encoding: 'base64', truncated: false },
+    });
 
     await (service as any).completeIterationTask({
       gameId: 'game-published-live',
@@ -2964,6 +3055,11 @@ describe('GameService', () => {
     const persistCall = persistGeneratedGameResultSpy.mock.calls[0]?.[0] as any;
     expect(persistCall.updateData.version).toBeUndefined();
     expect(persistCall.updateData.gameType).toBeUndefined();
+    expect(persistCall.updateData.thumbnailUrl).toBeUndefined();
+    expect(persistCall.metadata.coverUrl).toBe(
+      'https://gamevallies.com/games/game-published-live/cover?taskId=task-published-live&v=3',
+    );
+    expect(persistCall.metadata.coverTaskId).toBe('task-published-live');
     assertTaskCanPersistResultSpy.mockRestore();
     persistGeneratedGameResultSpy.mockRestore();
   });

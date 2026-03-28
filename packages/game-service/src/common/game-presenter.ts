@@ -40,7 +40,12 @@ function normalizeAssetUrl(gameId: string, assetUrl: string | undefined, fallbac
 
   try {
     const parsed = new URL(assetUrl);
-    return `${baseUrl}${parsed.pathname}${parsed.search}`;
+    const baseOrigin = new URL(baseUrl).origin;
+    const isLocalCoverPath = parsed.pathname.endsWith(`/games/${gameId}/cover`);
+    if (parsed.origin === baseOrigin || isLocalCoverPath) {
+      return `${baseUrl}${parsed.pathname}${parsed.search}`;
+    }
+    return assetUrl;
   } catch {
     if (assetUrl.startsWith('/')) {
       return `${baseUrl}${assetUrl}`;
