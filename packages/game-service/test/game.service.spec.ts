@@ -123,6 +123,7 @@ describe('GameService', () => {
       markSucceeded: jest.fn(async () => undefined),
       markFailed: jest.fn(async () => undefined),
       findLatestArtifactForTask: jest.fn(),
+      findLatestArtifactForGame: jest.fn(),
       getLatestTaskForGame: jest.fn(),
       getTaskForUser: jest.fn(),
       listTaskEvents: jest.fn(),
@@ -842,6 +843,115 @@ describe('GameService', () => {
     executePipelineTaskSpy.mockRestore();
   });
 
+  it('passes the requested landscape orientation into v2 creation tasks', async () => {
+    (configService.get as jest.Mock).mockImplementation((key: string, defaultValue?: string) => {
+      const values: Record<string, string> = {
+        AI_ENGINE_URL: 'http://ai-engine.test',
+        PUBLIC_API_BASE_URL: 'https://gamevallies.com',
+        APP_URL: 'https://gamevallies.com',
+        ADMIN_TOKEN: 'test-admin-token',
+        PIPELINE_VERSION: 'v2',
+        PIPELINE_V2_ENTRYPOINTS: 'create,iterate',
+      };
+      return values[key] ?? defaultValue;
+    });
+    const executePipelineTaskSpy = jest
+      .spyOn(service as any, 'executePipelineTask')
+      .mockResolvedValue(undefined);
+
+    prisma.userSubscription.updateMany.mockResolvedValue({ count: 0 });
+    prisma.userQuota.upsert.mockResolvedValue({
+      userId: 'user-v2-landscape',
+      totalFreeQuota: 5,
+      usedFreeQuota: 0,
+    });
+    prisma.userSubscription.findFirst.mockResolvedValue(null);
+    prisma.userQuota.update.mockResolvedValue({
+      userId: 'user-v2-landscape',
+      totalFreeQuota: 5,
+      usedFreeQuota: 1,
+    });
+    prisma.game.create.mockResolvedValue({ id: 'game-v2-landscape' });
+
+    await service.create('user-v2-landscape', {
+      description: 'make a wide runner game',
+      orientation: 'landscape',
+    } as any);
+
+    expect(generationTaskService.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({
+        orientation: 'landscape',
+      }),
+    }));
+
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(executePipelineTaskSpy).toHaveBeenCalledWith(
+      expect.any(String),
+      'user-v2-landscape',
+      'make a wide runner game',
+      expect.any(Number),
+      expect.any(String),
+      expect.any(String),
+      expect.objectContaining({
+        orientation: 'landscape',
+        runtimeContract: expect.objectContaining({
+          canvas: expect.objectContaining({
+            orientation: 'landscape_first',
+          }),
+          mobile_layout: expect.objectContaining({
+            orientation: 'landscape_first',
+          }),
+          metadata: expect.objectContaining({
+            requested_orientation: 'landscape',
+            orientation: 'landscape_first',
+          }),
+        }),
+      }),
+    );
+    executePipelineTaskSpy.mockRestore();
+  });
+
+  it('persists requested and runtime orientation in bundle metadata for completed create tasks', async () => {
+    prisma.game.findUnique
+      .mockResolvedValueOnce({ title: 'Game abcdef12' })
+      .mockResolvedValueOnce({ version: 0, status: 'generating' });
+    bundleService.getBundle.mockResolvedValue(null);
+    bundleService.saveBundle.mockResolvedValue({});
+
+    await (service as any).completePipelineTask({
+      gameId: 'game-orientation-meta',
+      userId: 'user-orientation-meta',
+      description: 'make a wide runner game',
+      orientation: 'landscape',
+      runtimeContract: {
+        version: '1.0',
+        runtime_profile: 'lane_runner',
+        metadata: {
+          orientation: 'landscape_first',
+        },
+        canvas: {
+          orientation: 'landscape_first',
+        },
+        mobile_layout: {
+          orientation: 'landscape_first',
+        },
+      },
+      responseData: {
+        html_code: '<!DOCTYPE html><html><head><title>Wide Runner</title></head><body></body></html>',
+        game_spec: {
+          game_type: 'runner',
+        },
+      },
+    });
+
+    expect(bundleService.saveBundle).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({
+        requestedOrientation: 'landscape',
+        runtimeOrientation: 'landscape_first',
+      }),
+    }));
+  });
+
   it('clamps v2 create timeouts to at least 1200 seconds', async () => {
     (configService.get as jest.Mock).mockImplementation((key: string, defaultValue?: string) => {
       const values: Record<string, string> = {
@@ -1020,6 +1130,7 @@ describe('GameService', () => {
       {
         pipelineVersion: 'v2',
         title: 'V2 Runner',
+        orientation: 'landscape',
         access: {
           canPlay: true,
           requireSubscription: false,
@@ -1039,6 +1150,9 @@ describe('GameService', () => {
           entrypoint: 'create',
           pipeline_version: 'v2',
           region: 'cn_shanghai',
+          metadata: expect.objectContaining({
+            orientation: 'landscape',
+          }),
         }),
         entitlement: expect.objectContaining({
           can_play: true,
@@ -1057,6 +1171,18 @@ describe('GameService', () => {
         }),
         runtime_contract: expect.objectContaining({
           runtime_profile: 'lane_runner',
+          canvas: expect.objectContaining({
+            orientation: 'landscape_first',
+          }),
+          mobile_layout: expect.objectContaining({
+            orientation: 'landscape_first',
+          }),
+        }),
+        normalized_request: expect.objectContaining({
+          orientation: 'landscape',
+        }),
+        metadata: expect.objectContaining({
+          orientation: 'landscape',
         }),
       }),
       expect.objectContaining({
@@ -1469,6 +1595,20 @@ describe('GameService', () => {
       'cn_shanghai',
       {
         pipelineVersion: 'v2',
+        orientation: 'landscape',
+        runtimeContract: {
+          version: '1.0',
+          runtime_profile: 'lane_runner',
+          metadata: {
+            orientation: 'landscape_first',
+          },
+          canvas: {
+            orientation: 'landscape_first',
+          },
+          mobile_layout: {
+            orientation: 'landscape_first',
+          },
+        },
         game: {
           status: 'published',
           visibility: 'public',
@@ -1502,6 +1642,20 @@ describe('GameService', () => {
         request_context: expect.objectContaining({
           entrypoint: 'iterate',
           pipeline_version: 'v2',
+          metadata: expect.objectContaining({
+            orientation: 'landscape',
+          }),
+        }),
+        runtime_contract: expect.objectContaining({
+          mobile_layout: expect.objectContaining({
+            orientation: 'landscape_first',
+          }),
+        }),
+        normalized_request: expect.objectContaining({
+          orientation: 'landscape',
+        }),
+        metadata: expect.objectContaining({
+          orientation: 'landscape',
         }),
       }),
       expect.objectContaining({
@@ -1692,6 +1846,116 @@ describe('GameService', () => {
     expect(gameState.status).toBe('published');
     expect(gameState.visibility).toBe('public');
     expect(gameState.version).toBe(1);
+  });
+
+  it('persists a versioned cover url when create completion has a stored cover artifact', async () => {
+    let gameState: any = {
+      id: 'game-cover-create',
+      title: 'Game abcdef12',
+      authorId: 'user-cover-create',
+      status: 'generating',
+      version: 0,
+    };
+
+    prisma.generationTask.findUnique.mockImplementation(({ where, select }: any) => {
+      if (where?.id !== 'task-cover-create') {
+        return Promise.resolve(null);
+      }
+      if (select?.cancelRequested) {
+        return Promise.resolve({
+          status: 'running',
+          cancelRequested: false,
+          gameId: 'game-cover-create',
+        });
+      }
+      return Promise.resolve({ status: 'running' });
+    });
+    prisma.game.findUnique.mockImplementation(({ where, select }: any) => {
+      if (where?.id !== 'game-cover-create') {
+        return Promise.resolve(null);
+      }
+      if (select) {
+        const projection: any = {};
+        Object.keys(select).forEach((key) => {
+          projection[key] = gameState[key];
+        });
+        return Promise.resolve(projection);
+      }
+      return Promise.resolve({ ...gameState });
+    });
+    prisma.game.updateMany.mockImplementation(({ where, data }: any) => {
+      if (where?.id === gameState.id) {
+        gameState = { ...gameState, ...data };
+        return Promise.resolve({ count: 1 });
+      }
+      return Promise.resolve({ count: 0 });
+    });
+    bundleService.getBundle.mockResolvedValue(null);
+    bundleService.saveBundle.mockResolvedValue(undefined);
+    generationTaskService.findLatestArtifactForTask.mockResolvedValue({
+      gameId: 'game-cover-create',
+      contentType: 'image/jpeg',
+      payloadText: 'ZmFrZS1pbWFnZS1kYXRh',
+      metadata: { encoding: 'base64', truncated: false },
+    });
+
+    await (service as any).completePipelineTask({
+      gameId: 'game-cover-create',
+      userId: 'user-cover-create',
+      description: 'make a tiny arcade game',
+      taskId: 'task-cover-create',
+      responseData: {
+        html_code: '<!DOCTYPE html><html><head><title>Cover Create</title></head><body>cover</body></html>',
+        strategy: 'llm',
+        qa_passed: true,
+        qa_retries: 0,
+        game_spec: { game_type: 'runner' },
+        generation_time_ms: 1200,
+        code_size_bytes: 100,
+        quality_score: 88,
+        quality_breakdown: {},
+      },
+    });
+
+    expect(gameState.thumbnailUrl).toBe(
+      'https://gamevallies.com/games/game-cover-create/cover?taskId=task-cover-create&v=1',
+    );
+    expect(generationTaskService.markSucceeded).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'task-cover-create',
+      resultSummary: expect.objectContaining({
+        coverGenerated: true,
+      }),
+    }));
+  });
+
+  it('serves stored cover images for author preview tokens on draft games', async () => {
+    const previewToken = Buffer.from(JSON.stringify({
+      type: 'game_preview',
+      sub: 'user-cover-preview',
+      gameId: 'game-cover-preview',
+    }), 'utf8').toString('base64url');
+
+    prisma.game.findUnique.mockResolvedValue({
+      id: 'game-cover-preview',
+      authorId: 'user-cover-preview',
+      status: 'draft',
+      visibility: 'private',
+    });
+    generationTaskService.findLatestArtifactForTask.mockResolvedValue({
+      gameId: 'game-cover-preview',
+      contentType: 'image/jpeg',
+      payloadText: Buffer.from('fake-image').toString('base64'),
+      metadata: { encoding: 'base64', truncated: false },
+    });
+
+    const cover = await service.getGameCoverContent('game-cover-preview', {
+      previewToken,
+      taskId: 'task-cover-preview',
+    });
+
+    expect(cover.contentType).toBe('image/jpeg');
+    expect(cover.cacheControl).toBe('private, no-store');
+    expect(cover.buffer.toString()).toBe('fake-image');
   });
 
   it('supports the published v2 iterate journey with live version promotion on publish', async () => {
@@ -2471,6 +2735,87 @@ describe('GameService', () => {
           latest_game_type: 'runner',
           latest_feedback: '把障碍再清楚一些',
           recent_revisions: expect.any(Array),
+        }),
+      }),
+    );
+    executeIterationTaskSpy.mockRestore();
+    jest.useRealTimers();
+  });
+
+  it('inherits persisted landscape orientation when scheduling v2 iteration', async () => {
+    jest.useFakeTimers();
+    const executeIterationTaskSpy = jest
+      .spyOn(service as any, 'executeIterationTask')
+      .mockResolvedValue(undefined);
+
+    prisma.game.findUnique.mockResolvedValue({
+      id: 'game-landscape-iter',
+      authorId: 'user-landscape-iter',
+      title: 'Wide Runner',
+      gameType: 'runner',
+      version: 2,
+      status: 'draft',
+      updatedAt: new Date('2026-03-23T10:00:00.000Z'),
+    });
+    prisma.generationTask.findFirst.mockResolvedValue(null);
+    bundleService.getLatestBundle.mockResolvedValue({
+      version: 2,
+      htmlCode: '<!DOCTYPE html><html><head><title>Wide Runner</title></head><body>old</body></html>',
+      metadata: {
+        requestedOrientation: 'landscape',
+        runtimeOrientation: 'landscape_first',
+        gameSpec: {
+          game_type: 'runner',
+        },
+      },
+    });
+    bundleService.getBundleHistory.mockResolvedValue([
+      {
+        version: 1,
+        createdAt: new Date('2026-03-22T10:00:00.000Z'),
+        metadata: {
+          requestedOrientation: 'landscape',
+          runtimeOrientation: 'landscape_first',
+          gameSpec: {
+            game_type: 'runner',
+          },
+        },
+      },
+    ]);
+    generationTaskService.getLatestTaskForGame.mockResolvedValue(null);
+
+    await service.iterate('game-landscape-iter', 'user-landscape-iter', {
+      feedback: 'add wider lanes and co-op hazards',
+    } as any);
+
+    jest.runOnlyPendingTimers();
+    expect(generationTaskService.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({
+        orientation: 'landscape',
+      }),
+    }));
+    expect(executeIterationTaskSpy).toHaveBeenCalledWith(
+      'game-landscape-iter',
+      'user-landscape-iter',
+      'add wider lanes and co-op hazards',
+      3,
+      expect.any(Array),
+      expect.stringContaining('<title>Wide Runner</title>'),
+      expect.any(Number),
+      expect.any(String),
+      expect.any(String),
+      expect.objectContaining({
+        orientation: 'landscape',
+        runtimeContract: expect.objectContaining({
+          canvas: expect.objectContaining({
+            orientation: 'landscape_first',
+          }),
+          mobile_layout: expect.objectContaining({
+            orientation: 'landscape_first',
+          }),
+        }),
+        sourceBundleContext: expect.objectContaining({
+          latest_orientation: 'landscape',
         }),
       }),
     );

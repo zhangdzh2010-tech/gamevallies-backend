@@ -29,7 +29,7 @@ from ..api.models import GameRuntimeContract, GameSpec, QACheckError, QACheckRes
 from ..config.settings import settings
 from ..config.timeout_store import get_int as get_timeout_int
 from ..services.llm_client import LLMClient, LLMResponseTruncatedError
-from .mobile_layout import MOBILE_LAYOUT_BRIDGE_MARKER, has_portrait_short_edge_scaling
+from .mobile_layout import MOBILE_LAYOUT_BRIDGE_MARKER, has_short_edge_scaling
 from .prompt_store import require_prompt
 from .restart_entry import has_restart_entry
 from .scoring_loop import has_visible_scoring_loop
@@ -337,8 +337,14 @@ class QAPipeline:
             instructions.append(normalized if normalized.startswith("-") else f"- {normalized}")
 
     @staticmethod
-    def _build_targeted_fix_instructions(errors: List[QACheckError]) -> str:
+    def _build_targeted_fix_instructions(
+        errors: List[QACheckError],
+        runtime_contract: Optional[GameRuntimeContract] = None,
+    ) -> str:
         instructions: List[str] = []
+        mobile_orientation = QAPipeline._resolve_mobile_layout_orientation(runtime_contract)
+        mobile_reference = "landscape" if mobile_orientation == "landscape_first" else "portrait"
+        mobile_requirement = "landscape-first" if mobile_orientation == "landscape_first" else "portrait-first"
 
         for error in errors:
             message = error.message.lower()
@@ -406,8 +412,8 @@ class QAPipeline:
                 )
                 instructions.extend([
                     "- Read both viewport width and viewport height inside a resize or orientation-change handler.",
-                    "- Keep a portrait reference canvas and compute scaleX and scaleY against that reference size.",
-                    "- Derive uiScale from Math.min(scaleX, scaleY) or an equivalent short-edge fit, then center the canvas.",
+                    f"- Keep a {mobile_reference} reference canvas and compute scaleX and scaleY against that reference size.",
+                    f"- Derive uiScale from Math.min(scaleX, scaleY) or an equivalent short-edge fit, then center the {mobile_requirement} playfield.",
                     "- Do not size HUD text from screen width alone on wide mobile screens.",
                 ])
             elif any(
@@ -480,6 +486,17 @@ class QAPipeline:
         if "ui scale mode" not in block.lower():
             block += f"\n- UI scale mode: {runtime_contract.mobile_layout.ui_scale_mode}"
         return "\n" + block
+
+    @staticmethod
+    def _resolve_mobile_layout_orientation(
+        runtime_contract: Optional[GameRuntimeContract],
+    ) -> str:
+        orientation = str(
+            getattr(getattr(runtime_contract, "mobile_layout", None), "orientation", None)
+            or getattr(getattr(runtime_contract, "canvas", None), "orientation", None)
+            or "portrait_first"
+        ).strip()
+        return "landscape_first" if orientation == "landscape_first" else "portrait_first"
 
     @staticmethod
     def _resolved_bundle_prompt(
@@ -816,8 +833,14 @@ class QAPipeline:
             repaired,
             scoped_errors,
             repair_family=repair_family,
+            runtime_contract=runtime_contract,
         )
-        if self._can_short_circuit_repair(repaired, scoped_errors, repair_family=repair_family):
+        if self._can_short_circuit_repair(
+            repaired,
+            scoped_errors,
+            repair_family=repair_family,
+            runtime_contract=runtime_contract,
+        ):
             return repaired
         prefer_fast = self._should_use_fast_fix(scoped_errors) and not force_full and repair_family not in {"syntax_structural", "generic"}
         effective_max_tokens = max_tokens if max_tokens is not None else self._estimate_fix_max_tokens(
@@ -1636,7 +1659,7 @@ class QAPipeline:
     ) -> str:
         error_list = "\n".join(f"  - [{e.type}] {e.message}" for e in errors)
         game_type = game_spec.game_type if game_spec else "unknown"
-        targeted_instructions = self._build_targeted_fix_instructions(errors)
+        targeted_instructions = self._build_targeted_fix_instructions(errors, runtime_contract)
         runtime_contract_block = self._build_runtime_contract_block(runtime_contract)
 
         prompt_key, prompt_template = self._resolve_repair_prompt(
@@ -1688,6 +1711,7 @@ class QAPipeline:
         errors: List[QACheckError],
         *,
         repair_family: str,
+        runtime_contract: Optional[GameRuntimeContract] = None,
     ) -> str:
         repaired = code
         if repair_family == "input_contract" and self._needs_input_bridge(errors):
@@ -1703,7 +1727,7 @@ class QAPipeline:
             repaired = self._inject_terminal_state_fallback(repaired)
         if repair_family == "mobile_layout":
             repaired = self._ensure_mobile_viewport_meta(repaired)
-            repaired = self._inject_mobile_layout_bridge(repaired)
+            repaired = self._inject_mobile_layout_bridge(repaired, runtime_contract=runtime_contract)
         return repaired
 
     @classmethod
@@ -1721,13 +1745,16 @@ class QAPipeline:
         errors: List[QACheckError],
         *,
         repair_family: str,
+        runtime_contract: Optional[GameRuntimeContract] = None,
     ) -> bool:
         if repair_family != "input_contract" or not errors:
             if repair_family == "score_feedback" and errors:
                 return self._has_score_bridge_marker(code) or has_visible_scoring_loop(code)
             if repair_family == "mobile_layout" and errors:
+                orientation = self._resolve_mobile_layout_orientation(runtime_contract)
                 return self._has_mobile_viewport_meta(code) and (
-                    has_portrait_short_edge_scaling(code) and not self._has_width_only_font_scaling(code)
+                    has_short_edge_scaling(code, orientation=orientation)
+                    and not self._has_width_only_font_scaling(code)
                 )
             if repair_family == "runtime_startup" and errors and self._needs_touch_coordinate_guard(errors):
                 return not self._still_has_unsafe_touch_coordinate_access(code)
@@ -2101,8 +2128,14 @@ class QAPipeline:
         return code + "\n" + bridge
 
     @classmethod
-    def _inject_mobile_layout_bridge(cls, code: str) -> str:
-        if cls._has_mobile_layout_bridge_marker(code) or has_portrait_short_edge_scaling(code):
+    def _inject_mobile_layout_bridge(
+        cls,
+        code: str,
+        *,
+        runtime_contract: Optional[GameRuntimeContract] = None,
+    ) -> str:
+        orientation = cls._resolve_mobile_layout_orientation(runtime_contract)
+        if cls._has_mobile_layout_bridge_marker(code) or has_short_edge_scaling(code, orientation=orientation):
             return code
         if not re.search(r"<canvas\b", code, re.IGNORECASE):
             return code
@@ -2116,7 +2149,7 @@ class QAPipeline:
   if (!canvas) return;
   const designWidth = Math.max(1, Number(canvas.width) || Number(canvas.getAttribute('width')) || 360);
   const designHeight = Math.max(1, Number(canvas.height) || Number(canvas.getAttribute('height')) || 640);
-  const applyPortraitLayout = () => {
+  const applyResponsiveLayout = () => {
     const docEl = document.documentElement || document.body;
     const viewportWidth = Math.max((docEl && docEl.clientWidth) || 0, window.innerWidth || 0);
     const viewportHeight = Math.max((docEl && docEl.clientHeight) || 0, window.innerHeight || 0);
@@ -2140,12 +2173,14 @@ class QAPipeline:
     canvas.style.top = Math.max(0, Math.round((viewportHeight - renderHeight) / 2)) + 'px';
     canvas.style.maxWidth = 'none';
     canvas.style.maxHeight = 'none';
+    window.__playforgeUiScale = uiScale;
+    window.__playforgeShortEdge = shortEdge;
     window.__playforgePortraitUiScale = uiScale;
     window.__playforgePortraitShortEdge = shortEdge;
   };
-  applyPortraitLayout();
-  window.addEventListener('resize', applyPortraitLayout, { passive: true });
-  window.addEventListener('orientationchange', applyPortraitLayout, { passive: true });
+  applyResponsiveLayout();
+  window.addEventListener('resize', applyResponsiveLayout, { passive: true });
+  window.addEventListener('orientationchange', applyResponsiveLayout, { passive: true });
 })();
 </script>
 """

@@ -81,6 +81,7 @@ export class GameController {
         description: dto.description || dto.prompt || '',
         timeoutS: dto.timeoutS,
         regionHint: dto.regionHint,
+        orientation: dto.orientation,
       });
 
       return ok(result);

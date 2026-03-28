@@ -118,7 +118,7 @@ type LlmCallLogParams = {
 };
 
 const MAX_INLINE_JSON_BYTES = 20 * 1024;
-const MAX_INLINE_TEXT_BYTES = 200 * 1024;
+const MAX_INLINE_TEXT_BYTES = 512 * 1024;
 const SUPPRESSED_TASK_ACTIVITY_STATES = new Set(['started', 'heartbeat', 'completed']);
 const SLOW_LLM_CALL_THRESHOLD_MS = 30_000;
 const DISPLAY_PIPELINE_STAGES = [
@@ -591,6 +591,26 @@ export class GenerationTaskService {
     return this.prisma.generationArtifact.findFirst({
       where: {
         taskId,
+        artifactType: {
+          in: types,
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async findLatestArtifactForGame(gameId: string, artifactTypes: string | string[]) {
+    const types = Array.isArray(artifactTypes)
+      ? artifactTypes.filter((item) => typeof item === 'string' && item.trim())
+      : [artifactTypes].filter((item) => typeof item === 'string' && item.trim());
+
+    if (types.length === 0) {
+      return null;
+    }
+
+    return this.prisma.generationArtifact.findFirst({
+      where: {
+        gameId,
         artifactType: {
           in: types,
         },

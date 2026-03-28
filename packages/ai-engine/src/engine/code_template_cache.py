@@ -11,6 +11,8 @@ import logging
 import re
 from typing import Dict, Optional
 
+from ..api.models import GameSpec
+
 logger = logging.getLogger(__name__)
 
 # Maximum skeleton length injected into prompt (chars)
@@ -23,25 +25,58 @@ class CodeTemplateCache:
     def __init__(self) -> None:
         self._cache: Dict[str, str] = {}
 
-    def get_skeleton(self, game_type: str, runtime_profile: str) -> Optional[str]:
-        """Return cached skeleton for the given game_type:profile, or None."""
-        key = self._key(game_type, runtime_profile)
+    def get_skeleton(self, spec: GameSpec, runtime_profile: str) -> Optional[str]:
+        """Return cached skeleton for the given gameplay fingerprint, or None."""
+        key = self._key(spec, runtime_profile)
         skeleton = self._cache.get(key)
         if skeleton:
             logger.debug("Skeleton cache hit for %s", key)
         return skeleton
 
-    def store(self, game_type: str, runtime_profile: str, code: str) -> None:
+    def store(self, spec: GameSpec, runtime_profile: str, code: str) -> None:
         """Extract and cache a skeleton from QA-passing code."""
-        key = self._key(game_type, runtime_profile)
+        key = self._key(spec, runtime_profile)
         skeleton = self._extract_skeleton(code)
         if skeleton and len(skeleton) > 200:
             self._cache[key] = skeleton[:_MAX_SKELETON_CHARS]
             logger.info("Cached skeleton for %s (%d chars)", key, len(skeleton))
 
     @staticmethod
-    def _key(game_type: str, runtime_profile: str) -> str:
-        return f"{(game_type or 'unknown').lower()}:{(runtime_profile or 'default').lower()}"
+    def _key(spec: GameSpec, runtime_profile: str) -> str:
+        theme = (spec.visual_style.theme or "arcade").lower()
+        input_mode = (
+            spec.platform_constraints.input_mode
+            or (spec.core_mechanics[0].input if spec.core_mechanics else "")
+            or "touch"
+        ).lower()
+        goal_bucket = CodeTemplateCache._goal_bucket(spec.rules.win_condition)
+        return ":".join([
+            (spec.game_type or "unknown").lower(),
+            (runtime_profile or "default").lower(),
+            theme,
+            input_mode,
+            goal_bucket,
+        ])
+
+    @staticmethod
+    def _goal_bucket(win_condition: str) -> str:
+        normalized = re.sub(r"[^a-z0-9]+", " ", (win_condition or "").lower()).strip()
+        keyword_buckets = (
+            ("survive", "survive"),
+            ("score", "score"),
+            ("collect", "collect"),
+            ("rescue", "rescue"),
+            ("deliver", "deliver"),
+            ("clear", "clear"),
+            ("solve", "solve"),
+            ("defend", "defend"),
+            ("defeat", "defeat"),
+            ("reach", "reach"),
+        )
+        for keyword, bucket in keyword_buckets:
+            if keyword in normalized:
+                return bucket
+        return normalized[:24] or "generic"
 
     @staticmethod
     def _extract_skeleton(code: str) -> str:

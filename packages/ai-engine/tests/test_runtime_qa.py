@@ -6,7 +6,7 @@ import types
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.engine.runtime_qa import _inject_probe_script, _resolve_chromium_executable, run_runtime_qa
+from src.engine.runtime_qa import _inject_probe_script, _resolve_chromium_executable, capture_cover_artifact, run_runtime_qa
 
 
 class _SlowPage:
@@ -29,9 +29,19 @@ class _SlowPage:
     async def evaluate(self, script):
         if "createTreeWalker" in script:
             return {"hash": 1, "bodyText": "", "title": "", "count": 1}
-        if "canvas" in script:
+        if "dominantBuckets" in script:
+            return {
+                "source": "canvas",
+                "primary": "#204060",
+                "secondary": "#60a5fa",
+                "background": "#0f172a",
+            }
+        if "getImageData" in script and "return false" in script:
             return True
         return {"fps": 60, "errors": [], "gameOverReceived": False}
+
+    async def screenshot(self, **_kwargs):
+        return b"slow-cover"
 
 
 class _SlowContext:
@@ -71,6 +81,31 @@ class _InteractivePage:
                 "title": "Test",
                 "count": 2,
             }
+        if "dominantBuckets" in script:
+            if not hasattr(self, "_palette_calls"):
+                self._palette_calls = 0
+            self._palette_calls += 1
+            palettes = {
+                1: {
+                    "source": "canvas",
+                    "primary": "#1d4ed8",
+                    "secondary": "#7c3aed",
+                    "background": "#0f172a",
+                },
+                2: {
+                    "source": "canvas",
+                    "primary": "#0ea5e9",
+                    "secondary": "#22c55e",
+                    "background": "#082f49",
+                },
+                3: {
+                    "source": "canvas",
+                    "primary": "#38bdf8",
+                    "secondary": "#c084fc",
+                    "background": "#0f172a",
+                },
+            }
+            return palettes.get(self._palette_calls, palettes[3])
         if "getImageData" in script and "return false" in script:
             return True
         if "hash = (hash * 33" in script:
@@ -90,6 +125,17 @@ class _InteractivePage:
             "interactionPerformed": True,
         }
 
+    async def screenshot(self, **_kwargs):
+        if not hasattr(self, "_screenshot_calls"):
+            self._screenshot_calls = 0
+        self._screenshot_calls += 1
+        frames = {
+            1: b"ready-frame",
+            2: b"action-frame",
+            3: b"settled-frame",
+        }
+        return frames.get(self._screenshot_calls, b"settled-frame")
+
 
 class _InteractiveContext:
     def __init__(self):
@@ -97,6 +143,96 @@ class _InteractiveContext:
 
     async def new_page(self):
         self.page = _InteractivePage()
+        return self.page
+
+
+class _QualityHeuristicPage:
+    def __init__(self):
+        self.html = None
+
+    def on(self, *_args, **_kwargs):
+        return None
+
+    async def add_init_script(self, *_args, **_kwargs):
+        return None
+
+    async def set_content(self, html, *_args, **_kwargs):
+        self.html = html
+        return None
+
+    async def wait_for_load_state(self, *_args, **_kwargs):
+        return None
+
+    async def evaluate(self, script):
+        if "createTreeWalker" in script:
+            if not hasattr(self, "_dom_calls"):
+                self._dom_calls = 0
+            self._dom_calls += 1
+            dom_states = {
+                1: {
+                    "hash": 111,
+                    "bodyText": "Tap to Start",
+                    "title": "Runner",
+                    "count": 3,
+                },
+                2: {
+                    "hash": 222,
+                    "bodyText": "Score 12 Combo x2",
+                    "title": "Runner",
+                    "count": 4,
+                },
+                3: {
+                    "hash": 333,
+                    "bodyText": "Game Over Try Again",
+                    "title": "Runner",
+                    "count": 4,
+                },
+            }
+            return dom_states.get(self._dom_calls, dom_states[3])
+        if "dominantBuckets" in script:
+            return {
+                "source": "canvas",
+                "primary": "#22c55e",
+                "secondary": "#38bdf8",
+                "background": "#052e16",
+            }
+        if "getImageData" in script and "return false" in script:
+            return True
+        if "hash = (hash * 33" in script:
+            if not hasattr(self, "_fingerprint_calls"):
+                self._fingerprint_calls = 0
+            self._fingerprint_calls += 1
+            return {1: 111, 2: 222, 3: 333}.get(self._fingerprint_calls, 333)
+        if "window.__qaInteractionPerformed = true" in script:
+            return True
+        return {
+            "fps": 60,
+            "errors": [],
+            "gameOverReceived": False,
+            "registeredInputHandlers": ["pointerdown", "pointerup"],
+            "directInputHandlers": ["click"],
+            "triggeredInputHandlers": ["pointerdown"],
+            "interactionPerformed": True,
+        }
+
+    async def screenshot(self, **_kwargs):
+        if not hasattr(self, "_screenshot_calls"):
+            self._screenshot_calls = 0
+        self._screenshot_calls += 1
+        frames = {
+            1: b"menu-frame",
+            2: b"gameplay-frame",
+            3: b"game-over-frame",
+        }
+        return frames.get(self._screenshot_calls, b"game-over-frame")
+
+
+class _QualityHeuristicContext:
+    def __init__(self):
+        self.page = None
+
+    async def new_page(self):
+        self.page = _QualityHeuristicPage()
         return self.page
 
 
@@ -190,6 +326,69 @@ def test_runtime_qa_collects_input_handler_signals(monkeypatch):
     assert result.interaction_performed is True
     assert result.canvas_changed_after_input is True
     assert result.dom_changed_after_input is True
+
+
+def test_capture_cover_artifact_prefers_settled_frame_after_interaction(monkeypatch):
+    browser = _ClosableBrowser()
+    browser.context_factory = _InteractiveContext
+    fake_module = types.SimpleNamespace(
+        async_playwright=lambda: _PlaywrightCtx(browser),
+    )
+    monkeypatch.setitem(sys.modules, "playwright.async_api", fake_module)
+
+    result = asyncio.run(capture_cover_artifact(
+        "<html></html>",
+        orientation="landscape_first",
+        timeout_s=1.5,
+        title="Nebula Rush",
+        game_type="runner",
+        theme="space",
+        runtime_profile="lane_runner",
+    ))
+
+    assert result is not None
+    assert result["content_type"] == "image/jpeg"
+    assert result["metadata"]["selectedFrame"] == "settled_frame"
+    assert result["metadata"]["orientation"] == "landscape"
+    assert result["metadata"]["coverStyle"] == "posterized_overlay"
+    assert result["metadata"]["overlayApplied"] is True
+    assert result["metadata"]["title"] == "Nebula Rush"
+    assert result["metadata"]["badge"] == "SPACE RUNNER"
+    assert result["metadata"]["theme"] == "space"
+    assert result["metadata"]["paletteSource"] == "canvas"
+    assert result["metadata"]["palette"]["primary"] == "#38bdf8"
+    assert result["metadata"]["palette"]["secondary"] == "#c084fc"
+    assert result["metadata"]["canvasChangedAfterInput"] is True
+
+
+def test_capture_cover_artifact_avoids_menu_and_game_over_frames(monkeypatch):
+    browser = _ClosableBrowser()
+    browser.context_factory = _QualityHeuristicContext
+    fake_module = types.SimpleNamespace(
+        async_playwright=lambda: _PlaywrightCtx(browser),
+    )
+    monkeypatch.setitem(sys.modules, "playwright.async_api", fake_module)
+
+    result = asyncio.run(capture_cover_artifact(
+        "<html></html>",
+        orientation="portrait_first",
+        timeout_s=1.5,
+        title="Combo Runner",
+        game_type="runner",
+        theme="arcade",
+        runtime_profile="lane_runner",
+    ))
+
+    assert result is not None
+    assert result["metadata"]["selectedFrame"] == "action_frame"
+    assert result["metadata"]["qualityScore"] > 0
+    assert "gameplay_text" in result["metadata"]["qualityReasons"]
+
+    candidate_map = {candidate["label"]: candidate for candidate in result["metadata"]["candidates"]}
+    assert candidate_map["ready_frame"]["qualityScore"] < candidate_map["action_frame"]["qualityScore"]
+    assert candidate_map["settled_frame"]["qualityScore"] < candidate_map["action_frame"]["qualityScore"]
+    assert "menu_text" in candidate_map["ready_frame"]["qualityReasons"]
+    assert "game_over_text" in candidate_map["settled_frame"]["qualityReasons"]
 
 
 def test_runtime_qa_launch_exception_is_reported_as_infra_unavailable(monkeypatch):

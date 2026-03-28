@@ -296,6 +296,111 @@ class TestPromptIntegration(unittest.TestCase):
         self.assertIn("Math.min(scaleX, scaleY)", message)
         self.assertIn("14-20px", message)
 
+    def test_mobile_layout_guardrails_switch_to_landscape_when_contract_requests_it(self):
+        generator = CodeGenerator(llm_mode="real")
+        gdd = GDD(
+            canvas=CanvasConfig(width=640, height=360, dpr_adaptive=True, target_fps=60),
+            numerics=NumericsConfig(),
+            collision=CollisionConfig(),
+            input_map={},
+            ui_layout={},
+        )
+
+        with patch(
+            "src.engine.code_generator.require_prompt",
+            side_effect=lambda key: COMMON_CODEGEN_PROMPTS[key],
+        ):
+            guardrails = generator._build_mobile_layout_guardrails(
+                gdd,
+                GameRuntimeContract(mobile_layout={"orientation": "landscape_first"}),
+            )
+
+        self.assertIn("landscape-first", guardrails)
+        self.assertNotIn("portrait-first", guardrails)
+
+    def test_profile_few_shot_switches_to_landscape_when_contract_requests_it(self):
+        with patch(
+            "src.engine.code_generator.get_runtime_profile",
+            return_value={
+                "few_shot_prompt": (
+                    "Use a centered portrait canvas, compact HUD, and one obvious primary interaction."
+                ),
+            },
+        ):
+            profile_prompt = CodeGenerator._resolve_profile_few_shot(
+                None,
+                "portrait_arcade",
+                runtime_contract=GameRuntimeContract(
+                    mobile_layout={"orientation": "landscape_first"},
+                ),
+            )
+
+        self.assertIn("centered landscape canvas", profile_prompt)
+        self.assertNotIn("portrait canvas", profile_prompt)
+
+    def test_generate_rewrites_profile_few_shot_for_landscape_contracts(self):
+        generator = CodeGenerator(llm_mode="real")
+        spec = GameSpec(
+            game_type="runner",
+            core_mechanics=[CoreMechanic(type="runner", input="swipe")],
+            entities=[GameEntity(name="runner", role="player")],
+            rules=GameRules(),
+            visual_style=VisualStyle(theme="arcade", art_style="minimal"),
+            platform_constraints=PlatformConstraints(),
+        )
+        gdd = GDD(
+            canvas=CanvasConfig(width=640, height=360, dpr_adaptive=True, target_fps=60),
+            numerics=NumericsConfig(),
+            collision=CollisionConfig(),
+            input_map={},
+            ui_layout={},
+        )
+
+        def fake_get_prompt(key: str, default=None):
+            if key == "prompt.game_design_template":
+                return "Game Type: {game_type}\nTheme: {theme}\nCanvas: {canvas_w}x{canvas_h}"
+            if key == "prompt.generate_request_context_template":
+                return "Original user request:\n{request_text}"
+            if key == "prompt.generate_alignment_reminder":
+                return "ALIGN"
+            if key == "prompt.platform_standard":
+                return "PLATFORM"
+            if key == "prompt.code_gen_system":
+                return "SYSTEM"
+            return COMMON_CODEGEN_PROMPTS.get(key, default)
+
+        with patch(
+            "src.engine.code_generator.require_prompt",
+            side_effect=fake_get_prompt,
+        ), patch(
+            "src.engine.code_generator.get_runtime_profile",
+            return_value={
+                "few_shot_prompt": (
+                    "Use a centered portrait canvas, compact HUD, and one obvious primary interaction."
+                ),
+            },
+        ), patch.object(
+            generator._client,
+            "complete",
+            new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
+        ) as mock_complete:
+            asyncio.run(
+                generator._llm_generate(
+                    spec,
+                    gdd,
+                    description="make a landscape arcade runner",
+                    runtime_contract=GameRuntimeContract(
+                        mobile_layout={"orientation": "landscape_first"},
+                        canvas={"orientation": "landscape_first"},
+                    ),
+                    runtime_profile="portrait_arcade",
+                )
+            )
+
+        message = mock_complete.await_args.kwargs["messages"][0]["content"]
+        self.assertIn("centered landscape canvas", message)
+        self.assertNotIn("centered portrait canvas", message)
+
     def test_iterate_passes_current_code_using_code_parameter(self):
         generator = CodeGenerator(llm_mode="real")
 

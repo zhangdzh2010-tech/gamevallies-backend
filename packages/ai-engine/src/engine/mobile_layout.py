@@ -1,4 +1,4 @@
-"""Helpers for portrait-first short-edge mobile layout validation."""
+"""Helpers for orientation-aware short-edge mobile layout validation."""
 
 from __future__ import annotations
 
@@ -32,9 +32,10 @@ _RESIZE_HANDLER_RE = re.compile(
 )
 
 
-def has_portrait_short_edge_scaling(code: str) -> bool:
+def has_short_edge_scaling(code: str, *, orientation: str = "portrait_first") -> bool:
     source = code or ""
     lower = source.lower()
+    normalized_orientation = _normalize_orientation(orientation)
 
     if MOBILE_LAYOUT_BRIDGE_MARKER.lower() in lower:
         return True
@@ -44,7 +45,15 @@ def has_portrait_short_edge_scaling(code: str) -> bool:
         return True
     if _has_explicit_short_edge_tokens(lower):
         return True
-    return _has_portrait_aspect_ratio_fit(source)
+    return _has_orientation_aspect_ratio_fit(source, orientation=normalized_orientation)
+
+
+def has_portrait_short_edge_scaling(code: str) -> bool:
+    return has_short_edge_scaling(code, orientation="portrait_first")
+
+
+def has_landscape_short_edge_scaling(code: str) -> bool:
+    return has_short_edge_scaling(code, orientation="landscape_first")
 
 
 def _has_viewport_dimension_signals(code: str) -> bool:
@@ -75,24 +84,30 @@ def _has_explicit_short_edge_tokens(lower: str) -> bool:
     )
 
 
-def _has_portrait_aspect_ratio_fit(code: str) -> bool:
+def _has_orientation_aspect_ratio_fit(code: str, *, orientation: str) -> bool:
     if not _RESIZE_HANDLER_RE.search(code):
         return False
     if not _ASPECT_COMPARE_RE.search(code):
         return False
     if not re.search(r"\b(?:canvas|[A-Za-z_$][\w$]*)\.(?:width|height)\s*=", code):
         return False
-    return _has_portrait_reference_dimensions(code)
+    return _has_reference_dimensions(code, orientation=orientation)
 
 
-def _has_portrait_reference_dimensions(code: str) -> bool:
+def _has_reference_dimensions(code: str, *, orientation: str) -> bool:
     assignments = [
         (name.lower(), int(value))
         for name, value in re.findall(r"\b([A-Za-z_$][\w$]*)\s*=\s*(\d{2,4})\b", code)
     ]
     width_values = [value for name, value in assignments if _looks_width_name(name)]
     height_values = [value for name, value in assignments if _looks_height_name(name)]
+    if orientation == "landscape_first":
+        return any(width > height for width in width_values for height in height_values)
     return any(width < height for width in width_values for height in height_values)
+
+
+def _normalize_orientation(orientation: str) -> str:
+    return "landscape_first" if orientation == "landscape_first" else "portrait_first"
 
 
 def _looks_width_name(name: str) -> bool:

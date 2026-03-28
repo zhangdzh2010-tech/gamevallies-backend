@@ -18,7 +18,6 @@ from ..api.models import (
     QAResult,
     RunPipelineRequest,
     RunPipelineResponse,
-    TemplateMatchResult,
 )
 from ..config.settings import settings
 from ..config.timeout_store import get_int as get_timeout_int
@@ -148,22 +147,6 @@ class PipelineOrchestrator:
         )
 
         if stage_context is not None:
-            stage_context["stage"] = PipelineStage.template_matching.value
-        self._notify(
-            progress_cb,
-            PipelineStage.template_matching,
-            45,
-            "Selecting generation path",
-            {"gameId": request.game_id, "userId": request.user_id, "attempt": 1, "maxAttempts": DEFAULT_STAGE_TOTAL_ATTEMPTS},
-        )
-        match = self._stage_match_template(
-            game_spec,
-            request.game_id,
-            request.user_id,
-            progress_cb,
-        )
-
-        if stage_context is not None:
             stage_context["stage"] = PipelineStage.code_generating.value
         self._notify(
             progress_cb,
@@ -175,7 +158,6 @@ class PipelineOrchestrator:
         code_result = await self._stage_generate_code(
             game_spec,
             gdd,
-            match,
             request.game_id,
             request.user_id,
             progress_cb,
@@ -432,6 +414,7 @@ class PipelineOrchestrator:
                 spec = await self.dialogue_engine.parse_description_to_spec(
                     description,
                     allow_fallback=True,
+                    variation_seed=game_id,
                 )
                 logger.info(f"Intent parse succeeded on attempt {attempt}: game_type={spec.game_type}")
                 return spec
@@ -518,30 +501,10 @@ class PipelineOrchestrator:
             retry_count=max_attempts - 1,
         )
 
-    def _stage_match_template(
-        self,
-        spec: GameSpec,
-        game_id: str,
-        user_id: str,
-        progress_cb: ProgressCallback,
-    ) -> TemplateMatchResult:
-        """Stage 04: generation path selection."""
-        del spec
-        logger.info("Template generation disabled; forcing full LLM path")
-        self._notify(
-            progress_cb,
-            PipelineStage.template_matching,
-            48,
-            "Full LLM generation only",
-            {"gameId": game_id, "userId": user_id, "path": "llm"},
-        )
-        return TemplateMatchResult(path="llm")
-
     async def _stage_generate_code(
         self,
         spec: GameSpec,
         gdd: GDD,
-        match: TemplateMatchResult,
         game_id: str,
         user_id: str,
         progress_cb: ProgressCallback,
@@ -558,10 +521,7 @@ class PipelineOrchestrator:
                 result = await self.code_generator.generate(
                     spec=spec,
                     gdd=gdd,
-                    template_id=match.template_id,
-                    confidence=match.confidence,
                     description=description,
-                    allow_fallback=False,
                 )
                 logger.info(f"Code generated: strategy={result.strategy}, size={result.code_size_bytes}B")
                 return result
@@ -715,7 +675,6 @@ class PipelineOrchestrator:
                     current_code=current_code,
                     feedback=feedback,
                     conversation=conversation,
-                    allow_fallback=False,
                 )
                 break
             except Exception as exc:

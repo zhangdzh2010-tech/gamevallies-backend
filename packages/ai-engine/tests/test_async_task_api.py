@@ -620,6 +620,67 @@ class TestAsyncTaskApi(unittest.TestCase):
         self.assertNotIn("source_game_spec", artifact_types)
         self.assertNotIn("source_bundle_context", artifact_types)
 
+    def test_v2_create_internal_relays_cover_image_when_capture_succeeds(self):
+        request = RunPipelineV2Request(
+            game_id="game-v2-cover-artifacts",
+            user_id="user-v2-cover-artifacts",
+            raw_user_input="make a runner game",
+            title="Wide Runner",
+        )
+        fake_result = RunPipelineResponse(
+            game_id="game-v2-cover-artifacts",
+            html_code="<!DOCTYPE html><html><body>cover</body></html>",
+            game_spec=GameSpec(game_type="runner"),
+            strategy="llm",
+            qa_passed=True,
+            qa_retries=1,
+            generation_time_ms=789,
+            code_size_bytes=64,
+            quality_score=8.9,
+            quality_breakdown={"qa_penalty": 0},
+            runtime_profile="lane_runner",
+            contract_version="1.0",
+        )
+        relay_artifact = AsyncMock(
+            side_effect=lambda **kwargs: f"artifact-{kwargs['artifact_type']}"
+        )
+        capture_cover = AsyncMock(return_value={
+            "payload": "ZmFrZS1jb3Zlcg==",
+            "content_type": "image/jpeg",
+            "metadata": {"selectedFrame": "settled_frame", "coverStyle": "posterized_overlay"},
+        })
+
+        with patch_v2_prompt_defaults(), patch.object(
+            generate_api.settings,
+            "GAME_SERVICE_UPSTREAM_URL",
+            "http://game-service.test",
+        ), patch(
+            "src.api.endpoints.generate._v2_runner.run",
+            new=AsyncMock(return_value=fake_result),
+        ), patch(
+            "src.api.endpoints.generate._relay_artifact_to_game_service",
+            new=relay_artifact,
+        ), patch(
+            "src.api.endpoints.generate._relay_stage_summary_to_game_service",
+            new=AsyncMock(),
+        ), patch(
+            "src.api.endpoints.generate._maybe_capture_cover_artifact",
+            new=capture_cover,
+        ):
+            asyncio.run(
+                generate_api._run_pipeline_v2_internal(
+                    request,
+                    task_id="task-v2-cover-artifacts",
+                )
+            )
+
+        artifact_types = [call.kwargs["artifact_type"] for call in relay_artifact.await_args_list]
+        self.assertIn("cover_image", artifact_types)
+        self.assertEqual(capture_cover.await_args.kwargs["title"], "Wide Runner")
+        self.assertEqual(capture_cover.await_args.kwargs["game_type"], "runner")
+        self.assertEqual(capture_cover.await_args.kwargs["theme"], "arcade")
+        self.assertFalse(capture_cover.await_args.kwargs.get("updated", False))
+
     def test_v2_iteration_internal_uses_runner_instead_of_legacy_internal(self):
         request = IterateV2Request(
             game_id="game-v2-iter-internal",
@@ -657,6 +718,54 @@ class TestAsyncTaskApi(unittest.TestCase):
         self.assertEqual(response.runtime_profile, "lane_runner")
         self.assertIsNotNone(mock_runner.await_args)
         self.assertIsNone(mock_legacy.await_args)
+
+    def test_v2_iteration_internal_passes_updated_cover_context(self):
+        request = IterateV2Request(
+            game_id="game-v2-iter-cover",
+            user_id="user-v2-iter-cover",
+            current_code="<!DOCTYPE html><html><body>old</body></html>",
+            iteration_intent={
+                "feedback": "add more hazards",
+                "conversation": [],
+            },
+            source_bundle_context={
+                "title": "Wide Runner",
+                "latest_game_type": "runner",
+            },
+        )
+        fake_result = IterateResponse(
+            html_code="<!DOCTYPE html><html><body>new</body></html>",
+            changes=["Applied: add more hazards"],
+            iteration_type="element_change",
+            generation_time_ms=456,
+            qa_retries=1,
+            iteration_retries=0,
+            runtime_profile="lane_runner",
+            contract_version="1.0",
+        )
+        capture_cover = AsyncMock(return_value=None)
+
+        with patch_v2_prompt_defaults(), patch(
+            "src.api.endpoints.generate._v2_runner.iterate",
+            new=AsyncMock(return_value=fake_result),
+        ), patch(
+            "src.api.endpoints.generate._relay_stage_summary_to_game_service",
+            new=AsyncMock(),
+        ), patch(
+            "src.api.endpoints.generate._maybe_capture_cover_artifact",
+            new=capture_cover,
+        ):
+            asyncio.run(
+                generate_api._run_iteration_v2_internal(
+                    request,
+                    task_id="task-v2-iter-cover",
+                )
+            )
+
+        self.assertEqual(capture_cover.await_args.kwargs["title"], "Wide Runner")
+        self.assertEqual(capture_cover.await_args.kwargs["game_type"], "runner")
+        self.assertEqual(capture_cover.await_args.kwargs["runtime_profile"], "lane_runner")
+        self.assertTrue(capture_cover.await_args.kwargs["updated"])
 
     def test_v2_iteration_internal_persists_source_history_artifacts(self):
         request = IterateV2Request(
