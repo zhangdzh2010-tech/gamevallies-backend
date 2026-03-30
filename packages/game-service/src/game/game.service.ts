@@ -28,6 +28,7 @@ import { StatsService } from '../stats/stats.service';
 import { GameWebSocketGateway } from '../websocket/websocket.gateway';
 import {
   CreateGameDto,
+  CreateGameGenerationTier,
   CreateGameOrientation,
   PublishGameDto,
   IterateGameDto,
@@ -37,6 +38,12 @@ import {
   TIMEOUT_CONFIG_CATALOG,
   TIMEOUT_CONFIG_CATALOG_BY_KEY,
 } from './catalogs/timeout-catalog';
+import { normalizeGameType } from './game-type-catalog';
+import {
+  DEFAULT_RUNTIME_PROFILE_ID,
+  normalizeRuntimeProfileId,
+  runtimeProfileLookupCandidates,
+} from './runtime-profile-ids';
 
 // Pipeline stage labels for WebSocket progress events
 const STAGE_LABELS: Record<string, string> = {
@@ -62,6 +69,7 @@ const STAGE_PCT: Record<string, number> = {
 };
 
 type RuntimeOrientation = 'portrait_first' | 'landscape_first';
+type GenerationTier = CreateGameGenerationTier;
 
 interface RetryContext {
   retry: number;
@@ -146,6 +154,7 @@ interface SourceBundleContextPayload {
   title?: string | null;
   latest_bundle_version?: number | null;
   latest_game_type?: string | null;
+  latest_generation_tier?: GenerationTier | null;
   latest_orientation?: CreateGameOrientation | null;
   latest_feedback?: string | null;
   latest_iteration_type?: string | null;
@@ -157,6 +166,7 @@ interface CreateExecutionOptions {
   pipelineVersion?: PipelineVersion;
   title?: string;
   orientation?: CreateGameOrientation;
+  generationTier?: GenerationTier;
   access?: AccessGrantDecision;
   promptBundleSnapshot?: PromptBundleSnapshotPayload | null;
   runtimeContract?: RuntimeContractPayload | null;
@@ -167,6 +177,7 @@ interface IterateExecutionOptions {
   promptBundleSnapshot?: PromptBundleSnapshotPayload | null;
   runtimeContract?: RuntimeContractPayload | null;
   orientation?: CreateGameOrientation;
+  generationTier?: GenerationTier;
   sourceSpec?: Record<string, unknown> | null;
   sourceBundleContext?: SourceBundleContextPayload | null;
   game?: {
@@ -585,19 +596,19 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (/(classroom|teacher|lesson|quiz|worksheet|practice question|practice quiz|learning game|teaching|knowledge point|课堂|教学|老师|练习题|知识点|问答|测验|小测|学习游戏|教学游戏)/.test(text)) {
-      return 'grid_puzzle';
+      return 'puzzle_grid';
     }
     if (/(runner|race|racing|lane|endless runner|跑酷|赛道|lane runner)/.test(text)) {
-      return 'lane_runner';
+      return 'casual_lane';
     }
     if (/(puzzle|grid|tile|match|merge|circuit|wire|battery|bulb|switch|connect|drag|assemble|拼图|消除|方块|电路|导线|电池|灯泡|开关|连接|拖拽|组装)/.test(text)) {
-      return 'grid_puzzle';
+      return 'puzzle_grid';
     }
     if (/(shooter|shoot|top-down|top down|action|射击|飞船|弹幕|俯视|动作)/.test(text)) {
-      return 'topdown_action';
+      return 'casual_action';
     }
     if (/(rhythm|timing|beat|music|节奏|音游|点按)/.test(text)) {
-      return 'tap_timing';
+      return 'tap_challenge';
     }
     return undefined;
   }
@@ -625,15 +636,24 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       return typeof metadata === 'object' && metadata !== null && (metadata as Record<string, unknown>).default === true;
     });
 
-    const normalizedHint = String(profileHint || '').trim();
+    const normalizedHint = normalizeRuntimeProfileId(profileHint);
     if (normalizedHint) {
-      const hintedProfile = profiles.find((profile) => profile.id === normalizedHint);
-      if (hintedProfile) {
-        return hintedProfile;
+      for (const candidate of runtimeProfileLookupCandidates(normalizedHint)) {
+        const hintedProfile = profiles.find((profile) => profile.id === candidate);
+        if (hintedProfile) {
+          return {
+            ...hintedProfile,
+            id: normalizeRuntimeProfileId(hintedProfile.id) || DEFAULT_RUNTIME_PROFILE_ID,
+          };
+        }
       }
     }
 
-    return defaultProfile || profiles[0];
+    const selected = defaultProfile || profiles[0];
+    return {
+      ...selected,
+      id: normalizeRuntimeProfileId(selected.id) || DEFAULT_RUNTIME_PROFILE_ID,
+    };
   }
 
   private normalizeRuntimeContractSchema(
@@ -690,6 +710,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   private async buildPromptBundleSnapshot(
     entrypoint: PipelineEntrypoint,
     runtimeProfile?: string,
+    generationTier: GenerationTier = 'standard',
   ): Promise<PromptBundleSnapshotPayload> {
     const bundle = await this.resolveActivePromptBundleIdentity();
     return {
@@ -699,6 +720,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       layers: {
         entrypoint,
         source: 'game-service',
+        generation_tier: generationTier,
         ...(runtimeProfile ? { profile_few_shot: runtimeProfile } : {}),
       },
     };
@@ -708,6 +730,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     entrypoint: PipelineEntrypoint,
     runtimeProfile?: string,
     requestedOrientation?: CreateGameOrientation,
+    generationTier: GenerationTier = 'standard',
   ): Promise<RuntimeContractPayload> {
     const profile = await this.resolveRuntimeProfile(runtimeProfile);
     const normalizedContract = this.normalizeRuntimeContractSchema(profile.id, profile.contractSchema);
@@ -718,6 +741,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         ...((normalizedContract.metadata as Record<string, unknown> | undefined) ?? {}),
         entrypoint,
         source: 'game-service',
+        generation_tier: generationTier,
       },
     }, requestedOrientation);
   }
@@ -741,6 +765,56 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       return 'landscape';
     }
     if (orientation === 'portrait') {
+      return 'portrait';
+    }
+    return undefined;
+  }
+
+  private normalizeRequestedGenerationTier(
+    generationTier?: unknown,
+  ): GenerationTier | undefined {
+    if (generationTier === 'safe') {
+      return 'safe';
+    }
+    if (generationTier === 'showcase') {
+      return 'showcase';
+    }
+    if (generationTier === 'standard') {
+      return 'standard';
+    }
+    return undefined;
+  }
+
+  private inferRequestedOrientationFromText(
+    description?: string | null,
+    title?: string | null,
+  ): CreateGameOrientation | undefined {
+    const text = `${title ?? ''} ${description ?? ''}`.trim().toLowerCase();
+    if (!text) {
+      return undefined;
+    }
+
+    const hasLandscapeHint = [
+      'landscape',
+      'horizontal',
+      'wide',
+      '16:9',
+      '横屏',
+      '横版',
+      '宽屏',
+    ].some((token) => text.includes(token));
+    const hasPortraitHint = [
+      'portrait',
+      'vertical',
+      '9:16',
+      '竖屏',
+      '纵向',
+    ].some((token) => text.includes(token));
+
+    if (hasLandscapeHint && !hasPortraitHint) {
+      return 'landscape';
+    }
+    if (hasPortraitHint && !hasLandscapeHint) {
       return 'portrait';
     }
     return undefined;
@@ -801,6 +875,29 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       ...(requestedOrientation ? { requestedOrientation } : {}),
       ...(runtimeOrientation ? { runtimeOrientation } : {}),
     };
+  }
+
+  private buildPersistedGenerationTierMetadata(
+    generationTier?: GenerationTier | null,
+  ): Record<string, unknown> {
+    const normalizedGenerationTier = this.normalizeRequestedGenerationTier(generationTier) || 'standard';
+    return {
+      generationTier: normalizedGenerationTier,
+    };
+  }
+
+  private resolveNextIterationVersion(params: {
+    gameVersion?: number | null;
+    latestBundle?: { version?: number | null } | null;
+    bundleHistory?: Array<{ version?: number | null } | null> | null;
+  }): number {
+    const versions = [
+      Number(params.gameVersion || 0),
+      Number(params.latestBundle?.version || 0),
+      ...((params.bundleHistory || []).map((bundle) => Number(bundle?.version || 0))),
+    ].filter((value) => Number.isFinite(value) && value >= 0);
+
+    return Math.max(0, ...versions) + 1;
   }
 
   private applyRequestedCreateOrientation(
@@ -895,6 +992,25 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     return null;
   }
 
+  private resolveRuntimeHintGameType(
+    sourceSpec?: Record<string, unknown> | null,
+    game?: { gameType?: string | null } | null,
+  ): string | null {
+    if (
+      sourceSpec
+      && typeof sourceSpec.game_type === 'string'
+      && sourceSpec.game_type.trim()
+    ) {
+      return sourceSpec.game_type.trim();
+    }
+
+    if (typeof game?.gameType === 'string' && game.gameType.trim()) {
+      return game.gameType.trim();
+    }
+
+    return null;
+  }
+
   private extractBundleOrientation(bundleHistory: any[]): CreateGameOrientation | undefined {
     for (const bundle of [...bundleHistory].reverse()) {
       const metadata = bundle?.metadata && typeof bundle.metadata === 'object'
@@ -917,6 +1033,26 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       const recoveredOrientation = this.resolveRequestedOrientationFromRuntime(runtimeOrientation);
       if (recoveredOrientation) {
         return recoveredOrientation;
+      }
+    }
+
+    return undefined;
+  }
+
+  private extractBundleGenerationTier(bundleHistory: any[]): GenerationTier | undefined {
+    for (const bundle of [...bundleHistory].reverse()) {
+      const metadata = bundle?.metadata && typeof bundle.metadata === 'object'
+        ? bundle.metadata as Record<string, unknown>
+        : null;
+      if (!metadata) {
+        continue;
+      }
+
+      const generationTier = this.normalizeRequestedGenerationTier(
+        metadata.generationTier ?? metadata.generation_tier,
+      );
+      if (generationTier) {
+        return generationTier;
       }
     }
 
@@ -961,19 +1097,25 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     const latestIterationType = typeof latestMetadata.iterationType === 'string'
       ? latestMetadata.iterationType.trim()
       : '';
-    const latestGameType = typeof game?.gameType === 'string' && game.gameType.trim()
-      ? game.gameType.trim()
+    const latestGameType = typeof latestMetadata?.gameSpec?.game_type === 'string'
+      && latestMetadata.gameSpec.game_type.trim()
+      ? latestMetadata.gameSpec.game_type.trim()
       : (
-        typeof latestMetadata?.gameSpec?.game_type === 'string'
-          ? latestMetadata.gameSpec.game_type.trim()
+        typeof game?.gameType === 'string' && game.gameType.trim()
+          ? game.gameType.trim()
           : null
       );
     const latestOrientation = this.extractBundleOrientation([
       ...bundleHistory,
       ...(latestBundle ? [latestBundle] : []),
     ]) ?? null;
+    const latestGenerationTier = this.extractBundleGenerationTier([
+      ...bundleHistory,
+      ...(latestBundle ? [latestBundle] : []),
+    ]) ?? 'standard';
     const summaryParts = [
       latestGameType ? `game_type=${latestGameType}` : '',
+      latestGenerationTier ? `generation_tier=${latestGenerationTier}` : '',
       latestOrientation ? `orientation=${latestOrientation}` : '',
       latestFeedback ? `latest_feedback=${latestFeedback}` : '',
       latestIterationType ? `latest_iteration=${latestIterationType}` : '',
@@ -986,6 +1128,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         ? latestBundle.version
         : (typeof game?.version === 'number' ? game.version : null),
       latest_game_type: latestGameType,
+      latest_generation_tier: latestGenerationTier,
       latest_orientation: latestOrientation,
       latest_feedback: latestFeedback || null,
       latest_iteration_type: latestIterationType || null,
@@ -1003,14 +1146,17 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     timeoutS: number;
     taskId?: string;
     orientation?: CreateGameOrientation;
+    generationTier?: GenerationTier;
     access?: AccessGrantDecision;
     promptBundleSnapshot: PromptBundleSnapshotPayload;
     runtimeContract: RuntimeContractPayload;
   }): Record<string, unknown> {
+    const generationTier = this.normalizeRequestedGenerationTier(params.generationTier) || 'standard';
     return {
       game_id: params.gameId,
       user_id: params.userId,
       raw_user_input: params.description,
+      generation_tier: generationTier,
       title: params.title || null,
       platform: 'wechat_webview',
       timeout_s: params.timeoutS,
@@ -1022,6 +1168,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         pipeline_version: 'v2',
         metadata: {
           game_id: params.gameId,
+          generation_tier: generationTier,
           ...(params.orientation ? { orientation: params.orientation } : {}),
         },
       },
@@ -1045,11 +1192,13 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         title: params.title || null,
         region: params.executionRegion,
         entrypoint: 'create',
+        generation_tier: generationTier,
         ...(params.orientation ? { orientation: params.orientation } : {}),
       },
       metadata: {
         adapter: 'compat_v1',
         pipeline_version: 'v2',
+        generation_tier: generationTier,
         ...(params.orientation ? { orientation: params.orientation } : {}),
       },
     };
@@ -1066,6 +1215,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     taskId?: string;
     game?: IterateExecutionOptions['game'];
     orientation?: CreateGameOrientation;
+    generationTier?: GenerationTier;
     sourceSpec?: Record<string, unknown> | null;
     sourceBundleContext?: SourceBundleContextPayload | null;
     promptBundleSnapshot: PromptBundleSnapshotPayload;
@@ -1076,11 +1226,15 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       ?? this.resolveRequestedOrientationFromRuntime(
         this.resolveRuntimeOrientationFromContract(params.runtimeContract),
       );
+    const generationTier = this.normalizeRequestedGenerationTier(params.generationTier)
+      ?? this.normalizeRequestedGenerationTier(params.sourceBundleContext?.latest_generation_tier)
+      ?? 'standard';
 
     return {
       game_id: params.gameId,
       user_id: params.userId,
       current_code: params.currentCode,
+      generation_tier: generationTier,
       platform: 'wechat_webview',
       timeout_s: params.timeoutS,
       task_id: params.taskId,
@@ -1092,6 +1246,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         metadata: {
           game_id: params.gameId,
           live_bundle_version: game.version ?? null,
+          generation_tier: generationTier,
           ...(orientation ? { orientation } : {}),
         },
       },
@@ -1129,11 +1284,13 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         feedback: params.feedback,
         region: params.executionRegion,
         entrypoint: 'iterate',
+        generation_tier: generationTier,
         ...(orientation ? { orientation } : {}),
       },
       metadata: {
         adapter: 'compat_v1',
         pipeline_version: 'v2',
+        generation_tier: generationTier,
         ...(orientation ? { orientation } : {}),
       },
     };
@@ -1250,6 +1407,21 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     return (publicApiBaseUrl || appUrl).replace(/\/$/, '');
   }
 
+  private getPublicApiBaseUrl(): string {
+    const baseUrl = this.getPublicBaseUrl();
+
+    try {
+      const parsed = new URL(baseUrl);
+      const normalizedPath = (parsed.pathname || '').replace(/\/$/, '');
+      parsed.pathname = normalizedPath.endsWith('/api/v1')
+        ? normalizedPath
+        : `${normalizedPath}/api/v1`.replace(/\/{2,}/g, '/');
+      return parsed.toString().replace(/\/$/, '');
+    } catch {
+      return baseUrl.endsWith('/api/v1') ? baseUrl : `${baseUrl}/api/v1`;
+    }
+  }
+
   private buildPreviewUrl(gameId: string, options: PreviewLinkOptions = {}): string {
     const previewUrl = new URL(`${this.getPublicBaseUrl()}/games/${gameId}/preview`);
     if (options.previewToken) {
@@ -1267,7 +1439,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   }
 
   private buildCoverUrl(gameId: string, options: CoverLinkOptions = {}): string {
-    const coverUrl = new URL(`${this.getPublicBaseUrl()}/games/${gameId}/cover`);
+    const coverUrl = new URL(`${this.getPublicApiBaseUrl()}/games/${gameId}/cover`);
     if (options.taskId) {
       coverUrl.searchParams.set('taskId', options.taskId);
     }
@@ -1321,10 +1493,23 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     return this.extractCoverTaskIdFromUrl(gameId, this.extractPersistedCoverUrl(metadata));
   }
 
+  private extractPersistedCoverArtifactId(metadata: unknown): string | null {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      return null;
+    }
+
+    const rawArtifactId = (metadata as Record<string, unknown>).coverArtifactId
+      ?? (metadata as Record<string, unknown>).cover_artifact_id;
+    return typeof rawArtifactId === 'string' && rawArtifactId.trim()
+      ? rawArtifactId.trim()
+      : null;
+  }
+
   private buildPersistedCoverMetadata(params: {
     gameId: string;
     coverUrl?: string | null;
     taskId?: string;
+    artifactId?: string | null;
   }): Record<string, unknown> {
     const persistedCoverUrl = typeof params.coverUrl === 'string' && params.coverUrl.trim()
       ? params.coverUrl.trim()
@@ -1332,10 +1517,14 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     const persistedCoverTaskId = typeof params.taskId === 'string' && params.taskId.trim()
       ? params.taskId.trim()
       : this.extractCoverTaskIdFromUrl(params.gameId, persistedCoverUrl);
+    const persistedCoverArtifactId = typeof params.artifactId === 'string' && params.artifactId.trim()
+      ? params.artifactId.trim()
+      : null;
 
     return {
       ...(persistedCoverUrl ? { coverUrl: persistedCoverUrl } : {}),
       ...(persistedCoverTaskId ? { coverTaskId: persistedCoverTaskId } : {}),
+      ...(persistedCoverArtifactId ? { coverArtifactId: persistedCoverArtifactId } : {}),
     };
   }
 
@@ -1343,6 +1532,13 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     gameId: string,
     bundle?: { version?: number | string | null; metadata?: unknown } | null,
   ): string | null {
+    const coverArtifactId = this.extractPersistedCoverArtifactId(bundle?.metadata);
+    if (coverArtifactId) {
+      return this.buildCoverUrl(gameId, {
+        version: bundle?.version ?? undefined,
+      });
+    }
+
     const coverTaskId = this.extractPersistedCoverTaskId(gameId, bundle?.metadata);
     if (coverTaskId) {
       return this.buildCoverUrl(gameId, {
@@ -2782,6 +2978,9 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       const gameId = randomUUID();
       const description = dto.description || dto.prompt || '';
       const title = dto.title?.trim() || `Game ${gameId.substring(0, 8)}`;
+      const requestedOrientation = this.normalizeRequestedOrientation(dto.orientation)
+        ?? this.inferRequestedOrientationFromText(description, title);
+      const requestedGenerationTier = this.normalizeRequestedGenerationTier(dto.generationTier) || 'standard';
       const executionRegion = this.resolveExecutionRegion(dto.regionHint);
       const pipelineVersion = this.resolvePipelineVersion({
         entrypoint: 'create',
@@ -2791,10 +2990,10 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       const timeoutS = this.resolveTaskTimeoutForPipelineVersion(dto.timeoutS, pipelineVersion);
       const runtimeProfileHint = this.inferRuntimeProfileHint(description, dto.title);
       const promptBundleSnapshot = pipelineVersion === 'v2'
-        ? await this.buildPromptBundleSnapshot('create', runtimeProfileHint)
+        ? await this.buildPromptBundleSnapshot('create', runtimeProfileHint, requestedGenerationTier)
         : null;
       const runtimeContract = pipelineVersion === 'v2'
-        ? await this.buildDefaultRuntimeContract('create', runtimeProfileHint, dto.orientation)
+        ? await this.buildDefaultRuntimeContract('create', runtimeProfileHint, requestedOrientation, requestedGenerationTier)
         : null;
       const { access, task } = await this.prisma.$transaction(async (tx) => {
         await this.markExpiredSubscriptions(tx, userId);
@@ -2873,7 +3072,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
             description,
             region: executionRegion,
             pipelineVersion,
-            orientation: dto.orientation ?? null,
+            orientation: requestedOrientation ?? null,
+            generationTier: requestedGenerationTier,
           },
           client: tx,
         });
@@ -2908,7 +3108,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           {
             pipelineVersion,
             title,
-            orientation: dto.orientation,
+            orientation: requestedOrientation,
+            generationTier: requestedGenerationTier,
             access,
             promptBundleSnapshot,
             runtimeContract,
@@ -3037,6 +3238,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       const htmlTitleMatch = htmlCode.match(/<title>([^<]{1,60})<\/title>/i);
       const aiTitle = htmlTitleMatch ? htmlTitleMatch[1].trim() : null;
       const gameTitle = (aiTitle && aiTitle.length > 2) ? aiTitle : this.deriveTitle(gameSpec, description);
+      const normalizedGameType = normalizeGameType(
+        gameSpec?.game_type,
+        gameTitle,
+        description,
+      );
 
       // Only overwrite title if it's still the auto-generated placeholder (Game [id])
       const currentGame = await this.prisma.game.findUnique({ where: { id: gameId }, select: { title: true } });
@@ -3059,6 +3265,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           qaPassed,
           qaRetries,
           gameSpec,
+          gameType: normalizedGameType,
           genTimeMs,
           codeSizeBytes,
           qualityScore,
@@ -3068,7 +3275,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         updateData: {
           status: 'draft',
           version: 1,
-          gameType: gameSpec?.game_type || null,
+          gameType: normalizedGameType,
           qualityScore,
           failedStage: null,
           failedReason: null,
@@ -3085,7 +3292,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
             strategy,
             qaPassed,
             qaRetries,
-            gameType: gameSpec?.game_type || null,
+            gameType: normalizedGameType,
             generationTimeMs: genTimeMs,
             codeSizeBytes,
             qualityScore,
@@ -3169,6 +3376,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     taskId?: string;
     responseData: Record<string, any>;
     orientation?: CreateGameOrientation;
+    generationTier?: GenerationTier;
     runtimeContract?: RuntimeContractPayload | null;
     allowFinalTaskRecovery?: boolean;
   }): Promise<void> {
@@ -3179,6 +3387,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       taskId,
       responseData,
       orientation,
+      generationTier,
       runtimeContract,
       allowFinalTaskRecovery = false,
     } = params;
@@ -3215,6 +3424,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     const htmlTitleMatch = htmlCode.match(/<title>([^<]{1,60})<\/title>/i);
     const aiTitle = htmlTitleMatch ? htmlTitleMatch[1].trim() : null;
     const gameTitle = (aiTitle && aiTitle.length > 2) ? aiTitle : this.deriveTitle(gameSpec, description);
+    const normalizedGameType = normalizeGameType(
+      gameSpec?.game_type,
+      gameTitle,
+      description,
+    );
     const currentGame = await this.prisma.game.findUnique({ where: { id: gameId }, select: { title: true } });
     const isPlaceholderTitle = /^Game\s+[0-9a-f]{8}$/i.test(currentGame?.title || '');
 
@@ -3236,6 +3450,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         qaPassed,
         qaRetries,
         gameSpec,
+        gameType: normalizedGameType,
+        ...this.buildPersistedGenerationTierMetadata(generationTier),
         ...this.buildPersistedOrientationMetadata({ orientation, runtimeContract }),
         ...this.buildPersistedCoverMetadata({ gameId, coverUrl, taskId }),
         genTimeMs,
@@ -3249,7 +3465,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       updateData: {
         status: 'draft',
         version: 1,
-        gameType: gameSpec?.game_type || null,
+        gameType: normalizedGameType,
         ...(coverUrl ? { thumbnailUrl: coverUrl } : {}),
         qualityScore,
         failedStage: null,
@@ -3272,7 +3488,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           strategy,
           qaPassed,
           qaRetries,
-          gameType: gameSpec?.game_type || null,
+          gameType: normalizedGameType,
+          generationTier: this.normalizeRequestedGenerationTier(generationTier) || 'standard',
           generationTimeMs: genTimeMs,
           codeSizeBytes,
           qualityScore,
@@ -3641,6 +3858,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         taskId: task.id,
         responseData,
         orientation: this.normalizeRequestedOrientation(task.metadata?.orientation),
+        generationTier: this.normalizeRequestedGenerationTier(task.metadata?.generationTier),
         allowFinalTaskRecovery,
       });
     } else {
@@ -3656,6 +3874,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         currentCode: latestBundle?.htmlCode || '',
         responseData,
         orientation: this.normalizeRequestedOrientation(task.metadata?.orientation),
+        generationTier: this.normalizeRequestedGenerationTier(task.metadata?.generationTier),
         baseStatus: this.getIterationBaseStatus(task, currentGame),
         allowFinalTaskRecovery,
       });
@@ -3674,6 +3893,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     currentCode: string;
     responseData: Record<string, any>;
     orientation?: CreateGameOrientation;
+    generationTier?: GenerationTier;
     runtimeContract?: RuntimeContractPayload | null;
     baseStatus?: GameStatus;
     allowFinalTaskRecovery?: boolean;
@@ -3688,6 +3908,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       currentCode,
       responseData,
       orientation,
+      generationTier,
       runtimeContract,
       baseStatus,
       allowFinalTaskRecovery = false,
@@ -3719,6 +3940,9 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       gameId,
       version: nextVersion,
     });
+    const normalizedGameType = gameSpec?.game_type
+      ? normalizeGameType(gameSpec.game_type, feedback)
+      : null;
     this.emitStage(userId, gameId, 'publishing', {
       stage: 'publishing',
       attempt: 1,
@@ -3736,6 +3960,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         feedback,
         iterationType,
         ...(gameSpec ? { gameSpec } : {}),
+        ...(normalizedGameType ? { gameType: normalizedGameType } : {}),
+        ...this.buildPersistedGenerationTierMetadata(generationTier),
         ...this.buildPersistedOrientationMetadata({ orientation, runtimeContract }),
         ...this.buildPersistedCoverMetadata({ gameId, coverUrl, taskId }),
         genTimeMs,
@@ -3753,7 +3979,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         status: baseStatus || GameStatus.draft,
         ...(baseStatus === GameStatus.published
           ? {}
-          : (gameSpec?.game_type ? { gameType: gameSpec.game_type } : {})),
+          : (normalizedGameType ? { gameType: normalizedGameType } : {})),
         ...(baseStatus === GameStatus.published
           ? {}
           : (coverUrl ? { thumbnailUrl: coverUrl } : {})),
@@ -3779,7 +4005,9 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           generationTimeMs: genTimeMs,
           qaRetries,
           iterationRetries,
+          generationTier: this.normalizeRequestedGenerationTier(generationTier) || 'standard',
           version: nextVersion,
+          ...(normalizedGameType ? { gameType: normalizedGameType } : {}),
           ...(coverUrl ? { coverGenerated: true } : {}),
           ...runtimeQaSummary,
         },
@@ -3882,6 +4110,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     executionRegion?: string,
     options: CreateExecutionOptions = {},
   ): Promise<void> {
+    const generationTier = this.normalizeRequestedGenerationTier(options.generationTier) || 'standard';
     try {
       const resolvedTimeoutS = this.resolvePipelineTimeout(timeoutS);
       const aiEngineBaseUrls = await this.resolveAiEngineEndpointCandidates(executionRegion);
@@ -3889,10 +4118,10 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       const pipelineVersion = options.pipelineVersion === 'v1' ? 'v1' : 'v2';
       const runtimeProfileHint = this.inferRuntimeProfileHint(description, options.title);
       const promptBundleSnapshot = pipelineVersion === 'v2'
-        ? (options.promptBundleSnapshot ?? await this.buildPromptBundleSnapshot('create', runtimeProfileHint))
+        ? (options.promptBundleSnapshot ?? await this.buildPromptBundleSnapshot('create', runtimeProfileHint, generationTier))
         : null;
       const runtimeContract = pipelineVersion === 'v2'
-        ? (options.runtimeContract ?? await this.buildDefaultRuntimeContract('create', runtimeProfileHint, options.orientation))
+        ? (options.runtimeContract ?? await this.buildDefaultRuntimeContract('create', runtimeProfileHint, options.orientation, generationTier))
         : null;
       if (taskId) {
         await this.generationTaskService.markRunning(taskId!);
@@ -3913,6 +4142,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
             timeoutS: resolvedTimeoutS,
             taskId,
             orientation: options.orientation,
+            generationTier,
             access: options.access,
             promptBundleSnapshot: promptBundleSnapshot!,
             runtimeContract: runtimeContract!,
@@ -3962,6 +4192,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         taskId,
         responseData: snapshot.result || {},
         orientation: options.orientation,
+        generationTier,
         runtimeContract,
       });
     } catch (error) {
@@ -3992,6 +4223,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
             metadata: {
               description,
               orientation: options.orientation ?? null,
+              generationTier,
             },
           },
         }).catch((recoveryError) => {
@@ -4026,17 +4258,23 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     executionRegion?: string,
     options: IterateExecutionOptions = {},
   ): Promise<void> {
+    const generationTier = this.normalizeRequestedGenerationTier(options.generationTier)
+      ?? this.normalizeRequestedGenerationTier(options.sourceBundleContext?.latest_generation_tier)
+      ?? 'standard';
     try {
       const resolvedTimeoutS = this.resolvePipelineTimeout(timeoutS);
       const aiEngineBaseUrls = await this.resolveAiEngineEndpointCandidates(executionRegion);
       const resolvedRegion = this.resolveExecutionRegion(executionRegion);
       const pipelineVersion = options.pipelineVersion === 'v1' ? 'v1' : 'v2';
-      const runtimeProfileHint = this.inferRuntimeProfileHint(options.game?.gameType, feedback);
+      const runtimeProfileHint = this.inferRuntimeProfileHint(
+        this.resolveRuntimeHintGameType(options.sourceSpec, options.game),
+        feedback,
+      );
       const promptBundleSnapshot = pipelineVersion === 'v2'
-        ? (options.promptBundleSnapshot ?? await this.buildPromptBundleSnapshot('iterate', runtimeProfileHint))
+        ? (options.promptBundleSnapshot ?? await this.buildPromptBundleSnapshot('iterate', runtimeProfileHint, generationTier))
         : null;
       const runtimeContract = pipelineVersion === 'v2'
-        ? (options.runtimeContract ?? await this.buildDefaultRuntimeContract('iterate', runtimeProfileHint, options.orientation))
+        ? (options.runtimeContract ?? await this.buildDefaultRuntimeContract('iterate', runtimeProfileHint, options.orientation, generationTier))
         : null;
       if (taskId) {
         await this.generationTaskService.markRunning(taskId!);
@@ -4059,6 +4297,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
             taskId,
             game: options.game,
             orientation: options.orientation,
+            generationTier,
             sourceSpec: options.sourceSpec,
             sourceBundleContext: options.sourceBundleContext,
             promptBundleSnapshot: promptBundleSnapshot!,
@@ -4113,6 +4352,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         currentCode,
         responseData: snapshot.result || {},
         orientation: options.orientation,
+        generationTier,
         runtimeContract,
         baseStatus: taskId
           ? this.getIterationBaseStatus(
@@ -4155,6 +4395,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
               conversation: conversationHistory,
               baseStatus: options.game?.status || null,
               orientation: options.orientation ?? null,
+              generationTier,
             },
           },
         }).catch((recoveryError) => {
@@ -4180,11 +4421,10 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   private deriveTitle(gameSpec: any, description: string): string {
     // Try to extract a meaningful name from the game type
     const typeMap: Record<string, string> = {
-      snake: '贪吃蛇', platformer: '跑酷冒险', shooter: '太空射击',
-      puzzle: '益智谜题', rhythm: '音乐节奏', breakout: '打砖块',
-      whack_a_mole: '打地鼠', racing: '极速竞赛', defense: '防御塔',
-      card: '卡牌对决', rpg: '角色扮险', arcade: '街机游戏',
-      '2048': '2048', runner: '无尽跑酷', space: '太空飞船',
+      casual: '休闲游戏',
+      puzzle: '益智游戏',
+      educational: '教育游戏',
+      funny: '搞笑游戏',
     };
     const gameType = gameSpec?.game_type || '';
     if (typeMap[gameType]) return typeMap[gameType];
@@ -4658,6 +4898,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           visibility: true,
           version: true,
           thumbnailUrl: true,
+          forkedFrom: true,
         },
       });
       if (!game) {
@@ -4681,18 +4922,39 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         ? options.taskId.trim()
         : null;
       let artifactTaskId = explicitTaskId;
+      let artifactId: string | null = null;
 
       if (!artifactTaskId) {
         const bundle = await this.loadBundleForGame(game, {
           preferLiveVersion: !hasPrivilegedPreviewAccess,
         });
+        artifactId = this.extractPersistedCoverArtifactId(bundle?.metadata);
         artifactTaskId = this.extractPersistedCoverTaskId(id, bundle?.metadata)
           ?? this.extractCoverTaskIdFromUrl(id, game.thumbnailUrl);
       }
 
-      if (artifactTaskId) {
+      if (artifactId) {
+        artifact = await this.generationTaskService.findArtifactById(artifactId);
+        const isOwnArtifact = artifact?.gameId === id;
+        const isForkSourceArtifact = Boolean(
+          artifact
+          && game.forkedFrom
+          && artifact.gameId === game.forkedFrom,
+        );
+        if (artifact && !isOwnArtifact && !isForkSourceArtifact) {
+          artifact = null;
+        }
+      }
+
+      if (!artifact && artifactTaskId) {
         artifact = await this.generationTaskService.findLatestArtifactForTask(artifactTaskId, 'cover_image');
-        if (artifact && artifact.gameId !== id) {
+        const isOwnArtifact = artifact?.gameId === id;
+        const isForkSourceArtifact = Boolean(
+          artifact
+          && game.forkedFrom
+          && artifact.gameId === game.forkedFrom,
+        );
+        if (artifact && !isOwnArtifact && !isForkSourceArtifact) {
           artifact = null;
         }
       }
@@ -4700,7 +4962,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         artifact = await this.generationTaskService.findLatestArtifactForGame(id, 'cover_image');
       }
 
-      if (!artifact || artifact.gameId !== id) {
+      if (!artifact || (artifact.gameId !== id && artifact.gameId !== game.forkedFrom)) {
         throw new NotFoundException('Game cover not found');
       }
 
@@ -4859,6 +5121,9 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           ? Number(game.version)
           : 1;
       const promotedCoverUrl = this.resolvePersistedCoverUrlForBundle(id, bundle);
+      const publishGameType = dto.gameType !== undefined
+        ? normalizeGameType(dto.gameType, dto.title, dto.description, dto.tags)
+        : normalizeGameType(game.gameType, game.title, game.description, game.tags);
 
       const publishedGame = await this.prisma.game.update({
         where: { id },
@@ -4866,7 +5131,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           title: dto.title || game.title,
           description: dto.description || game.description,
           tags: dto.tags ?? game.tags ?? [],
-          gameType: dto.gameType || game.gameType,
+          gameType: publishGameType,
           version: liveVersion,
           ...(promotedCoverUrl ? { thumbnailUrl: promotedCoverUrl } : {}),
           status: 'published',
@@ -4950,13 +5215,16 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       }
       await this.ensureNoActiveTaskForGame(id);
 
-      const version = (game.version || 1) + 1;
-
       const bundle = await this.bundleService.getLatestBundle(id);
       if (!this.isBundlePlayable(bundle)) {
         throw new BadRequestException('Cannot iterate a game without a playable bundle');
       }
       const bundleHistory = await this.bundleService.getBundleHistory(id);
+      const version = this.resolveNextIterationVersion({
+        gameVersion: game.version,
+        latestBundle: bundle,
+        bundleHistory,
+      });
       const latestStoredConversation = [...bundleHistory]
         .reverse()
         .map((bundleVersion) => (
@@ -4976,6 +5244,12 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         ...bundleHistory,
         ...(bundle ? [bundle] : []),
       ]);
+      const requestedGenerationTier = this.normalizeRequestedGenerationTier(dto.generationTier)
+        ?? this.extractBundleGenerationTier([
+          ...bundleHistory,
+          ...(bundle ? [bundle] : []),
+        ])
+        ?? 'standard';
       const sourceSpec = this.extractBundleGameSpec([
         ...bundleHistory,
         ...(bundle ? [bundle] : []),
@@ -4995,14 +5269,20 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         executionRegion,
       });
       const timeoutS = this.resolveTaskTimeoutForPipelineVersion(dto.timeoutS, pipelineVersion);
+      const runtimeHintGameType = this.resolveRuntimeHintGameType(sourceSpec, game);
       const promptBundleSnapshot = pipelineVersion === 'v2'
-        ? await this.buildPromptBundleSnapshot('iterate', this.inferRuntimeProfileHint(game.gameType, dto.feedback))
+        ? await this.buildPromptBundleSnapshot(
+          'iterate',
+          this.inferRuntimeProfileHint(runtimeHintGameType, dto.feedback),
+          requestedGenerationTier,
+        )
         : null;
       const runtimeContract = pipelineVersion === 'v2'
         ? await this.buildDefaultRuntimeContract(
           'iterate',
-          this.inferRuntimeProfileHint(game.gameType, dto.feedback),
+          this.inferRuntimeProfileHint(runtimeHintGameType, dto.feedback),
           requestedOrientation,
+          requestedGenerationTier,
         )
         : null;
       const baseStatus = this.getIterationBaseStatus(null, game);
@@ -5053,6 +5333,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
             baseStatus,
             pipelineVersion,
             orientation: requestedOrientation ?? null,
+            generationTier: requestedGenerationTier,
           },
           client: tx,
         });
@@ -5074,6 +5355,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
             promptBundleSnapshot,
             runtimeContract,
             orientation: requestedOrientation,
+            generationTier: requestedGenerationTier,
             game,
             sourceSpec,
             sourceBundleContext,
