@@ -122,6 +122,7 @@ describe('GameService', () => {
       recordProgress: jest.fn(async () => undefined),
       markSucceeded: jest.fn(async () => undefined),
       markFailed: jest.fn(async () => undefined),
+      findArtifactById: jest.fn(),
       findLatestArtifactForTask: jest.fn(),
       findLatestArtifactForGame: jest.fn(),
       getLatestTaskForGame: jest.fn(),
@@ -169,7 +170,7 @@ describe('GameService', () => {
     });
     prisma.runtimeProfileCatalog.findMany.mockResolvedValue([
       {
-        id: 'lane_runner',
+        id: 'casual_lane',
         contractSchema: {
           inputContract: {
             requiredModes: ['pointer', 'touch'],
@@ -191,7 +192,7 @@ describe('GameService', () => {
         metadata: {},
       },
       {
-        id: 'topdown_action',
+        id: 'casual_action',
         contractSchema: {
           inputContract: {
             requiredModes: ['pointer', 'touch'],
@@ -213,7 +214,7 @@ describe('GameService', () => {
         metadata: {},
       },
       {
-        id: 'portrait_arcade',
+        id: 'casual_arcade',
         contractSchema: {
           inputContract: {
             requiredModes: ['pointer', 'touch'],
@@ -437,7 +438,7 @@ describe('GameService', () => {
         '请设计一个课堂小游戏，包含3道配套练习题，帮助学生巩固浮力知识点',
         '浮力的故事',
       ),
-    ).toBe('grid_puzzle');
+    ).toBe('puzzle_grid');
   });
 
   it('prefers persisted upstream base URLs when fetching upstream snapshots', async () => {
@@ -835,7 +836,7 @@ describe('GameService', () => {
       pipelineVersion: 'v2',
       promptBundleId: 'runtime-v2-default',
       promptBundleVersion: 1,
-      runtimeProfile: 'portrait_arcade',
+      runtimeProfile: 'casual_arcade',
       contractVersion: '1.0',
     }));
 
@@ -911,6 +912,74 @@ describe('GameService', () => {
     executePipelineTaskSpy.mockRestore();
   });
 
+  it('infers landscape orientation from request text when clients omit the field', async () => {
+    (configService.get as jest.Mock).mockImplementation((key: string, defaultValue?: string) => {
+      const values: Record<string, string> = {
+        AI_ENGINE_URL: 'http://ai-engine.test',
+        PUBLIC_API_BASE_URL: 'https://gamevallies.com',
+        APP_URL: 'https://gamevallies.com',
+        ADMIN_TOKEN: 'test-admin-token',
+        PIPELINE_VERSION: 'v2',
+        PIPELINE_V2_ENTRYPOINTS: 'create,iterate',
+      };
+      return values[key] ?? defaultValue;
+    });
+    const executePipelineTaskSpy = jest
+      .spyOn(service as any, 'executePipelineTask')
+      .mockResolvedValue(undefined);
+
+    prisma.userSubscription.updateMany.mockResolvedValue({ count: 0 });
+    prisma.userQuota.upsert.mockResolvedValue({
+      userId: 'user-v2-inferred-landscape',
+      totalFreeQuota: 5,
+      usedFreeQuota: 0,
+    });
+    prisma.userSubscription.findFirst.mockResolvedValue(null);
+    prisma.userQuota.update.mockResolvedValue({
+      userId: 'user-v2-inferred-landscape',
+      totalFreeQuota: 5,
+      usedFreeQuota: 1,
+    });
+    prisma.game.create.mockResolvedValue({ id: 'game-v2-inferred-landscape' });
+
+    await service.create('user-v2-inferred-landscape', {
+      title: '横屏闯关',
+      description: '做一个横屏跑跳闯关小游戏',
+    } as any);
+
+    expect(generationTaskService.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({
+        orientation: 'landscape',
+      }),
+    }));
+
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(executePipelineTaskSpy).toHaveBeenCalledWith(
+      expect.any(String),
+      'user-v2-inferred-landscape',
+      '做一个横屏跑跳闯关小游戏',
+      expect.any(Number),
+      expect.any(String),
+      expect.any(String),
+      expect.objectContaining({
+        orientation: 'landscape',
+        runtimeContract: expect.objectContaining({
+          canvas: expect.objectContaining({
+            orientation: 'landscape_first',
+          }),
+          mobile_layout: expect.objectContaining({
+            orientation: 'landscape_first',
+          }),
+          metadata: expect.objectContaining({
+            requested_orientation: 'landscape',
+            orientation: 'landscape_first',
+          }),
+        }),
+      }),
+    );
+    executePipelineTaskSpy.mockRestore();
+  });
+
   it('persists requested and runtime orientation in bundle metadata for completed create tasks', async () => {
     prisma.game.findUnique
       .mockResolvedValueOnce({ title: 'Game abcdef12' })
@@ -925,7 +994,7 @@ describe('GameService', () => {
       orientation: 'landscape',
       runtimeContract: {
         version: '1.0',
-        runtime_profile: 'lane_runner',
+        runtime_profile: 'casual_lane',
         metadata: {
           orientation: 'landscape_first',
         },
@@ -950,6 +1019,43 @@ describe('GameService', () => {
         runtimeOrientation: 'landscape_first',
       }),
     }));
+  });
+
+  it('normalizes generated game types into the curated 4-category catalog when create completes', async () => {
+    const persistGeneratedGameResultSpy = jest
+      .spyOn(service as any, 'persistGeneratedGameResult')
+      .mockResolvedValue(undefined);
+    const assertTaskCanPersistResultSpy = jest
+      .spyOn(service as any, 'assertTaskCanPersistResult')
+      .mockResolvedValue(undefined);
+
+    prisma.game.findUnique.mockResolvedValue({ title: 'Game abcdef12' });
+
+    await (service as any).completePipelineTask({
+      gameId: 'game-type-normalized',
+      userId: 'user-type-normalized',
+      description: 'make a runner game',
+      taskId: 'task-type-normalized',
+      responseData: {
+        html_code: '<!DOCTYPE html><html><head><title>Runner</title></head><body></body></html>',
+        game_spec: {
+          game_type: 'runner',
+        },
+      },
+    });
+
+    const persistCall = persistGeneratedGameResultSpy.mock.calls[0]?.[0] as any;
+    expect(persistCall.metadata.gameType).toBe('casual');
+    expect(persistCall.updateData.gameType).toBe('casual');
+    expect(generationTaskService.markSucceeded).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'task-type-normalized',
+      resultSummary: expect.objectContaining({
+        gameType: 'casual',
+      }),
+    }));
+
+    assertTaskCanPersistResultSpy.mockRestore();
+    persistGeneratedGameResultSpy.mockRestore();
   });
 
   it('clamps v2 create timeouts to at least 1200 seconds', async () => {
@@ -1166,11 +1272,11 @@ describe('GameService', () => {
         prompt_bundle_snapshot: expect.objectContaining({
           bundle_id: 'runtime-v2-default',
           layers: expect.objectContaining({
-            profile_few_shot: 'lane_runner',
+            profile_few_shot: 'casual_lane',
           }),
         }),
         runtime_contract: expect.objectContaining({
-          runtime_profile: 'lane_runner',
+          runtime_profile: 'casual_lane',
           canvas: expect.objectContaining({
             orientation: 'landscape_first',
           }),
@@ -1598,7 +1704,7 @@ describe('GameService', () => {
         orientation: 'landscape',
         runtimeContract: {
           version: '1.0',
-          runtime_profile: 'lane_runner',
+          runtime_profile: 'casual_lane',
           metadata: {
             orientation: 'landscape_first',
           },
@@ -1918,7 +2024,7 @@ describe('GameService', () => {
     });
 
     expect(gameState.thumbnailUrl).toBe(
-      'https://gamevallies.com/games/game-cover-create/cover?taskId=task-cover-create&v=1',
+      'https://gamevallies.com/api/v1/games/game-cover-create/cover?taskId=task-cover-create&v=1',
     );
     expect(generationTaskService.markSucceeded).toHaveBeenCalledWith(expect.objectContaining({
       taskId: 'task-cover-create',
@@ -1965,7 +2071,7 @@ describe('GameService', () => {
       status: 'published',
       visibility: 'public',
       version: 2,
-      thumbnailUrl: 'https://gamevallies.com/games/game-cover-live/cover?taskId=task-old&v=1',
+        thumbnailUrl: 'https://gamevallies.com/api/v1/games/game-cover-live/cover?taskId=task-old&v=1',
     });
     bundleService.getBundle.mockResolvedValue({
       gameId: 'game-cover-live',
@@ -1973,7 +2079,7 @@ describe('GameService', () => {
       htmlCode: '<!DOCTYPE html><html><body>live</body></html>',
       metadata: {
         coverTaskId: 'task-live',
-        coverUrl: 'https://gamevallies.com/games/game-cover-live/cover?taskId=task-live&v=2',
+          coverUrl: 'https://gamevallies.com/api/v1/games/game-cover-live/cover?taskId=task-live&v=2',
       },
     });
     generationTaskService.findLatestArtifactForTask.mockImplementation(async (taskId: string) => (
@@ -2000,6 +2106,72 @@ describe('GameService', () => {
     expect(bundleService.getBundle).toHaveBeenCalledWith('game-cover-live', 2);
     expect(generationTaskService.findLatestArtifactForTask).toHaveBeenCalledWith('task-live', 'cover_image');
     expect(generationTaskService.findLatestArtifactForGame).not.toHaveBeenCalled();
+  });
+
+  it('serves bundle-linked cover artifacts directly by artifact id', async () => {
+    prisma.game.findUnique.mockResolvedValue({
+      id: 'game-cover-artifact',
+      authorId: 'user-cover-artifact',
+      status: 'published',
+      visibility: 'public',
+      version: 3,
+      forkedFrom: null,
+      thumbnailUrl: 'https://gamevallies.com/api/v1/games/game-cover-artifact/cover?v=3',
+    });
+    bundleService.getBundle.mockResolvedValue({
+      gameId: 'game-cover-artifact',
+      version: 3,
+      htmlCode: '<!DOCTYPE html><html><body>cover</body></html>',
+      metadata: {
+        coverArtifactId: 'artifact-cover-direct',
+      },
+    });
+    generationTaskService.findArtifactById.mockResolvedValue({
+      id: 'artifact-cover-direct',
+      gameId: 'game-cover-artifact',
+      contentType: 'image/jpeg',
+      payloadText: Buffer.from('artifact-cover').toString('base64'),
+      metadata: { encoding: 'base64', truncated: false },
+    });
+
+    const cover = await service.getGameCoverContent('game-cover-artifact');
+
+    expect(cover.buffer.toString()).toBe('artifact-cover');
+    expect(cover.cacheControl).toBe('public, max-age=300');
+    expect(generationTaskService.findArtifactById).toHaveBeenCalledWith('artifact-cover-direct');
+    expect(generationTaskService.findLatestArtifactForTask).not.toHaveBeenCalled();
+  });
+
+  it('serves source-game cover artifacts for published forks that still reference the parent cover task', async () => {
+    prisma.game.findUnique.mockResolvedValue({
+      id: 'game-cover-fork',
+      authorId: 'user-cover-fork',
+      status: 'published',
+      visibility: 'public',
+      version: 1,
+      forkedFrom: 'game-cover-parent',
+      thumbnailUrl: 'https://gamevallies.com/api/v1/games/game-cover-fork/cover?taskId=task-parent-cover&v=1',
+    });
+    bundleService.getBundle.mockResolvedValue({
+      gameId: 'game-cover-fork',
+      version: 1,
+      htmlCode: '<!DOCTYPE html><html><body>fork</body></html>',
+      metadata: {
+        coverTaskId: 'task-parent-cover',
+      },
+    });
+    generationTaskService.findLatestArtifactForTask.mockResolvedValue({
+      gameId: 'game-cover-parent',
+      contentType: 'image/jpeg',
+      payloadText: Buffer.from('parent-cover').toString('base64'),
+      metadata: { encoding: 'base64', truncated: false },
+    });
+
+    const cover = await service.getGameCoverContent('game-cover-fork');
+
+    expect(cover.buffer.toString()).toBe('parent-cover');
+    expect(cover.cacheControl).toBe('public, max-age=300');
+    expect(generationTaskService.findLatestArtifactForTask).toHaveBeenCalledWith('task-parent-cover', 'cover_image');
   });
 
   it('supports the published v2 iterate journey with live version promotion on publish', async () => {
@@ -2644,7 +2816,7 @@ describe('GameService', () => {
       status: 'published',
       visibility: 'public',
       version: 2,
-      thumbnailUrl: 'https://gamevallies.com/games/game-republish-cover/cover?taskId=task-old&v=2',
+        thumbnailUrl: 'https://gamevallies.com/api/v1/games/game-republish-cover/cover?taskId=task-old&v=2',
       forkedFrom: null,
       title: 'Published Game',
       description: 'Published description',
@@ -2658,7 +2830,7 @@ describe('GameService', () => {
       htmlCode: '<!DOCTYPE html><html><body>candidate</body></html>',
       metadata: {
         coverTaskId: 'task-new',
-        coverUrl: 'https://gamevallies.com/games/game-republish-cover/cover?taskId=task-new&v=3',
+          coverUrl: 'https://gamevallies.com/api/v1/games/game-republish-cover/cover?taskId=task-new&v=3',
       },
     });
     prisma.game.update.mockResolvedValue({
@@ -2672,7 +2844,7 @@ describe('GameService', () => {
       where: { id: 'game-republish-cover' },
       data: expect.objectContaining({
         version: 3,
-        thumbnailUrl: 'https://gamevallies.com/games/game-republish-cover/cover?taskId=task-new&v=3',
+        thumbnailUrl: 'https://gamevallies.com/api/v1/games/game-republish-cover/cover?taskId=task-new&v=3',
         status: 'published',
       }),
     }));
@@ -2738,6 +2910,69 @@ describe('GameService', () => {
     expect(result.status).toBe('iterating');
 
     jest.runOnlyPendingTimers();
+    executeIterationTaskSpy.mockRestore();
+    jest.useRealTimers();
+  });
+
+  it('allocates a fresh candidate version when a published game already has an unpublished review bundle', async () => {
+    jest.useFakeTimers();
+    const executeIterationTaskSpy = jest
+      .spyOn(service as any, 'executeIterationTask')
+      .mockResolvedValue(undefined);
+
+    prisma.game.findUnique.mockResolvedValue({
+      id: 'game-published-candidate',
+      authorId: 'user-published-candidate',
+      version: 4,
+      status: 'published',
+      updatedAt: new Date('2026-03-30T06:00:00.000Z'),
+    });
+    prisma.generationTask.findFirst.mockResolvedValue(null);
+    bundleService.getLatestBundle.mockResolvedValue({
+      version: 5,
+      htmlCode: '<!DOCTYPE html><html><body>candidate-v5</body></html>',
+      metadata: {},
+    });
+    bundleService.getBundleHistory.mockResolvedValue([
+      {
+        version: 5,
+        htmlCode: '<!DOCTYPE html><html><body>candidate-v5</body></html>',
+        metadata: {},
+      },
+    ]);
+    generationTaskService.getLatestTaskForGame.mockResolvedValue(null);
+
+    const result = await service.iterate('game-published-candidate', 'user-published-candidate', {
+      feedback: 'add a sixth stage and more polish',
+    } as any);
+
+    expect(generationTaskService.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      gameId: 'game-published-candidate',
+      version: 6,
+      metadata: expect.objectContaining({
+        baseStatus: 'published',
+      }),
+    }));
+    jest.runOnlyPendingTimers();
+    expect(executeIterationTaskSpy).toHaveBeenCalledWith(
+      'game-published-candidate',
+      'user-published-candidate',
+      'add a sixth stage and more polish',
+      6,
+      expect.any(Array),
+      expect.stringContaining('candidate-v5'),
+      expect.any(Number),
+      expect.any(String),
+      expect.any(String),
+      expect.objectContaining({
+        game: expect.objectContaining({
+          version: 4,
+          status: 'published',
+        }),
+      }),
+    );
+    expect(result.version).toBe(6);
+
     executeIterationTaskSpy.mockRestore();
     jest.useRealTimers();
   });
@@ -3057,7 +3292,7 @@ describe('GameService', () => {
     expect(persistCall.updateData.gameType).toBeUndefined();
     expect(persistCall.updateData.thumbnailUrl).toBeUndefined();
     expect(persistCall.metadata.coverUrl).toBe(
-      'https://gamevallies.com/games/game-published-live/cover?taskId=task-published-live&v=3',
+      'https://gamevallies.com/api/v1/games/game-published-live/cover?taskId=task-published-live&v=3',
     );
     expect(persistCall.metadata.coverTaskId).toBe('task-published-live');
     assertTaskCanPersistResultSpy.mockRestore();
@@ -3132,5 +3367,131 @@ describe('GameService', () => {
     }));
     assertTaskCanPersistResultSpy.mockRestore();
     persistGeneratedGameResultSpy.mockRestore();
+  });
+
+  it('persists generation tier in prompt bundles and runtime contracts', async () => {
+    const promptBundle = await (service as any).buildPromptBundleSnapshot(
+      'create',
+      'casual_arcade',
+      'showcase',
+    );
+    const runtimeContract = await (service as any).buildDefaultRuntimeContract(
+      'create',
+      'casual_arcade',
+      undefined,
+      'showcase',
+    );
+
+    expect(promptBundle.layers.generation_tier).toBe('showcase');
+    expect(runtimeContract.metadata.generation_tier).toBe('showcase');
+  });
+
+  it('includes generation tier in create v2 payload metadata', () => {
+    const payload = (service as any).buildCreateV2Payload({
+      gameId: 'game-tier-create',
+      userId: 'user-tier-create',
+      title: 'Showcase Game',
+      description: 'build a premium arcade experience',
+      executionRegion: 'cn_shanghai',
+      timeoutS: 1200,
+      generationTier: 'showcase',
+      promptBundleSnapshot: {
+        bundle_id: 'runtime-v2-default',
+        bundle_version: 1,
+        resolved_at: new Date().toISOString(),
+        layers: {
+          entrypoint: 'create',
+          source: 'game-service',
+          generation_tier: 'showcase',
+        },
+      },
+      runtimeContract: {
+        runtime_profile: 'casual_arcade',
+        metadata: {
+          generation_tier: 'showcase',
+        },
+      },
+    });
+
+    expect(payload.generation_tier).toBe('showcase');
+    expect(payload.request_context.metadata.generation_tier).toBe('showcase');
+    expect(payload.normalized_request.generation_tier).toBe('showcase');
+    expect(payload.metadata.generation_tier).toBe('showcase');
+  });
+
+  it('inherits generation tier from bundle history for iterate payloads', () => {
+    const sourceBundleContext = (service as any).buildIterationSourceBundleContext({
+      game: {
+        id: 'game-tier-iter',
+        title: 'Tiered Game',
+        gameType: 'casual',
+        version: 2,
+      },
+      latestBundle: {
+        version: 2,
+        metadata: {
+          generationTier: 'showcase',
+          gameSpec: {
+            game_type: 'casual',
+          },
+        },
+      },
+      bundleHistory: [
+        {
+          version: 1,
+          metadata: {
+            generationTier: 'safe',
+          },
+        },
+        {
+          version: 2,
+          metadata: {
+            generationTier: 'showcase',
+          },
+        },
+      ],
+    });
+
+    const payload = (service as any).buildIterateV2Payload({
+      gameId: 'game-tier-iter',
+      userId: 'user-tier-iter',
+      feedback: 'make it more premium',
+      conversationHistory: [],
+      currentCode: '<!DOCTYPE html><html><body>old</body></html>',
+      executionRegion: 'cn_shanghai',
+      timeoutS: 1200,
+      game: {
+        status: 'draft',
+        visibility: 'private',
+        version: 2,
+        canPlay: true,
+        requireSubscription: false,
+      },
+      sourceSpec: {
+        game_type: 'casual',
+      },
+      sourceBundleContext,
+      promptBundleSnapshot: {
+        bundle_id: 'runtime-v2-default',
+        bundle_version: 1,
+        resolved_at: new Date().toISOString(),
+        layers: {
+          entrypoint: 'iterate',
+          source: 'game-service',
+          generation_tier: 'showcase',
+        },
+      },
+      runtimeContract: {
+        runtime_profile: 'casual_arcade',
+        metadata: {
+          generation_tier: 'showcase',
+        },
+      },
+    });
+
+    expect(sourceBundleContext.latest_generation_tier).toBe('showcase');
+    expect(payload.generation_tier).toBe('showcase');
+    expect(payload.request_context.metadata.generation_tier).toBe('showcase');
+    expect(payload.normalized_request.generation_tier).toBe('showcase');
   });
 });

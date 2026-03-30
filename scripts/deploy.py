@@ -106,6 +106,7 @@ REGION            = os.environ.get("VOLCENGINE_REGION",             "cn-shanghai
 REGISTRY          = os.environ.get("VOLCENGINE_REGISTRY",           "gamevallies-repo-cn-shanghai.cr.volces.com")
 NAMESPACE         = os.environ.get("VOLCENGINE_REGISTRY_NAMESPACE",  "")
 IMAGE_TAG         = os.environ.get("IMAGE_TAG",                     "").strip()
+DOCKER_BUILD_NO_CACHE = os.environ.get("DOCKER_BUILD_NO_CACHE",    "").strip().lower() in {"1", "true", "yes", "on"}
 VCR_USERNAME      = os.environ.get("VOLCENGINE_REGISTRY_USERNAME",  "")
 VCR_PASSWORD      = os.environ.get("VOLCENGINE_REGISTRY_PASSWORD",  "")
 VPC_ID            = os.environ.get("VOLCENGINE_VPC_ID",             "")
@@ -850,6 +851,7 @@ def _env_vars(port: int, svc: dict | None = None) -> dict:
             "ALIYUN_SMS_TPL_REGISTER", "ALIYUN_SMS_TPL_LOGIN",
             "VERIFY_CODE_SEND_INTERVAL_SECONDS",
             "WECHAT_MINIAPP_APP_ID", "WECHAT_MINIAPP_APP_SECRET",
+            "WECHAT_H5_APP_ID", "WECHAT_H5_APP_SECRET", "WECHAT_H5_OAUTH_SCOPE",
             "WECHAT_PAY_MODE", "WECHAT_PAY_MERCHANT_ID",
             "WECHAT_PAY_NOTIFY_URL", "WECHAT_PAY_SERIAL_NO",
             "WECHAT_PAY_PRIVATE_KEY", "WECHAT_PAY_PRIVATE_KEY_PATH",
@@ -894,11 +896,28 @@ def _ai_env_vars(port: int, svc: dict | None = None) -> dict:
     return env
 
 
-def build_envs_update(port: int, ai: bool = False, svc: dict | None = None) -> list:
+def _extract_existing_envs(function) -> dict[str, str]:
+    existing: dict[str, str] = {}
+    for item in getattr(function, "envs", None) or []:
+        key = getattr(item, "key", None)
+        value = getattr(item, "value", None)
+        if key:
+            existing[str(key)] = "" if value is None else str(value)
+    return existing
+
+
+def build_envs_update(
+    port: int,
+    ai: bool = False,
+    svc: dict | None = None,
+    existing: dict[str, str] | None = None,
+) -> list:
     src = _ai_env_vars(port, svc=svc) if ai else _env_vars(port, svc=svc)
+    merged = dict(existing or {})
+    merged.update(src)
     return [
         volcenginesdkvefaas.EnvForUpdateFunctionInput(key=k, value=v)
-        for k, v in src.items()
+        for k, v in merged.items()
     ]
 
 
@@ -1104,6 +1123,35 @@ def wait_image_sync(api: volcenginesdkvefaas.VEFAASApi, func_id: str, image: str
     return False
 
 
+def _build_update_function_request(
+    func_id: str,
+    svc: dict,
+    image: str,
+    existing_envs: dict[str, str],
+    *,
+    include_source_access_config: bool,
+):
+    is_ai = svc.get("type") == "python"
+    request_timeout = _desired_request_timeout(svc)
+    update_req = volcenginesdkvefaas.UpdateFunctionRequest(
+        id=func_id,
+        source_type="image",
+        source=image,
+        command=_svc_command(svc),
+        envs=build_envs_update(svc["port"], ai=is_ai, svc=svc, existing=existing_envs),
+        request_timeout=request_timeout,
+    )
+    if include_source_access_config:
+        update_req.source_access_config = volcenginesdkvefaas.SourceAccessConfigForUpdateFunctionInput(
+            username=VCR_USERNAME or AK,
+            password=VCR_PASSWORD or SK,
+        )
+    vpc = _vpc_config_update(svc)
+    if vpc:
+        update_req.vpc_config = vpc
+    return update_req
+
+
 def deploy_service(api: volcenginesdkvefaas.VEFAASApi, svc: dict) -> bool:
     name   = svc["name"]
     image  = image_uri(svc)
@@ -1129,6 +1177,8 @@ def deploy_service(api: volcenginesdkvefaas.VEFAASApi, svc: dict) -> bool:
             "-t", image,
             ROOT_DIR,
         ]
+    if DOCKER_BUILD_NO_CACHE:
+        build_cmd.insert(2, "--no-cache")
     if not shell(build_cmd):
         print(f"  ❌ docker build 失败")
         return False
@@ -1145,22 +1195,20 @@ def deploy_service(api: volcenginesdkvefaas.VEFAASApi, svc: dict) -> bool:
     func_id = get_function_id(api, name)
     if func_id:
         print(f"  ✅ 函数已存在（ID: {func_id}），执行更新...")
+        existing_envs: dict[str, str] = {}
+        try:
+            function_detail = api.get_function(volcenginesdkvefaas.GetFunctionRequest(id=func_id))
+            existing_envs = _extract_existing_envs(function_detail)
+        except Exception as e:
+            print(f"  ⚠️  读取现有环境变量失败，将仅使用本次部署环境: {e}")
         # 4a. 更新已有函数
-        update_req = volcenginesdkvefaas.UpdateFunctionRequest(
-            id=func_id,
-            source_type="image",
-            source=image,
-            source_access_config=volcenginesdkvefaas.SourceAccessConfigForUpdateFunctionInput(
-                username=VCR_USERNAME or AK,
-                password=VCR_PASSWORD or SK,
-            ),
-            command=_svc_command(svc),
-            envs=build_envs_update(svc["port"], ai=is_ai, svc=svc),
-            request_timeout=request_timeout,
+        update_req = _build_update_function_request(
+            func_id,
+            svc,
+            image,
+            existing_envs,
+            include_source_access_config=True,
         )
-        vpc = _vpc_config_update(svc)
-        if vpc:
-            update_req.vpc_config = vpc
         try:
             api.update_function(update_req)
         except Exception as e:
@@ -1176,7 +1224,25 @@ def deploy_service(api: volcenginesdkvefaas.VEFAASApi, svc: dict) -> bool:
     # 5. 等待镜像缓存就绪
     print(f"  ⏳ 等待镜像缓存就绪...")
     if not wait_image_sync(api, func_id, image):
-        return False
+        if func_id and VCR_USERNAME and VCR_PASSWORD:
+            print(f"  🔁 镜像同步失败，尝试保留函数现有拉镜像凭据后重试...")
+            try:
+                retry_req = _build_update_function_request(
+                    func_id,
+                    svc,
+                    image,
+                    existing_envs if func_id else {},
+                    include_source_access_config=False,
+                )
+                api.update_function(retry_req)
+                print(f"  ✅ 已使用现有拉镜像凭据重新提交草稿")
+            except Exception as e:
+                print(f"  ❌ 保留现有拉镜像凭据重试失败: {e}")
+                return False
+            if not wait_image_sync(api, func_id, image):
+                return False
+        else:
+            return False
 
     if not ensure_function_instance_limits(api, func_id, svc):
         return False
