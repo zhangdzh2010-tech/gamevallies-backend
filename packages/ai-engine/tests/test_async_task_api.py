@@ -21,11 +21,13 @@ from src.api.models import (
     IterateV2Request,
     RunPipelineResponse,
     RunPipelineV2Request,
+    VisualStyle,
 )
 from src.api.endpoints import generate as generate_api
 from src.engine.pipeline_orchestrator import PipelineExecutionError
 from src.main import app
 from src.services.async_task_manager import AsyncTaskManager, task_manager
+from src.services.task_memory import task_memory
 
 TEST_V2_PROMPT_BUNDLE_SNAPSHOT = {
     "bundle_id": "runtime-v2-default",
@@ -39,7 +41,7 @@ TEST_V2_PROMPT_BUNDLE_SNAPSHOT = {
 
 TEST_V2_RUNTIME_CONTRACT = {
     "version": "1.0",
-    "runtime_profile": "portrait_arcade",
+    "runtime_profile": "casual_arcade",
     "canvas": {
         "requires_canvas_2d": True,
         "must_render_within_ms": 1500,
@@ -77,14 +79,14 @@ TEST_V2_RUNTIME_CONTRACT = {
 
 def _resolve_test_prompt_bundle(snapshot, runtime_profile=None):
     layers = dict(snapshot.layers or {})
-    layers["profile_few_shot"] = runtime_profile or "portrait_arcade"
+    layers["profile_few_shot"] = runtime_profile or "casual_arcade"
     layers["resolved_prompts"] = {
         "locked_contract": {"key": "bundle.runtime.locked_contract", "content": "LOCKED CONTRACT"},
         "product_policy": {"key": "bundle.product.policy", "content": "PRODUCT POLICY"},
         "intent_parse": {"key": "bundle.product.intent_parse", "content": "INTENT PARSE"},
         "logic_generate": {"key": "bundle.product.logic_generate", "content": "LOGIC GENERATE"},
         "profile_few_shot": {
-            "key": f"bundle.runtime.profile.{runtime_profile or 'portrait_arcade'}",
+            "key": f"bundle.runtime.profile.{runtime_profile or 'casual_arcade'}",
             "content": "PROFILE FEW SHOT",
         },
         "repair_input_contract": {"key": "bundle.repair.input_contract", "content": "REPAIR INPUT"},
@@ -186,6 +188,30 @@ class TestAsyncTaskManager(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_task_timeout_marks_task_failed(self):
+        manager = AsyncTaskManager()
+
+        async def scenario():
+            async def runner(_task_id: str):
+                await asyncio.sleep(2)
+
+            handle = await manager.create_task(
+                task_type=AsyncTaskType.pipeline_run,
+                game_id="game-timeout",
+                user_id="user-timeout",
+                timeout_s=1,
+                runner=runner,
+            )
+
+            await asyncio.sleep(1.1)
+            snapshot = await manager.get_task(handle.task_id)
+
+            self.assertIsNotNone(snapshot)
+            self.assertEqual(snapshot.status, AsyncTaskStatus.failed)
+            self.assertEqual(snapshot.error.message, "Task timed out")
+
+        asyncio.run(scenario())
+
 
 class TestAsyncTaskApi(unittest.TestCase):
     def tearDown(self):
@@ -236,7 +262,7 @@ class TestAsyncTaskApi(unittest.TestCase):
         fake_result = RunPipelineResponse(
             game_id="game-async",
             html_code="<!DOCTYPE html><html></html>",
-            game_spec=GameSpec(game_type="runner"),
+            game_spec=GameSpec(game_type="casual"),
             strategy="llm",
             qa_passed=True,
             qa_retries=0,
@@ -287,7 +313,7 @@ class TestAsyncTaskApi(unittest.TestCase):
         fake_result = RunPipelineResponse(
             game_id="game-sync",
             html_code="<!DOCTYPE html><html></html>",
-            game_spec=GameSpec(game_type="runner"),
+            game_spec=GameSpec(game_type="casual"),
             strategy="llm",
             qa_passed=True,
             qa_retries=0,
@@ -362,7 +388,7 @@ class TestAsyncTaskApi(unittest.TestCase):
         fake_result = RunPipelineResponse(
             game_id="game-legacy",
             html_code="<!DOCTYPE html><html></html>",
-            game_spec=GameSpec(game_type="runner"),
+            game_spec=GameSpec(game_type="casual"),
             strategy="llm",
             qa_passed=True,
             qa_retries=0,
@@ -398,7 +424,7 @@ class TestAsyncTaskApi(unittest.TestCase):
         fake_result = RunPipelineResponse(
             game_id="game-v1",
             html_code="<!DOCTYPE html><html></html>",
-            game_spec=GameSpec(game_type="runner"),
+            game_spec=GameSpec(game_type="casual"),
             strategy="llm",
             qa_passed=True,
             qa_retries=0,
@@ -537,6 +563,44 @@ class TestAsyncTaskApi(unittest.TestCase):
         self.assertEqual(await_args[1].kwargs["artifact_type"], "runtime_qa_report")
         self.assertEqual(await_args[2].kwargs["artifact_type"], "task_failure")
 
+    def test_v2_failure_records_structured_diagnostics_for_opaque_exception_messages(self):
+        request = RunPipelineV2Request(
+            game_id="game-v2-opaque-failure",
+            user_id="user-v2-opaque-failure",
+            raw_user_input="make a puzzle game",
+        )
+        relay_artifact = AsyncMock(return_value="artifact-task-failure")
+
+        with patch_v2_prompt_defaults(), patch(
+            "src.api.endpoints.generate._persist_v2_request_artifacts",
+            new=AsyncMock(return_value=[]),
+        ), patch(
+            "src.api.endpoints.generate._relay_stage_summary_to_game_service",
+            new=AsyncMock(),
+        ), patch(
+            "src.api.endpoints.generate._relay_task_failure_to_game_service",
+            new=AsyncMock(),
+        ), patch(
+            "src.api.endpoints.generate._relay_artifact_to_game_service",
+            new=relay_artifact,
+        ), patch(
+            "src.api.endpoints.generate._v2_runner.run",
+            new=AsyncMock(side_effect=KeyError(4)),
+        ):
+            with self.assertRaises(KeyError):
+                asyncio.run(
+                    generate_api._run_pipeline_v2_internal(
+                        request,
+                        task_id="task-v2-opaque-failure",
+                    )
+                )
+
+        payload = relay_artifact.await_args.kwargs["payload"]
+        self.assertIn("KeyError", payload["message"])
+        self.assertEqual(payload["diagnostics"]["exceptionClass"], "KeyError")
+        self.assertIn("KeyError", payload["diagnostics"]["exceptionRepr"])
+        self.assertIn("KeyError", payload["diagnostics"]["tracebackExcerpt"])
+
     def test_v2_internal_uses_runner_instead_of_legacy_internal(self):
         request = RunPipelineV2Request(
             game_id="game-v2-internal",
@@ -546,7 +610,7 @@ class TestAsyncTaskApi(unittest.TestCase):
         fake_result = RunPipelineResponse(
             game_id="game-v2-internal",
             html_code="<!DOCTYPE html><html></html>",
-            game_spec=GameSpec(game_type="runner"),
+            game_spec=GameSpec(game_type="casual"),
             strategy="llm",
             qa_passed=True,
             qa_retries=1,
@@ -554,7 +618,7 @@ class TestAsyncTaskApi(unittest.TestCase):
             code_size_bytes=64,
             quality_score=8.9,
             quality_breakdown={"qa_penalty": 0},
-            runtime_profile="lane_runner",
+            runtime_profile="casual_lane",
             contract_version="1.0",
         )
 
@@ -571,9 +635,55 @@ class TestAsyncTaskApi(unittest.TestCase):
                 )
 
         self.assertEqual(response.pipeline_version, "v2")
-        self.assertEqual(response.runtime_profile, "lane_runner")
+        self.assertEqual(response.runtime_profile, "casual_lane")
         self.assertIsNotNone(mock_runner.await_args)
         self.assertIsNone(mock_legacy.await_args)
+
+    def test_v2_internal_initializes_and_clears_task_memory(self):
+        request = RunPipelineV2Request(
+            game_id="game-v2-memory",
+            user_id="user-v2-memory",
+            raw_user_input="make a funny game about office chaos",
+            title="Office Chaos",
+        )
+        fake_result = RunPipelineResponse(
+            game_id="game-v2-memory",
+            html_code="<!DOCTYPE html><html></html>",
+            game_spec=GameSpec(game_type="funny"),
+            strategy="llm",
+            qa_passed=True,
+            qa_retries=0,
+            generation_time_ms=100,
+            code_size_bytes=64,
+            quality_score=8.5,
+            quality_breakdown={"qa_penalty": 0},
+            runtime_profile="casual_arcade",
+            contract_version="1.0",
+        )
+
+        async def fake_run(*args, **kwargs):
+            record = await task_memory.get("task-v2-memory")
+            self.assertIsNotNone(record)
+            self.assertEqual(record.task_meta.get("entrypoint"), "create")
+            self.assertEqual(record.task_meta.get("title"), "Office Chaos")
+            return fake_result
+
+        with patch_v2_prompt_defaults(), patch(
+            "src.api.endpoints.generate._v2_runner.run",
+            new=AsyncMock(side_effect=fake_run),
+        ), patch(
+            "src.api.endpoints.generate._relay_stage_summary_to_game_service",
+            new=AsyncMock(),
+        ):
+            response = asyncio.run(
+                generate_api._run_pipeline_v2_internal(
+                    request,
+                    task_id="task-v2-memory",
+                )
+            )
+
+        self.assertEqual(response.runtime_profile, "casual_arcade")
+        self.assertIsNone(asyncio.run(task_memory.get("task-v2-memory")))
 
     def test_v2_create_internal_does_not_persist_iteration_history_artifacts(self):
         request = RunPipelineV2Request(
@@ -584,7 +694,7 @@ class TestAsyncTaskApi(unittest.TestCase):
         fake_result = RunPipelineResponse(
             game_id="game-v2-create-artifacts",
             html_code="<!DOCTYPE html><html></html>",
-            game_spec=GameSpec(game_type="runner"),
+            game_spec=GameSpec(game_type="casual"),
             strategy="llm",
             qa_passed=True,
             qa_retries=1,
@@ -592,7 +702,7 @@ class TestAsyncTaskApi(unittest.TestCase):
             code_size_bytes=64,
             quality_score=8.9,
             quality_breakdown={"qa_penalty": 0},
-            runtime_profile="lane_runner",
+            runtime_profile="casual_lane",
             contract_version="1.0",
         )
         relay_artifact = AsyncMock(
@@ -630,7 +740,14 @@ class TestAsyncTaskApi(unittest.TestCase):
         fake_result = RunPipelineResponse(
             game_id="game-v2-cover-artifacts",
             html_code="<!DOCTYPE html><html><body>cover</body></html>",
-            game_spec=GameSpec(game_type="runner"),
+            game_spec=GameSpec(
+                game_type="casual",
+                visual_style=VisualStyle(
+                    theme="arcade",
+                    visual_pack="neon_glass",
+                    render_style_intensity="high",
+                ),
+            ),
             strategy="llm",
             qa_passed=True,
             qa_retries=1,
@@ -638,7 +755,7 @@ class TestAsyncTaskApi(unittest.TestCase):
             code_size_bytes=64,
             quality_score=8.9,
             quality_breakdown={"qa_penalty": 0},
-            runtime_profile="lane_runner",
+            runtime_profile="casual_lane",
             contract_version="1.0",
         )
         relay_artifact = AsyncMock(
@@ -647,7 +764,7 @@ class TestAsyncTaskApi(unittest.TestCase):
         capture_cover = AsyncMock(return_value={
             "payload": "ZmFrZS1jb3Zlcg==",
             "content_type": "image/jpeg",
-            "metadata": {"selectedFrame": "settled_frame", "coverStyle": "posterized_overlay"},
+            "metadata": {"selectedFrame": "settled_frame", "coverStyle": "runtime_frame_capture"},
         })
 
         with patch_v2_prompt_defaults(), patch.object(
@@ -677,9 +794,57 @@ class TestAsyncTaskApi(unittest.TestCase):
         artifact_types = [call.kwargs["artifact_type"] for call in relay_artifact.await_args_list]
         self.assertIn("cover_image", artifact_types)
         self.assertEqual(capture_cover.await_args.kwargs["title"], "Wide Runner")
-        self.assertEqual(capture_cover.await_args.kwargs["game_type"], "runner")
+        self.assertEqual(capture_cover.await_args.kwargs["game_type"], "casual")
         self.assertEqual(capture_cover.await_args.kwargs["theme"], "arcade")
+        self.assertEqual(capture_cover.await_args.kwargs["visual_pack"], "neon_glass")
+        self.assertEqual(capture_cover.await_args.kwargs["render_style_intensity"], "high")
         self.assertFalse(capture_cover.await_args.kwargs.get("updated", False))
+
+    def test_admin_cover_capture_endpoint_returns_captured_artifact(self):
+        capture_cover = AsyncMock(return_value={
+            "payload": "ZmFrZS1jb3Zlcg==",
+            "content_type": "image/jpeg",
+            "metadata": {
+                "selectedFrame": "settled_frame",
+                "coverStyle": "runtime_frame_capture",
+                "coverVariant": "direct_runtime_frame_v2",
+            },
+        })
+
+        with patch.object(generate_api.settings, "ADMIN_TOKEN", "admin-cover-token"), patch(
+            "src.api.endpoints.generate._maybe_capture_cover_artifact",
+            new=capture_cover,
+        ):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/v1/ai/covers/capture",
+                    headers={"x-admin-token": "admin-cover-token"},
+                    json={
+                        "game_id": "game-cover-capture",
+                        "user_id": "user-cover-capture",
+                        "html_code": "<!DOCTYPE html><html><body>cover</body></html>",
+                        "orientation": "landscape_first",
+                        "timeout_s": 12,
+                        "title": "Orbital Office",
+                        "game_type": "funny",
+                        "theme": "neon_city",
+                        "runtime_profile": "casual_arcade",
+                        "visual_pack": "comic_bounce",
+                        "render_style_intensity": "high",
+                        "updated": False,
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["captured"])
+        self.assertEqual(body["content_type"], "image/jpeg")
+        self.assertEqual(body["payload"], "ZmFrZS1jb3Zlcg==")
+        self.assertEqual(body["metadata"]["coverVariant"], "direct_runtime_frame_v2")
+        self.assertEqual(capture_cover.await_args.kwargs["orientation"], "landscape_first")
+        self.assertEqual(capture_cover.await_args.kwargs["title"], "Orbital Office")
+        self.assertEqual(capture_cover.await_args.kwargs["visual_pack"], "comic_bounce")
+        self.assertEqual(capture_cover.await_args.kwargs["render_style_intensity"], "high")
 
     def test_v2_iteration_internal_uses_runner_instead_of_legacy_internal(self):
         request = IterateV2Request(
@@ -698,7 +863,7 @@ class TestAsyncTaskApi(unittest.TestCase):
             generation_time_ms=456,
             qa_retries=1,
             iteration_retries=0,
-            runtime_profile="lane_runner",
+            runtime_profile="casual_lane",
             contract_version="1.0",
         )
 
@@ -715,7 +880,7 @@ class TestAsyncTaskApi(unittest.TestCase):
                 )
 
         self.assertEqual(response.pipeline_version, "v2")
-        self.assertEqual(response.runtime_profile, "lane_runner")
+        self.assertEqual(response.runtime_profile, "casual_lane")
         self.assertIsNotNone(mock_runner.await_args)
         self.assertIsNone(mock_legacy.await_args)
 
@@ -737,10 +902,18 @@ class TestAsyncTaskApi(unittest.TestCase):
             html_code="<!DOCTYPE html><html><body>new</body></html>",
             changes=["Applied: add more hazards"],
             iteration_type="element_change",
+            game_spec=GameSpec(
+                game_type="casual",
+                visual_style=VisualStyle(
+                    theme="arcade",
+                    visual_pack="pixel_arcade",
+                    render_style_intensity="balanced",
+                ),
+            ),
             generation_time_ms=456,
             qa_retries=1,
             iteration_retries=0,
-            runtime_profile="lane_runner",
+            runtime_profile="casual_lane",
             contract_version="1.0",
         )
         capture_cover = AsyncMock(return_value=None)
@@ -763,8 +936,10 @@ class TestAsyncTaskApi(unittest.TestCase):
             )
 
         self.assertEqual(capture_cover.await_args.kwargs["title"], "Wide Runner")
-        self.assertEqual(capture_cover.await_args.kwargs["game_type"], "runner")
-        self.assertEqual(capture_cover.await_args.kwargs["runtime_profile"], "lane_runner")
+        self.assertEqual(capture_cover.await_args.kwargs["game_type"], "casual")
+        self.assertEqual(capture_cover.await_args.kwargs["runtime_profile"], "casual_lane")
+        self.assertEqual(capture_cover.await_args.kwargs["visual_pack"], "pixel_arcade")
+        self.assertEqual(capture_cover.await_args.kwargs["render_style_intensity"], "balanced")
         self.assertTrue(capture_cover.await_args.kwargs["updated"])
 
     def test_v2_iteration_internal_persists_source_history_artifacts(self):
@@ -776,7 +951,7 @@ class TestAsyncTaskApi(unittest.TestCase):
                 "feedback": "add five levels",
                 "conversation": [],
             },
-            source_spec=GameSpec(game_type="runner", intent_summary="keep runner"),
+            source_spec=GameSpec(game_type="casual", intent_summary="keep runner"),
             source_bundle_context={
                 "title": "Pig Runner",
                 "latest_bundle_version": 3,
@@ -787,11 +962,11 @@ class TestAsyncTaskApi(unittest.TestCase):
             html_code="<!DOCTYPE html><html><body>new</body></html>",
             changes=["Applied: add five levels"],
             iteration_type="element_change",
-            game_spec=GameSpec(game_type="runner"),
+            game_spec=GameSpec(game_type="casual"),
             generation_time_ms=456,
             qa_retries=1,
             iteration_retries=0,
-            runtime_profile="lane_runner",
+            runtime_profile="casual_lane",
             contract_version="1.0",
         )
         relay_artifact = AsyncMock(

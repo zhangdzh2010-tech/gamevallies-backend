@@ -110,6 +110,21 @@ def _coerce_optional_positive_int(value: Any) -> Optional[int]:
     return parsed if parsed > 0 else None
 
 
+def _coerce_optional_bool(value: Any) -> Optional[bool]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    return None
+
+
 def _extract_provider_numeric_cap(extra_config: Any, *keys: str) -> Optional[int]:
     if not isinstance(extra_config, dict):
         return None
@@ -118,6 +133,30 @@ def _extract_provider_numeric_cap(extra_config: Any, *keys: str) -> Optional[int
             normalized = _coerce_optional_positive_int(extra_config.get(key))
             if normalized is not None:
                 return normalized
+    return None
+
+
+def _extract_provider_bool(extra_config: Any, *keys: str) -> Optional[bool]:
+    if not isinstance(extra_config, dict):
+        return None
+    for key in keys:
+        if key in extra_config:
+            normalized = _coerce_optional_bool(extra_config.get(key))
+            if normalized is not None:
+                return normalized
+    return None
+
+
+def _extract_provider_string(extra_config: Any, *keys: str) -> Optional[str]:
+    if not isinstance(extra_config, dict):
+        return None
+    for key in keys:
+        raw = extra_config.get(key)
+        if raw is None:
+            continue
+        normalized = str(raw).strip()
+        if normalized:
+            return normalized
     return None
 
 
@@ -205,6 +244,9 @@ class ProviderRecord:
     extra_config: dict[str, Any]
     context_window: Optional[int]
     max_tokens: Optional[int]
+    tokenizer_family: Optional[str]
+    strict_admission: bool
+    safety_margin_tokens: Optional[int]
     updated_at: float
 
 
@@ -237,6 +279,9 @@ class ResolvedRoute:
     connect_timeout_s: int
     context_window: Optional[int]
     max_tokens: Optional[int]
+    tokenizer_family: Optional[str]
+    strict_admission: bool
+    safety_margin_tokens: Optional[int]
     step_key: str
     config_version: int
     route_snapshot: dict[str, Any]
@@ -308,6 +353,12 @@ class LLMGateway:
             updated_at = row.get("updated_at")
             updated_ts = int(updated_at.timestamp()) if updated_at else int(time.time())
             version_candidates.append(updated_ts)
+            extra_config = _loads_json(row.get("extra_config"), {})
+            context_window = _extract_provider_numeric_cap(extra_config, "contextWindow", "context_window")
+            max_tokens = _extract_provider_numeric_cap(extra_config, "maxTokens", "max_tokens")
+            strict_admission = _extract_provider_bool(extra_config, "strictAdmission", "strict_admission")
+            if strict_admission is None:
+                strict_admission = bool(context_window and max_tokens)
             providers[row["id"]] = ProviderRecord(
                 id=row["id"],
                 name=row["name"],
@@ -322,9 +373,12 @@ class LLMGateway:
                 enabled=bool(row.get("enabled", True)),
                 priority=int(row.get("priority") or 100),
                 description=row.get("description"),
-                extra_config=_loads_json(row.get("extra_config"), {}),
-                context_window=_extract_provider_numeric_cap(_loads_json(row.get("extra_config"), {}), "contextWindow", "context_window"),
-                max_tokens=_extract_provider_numeric_cap(_loads_json(row.get("extra_config"), {}), "maxTokens", "max_tokens"),
+                extra_config=extra_config,
+                context_window=context_window,
+                max_tokens=max_tokens,
+                tokenizer_family=_extract_provider_string(extra_config, "tokenizerFamily", "tokenizer_family"),
+                strict_admission=strict_admission,
+                safety_margin_tokens=_extract_provider_numeric_cap(extra_config, "safetyMarginTokens", "safety_margin_tokens"),
                 updated_at=float(updated_ts),
             )
 
@@ -417,6 +471,9 @@ class LLMGateway:
             ),
             context_window=None,
             max_tokens=None,
+            tokenizer_family=None,
+            strict_admission=False,
+            safety_margin_tokens=None,
             step_key=step_key,
             config_version=self._config_version,
             route_snapshot={
@@ -425,6 +482,7 @@ class LLMGateway:
                 "region": settings.SERVICE_REGION or "cn_shanghai",
                 "context_window": None,
                 "max_tokens": None,
+                "strict_admission": False,
             },
         )
 
@@ -493,6 +551,82 @@ class LLMGateway:
 
         return ordered
 
+    @staticmethod
+    def _provider_meets_output_floor(
+        provider: ProviderRecord,
+        required_output_tokens: Optional[int],
+        *,
+        allow_unknown: bool,
+    ) -> bool:
+        floor = _coerce_optional_positive_int(required_output_tokens)
+        if floor is None:
+            return True
+        provider_cap = _coerce_optional_positive_int(provider.max_tokens)
+        if provider_cap is None:
+            return allow_unknown
+        return provider_cap >= floor
+
+    def _augment_provider_candidates_for_failover(
+        self,
+        providers: list[ProviderRecord],
+        *,
+        service_region: str,
+        required_output_tokens: Optional[int],
+        allow_implicit_fallbacks: bool,
+    ) -> tuple[list[ProviderRecord], set[str]]:
+        if not allow_implicit_fallbacks:
+            return providers, set()
+
+        existing_ids = {provider.id for provider in providers}
+        implicit_ids: set[str] = set()
+
+        def append_candidates(region_matched: bool) -> None:
+            for provider in self._providers.values():
+                if provider.id in existing_ids:
+                    continue
+                if region_matched and provider.region != service_region:
+                    continue
+                if not region_matched and provider.region == service_region:
+                    continue
+                if not self._provider_meets_output_floor(
+                    provider,
+                    required_output_tokens,
+                    allow_unknown=False,
+                ):
+                    continue
+                providers.append(provider)
+                existing_ids.add(provider.id)
+                implicit_ids.add(provider.id)
+
+        append_candidates(region_matched=True)
+        append_candidates(region_matched=False)
+        return providers, implicit_ids
+
+    def _prioritize_provider_candidates_for_output_floor(
+        self,
+        providers: list[ProviderRecord],
+        *,
+        required_output_tokens: Optional[int],
+    ) -> list[ProviderRecord]:
+        floor = _coerce_optional_positive_int(required_output_tokens)
+        if floor is None:
+            return providers
+
+        capable: list[ProviderRecord] = []
+        uncertain: list[ProviderRecord] = []
+        insufficient: list[ProviderRecord] = []
+        for provider in providers:
+            provider_cap = _coerce_optional_positive_int(provider.max_tokens)
+            if provider_cap is None:
+                uncertain.append(provider)
+            elif provider_cap >= floor:
+                capable.append(provider)
+            else:
+                insufficient.append(provider)
+        if capable:
+            return capable + uncertain + insufficient
+        return uncertain + insufficient
+
     def _build_resolved_route(
         self,
         *,
@@ -503,6 +637,8 @@ class LLMGateway:
         route_match_strategy: Optional[str] = None,
         prefer_fast: bool = False,
         model_override: Optional[str] = None,
+        explicit_fallback_only: Optional[bool] = None,
+        extra_route_snapshot: Optional[dict[str, Any]] = None,
     ) -> ResolvedRoute:
         if model_override:
             resolved_model = model_override
@@ -528,6 +664,9 @@ class LLMGateway:
             connect_timeout_s=int(route.connect_timeout_s if route and route.connect_timeout_s is not None else provider.connect_timeout_s),
             context_window=provider.context_window,
             max_tokens=provider.max_tokens,
+            tokenizer_family=provider.tokenizer_family,
+            strict_admission=provider.strict_admission,
+            safety_margin_tokens=provider.safety_margin_tokens,
             step_key=step_key,
             config_version=self._config_version,
             route_snapshot={
@@ -542,9 +681,13 @@ class LLMGateway:
                 "requested_step_key": step_key,
                 "matched_step_key": matched_step_key or step_key,
                 "route_match_strategy": route_match_strategy or ("exact" if route else "none"),
-                "explicit_fallback_only": route is not None,
+                "explicit_fallback_only": bool(route is not None) if explicit_fallback_only is None else bool(explicit_fallback_only),
                 "context_window": provider.context_window,
                 "max_tokens": provider.max_tokens,
+                "tokenizer_family": provider.tokenizer_family,
+                "strict_admission": provider.strict_admission,
+                "safety_margin_tokens": provider.safety_margin_tokens,
+                **(extra_route_snapshot or {}),
             },
         )
 
@@ -576,6 +719,8 @@ class LLMGateway:
         step_key: str,
         prefer_fast: bool = False,
         model_override: Optional[str] = None,
+        allow_implicit_fallbacks: bool = False,
+        required_output_tokens: Optional[int] = None,
     ) -> list[ResolvedRoute]:
         self._ensure_loaded()
         if not self._providers:
@@ -587,6 +732,17 @@ class LLMGateway:
             region=service_region,
         )
         providers = self._ordered_provider_candidates(route=route, service_region=service_region)
+        base_provider_ids = {provider.id for provider in providers}
+        providers, implicit_provider_ids = self._augment_provider_candidates_for_failover(
+            providers,
+            service_region=service_region,
+            required_output_tokens=required_output_tokens,
+            allow_implicit_fallbacks=allow_implicit_fallbacks,
+        )
+        providers = self._prioritize_provider_candidates_for_output_floor(
+            providers,
+            required_output_tokens=required_output_tokens,
+        )
         if not providers:
             return [self._fallback_route(step_key=step_key, prefer_fast=prefer_fast, model_override=model_override)]
 
@@ -599,6 +755,13 @@ class LLMGateway:
                 route_match_strategy=route_match_strategy,
                 prefer_fast=prefer_fast,
                 model_override=model_override,
+                explicit_fallback_only=(
+                    route is not None and provider.id in base_provider_ids and provider.id not in implicit_provider_ids
+                ),
+                extra_route_snapshot={
+                    "implicit_provider_failover": provider.id in implicit_provider_ids,
+                    "required_output_tokens": _coerce_optional_positive_int(required_output_tokens),
+                },
             )
             for provider in providers
         ]
@@ -690,6 +853,9 @@ class LLMGateway:
             connect_timeout_s=provider.connect_timeout_s,
             context_window=provider.context_window,
             max_tokens=provider.max_tokens,
+            tokenizer_family=provider.tokenizer_family,
+            strict_admission=provider.strict_admission,
+            safety_margin_tokens=provider.safety_margin_tokens,
             step_key="admin.test",
             config_version=self._config_version,
             route_snapshot={
@@ -697,6 +863,9 @@ class LLMGateway:
                 "provider_name": provider.name,
                 "context_window": provider.context_window,
                 "max_tokens": provider.max_tokens,
+                "tokenizer_family": provider.tokenizer_family,
+                "strict_admission": provider.strict_admission,
+                "safety_margin_tokens": provider.safety_margin_tokens,
             },
         )
 

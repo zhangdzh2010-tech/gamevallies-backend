@@ -12,6 +12,7 @@ def _provider(
     provider_id: str,
     name: str,
     *,
+    max_tokens: int | None = None,
     updated_at: float = 100.0,
 ) -> ProviderRecord:
     return ProviderRecord(
@@ -28,9 +29,12 @@ def _provider(
         enabled=True,
         priority=100,
         description=None,
-        extra_config={},
+        extra_config=({"maxTokens": max_tokens} if max_tokens is not None else {}),
         context_window=None,
-        max_tokens=None,
+        max_tokens=max_tokens,
+        tokenizer_family=None,
+        strict_admission=False,
+        safety_margin_tokens=None,
         updated_at=updated_at,
     )
 
@@ -208,6 +212,9 @@ def test_resolve_candidates_exposes_provider_context_and_max_tokens_in_route_sna
         extra_config={"contextWindow": 128000, "maxTokens": 8192},
         context_window=128000,
         max_tokens=8192,
+        tokenizer_family=None,
+        strict_admission=True,
+        safety_margin_tokens=None,
         updated_at=100.0,
     )
     gateway = _gateway(
@@ -224,8 +231,37 @@ def test_resolve_candidates_exposes_provider_context_and_max_tokens_in_route_sna
 
     assert candidates[0].context_window == 128000
     assert candidates[0].max_tokens == 8192
+    assert candidates[0].strict_admission is True
     assert candidates[0].route_snapshot["context_window"] == 128000
     assert candidates[0].route_snapshot["max_tokens"] == 8192
+    assert candidates[0].route_snapshot["strict_admission"] is True
+
+
+def test_resolve_candidates_can_promote_implicit_large_output_failover_provider():
+    deepseek = _provider("provider-deepseek", "DeepSeek Shanghai", max_tokens=8192)
+    minimax = _provider("provider-minimax", "MiniMax Shanghai", max_tokens=16384, updated_at=90.0)
+    gateway = _gateway(
+        providers=[deepseek, minimax],
+        routes=[_route("route-iterate", "iterate.mechanic_change", deepseek.id)],
+    )
+
+    with patch("src.services.llm_gateway.settings.SERVICE_REGION", "cn_shanghai"), patch.object(
+        gateway,
+        "_ensure_loaded",
+        return_value=None,
+    ):
+        candidates = gateway.resolve_candidates(
+            step_key="iterate.mechanic_change",
+            allow_implicit_fallbacks=True,
+            required_output_tokens=12288,
+        )
+
+    assert len(candidates) == 2
+    assert candidates[0].provider_id == minimax.id
+    assert candidates[0].route_snapshot["implicit_provider_failover"] is True
+    assert candidates[0].route_snapshot["required_output_tokens"] == 12288
+    assert candidates[0].route_snapshot["explicit_fallback_only"] is False
+    assert candidates[1].provider_id == deepseek.id
 
 
 def test_invoke_test_completion_clamps_max_tokens_to_provider_limit():
@@ -247,6 +283,9 @@ def test_invoke_test_completion_clamps_max_tokens_to_provider_limit():
         extra_config={"maxTokens": 512},
         context_window=None,
         max_tokens=512,
+        tokenizer_family=None,
+        strict_admission=False,
+        safety_margin_tokens=None,
         updated_at=100.0,
     )
     route = gateway._resolved_route_for_provider(provider)
