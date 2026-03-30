@@ -10,12 +10,16 @@ import httpx
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from src.api.models import GameSpec
 from src.config.settings import settings
 from src.services import llm_client as llm_client_module
+from src.services.llm_gateway import llm_request_context
 from src.services.llm_client import (
     LLMClient,
     EmptyOpenAICompatibleTextError,
+    LLMContextWindowExceededError,
     LLMCompletionResult,
+    LLMProviderCapacityError,
     LLMResponseTruncatedError,
     LLMUsageSnapshot,
     _build_anthropic_base_url,
@@ -24,6 +28,7 @@ from src.services.llm_client import (
     _extract_openai_message_text,
     _is_anthropic_protocol_mismatch,
 )
+from src.services.task_memory import task_memory
 
 
 def test_build_chat_url_keeps_explicit_chat_completions_path():
@@ -678,6 +683,186 @@ def test_complete_clamps_max_tokens_to_provider_limit_and_records_metadata():
         assert captured["route_snapshot"]["effective_max_tokens"] == 4096
         assert captured["route_snapshot"]["provider_max_tokens"] == 4096
         assert captured["route_snapshot"]["provider_context_window"] == 128000
+        assert captured["route_snapshot"]["limit_source"] == "gateway_provider_max"
+    finally:
+        settings.LLM_MODE = old_mode
+
+
+def test_complete_fails_fast_when_all_routed_providers_are_below_required_output_floor():
+    client = LLMClient()
+    primary = SimpleNamespace(
+        provider_id="provider-primary",
+        provider_name="DeepSeek Primary",
+        provider_type="openai_compatible",
+        region="cn-shanghai",
+        base_url="https://primary.example/v1",
+        api_key="secret",
+        model="deepseek-chat",
+        fast_model="deepseek-chat",
+        request_timeout_s=600,
+        connect_timeout_s=15,
+        context_window=128000,
+        max_tokens=8192,
+        config_version=123,
+        route_snapshot={"step_key": "iterate.mechanic_change"},
+    )
+    old_mode = settings.LLM_MODE
+    old_failover = settings.LLM_PROVIDER_FAILOVER_ENABLED
+    settings.LLM_MODE = "real"
+    settings.LLM_PROVIDER_FAILOVER_ENABLED = True
+
+    try:
+        with patch.object(llm_client_module.gateway, "has_enabled_provider", return_value=True), patch.object(
+            llm_client_module.gateway,
+            "resolve_candidates",
+            return_value=[primary],
+        ), patch.object(
+            client,
+            "_complete_with_route",
+            new=AsyncMock(side_effect=AssertionError("should fail before upstream call")),
+        ):
+            try:
+                asyncio.run(client.complete(
+                    messages=[{"role": "user", "content": "Rewrite the whole game into a richer version."}],
+                    max_tokens=8192,
+                    step_key="iterate.mechanic_change",
+                    stage="code_generating",
+                    allow_provider_fallback=True,
+                    response_size_hint="xlarge",
+                ))
+                raise AssertionError("expected provider capacity failure")
+            except LLMProviderCapacityError as exc:
+                assert exc.required_output_tokens == 12288
+                assert exc.step_key == "iterate.mechanic_change"
+                assert exc.candidate_caps[0]["maxTokens"] == 8192
+    finally:
+        settings.LLM_MODE = old_mode
+        settings.LLM_PROVIDER_FAILOVER_ENABLED = old_failover
+
+
+def test_complete_injects_task_memory_for_task_scoped_calls():
+    client = LLMClient()
+    route = SimpleNamespace(
+        provider_id="provider-capped",
+        provider_name="MiniMax Capped",
+        provider_type="openai_compatible",
+        region="cn-shanghai",
+        base_url="https://provider.example/v1",
+        api_key="secret",
+        model="MiniMax-M2.7",
+        fast_model="MiniMax-M2.7",
+        request_timeout_s=600,
+        connect_timeout_s=15,
+        context_window=128000,
+        max_tokens=4096,
+        tokenizer_family="openai_cl100k_compatible",
+        strict_admission=True,
+        safety_margin_tokens=2048,
+        config_version=123,
+        route_snapshot={"step_key": "code_generate.full"},
+    )
+    old_mode = settings.LLM_MODE
+    settings.LLM_MODE = "real"
+
+    try:
+        captured = {}
+
+        async def run_case():
+            await task_memory.begin_task(
+                "task-memory-1",
+                task_meta={"entrypoint": "create", "title": "Memory Test"},
+                source_context_summary="- raw_user_input: make a funny game",
+            )
+            await task_memory.remember_spec(
+                "task-memory-1",
+                GameSpec(game_type="funny", intent_summary="A goofy tap challenge"),
+            )
+            with llm_request_context(game_id="game-1", user_id="user-1", task_id="task-memory-1"):
+                return await client.complete(
+                    messages=[{"role": "user", "content": "Generate the final HTML."}],
+                    step_key="code_generate.full",
+                    stage="code_generating",
+                    response_size_hint="large",
+                    context_scope="task",
+                    compression_policy="code_generation",
+                )
+
+        async def fake_complete_with_route(**kwargs):
+            captured["system"] = kwargs["system"]
+            captured["route_snapshot"] = kwargs["route"].route_snapshot
+            return "ok"
+
+        with patch.object(llm_client_module.gateway, "has_enabled_provider", return_value=True), patch.object(
+            llm_client_module.gateway,
+            "resolve",
+            return_value=route,
+        ), patch.object(
+            client,
+            "_complete_with_route",
+            new=AsyncMock(side_effect=fake_complete_with_route),
+        ):
+            result = asyncio.run(run_case())
+
+        assert result == "ok"
+        assert "TASK MEMORY (shared task context)" in captured["system"]
+        assert captured["route_snapshot"]["task_memory_injected"] is True
+        assert captured["route_snapshot"]["strict_admission"] is True
+        assert captured["route_snapshot"]["context_scope"] == "task"
+    finally:
+        asyncio.run(task_memory.clear_task("task-memory-1"))
+        settings.LLM_MODE = old_mode
+
+
+def test_complete_rejects_requests_that_still_exceed_context_after_compression():
+    client = LLMClient()
+    route = SimpleNamespace(
+        provider_id="provider-tight",
+        provider_name="Tight Window",
+        provider_type="openai_compatible",
+        region="cn-shanghai",
+        base_url="https://provider.example/v1",
+        api_key="secret",
+        model="deepseek-chat",
+        fast_model="deepseek-chat",
+        request_timeout_s=600,
+        connect_timeout_s=15,
+        context_window=900,
+        max_tokens=512,
+        tokenizer_family="openai_cl100k_compatible",
+        strict_admission=True,
+        safety_margin_tokens=256,
+        config_version=123,
+        route_snapshot={"step_key": "iterate.mechanic_change"},
+    )
+    old_mode = settings.LLM_MODE
+    settings.LLM_MODE = "real"
+
+    try:
+        with patch.object(llm_client_module.gateway, "has_enabled_provider", return_value=True), patch.object(
+            llm_client_module.gateway,
+            "resolve",
+            return_value=route,
+        ), patch.object(
+            client,
+            "_complete_with_route",
+            new=AsyncMock(side_effect=AssertionError("request should fail before upstream call")),
+        ):
+            try:
+                asyncio.run(client.complete(
+                    messages=[{
+                        "role": "user",
+                        "content": "CURRENT CODE\n\n" + ("摸鱼小游戏逻辑需要完整保留。 " * 1800),
+                    }],
+                    step_key="iterate.mechanic_change",
+                    stage="code_generating",
+                    response_size_hint="large",
+                    context_scope="request",
+                    compression_policy="iteration_rewrite",
+                ))
+                raise AssertionError("expected context overflow")
+            except LLMContextWindowExceededError as exc:
+                assert exc.allowed_input_tokens < exc.estimated_input_tokens
+                assert exc.context_window == 900
     finally:
         settings.LLM_MODE = old_mode
 
@@ -983,3 +1168,73 @@ def test_complete_logs_failed_call_when_outer_wait_cancels_it():
         assert payload["errorMessage"] == "LLM call canceled before completion"
     finally:
         settings.LLM_MODE = old_mode
+
+
+def test_complete_with_truncation_retry_retries_with_larger_budget():
+    client = LLMClient()
+
+    with patch.object(
+        client,
+        "complete",
+        new=AsyncMock(side_effect=[
+            LLMResponseTruncatedError(
+                "OpenAI-compatible response hit the output length limit and may be truncated",
+                stop_reason="length",
+                output_tokens=5207,
+            ),
+            "<!DOCTYPE html><html><body>ok</body></html>",
+        ]),
+    ) as mock_complete:
+        result = asyncio.run(
+            client.complete_with_truncation_retry(
+                messages=[{"role": "user", "content": "repair"}],
+                max_tokens=5207,
+                step_key="qa_fix",
+                stage="qa_checking",
+                truncation_retry_attempts=1,
+                truncation_retry_increment=2048,
+                truncation_retry_max_tokens=12288,
+            )
+        )
+
+    assert result == "<!DOCTYPE html><html><body>ok</body></html>"
+    assert mock_complete.await_count == 2
+    first_budget = mock_complete.await_args_list[0].kwargs["max_tokens"]
+    second_budget = mock_complete.await_args_list[1].kwargs["max_tokens"]
+    assert second_budget > first_budget
+
+
+def test_complete_with_truncation_retry_retries_timeout_with_longer_request_timeout():
+    client = LLMClient()
+
+    with patch.object(
+        client,
+        "complete",
+        new=AsyncMock(side_effect=[
+            httpx.ReadTimeout("timed out"),
+            "<!DOCTYPE html><html><body>ok</body></html>",
+        ]),
+    ) as mock_complete:
+        result = asyncio.run(
+            client.complete_with_truncation_retry(
+                messages=[{"role": "user", "content": "repair"}],
+                max_tokens=4096,
+                step_key="qa_fix.syntax_structural",
+                stage="qa_checking",
+                request_timeout_s=180,
+                overall_timeout_s=180,
+                timeout_retry_attempts=1,
+                timeout_retry_increment_s=60,
+                timeout_retry_max_s=300,
+            )
+        )
+
+    assert result == "<!DOCTYPE html><html><body>ok</body></html>"
+    assert mock_complete.await_count == 2
+    first_timeout = mock_complete.await_args_list[0].kwargs["request_timeout_s"]
+    second_timeout = mock_complete.await_args_list[1].kwargs["request_timeout_s"]
+    first_overall_timeout = mock_complete.await_args_list[0].kwargs["overall_timeout_s"]
+    second_overall_timeout = mock_complete.await_args_list[1].kwargs["overall_timeout_s"]
+    assert second_timeout > first_timeout
+    assert second_overall_timeout >= second_timeout
+    assert first_overall_timeout == 180

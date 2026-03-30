@@ -8,6 +8,7 @@ from copy import copy
 from dataclasses import dataclass, field
 import json
 import logging
+import math
 import re
 import time
 from typing import Any, Dict, List, Optional
@@ -17,7 +18,8 @@ import httpx
 
 from ..config.settings import settings
 from ..config.timeout_store import get_int as get_timeout_int
-from .llm_gateway import gateway
+from .llm_gateway import gateway, get_request_context
+from .task_memory import task_memory
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +82,56 @@ class LLMResponseTruncatedError(ValueError):
         self.input_tokens = input_tokens
         self.output_tokens = output_tokens
         self.total_tokens = total_tokens
+
+
+class LLMContextWindowExceededError(ValueError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        estimated_input_tokens: int,
+        allowed_input_tokens: int,
+        context_window: Optional[int],
+        compression_summary: Optional[list[str]] = None,
+    ) -> None:
+        super().__init__(message)
+        self.estimated_input_tokens = estimated_input_tokens
+        self.allowed_input_tokens = allowed_input_tokens
+        self.context_window = context_window
+        self.compression_summary = list(compression_summary or [])
+
+
+class LLMProviderCapacityError(ValueError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        step_key: str,
+        required_output_tokens: int,
+        candidate_caps: list[dict[str, Any]],
+        response_size_hint: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.step_key = step_key
+        self.required_output_tokens = required_output_tokens
+        self.candidate_caps = list(candidate_caps)
+        self.response_size_hint = response_size_hint
+
+
+@dataclass
+class PromptAdmissionResult:
+    system: Optional[str]
+    messages: List[Message]
+    estimated_input_tokens: int
+    requested_input_tokens: int
+    allowed_input_tokens: Optional[int]
+    reserved_output_tokens: int
+    safety_margin_tokens: int
+    task_memory_injected: bool = False
+    task_memory_compact: bool = False
+    compression_summary: list[str] = field(default_factory=list)
+    strict_admission: bool = False
+    limit_source: str = "caller_fallback"
 
 
 def _build_openai_compatible_chat_url(base_url: str) -> str:
@@ -324,6 +376,170 @@ def _is_retryable_provider_error(exc: Exception) -> bool:
     return False
 
 
+def _normalize_response_size_hint(value: Optional[str]) -> str:
+    normalized = (value or "").strip().lower()
+    if normalized in {"small", "medium", "large", "xlarge"}:
+        return normalized
+    return "medium"
+
+
+def _default_hint_tokens(response_size_hint: Optional[str]) -> int:
+    normalized = _normalize_response_size_hint(response_size_hint)
+    if normalized == "small":
+        return 1024
+    if normalized == "large":
+        return 4096
+    if normalized == "xlarge":
+        return max(8192, settings.LLM_LONG_GENERATION_MAX_TOKENS)
+    return 2048
+
+
+def _required_output_floor(
+    requested_max_tokens: Optional[int],
+    response_size_hint: Optional[str],
+) -> Optional[int]:
+    normalized_hint = _normalize_response_size_hint(response_size_hint)
+    if normalized_hint not in {"large", "xlarge"}:
+        return None
+    floor = _coerce_optional_int(requested_max_tokens)
+    if normalized_hint == "xlarge":
+        floor = max(
+            floor or 0,
+            max(
+                settings.LLM_LONG_GENERATION_MAX_TOKENS,
+                settings.LLM_GENERATION_TOKEN_BUDGET_STANDARD,
+            ),
+        )
+    return floor if floor and floor > 0 else None
+
+
+def _contains_cjk(text: str) -> int:
+    return len(re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]", text or ""))
+
+
+def _estimate_text_tokens(text: str, tokenizer_family: Optional[str] = None) -> int:
+    normalized = text or ""
+    if not normalized:
+        return 0
+
+    ascii_chars = len(re.findall(r"[\x00-\x7F]", normalized))
+    cjk_chars = _contains_cjk(normalized)
+    whitespace_chars = len(re.findall(r"\s", normalized))
+    other_chars = max(0, len(normalized) - ascii_chars - cjk_chars)
+    family = (tokenizer_family or "").strip().lower()
+
+    if family.startswith("anthropic"):
+        ascii_divisor = 3.5
+        other_divisor = 2.1
+        cjk_multiplier = 1.18
+    else:
+        ascii_divisor = 3.8
+        other_divisor = 2.4
+        cjk_multiplier = 1.10
+
+    ascii_non_space = max(0, ascii_chars - whitespace_chars)
+    estimate = (
+        math.ceil(ascii_non_space / ascii_divisor)
+        + math.ceil(other_chars / other_divisor)
+        + math.ceil(cjk_chars * cjk_multiplier)
+        + math.ceil(whitespace_chars / 12)
+        + 4
+    )
+    return max(estimate, math.ceil(len(normalized.encode("utf-8")) / 8))
+
+
+def _estimate_messages_tokens(system: Optional[str], messages: List[Message], tokenizer_family: Optional[str]) -> int:
+    total = 0
+    if system:
+        total += _estimate_text_tokens(system, tokenizer_family) + 8
+    for message in messages:
+        total += _estimate_text_tokens(str(message.get("content") or ""), tokenizer_family) + 8
+    return total
+
+
+def _head_tail(text: str, *, head: int, tail: int) -> str:
+    normalized = (text or "").strip()
+    if len(normalized) <= head + tail + 48:
+        return normalized
+    omitted = len(normalized) - head - tail
+    return f"{normalized[:head].rstrip()}\n...[omitted {omitted} chars]...\n{normalized[-tail:].lstrip()}"
+
+
+def _split_prompt_blocks(text: str) -> list[str]:
+    blocks = [block.strip() for block in re.split(r"\n{2,}", text or "") if block.strip()]
+    return blocks or [text.strip()]
+
+
+def _looks_like_code_or_html(text: str) -> bool:
+    lower = (text or "").lower()
+    return (
+        "<!doctype html" in lower
+        or "<html" in lower
+        or "<script" in lower
+        or "function " in lower
+        or "const " in lower
+        or "let " in lower
+        or "```" in lower
+    )
+
+
+def _block_priority(block: str, compression_policy: str) -> int:
+    lower = (block or "").lower()
+    policy = (compression_policy or "generic").lower()
+    score = 0
+    if _looks_like_code_or_html(lower):
+        score += 6 if policy in {"iteration_rewrite", "qa_fix"} else 2
+    if "runtime contract" in lower or "contract" in lower:
+        score += 5
+    if "error" in lower or "repair" in lower:
+        score += 5 if policy == "qa_fix" else 2
+    if "feedback" in lower:
+        score += 5 if policy == "iteration_rewrite" else 2
+    if "spec" in lower or "structured design" in lower or "critical intent" in lower:
+        score += 4
+    if "reference skeleton" in lower or "enriched design" in lower:
+        score -= 1
+    if "history" in lower or "conversation" in lower:
+        score -= 2
+    return score
+
+
+def _compress_prompt_text(
+    text: str,
+    *,
+    compression_policy: str,
+    aggressive: bool,
+) -> str:
+    normalized = (text or "").strip()
+    if not normalized:
+        return normalized
+
+    blocks = _split_prompt_blocks(normalized)
+    if len(blocks) == 1:
+        return _head_tail(normalized, head=700 if aggressive else 1100, tail=320 if aggressive else 520)
+
+    ordered = sorted(
+        enumerate(blocks),
+        key=lambda item: (_block_priority(item[1], compression_policy), -item[0]),
+        reverse=True,
+    )
+    keep_count = 3 if aggressive else 5
+    kept_indexes = {index for index, _ in ordered[:keep_count]}
+    rendered: list[str] = []
+    omitted_blocks = 0
+    for index, block in enumerate(blocks):
+        if index in kept_indexes:
+            rendered.append(block)
+        else:
+            omitted_blocks += 1
+
+    if omitted_blocks:
+        rendered.append(f"[omitted {omitted_blocks} lower-priority prompt blocks for context fit]")
+
+    shortened = "\n\n".join(rendered).strip()
+    return _head_tail(shortened, head=1400 if aggressive else 2200, tail=420 if aggressive else 620)
+
+
 def _apply_request_timeout_override(route: Any, request_timeout_s: Optional[int]) -> Any:
     if request_timeout_s is None:
         return route
@@ -345,6 +561,29 @@ def _apply_route_max_tokens_limit(route: Any, requested_max_tokens: int) -> int:
     if provider_max_tokens is None:
         return requested
     return max(1, min(requested, provider_max_tokens))
+
+
+def _resolve_gateway_output_limit(
+    route: Any,
+    *,
+    requested_max_tokens: Optional[int],
+    response_size_hint: Optional[str],
+) -> tuple[int, int, str]:
+    provider_max_tokens = _coerce_optional_int(getattr(route, "max_tokens", None))
+    hint_tokens = _default_hint_tokens(response_size_hint)
+    if provider_max_tokens is not None:
+        requested = max(1, int(requested_max_tokens)) if requested_max_tokens is not None else hint_tokens
+        return provider_max_tokens, requested, "gateway_provider_max"
+    if requested_max_tokens is not None:
+        return max(1, int(requested_max_tokens)), hint_tokens, "caller_fallback"
+    return hint_tokens, hint_tokens, "hint_fallback"
+
+
+def _is_timeout_like_error(exc: Exception) -> bool:
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError, httpx.TimeoutException)):
+        return True
+    message = str(exc or "").lower()
+    return "timed out" in message or "timeout" in message
 
 
 class LLMClient:
@@ -441,11 +680,185 @@ class LLMClient:
                     elapsed_ms=int((time.time() - started_at) * 1000),
                 )
 
+    async def _prepare_prompt_admission(
+        self,
+        *,
+        route: Any,
+        system: Optional[str],
+        messages: List[Message],
+        step_key: str,
+        compression_policy: Optional[str],
+        context_scope: str,
+        reserved_output_tokens: int,
+        limit_source: str,
+    ) -> PromptAdmissionResult:
+        base_system = system.strip() if isinstance(system, str) else None
+        admitted_messages = [dict(message) for message in messages]
+        tokenizer_family = getattr(route, "tokenizer_family", None)
+        context_window = _coerce_optional_int(getattr(route, "context_window", None))
+        configured_safety_margin = _coerce_optional_int(getattr(route, "safety_margin_tokens", None))
+        safety_margin_tokens = configured_safety_margin or (
+            max(1024, int(context_window * 0.05))
+            if context_window is not None
+            else 1024
+        )
+        strict_admission = bool(
+            getattr(route, "strict_admission", False)
+            and context_window is not None
+            and reserved_output_tokens > 0
+        )
+
+        task_memory_injected = False
+        task_memory_compact = False
+        compression_summary: list[str] = []
+        effective_system = base_system
+
+        context = get_request_context()
+        task_id = context.get("task_id")
+        if context_scope == "task" and task_id:
+            memory_block = task_memory.build_prompt_block(
+                task_id,
+                step_key=step_key,
+                compression_policy=compression_policy or "generic",
+                compact=False,
+            )
+            if memory_block:
+                task_memory_injected = True
+                effective_system = "\n\n".join(part for part in [base_system, memory_block] if part).strip() or None
+
+        requested_input_tokens = _estimate_messages_tokens(effective_system, admitted_messages, tokenizer_family)
+        if not strict_admission:
+            return PromptAdmissionResult(
+                system=effective_system,
+                messages=admitted_messages,
+                estimated_input_tokens=requested_input_tokens,
+                requested_input_tokens=requested_input_tokens,
+                allowed_input_tokens=None,
+                reserved_output_tokens=reserved_output_tokens,
+                safety_margin_tokens=safety_margin_tokens,
+                task_memory_injected=task_memory_injected,
+                task_memory_compact=task_memory_compact,
+                compression_summary=[],
+                strict_admission=False,
+                limit_source=limit_source,
+            )
+
+        allowed_input_tokens = max(512, context_window - reserved_output_tokens - safety_margin_tokens)
+        estimated_input_tokens = requested_input_tokens
+        if estimated_input_tokens <= allowed_input_tokens:
+            return PromptAdmissionResult(
+                system=effective_system,
+                messages=admitted_messages,
+                estimated_input_tokens=estimated_input_tokens,
+                requested_input_tokens=requested_input_tokens,
+                allowed_input_tokens=allowed_input_tokens,
+                reserved_output_tokens=reserved_output_tokens,
+                safety_margin_tokens=safety_margin_tokens,
+                task_memory_injected=task_memory_injected,
+                task_memory_compact=task_memory_compact,
+                compression_summary=[],
+                strict_admission=True,
+                limit_source=limit_source,
+            )
+
+        if task_memory_injected and task_id:
+            compact_memory = task_memory.build_prompt_block(
+                task_id,
+                step_key=step_key,
+                compression_policy=compression_policy or "generic",
+                compact=True,
+            )
+            if compact_memory:
+                compact_system = "\n\n".join(part for part in [base_system, compact_memory] if part).strip() or None
+                compact_tokens = _estimate_messages_tokens(compact_system, admitted_messages, tokenizer_family)
+                if compact_tokens < estimated_input_tokens:
+                    effective_system = compact_system
+                    estimated_input_tokens = compact_tokens
+                    task_memory_compact = True
+                    compression_summary.append("compact_task_memory")
+
+        while estimated_input_tokens > allowed_input_tokens and len(admitted_messages) > 1:
+            drop_index = next(
+                (
+                    index
+                    for index, message in enumerate(admitted_messages[:-1])
+                    if str(message.get("role") or "").lower() == "assistant"
+                ),
+                0,
+            )
+            del admitted_messages[drop_index]
+            compression_summary.append("drop_old_message")
+            estimated_input_tokens = _estimate_messages_tokens(effective_system, admitted_messages, tokenizer_family)
+
+        for index in range(max(0, len(admitted_messages) - 1)):
+            if estimated_input_tokens <= allowed_input_tokens:
+                break
+            content = str(admitted_messages[index].get("content") or "")
+            shortened = _compress_prompt_text(
+                content,
+                compression_policy=compression_policy or "generic",
+                aggressive=False,
+            )
+            if shortened != content:
+                admitted_messages[index]["content"] = shortened
+                compression_summary.append("compress_history_message")
+                estimated_input_tokens = _estimate_messages_tokens(effective_system, admitted_messages, tokenizer_family)
+
+        if admitted_messages and estimated_input_tokens > allowed_input_tokens:
+            last_content = str(admitted_messages[-1].get("content") or "")
+            shortened_last = _compress_prompt_text(
+                last_content,
+                compression_policy=compression_policy or "generic",
+                aggressive=True,
+            )
+            if shortened_last != last_content:
+                admitted_messages[-1]["content"] = shortened_last
+                compression_summary.append("compress_current_message")
+                estimated_input_tokens = _estimate_messages_tokens(effective_system, admitted_messages, tokenizer_family)
+
+        if effective_system and estimated_input_tokens > allowed_input_tokens:
+            shortened_system = _compress_prompt_text(
+                effective_system,
+                compression_policy="generic",
+                aggressive=True,
+            )
+            if shortened_system != effective_system:
+                effective_system = shortened_system
+                compression_summary.append("compress_system_context")
+                estimated_input_tokens = _estimate_messages_tokens(effective_system, admitted_messages, tokenizer_family)
+
+        if estimated_input_tokens > allowed_input_tokens:
+            raise LLMContextWindowExceededError(
+                (
+                    f"Prompt for {step_key} exceeds provider context window after compression "
+                    f"({estimated_input_tokens} input tokens > allowed {allowed_input_tokens}, context {context_window})"
+                ),
+                estimated_input_tokens=estimated_input_tokens,
+                allowed_input_tokens=allowed_input_tokens,
+                context_window=context_window,
+                compression_summary=compression_summary,
+            )
+
+        return PromptAdmissionResult(
+            system=effective_system,
+            messages=admitted_messages,
+            estimated_input_tokens=estimated_input_tokens,
+            requested_input_tokens=requested_input_tokens,
+            allowed_input_tokens=allowed_input_tokens,
+            reserved_output_tokens=reserved_output_tokens,
+            safety_margin_tokens=safety_margin_tokens,
+            task_memory_injected=task_memory_injected,
+            task_memory_compact=task_memory_compact,
+            compression_summary=compression_summary,
+            strict_admission=True,
+            limit_source=limit_source,
+        )
+
     async def complete(
         self,
         *,
         messages: List[Message],
-        max_tokens: int,
+        max_tokens: Optional[int] = None,
         system: Optional[str] = None,
         model: Optional[str] = None,
         step_key: str = "default",
@@ -454,15 +867,21 @@ class LLMClient:
         request_timeout_s: Optional[int] = None,
         overall_timeout_s: Optional[int] = None,
         allow_provider_fallback: bool = False,
+        response_size_hint: Optional[str] = None,
+        context_scope: str = "request",
+        compression_policy: Optional[str] = None,
     ) -> str:
         if not self.is_enabled():
             raise RuntimeError("Real LLM mode is not configured")
 
+        required_output_tokens = _required_output_floor(max_tokens, response_size_hint)
         routes = (
             gateway.resolve_candidates(
                 step_key=step_key,
                 prefer_fast=prefer_fast,
                 model_override=model,
+                allow_implicit_fallbacks=True,
+                required_output_tokens=required_output_tokens,
             )
             if allow_provider_fallback and settings.LLM_PROVIDER_FAILOVER_ENABLED
             else [gateway.resolve(
@@ -471,6 +890,37 @@ class LLMClient:
                 model_override=model,
             )]
         )
+
+        if required_output_tokens is not None:
+            known_caps = []
+            known_capable = False
+            unknown_capacity_present = False
+            for route in routes:
+                provider_cap = _coerce_optional_int(getattr(route, "max_tokens", None))
+                known_caps.append(
+                    {
+                        "providerId": getattr(route, "provider_id", None),
+                        "providerName": getattr(route, "provider_name", None),
+                        "maxTokens": provider_cap,
+                    }
+                )
+                if provider_cap is None:
+                    unknown_capacity_present = True
+                elif provider_cap >= required_output_tokens:
+                    known_capable = True
+
+            if not known_capable and not unknown_capacity_present:
+                raise LLMProviderCapacityError(
+                    (
+                        f"Step {step_key} requires at least {required_output_tokens} output tokens "
+                        f"for response size hint {_normalize_response_size_hint(response_size_hint)!r}, "
+                        "but no routed provider can satisfy that budget"
+                    ),
+                    step_key=step_key,
+                    required_output_tokens=required_output_tokens,
+                    candidate_caps=known_caps,
+                    response_size_hint=response_size_hint,
+                )
 
         last_exc: Optional[Exception] = None
         previous_provider_id: Optional[str] = None
@@ -492,16 +942,43 @@ class LLMClient:
                 )
 
             route = _apply_request_timeout_override(resolved_route, effective_request_timeout_s)
-            effective_max_tokens = _apply_route_max_tokens_limit(route, max_tokens)
+            effective_max_tokens, requested_max_tokens, limit_source = _resolve_gateway_output_limit(
+                route,
+                requested_max_tokens=max_tokens,
+                response_size_hint=response_size_hint,
+            )
+            admission = await self._prepare_prompt_admission(
+                route=route,
+                system=system,
+                messages=messages,
+                step_key=step_key,
+                compression_policy=compression_policy,
+                context_scope=context_scope,
+                reserved_output_tokens=effective_max_tokens,
+                limit_source=limit_source,
+            )
             route.route_snapshot = {
                 **dict(getattr(route, "route_snapshot", {}) or {}),
                 "attempt": attempt_index,
                 "attempt_count": total_attempts,
                 "provider_fallback_from": previous_provider_id,
-                "requested_max_tokens": int(max_tokens),
+                "requested_max_tokens": int(requested_max_tokens),
                 "effective_max_tokens": int(effective_max_tokens),
                 "provider_max_tokens": _coerce_optional_int(getattr(route, "max_tokens", None)),
                 "provider_context_window": _coerce_optional_int(getattr(route, "context_window", None)),
+                "limit_source": limit_source,
+                "response_size_hint": _normalize_response_size_hint(response_size_hint),
+                "context_scope": context_scope,
+                "compression_policy": compression_policy,
+                "requested_input_tokens": admission.requested_input_tokens,
+                "estimated_input_tokens": admission.estimated_input_tokens,
+                "allowed_input_tokens": admission.allowed_input_tokens,
+                "reserved_output_tokens": admission.reserved_output_tokens,
+                "safety_margin_tokens": admission.safety_margin_tokens,
+                "strict_admission": admission.strict_admission,
+                "task_memory_injected": admission.task_memory_injected,
+                "task_memory_compact": admission.task_memory_compact,
+                "compression_summary": list(admission.compression_summary),
                 **(
                     {"overall_timeout_s": int(overall_timeout_s)}
                     if overall_timeout_s is not None
@@ -511,9 +988,9 @@ class LLMClient:
             try:
                 return await self._complete_with_route(
                     route=route,
-                    messages=messages,
+                    messages=admission.messages,
                     max_tokens=effective_max_tokens,
-                    system=system,
+                    system=admission.system,
                     step_key=step_key,
                     stage=stage,
                 )
@@ -534,6 +1011,154 @@ class LLMClient:
         if last_exc is not None:
             raise last_exc
         raise RuntimeError(f"LLM call failed without attempts for step {step_key}")
+
+    async def complete_with_truncation_retry(
+        self,
+        *,
+        messages: List[Message],
+        max_tokens: Optional[int] = None,
+        system: Optional[str] = None,
+        model: Optional[str] = None,
+        step_key: str = "default",
+        stage: str = "llm",
+        prefer_fast: bool = False,
+        request_timeout_s: Optional[int] = None,
+        overall_timeout_s: Optional[int] = None,
+        allow_provider_fallback: bool = False,
+        truncation_retry_attempts: int = 1,
+        truncation_retry_increment: int = 2048,
+        truncation_retry_max_tokens: Optional[int] = None,
+        truncation_retry_min_tokens: Optional[int] = None,
+        timeout_retry_attempts: int = 0,
+        timeout_retry_increment_s: int = 60,
+        timeout_retry_max_s: Optional[int] = None,
+        timeout_retry_min_s: Optional[int] = None,
+        response_size_hint: Optional[str] = None,
+        context_scope: str = "request",
+        compression_policy: Optional[str] = None,
+    ) -> str:
+        resolved_route = None
+        try:
+            if self.is_enabled():
+                resolved_route = gateway.resolve(
+                    step_key=step_key,
+                    prefer_fast=prefer_fast,
+                    model_override=model,
+                )
+        except Exception:
+            resolved_route = None
+
+        if resolved_route is not None:
+            gateway_max_tokens, initial_requested_max_tokens, limit_source = _resolve_gateway_output_limit(
+                resolved_route,
+                requested_max_tokens=max_tokens,
+                response_size_hint=response_size_hint,
+            )
+        else:
+            gateway_max_tokens = max(1, int(max_tokens)) if max_tokens is not None else _default_hint_tokens(response_size_hint)
+            initial_requested_max_tokens = gateway_max_tokens
+            limit_source = "caller_fallback" if max_tokens is not None else "hint_fallback"
+        requested_max_tokens = initial_requested_max_tokens
+        max_retry_attempts = max(0, int(truncation_retry_attempts))
+        retry_increment = max(1, int(truncation_retry_increment))
+        retry_ceiling = (
+            max(1, int(truncation_retry_max_tokens))
+            if truncation_retry_max_tokens is not None
+            else None
+        )
+        if limit_source == "gateway_provider_max" and not allow_provider_fallback:
+            retry_ceiling = gateway_max_tokens
+        retry_floor = (
+            max(1, int(truncation_retry_min_tokens))
+            if truncation_retry_min_tokens is not None
+            else None
+        )
+        timeout_retry_limit = max(0, int(timeout_retry_attempts))
+        timeout_retry_increment = max(1, int(timeout_retry_increment_s))
+        requested_request_timeout_s = (
+            max(1, int(request_timeout_s))
+            if request_timeout_s is not None
+            else None
+        )
+        timeout_retry_ceiling = (
+            max(1, int(timeout_retry_max_s))
+            if timeout_retry_max_s is not None
+            else None
+        )
+        timeout_retry_floor = (
+            max(1, int(timeout_retry_min_s))
+            if timeout_retry_min_s is not None
+            else None
+        )
+        truncation_attempt = 0
+        timeout_attempt = 0
+
+        while True:
+            current_overall_timeout_s = overall_timeout_s
+            if current_overall_timeout_s is not None and requested_request_timeout_s is not None:
+                current_overall_timeout_s = max(
+                    int(current_overall_timeout_s),
+                    int(requested_request_timeout_s),
+                )
+            try:
+                return await self.complete(
+                    messages=messages,
+                    max_tokens=requested_max_tokens,
+                    system=system,
+                    model=model,
+                    step_key=step_key,
+                    stage=stage,
+                    prefer_fast=prefer_fast,
+                    request_timeout_s=requested_request_timeout_s,
+                    overall_timeout_s=current_overall_timeout_s,
+                    allow_provider_fallback=allow_provider_fallback,
+                    response_size_hint=response_size_hint,
+                    context_scope=context_scope,
+                    compression_policy=compression_policy,
+                )
+            except LLMResponseTruncatedError as exc:
+                if truncation_attempt >= max_retry_attempts:
+                    raise
+                next_requested = max(requested_max_tokens + retry_increment, retry_floor or 0)
+                if retry_ceiling is not None:
+                    next_requested = min(next_requested, retry_ceiling)
+                if next_requested <= requested_max_tokens:
+                    raise
+                logger.warning(
+                    "LLM %s response was truncated (stop_reason=%s, outputTokens=%s); retrying with larger budget (%s -> %s)",
+                    step_key,
+                    exc.stop_reason,
+                    exc.output_tokens,
+                    requested_max_tokens,
+                    next_requested,
+                )
+                requested_max_tokens = next_requested
+                truncation_attempt += 1
+                continue
+            except Exception as exc:
+                if (
+                    not _is_timeout_like_error(exc)
+                    or timeout_attempt >= timeout_retry_limit
+                    or requested_request_timeout_s is None
+                ):
+                    raise
+                next_timeout_s = max(
+                    requested_request_timeout_s + timeout_retry_increment,
+                    timeout_retry_floor or 0,
+                )
+                if timeout_retry_ceiling is not None:
+                    next_timeout_s = min(next_timeout_s, timeout_retry_ceiling)
+                if next_timeout_s <= requested_request_timeout_s:
+                    raise
+                logger.warning(
+                    "LLM %s timed out after %ss; retrying with longer timeout (%s -> %s)",
+                    step_key,
+                    requested_request_timeout_s,
+                    requested_request_timeout_s,
+                    next_timeout_s,
+                )
+                requested_request_timeout_s = next_timeout_s
+                timeout_attempt += 1
 
     async def _complete_with_route(
         self,

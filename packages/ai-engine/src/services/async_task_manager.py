@@ -76,7 +76,7 @@ class AsyncTaskManager:
             self._prune_locked(now)
             self._tasks[task_id] = _TaskEntry(snapshot=snapshot)
 
-        handle = asyncio.create_task(self._run_task(task_id, runner), name=f"ai-task-{task_id}")
+        handle = asyncio.create_task(self._run_task(task_id, runner, timeout_s), name=f"ai-task-{task_id}")
         async with self._lock:
             entry = self._tasks.get(task_id)
             if entry is not None:
@@ -166,10 +166,10 @@ class AsyncTaskManager:
                     entry.handle.cancel()
             self._tasks.clear()
 
-    async def _run_task(self, task_id: str, runner: TaskRunner) -> None:
+    async def _run_task(self, task_id: str, runner: TaskRunner, timeout_s: int) -> None:
         await self._mark_running(task_id)
         try:
-            result = await runner(task_id)
+            result = await asyncio.wait_for(runner(task_id), timeout=max(1, int(timeout_s)))
         except asyncio.CancelledError:
             await self._mark_canceled(task_id)
             raise

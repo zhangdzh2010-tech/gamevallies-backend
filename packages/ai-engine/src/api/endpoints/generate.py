@@ -24,6 +24,8 @@ from __future__ import annotations
 import asyncio
 import time
 import logging
+import re
+import traceback
 import httpx
 from fastapi import APIRouter, Header, HTTPException, Query, status as http_status
 from typing import Optional, Any
@@ -35,6 +37,8 @@ from ..models import (
     AsyncTaskType,
     ChatRequest,
     ChatResponse,
+    CoverCaptureRequest,
+    CoverCaptureResponse,
     GenerateCodeRequest,
     GenerateCodeResponse,
     IterateRequest,
@@ -75,6 +79,7 @@ from ...config.timeout_store import (
 )
 from ...services.async_task_manager import task_manager
 from ...services.llm_gateway import gateway, llm_request_context
+from ...services.task_memory import task_memory
 from ...services.websocket_manager import manager
 
 logger = logging.getLogger(__name__)
@@ -194,9 +199,12 @@ async def _maybe_capture_cover_artifact(
     game_type: Optional[str] = None,
     theme: Optional[str] = None,
     runtime_profile: Optional[str] = None,
+    visual_pack: Optional[str] = None,
+    render_style_intensity: Optional[str] = None,
     updated: bool = False,
+    require_game_service_upstream: bool = True,
 ) -> Optional[dict[str, Any]]:
-    if not settings.GAME_SERVICE_UPSTREAM_URL.rstrip("/"):
+    if require_game_service_upstream and not settings.GAME_SERVICE_UPSTREAM_URL.rstrip("/"):
         return None
     if not isinstance(html_code, str) or not html_code.strip():
         return None
@@ -217,6 +225,8 @@ async def _maybe_capture_cover_artifact(
             game_type=game_type,
             theme=theme,
             runtime_profile=runtime_profile,
+            visual_pack=visual_pack,
+            render_style_intensity=render_style_intensity,
             updated=updated,
         )
     except Exception as exc:
@@ -646,7 +656,45 @@ def _classify_failure_family(
     return "pipeline"
 
 
+def _is_opaque_failure_message(message: str) -> bool:
+    normalized = str(message or "").strip()
+    if not normalized:
+        return True
+    if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", normalized):
+        return True
+    return len(normalized) <= 2
+
+
+def _build_failure_diagnostics(exc: Exception) -> dict[str, Any]:
+    diagnostics: dict[str, Any] = {
+        "exceptionClass": exc.__class__.__name__,
+        "exceptionRepr": repr(exc),
+    }
+    try:
+        rendered_traceback = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        if rendered_traceback.strip():
+            diagnostics["tracebackExcerpt"] = rendered_traceback[-4000:]
+    except Exception:
+        pass
+
+    if isinstance(exc, HTTPException):
+        diagnostics["httpStatusCode"] = exc.status_code
+        if exc.detail is not None:
+            diagnostics["httpDetail"] = exc.detail
+    else:
+        detail = getattr(exc, "detail", None)
+        if detail is not None:
+            diagnostics["httpDetail"] = detail
+
+    return {
+        key: value
+        for key, value in diagnostics.items()
+        if value not in (None, "", [], {})
+    }
+
+
 def _extract_failure_context(exc: Exception, *, fallback_stage: str) -> dict[str, Any]:
+    diagnostics = _build_failure_diagnostics(exc)
     detail = getattr(exc, "detail", None) if isinstance(exc, HTTPException) else None
     if isinstance(detail, dict):
         message = str(detail.get("message") or detail.get("error") or str(exc))
@@ -665,6 +713,9 @@ def _extract_failure_context(exc: Exception, *, fallback_stage: str) -> dict[str
         failure_family = getattr(exc, "failure_family", None) or getattr(exc, "failureFamily", None)
         primary_artifact_id = getattr(exc, "primary_artifact_id", None) or getattr(exc, "primaryArtifactId", None)
 
+    if _is_opaque_failure_message(message):
+        message = str(diagnostics.get("exceptionRepr") or message)
+
     return {
         "message": message,
         "failed_stage": failed_stage,
@@ -677,6 +728,7 @@ def _extract_failure_context(exc: Exception, *, fallback_stage: str) -> dict[str
             timed_out=timed_out,
         ),
         "primary_artifact_id": primary_artifact_id,
+        "diagnostics": diagnostics,
     }
 
 
@@ -789,26 +841,89 @@ def _make_progress_cb(
     return progress_cb
 
 
+async def _initialize_task_memory_for_create(
+    request: RunPipelineV2Request,
+    *,
+    task_id: Optional[str],
+) -> None:
+    if not task_id:
+        return
+
+    await task_memory.begin_task(
+        task_id,
+        task_meta={
+            "entrypoint": request.request_context.entrypoint,
+            "game_id": request.game_id,
+            "user_id": request.user_id,
+            "title": request.title or "",
+            "platform": request.platform,
+        },
+        source_context_summary=f"- raw_user_input: {str(request.raw_user_input or '').strip()[:280]}",
+    )
+
+
+async def _initialize_task_memory_for_iteration(
+    request: IterateV2Request,
+    *,
+    task_id: Optional[str],
+) -> None:
+    if not task_id:
+        return
+
+    await task_memory.begin_task(
+        task_id,
+        task_meta={
+            "entrypoint": request.request_context.entrypoint,
+            "game_id": request.game_id,
+            "user_id": request.user_id,
+            "title": getattr(request.source_bundle_context, "title", "") or "",
+            "platform": request.platform,
+            "existing_status": request.existing_game.status,
+        },
+    )
+    await task_memory.remember_source_context(
+        task_id,
+        source_bundle_context=request.source_bundle_context,
+        source_spec=request.source_spec,
+        current_code=request.current_code,
+        feedback=request.iteration_intent.feedback,
+    )
+
+
 async def _run_pipeline_internal(
     request: RunPipelineRequest,
     *,
     task_id: Optional[str] = None,
 ) -> RunPipelineResponse:
+    effective_task_id = task_id or request.task_id
     progress_cb = _make_progress_cb(
         game_id=request.game_id,
         user_id=request.user_id,
-        task_id=task_id or request.task_id,
+        task_id=effective_task_id,
     )
-    with llm_request_context(
-        game_id=request.game_id,
-        user_id=request.user_id,
-        task_id=task_id or request.task_id,
-    ):
-        return await _orchestrator.run(
-            request,
-            progress_cb=progress_cb,
-            timeout_s=_resolve_timeout_s(request.timeout_s),
-        )
+    await task_memory.begin_task(
+        effective_task_id,
+        task_meta={
+            "entrypoint": "legacy_create",
+            "game_id": request.game_id,
+            "user_id": request.user_id,
+            "platform": request.platform,
+        },
+        source_context_summary=f"- raw_user_input: {str(request.description or '').strip()[:280]}",
+    )
+    try:
+        with llm_request_context(
+            game_id=request.game_id,
+            user_id=request.user_id,
+            task_id=effective_task_id,
+        ):
+            return await _orchestrator.run(
+                request,
+                progress_cb=progress_cb,
+                timeout_s=_resolve_timeout_s(request.timeout_s),
+            )
+    finally:
+        await task_memory.clear_task(effective_task_id)
 
 
 async def _run_iteration_internal(
@@ -817,25 +932,42 @@ async def _run_iteration_internal(
     task_id: Optional[str] = None,
 ) -> IterateResponse:
     start = time.time()
+    effective_task_id = task_id or request.task_id
     progress_cb = _make_progress_cb(
         game_id=request.game_id,
         user_id=request.user_id,
-        task_id=task_id or request.task_id,
+        task_id=effective_task_id,
     )
-    with llm_request_context(
-        game_id=request.game_id,
-        user_id=request.user_id,
-        task_id=task_id or request.task_id,
-    ):
-        result = await _orchestrator.iterate(
+    await task_memory.begin_task(
+        effective_task_id,
+        task_meta={
+            "entrypoint": "legacy_iterate",
+            "game_id": request.game_id,
+            "user_id": request.user_id,
+        },
+    )
+    await task_memory.remember_source_context(
+        effective_task_id,
+        current_code=request.current_code,
+        feedback=request.feedback,
+    )
+    try:
+        with llm_request_context(
             game_id=request.game_id,
-            current_code=request.current_code,
-            feedback=request.feedback,
-            conversation=request.conversation,
             user_id=request.user_id,
-            progress_cb=progress_cb,
-            timeout_s=_resolve_timeout_s(request.timeout_s),
-        )
+            task_id=effective_task_id,
+        ):
+            result = await _orchestrator.iterate(
+                game_id=request.game_id,
+                current_code=request.current_code,
+                feedback=request.feedback,
+                conversation=request.conversation,
+                user_id=request.user_id,
+                progress_cb=progress_cb,
+                timeout_s=_resolve_timeout_s(request.timeout_s),
+            )
+    finally:
+        await task_memory.clear_task(effective_task_id)
     elapsed = int((time.time() - start) * 1000)
     return IterateResponse(
         html_code=result["html_code"],
@@ -886,6 +1018,7 @@ async def _run_pipeline_v2_internal(
         user_id=resolved_request.user_id,
         task_id=effective_task_id,
     )
+    await _initialize_task_memory_for_create(resolved_request, task_id=effective_task_id)
     try:
         with llm_request_context(
             game_id=resolved_request.game_id,
@@ -946,6 +1079,12 @@ async def _run_pipeline_v2_internal(
             game_type=getattr(response.game_spec, "game_type", None),
             theme=getattr(getattr(response.game_spec, "visual_style", None), "theme", None),
             runtime_profile=response.runtime_profile,
+            visual_pack=getattr(getattr(response.game_spec, "visual_style", None), "visual_pack", None),
+            render_style_intensity=getattr(
+                getattr(response.game_spec, "visual_style", None),
+                "render_style_intensity",
+                None,
+            ),
         )
         if cover_artifact:
             cover_artifact_id = await _relay_artifact_to_game_service(
@@ -1023,6 +1162,8 @@ async def _run_pipeline_v2_internal(
             details={
                 "pipelineVersion": "v2",
                 "entrypoint": resolved_request.request_context.entrypoint,
+                "exceptionClass": failure.get("diagnostics", {}).get("exceptionClass"),
+                "httpStatusCode": failure.get("diagnostics", {}).get("httpStatusCode"),
             },
         )
         await _relay_stage_summary_to_game_service(
@@ -1033,6 +1174,7 @@ async def _run_pipeline_v2_internal(
             details={
                 "pipelineVersion": "v2",
                 "failureFamily": failure["failure_family"],
+                "exceptionClass": failure.get("diagnostics", {}).get("exceptionClass"),
             },
             artifact_ids=[
                 artifact_id
@@ -1042,6 +1184,8 @@ async def _run_pipeline_v2_internal(
         )
         _annotate_failure_exception(exc, failure)
         raise
+    finally:
+        await task_memory.clear_task(effective_task_id)
 
 
 async def _run_iteration_v2_internal(
@@ -1087,6 +1231,7 @@ async def _run_iteration_v2_internal(
         user_id=resolved_request.user_id,
         task_id=effective_task_id,
     )
+    await _initialize_task_memory_for_iteration(resolved_request, task_id=effective_task_id)
     try:
         with llm_request_context(
             game_id=resolved_request.game_id,
@@ -1152,6 +1297,12 @@ async def _run_iteration_v2_internal(
             ),
             theme=getattr(getattr(cover_game_spec, "visual_style", None), "theme", None),
             runtime_profile=response.runtime_profile,
+            visual_pack=getattr(getattr(cover_game_spec, "visual_style", None), "visual_pack", None),
+            render_style_intensity=getattr(
+                getattr(cover_game_spec, "visual_style", None),
+                "render_style_intensity",
+                None,
+            ),
             updated=True,
         )
         if cover_artifact:
@@ -1230,6 +1381,8 @@ async def _run_iteration_v2_internal(
             details={
                 "pipelineVersion": "v2",
                 "entrypoint": resolved_request.request_context.entrypoint,
+                "exceptionClass": failure.get("diagnostics", {}).get("exceptionClass"),
+                "httpStatusCode": failure.get("diagnostics", {}).get("httpStatusCode"),
             },
         )
         await _relay_stage_summary_to_game_service(
@@ -1240,6 +1393,7 @@ async def _run_iteration_v2_internal(
             details={
                 "pipelineVersion": "v2",
                 "failureFamily": failure["failure_family"],
+                "exceptionClass": failure.get("diagnostics", {}).get("exceptionClass"),
             },
             artifact_ids=[
                 artifact_id
@@ -1249,6 +1403,8 @@ async def _run_iteration_v2_internal(
         )
         _annotate_failure_exception(exc, failure)
         raise
+    finally:
+        await task_memory.clear_task(effective_task_id)
 
 
 # ===========================================================================
@@ -1407,6 +1563,35 @@ async def test_llm_gateway_provider_chat(
     except Exception as exc:
         logger.exception("LLM gateway provider chat test failed")
         raise HTTPException(status_code=500, detail=f"Provider chat test failed: {exc}") from exc
+
+
+@router.post("/covers/capture", response_model=CoverCaptureResponse)
+async def capture_cover(
+    request: CoverCaptureRequest,
+    x_admin_token: Optional[str] = Header(default=None, alias="x-admin-token"),
+) -> CoverCaptureResponse:
+    _require_admin_token(x_admin_token)
+    artifact = await _maybe_capture_cover_artifact(
+        html_code=request.html_code,
+        orientation=request.orientation,
+        timeout_s=request.timeout_s,
+        title=request.title,
+        game_type=request.game_type,
+        theme=request.theme,
+        runtime_profile=request.runtime_profile,
+        visual_pack=request.visual_pack,
+        render_style_intensity=request.render_style_intensity,
+        updated=request.updated,
+        require_game_service_upstream=False,
+    )
+    if not artifact:
+        return CoverCaptureResponse(captured=False, metadata={})
+    return CoverCaptureResponse(
+        captured=True,
+        content_type=str(artifact.get("content_type") or "image/jpeg"),
+        payload=str(artifact.get("payload") or ""),
+        metadata=dict(artifact.get("metadata") or {}),
+    )
 
 
 # ===========================================================================
