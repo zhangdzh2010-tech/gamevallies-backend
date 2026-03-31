@@ -1223,8 +1223,26 @@ class V2PipelineRunner:
         static_check = self.qa_pipeline.check(pre_repaired, runtime_contract=runtime_contract)
         contract_errors = self._validate_contract_bundle(pre_repaired, runtime_contract)
         if static_check.passed and not contract_errors:
-            logger.info("Code passed all checks on first attempt; skipping repair loop")
+            logger.info("Code passed all checks on first attempt; skipping repair loop and running runtime QA directly")
             qa_result = QAResult(success=True, code=pre_repaired, retries=0)
+            # Fast-path: jump directly to runtime QA, skip the contract_qa stage notification
+            stage_context["stage"] = "runtime_simulation_qa"
+            self._notify(progress_cb, "runtime_simulation_qa", 92, "Running runtime simulation QA", {
+                "gameId": game_id,
+                "userId": user_id,
+                "runtimeProfile": runtime_contract.runtime_profile,
+            })
+            final_code, runtime_qa, runtime_retries, qa_warnings = await self._run_runtime_qa_loop(
+                code=qa_result.code,
+                spec=spec,
+                runtime_contract=runtime_contract,
+                prompt_bundle_snapshot=prompt_bundle_snapshot,
+                progress_cb=progress_cb,
+                game_id=game_id,
+                user_id=user_id,
+                allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
+            )
+            return QAResult(success=True, code=final_code, retries=qa_result.retries), runtime_qa, runtime_retries, qa_warnings
         else:
             qa_result = await self._run_contract_qa_loop(
                 code=code,

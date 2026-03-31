@@ -1599,6 +1599,56 @@ async def test_llm_gateway_provider_chat(
         raise HTTPException(status_code=500, detail=f"Provider chat test failed: {exc}") from exc
 
 
+@router.post("/llm-gateway/providers/{provider_id}/verify")
+async def verify_llm_gateway_provider(
+    provider_id: str,
+    x_admin_token: Optional[str] = Header(default=None, alias="x-admin-token"),
+    timeout_s: int = Query(default=30, ge=5, le=300),
+):
+    _require_admin_token(x_admin_token)
+    try:
+        report = await gateway.verify_provider_capabilities(provider_id, timeout_s=timeout_s)
+        return report
+    except Exception as exc:
+        logger.exception("LLM gateway provider verification failed")
+        raise HTTPException(status_code=500, detail=f"Provider verification failed: {exc}") from exc
+
+
+@router.get("/llm-gateway/providers/capabilities")
+async def list_provider_capabilities(
+    x_admin_token: Optional[str] = Header(default=None, alias="x-admin-token"),
+):
+    _require_admin_token(x_admin_token)
+    from ...services.llm_gateway import STEP_REQUIRED_CAPABILITIES, _provider_has_capability
+    gateway._ensure_loaded()
+
+    providers_caps = []
+    for pid, provider in gateway._providers.items():
+        step_eligibility = {}
+        for step_key, required_caps in STEP_REQUIRED_CAPABILITIES.items():
+            missing = [cap for cap in required_caps if not _provider_has_capability(provider, cap)]
+            step_eligibility[step_key] = {
+                "eligible": len(missing) == 0,
+                "missing_capabilities": missing,
+            }
+        providers_caps.append({
+            "provider_id": provider.id,
+            "provider_name": provider.name,
+            "provider_type": provider.provider_type,
+            "region": provider.region,
+            "enabled": provider.enabled,
+            "capability_flags": provider.capability_flags,
+            "context_window": provider.context_window,
+            "max_tokens": provider.max_tokens,
+            "step_eligibility": step_eligibility,
+        })
+
+    return {
+        "providers": providers_caps,
+        "step_capability_requirements": {k: list(v) for k, v in STEP_REQUIRED_CAPABILITIES.items()},
+    }
+
+
 @router.post("/covers/capture", response_model=CoverCaptureResponse)
 async def capture_cover(
     request: CoverCaptureRequest,
@@ -2023,4 +2073,84 @@ async def health_check():
         "status": "healthy",
         "service": "PlayForge AI Engine",
         "timestamp": time.time(),
+    }
+
+
+@router.get("/llm-gateway/analytics/step-health")
+async def get_step_health_analytics(
+    x_admin_token: Optional[str] = Header(default=None, alias="x-admin-token"),
+    hours: int = Query(default=24, ge=1, le=720),
+):
+    """Aggregate LLM call health metrics by step_key."""
+    _require_admin_token(x_admin_token)
+    from ...services.llm_gateway import gateway
+
+    conn = gateway._connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    step_key,
+                    COUNT(*) AS total_calls,
+                    SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS success_count,
+                    SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS failure_count,
+                    ROUND(AVG(CASE WHEN success = 1 THEN latency_ms END)) AS avg_latency_ms,
+                    ROUND(AVG(CASE WHEN success = 1 THEN output_tokens END)) AS avg_output_tokens,
+                    SUM(CASE WHEN error_code = 'LLMResponseTruncatedError' THEN 1 ELSE 0 END) AS truncation_count,
+                    SUM(CASE WHEN failover_reason IS NOT NULL AND failover_reason != '' THEN 1 ELSE 0 END) AS failover_count,
+                    output_class
+                FROM llm_call_logs
+                WHERE created_at >= DATE_SUB(NOW(), INTERVAL %s HOUR)
+                GROUP BY step_key, output_class
+                ORDER BY total_calls DESC
+                """,
+                (hours,),
+            )
+            rows = cur.fetchall()
+    except Exception as exc:
+        # Graceful fallback if new columns don't exist yet
+        conn2 = gateway._connect()
+        try:
+            with conn2.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        step_key,
+                        COUNT(*) AS total_calls,
+                        SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS success_count,
+                        SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS failure_count,
+                        ROUND(AVG(CASE WHEN success = 1 THEN latency_ms END)) AS avg_latency_ms,
+                        ROUND(AVG(CASE WHEN success = 1 THEN output_tokens END)) AS avg_output_tokens,
+                        SUM(CASE WHEN error_code = 'LLMResponseTruncatedError' THEN 1 ELSE 0 END) AS truncation_count
+                    FROM llm_call_logs
+                    WHERE created_at >= DATE_SUB(NOW(), INTERVAL %s HOUR)
+                    GROUP BY step_key
+                    ORDER BY total_calls DESC
+                    """,
+                    (hours,),
+                )
+                rows = cur.fetchall()
+        finally:
+            conn2.close()
+    finally:
+        conn.close()
+
+    return {
+        "hours": hours,
+        "steps": [
+            {
+                "step_key": row["step_key"],
+                "total_calls": row["total_calls"],
+                "success_count": row.get("success_count", 0),
+                "failure_count": row.get("failure_count", 0),
+                "success_rate": round(row.get("success_count", 0) / max(row["total_calls"], 1), 3),
+                "avg_latency_ms": row.get("avg_latency_ms"),
+                "avg_output_tokens": row.get("avg_output_tokens"),
+                "truncation_count": row.get("truncation_count", 0),
+                "failover_count": row.get("failover_count", 0),
+                "output_class": row.get("output_class", ""),
+            }
+            for row in rows
+        ],
     }

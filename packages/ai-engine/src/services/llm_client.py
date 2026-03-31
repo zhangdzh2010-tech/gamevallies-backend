@@ -376,33 +376,107 @@ def _is_retryable_provider_error(exc: Exception) -> bool:
     return False
 
 
-def _normalize_response_size_hint(value: Optional[str]) -> str:
+# ── Output class taxonomy ──────────────────────────────────────────────
+VALID_OUTPUT_CLASSES = frozenset({
+    "small_text", "small_json", "medium_structured", "large_patch", "full_document",
+})
+
+_LEGACY_HINT_TO_OUTPUT_CLASS: dict[str, str] = {
+    "small": "small_text",
+    "medium": "medium_structured",
+    "large": "large_patch",
+    "xlarge": "full_document",
+}
+
+# Hardcoded step→output_class fallback when DB catalog is unavailable
+STEP_OUTPUT_CLASS_DEFAULTS: dict[str, str] = {
+    "dialogue.reply": "small_text",
+    "dialogue.slot_extract": "small_json",
+    "intent_parse": "small_json",
+    "iterate.classify": "small_json",
+    "generate_game_spec": "small_json",
+    "generate_game_spec.draft": "small_json",
+    "llm_design": "medium_structured",
+    "code_review": "medium_structured",
+    "iterate.param_adjust": "large_patch",
+    "iterate.element_change": "large_patch",
+    "iterate.mechanic_change": "large_patch",
+    "qa_fix": "large_patch",
+    "qa_fix.forbidden_api": "large_patch",
+    "qa_fix.input_contract": "large_patch",
+    "qa_fix.score_feedback": "large_patch",
+    "qa_fix.terminal_state": "large_patch",
+    "qa_fix.mobile_layout": "large_patch",
+    "qa_fix.runtime_startup": "large_patch",
+    "qa_fix.generic": "large_patch",
+    "qa_fix.syntax_structural": "full_document",
+    "qa_fix.syntax_rebuild": "full_document",
+    "code_generate.full": "full_document",
+}
+
+OUTPUT_CLASS_TOKEN_DEFAULTS: dict[str, int] = {
+    "small_text": 512,
+    "small_json": 1024,
+    "medium_structured": 2048,
+    "large_patch": 4096,
+    "full_document": 8192,
+}
+
+
+def _normalize_output_class(value: Optional[str]) -> str:
+    """Normalize output class, supporting both new 5-level and legacy 4-level hints."""
     normalized = (value or "").strip().lower()
-    if normalized in {"small", "medium", "large", "xlarge"}:
+    if normalized in VALID_OUTPUT_CLASSES:
         return normalized
-    return "medium"
+    # Legacy backward compatibility
+    legacy = _LEGACY_HINT_TO_OUTPUT_CLASS.get(normalized)
+    if legacy:
+        return legacy
+    return "medium_structured"
 
 
-def _default_hint_tokens(response_size_hint: Optional[str]) -> int:
-    normalized = _normalize_response_size_hint(response_size_hint)
-    if normalized == "small":
-        return 1024
-    if normalized == "large":
-        return 4096
-    if normalized == "xlarge":
-        return max(8192, settings.LLM_LONG_GENERATION_MAX_TOKENS)
-    return 2048
+def _resolve_output_class_for_step(step_key: str, explicit_hint: Optional[str] = None) -> str:
+    """Resolve the output class for a step, using explicit hint, DB catalog, or defaults."""
+    if explicit_hint:
+        resolved = _normalize_output_class(explicit_hint)
+        if resolved in VALID_OUTPUT_CLASSES:
+            return resolved
+    # Try step_key exact match, then parent walk
+    cls = STEP_OUTPUT_CLASS_DEFAULTS.get(step_key)
+    if cls:
+        return cls
+    parent = step_key
+    while "." in parent:
+        parent = parent.rsplit(".", 1)[0]
+        cls = STEP_OUTPUT_CLASS_DEFAULTS.get(parent)
+        if cls:
+            return cls
+    return "medium_structured"
+
+
+def _default_hint_tokens(output_class: Optional[str]) -> int:
+    """Return default token budget for an output class."""
+    normalized = _normalize_output_class(output_class)
+    if normalized == "full_document":
+        return max(OUTPUT_CLASS_TOKEN_DEFAULTS["full_document"], settings.LLM_LONG_GENERATION_MAX_TOKENS)
+    return OUTPUT_CLASS_TOKEN_DEFAULTS.get(normalized, 2048)
+
+
+# Keep backward-compatible alias
+def _normalize_response_size_hint(value: Optional[str]) -> str:
+    """Deprecated: use _normalize_output_class instead."""
+    return _normalize_output_class(value)
 
 
 def _required_output_floor(
     requested_max_tokens: Optional[int],
     response_size_hint: Optional[str],
 ) -> Optional[int]:
-    normalized_hint = _normalize_response_size_hint(response_size_hint)
-    if normalized_hint not in {"large", "xlarge"}:
+    output_class = _normalize_output_class(response_size_hint)
+    if output_class not in {"large_patch", "full_document"}:
         return None
     floor = _coerce_optional_int(requested_max_tokens)
-    if normalized_hint == "xlarge":
+    if output_class == "full_document":
         floor = max(
             floor or 0,
             max(
@@ -411,6 +485,38 @@ def _required_output_floor(
             ),
         )
     return floor if floor and floor > 0 else None
+
+
+from collections import deque
+
+class _OutputTokenTracker:
+    """Track recent output token usage per step_key for adaptive budgeting."""
+
+    def __init__(self, max_history: int = 20):
+        self._history: dict[str, deque] = {}
+        self._max_history = max_history
+
+    def record(self, step_key: str, output_tokens: int) -> None:
+        if step_key not in self._history:
+            self._history[step_key] = deque(maxlen=self._max_history)
+        self._history[step_key].append(output_tokens)
+
+    def suggest_budget(self, step_key: str, default: int) -> int:
+        """Suggest token budget based on recent usage. Returns P90 * 1.3 or default."""
+        history = self._history.get(step_key)
+        if not history or len(history) < 3:
+            return default
+        sorted_vals = sorted(history)
+        p90_idx = max(0, int(len(sorted_vals) * 0.9) - 1)
+        p90 = sorted_vals[p90_idx]
+        suggested = int(p90 * 1.3)
+        # Never go below default, never above 2x default
+        return max(default, min(suggested, default * 2))
+
+
+_output_token_tracker = _OutputTokenTracker(
+    max_history=getattr(settings, "LLM_ADAPTIVE_TOKEN_BUDGET_HISTORY_SIZE", 20),
+)
 
 
 def _contains_cjk(text: str) -> int:
@@ -1094,6 +1200,12 @@ class LLMClient:
         timeout_attempt = 0
 
         while True:
+            # Adaptive token budget: if enabled and we have history, adjust
+            if getattr(settings, "LLM_ADAPTIVE_TOKEN_BUDGET_ENABLED", False) and requested_max_tokens:
+                suggested = _output_token_tracker.suggest_budget(step_key, requested_max_tokens)
+                if suggested > requested_max_tokens:
+                    requested_max_tokens = suggested
+
             current_overall_timeout_s = overall_timeout_s
             if current_overall_timeout_s is not None and requested_request_timeout_s is not None:
                 current_overall_timeout_s = max(
@@ -1237,6 +1349,9 @@ class LLMClient:
                 elapsed_ms=latency_ms,
             )
 
+            if getattr(settings, "LLM_ADAPTIVE_TOKEN_BUDGET_ENABLED", False):
+                _output_token_tracker.record(step_key, completion_result.usage.output_tokens or 0)
+
             await gateway.emit_llm_call_log({
                 "stage": stage,
                 "stepKey": step_key,
@@ -1254,6 +1369,10 @@ class LLMClient:
                 "totalTokens": completion_result.usage.total_tokens,
                 "configVersion": route.config_version,
                 "routeSnapshot": route_snapshot,
+                "outputClass": route.route_snapshot.get("output_class_for_step", ""),
+                "isPrimaryProvider": route.route_snapshot.get("is_primary_provider", True),
+                "failoverReason": route.route_snapshot.get("failover_reason"),
+                "providerVerified": route.route_snapshot.get("provider_verified"),
             })
             return completion_result.text
         except asyncio.CancelledError:
@@ -1345,6 +1464,10 @@ class LLMClient:
                 "totalTokens": total_tokens,
                 "configVersion": route.config_version,
                 "routeSnapshot": route.route_snapshot,
+                "outputClass": route.route_snapshot.get("output_class_for_step", ""),
+                "isPrimaryProvider": route.route_snapshot.get("is_primary_provider", True),
+                "failoverReason": route.route_snapshot.get("failover_reason"),
+                "providerVerified": route.route_snapshot.get("provider_verified"),
             })
             raise
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -247,7 +248,39 @@ class ProviderRecord:
     tokenizer_family: Optional[str]
     strict_admission: bool
     safety_margin_tokens: Optional[int]
+    capability_flags: dict[str, Any]
     updated_at: float
+
+
+def _provider_has_capability(provider: ProviderRecord, capability: str) -> bool:
+    """Check if provider has a required capability.
+
+    Empty or missing capability_flags means all capabilities are assumed present
+    (backward compatible).
+    """
+    flags = provider.capability_flags
+    if not flags:
+        return True
+    # Check unsafe_for_steps list
+    unsafe_steps = flags.get("unsafe_for_steps", [])
+    if capability in unsafe_steps:
+        return False
+    return flags.get(capability, True)
+
+
+STEP_REQUIRED_CAPABILITIES: dict[str, tuple[str, ...]] = {
+    "code_generate.full": ("supports_full_html_rewrite",),
+    "iterate.mechanic_change": ("supports_patch_generation",),
+    "iterate.element_change": ("supports_patch_generation",),
+    "iterate.param_adjust": ("supports_patch_generation",),
+    "qa_fix": ("supports_qa_repair",),
+    "qa_fix.syntax_structural": ("supports_full_html_rewrite",),
+    "qa_fix.syntax_rebuild": ("supports_full_html_rewrite",),
+    "intent_parse": ("supports_dialogue",),
+    "dialogue.reply": ("supports_dialogue",),
+    "dialogue.slot_extract": ("supports_dialogue",),
+    "iterate.classify": ("supports_dialogue",),
+}
 
 
 @dataclass
@@ -325,7 +358,7 @@ class LLMGateway:
                     SELECT
                       id, name, provider_type, region, base_url, api_key, model, fast_model,
                       request_timeout_s, connect_timeout_s, enabled, priority, description,
-                      extra_config, updated_at
+                      extra_config, capability_flags, updated_at
                     FROM llm_gateway_providers
                     WHERE enabled = 1
                     ORDER BY priority ASC, updated_at DESC
@@ -359,6 +392,12 @@ class LLMGateway:
             strict_admission = _extract_provider_bool(extra_config, "strictAdmission", "strict_admission")
             if strict_admission is None:
                 strict_admission = bool(context_window and max_tokens)
+            # Parse capability_flags from dedicated column, falling back to extra_config
+            raw_capability_flags = _loads_json(row.get("capability_flags"), None)
+            if raw_capability_flags is None:
+                raw_capability_flags = extra_config.get("capability_flags", {})
+            if not isinstance(raw_capability_flags, dict):
+                raw_capability_flags = {}
             providers[row["id"]] = ProviderRecord(
                 id=row["id"],
                 name=row["name"],
@@ -379,6 +418,7 @@ class LLMGateway:
                 tokenizer_family=_extract_provider_string(extra_config, "tokenizerFamily", "tokenizer_family"),
                 strict_admission=strict_admission,
                 safety_margin_tokens=_extract_provider_numeric_cap(extra_config, "safetyMarginTokens", "safety_margin_tokens"),
+                capability_flags=raw_capability_flags,
                 updated_at=float(updated_ts),
             )
 
@@ -518,7 +558,8 @@ class LLMGateway:
         *,
         route: Optional[RouteRecord],
         service_region: str,
-    ) -> list[ProviderRecord]:
+        step_key: str = "",
+    ) -> tuple[list[ProviderRecord], list[str]]:
         ordered: list[ProviderRecord] = []
         seen: set[str] = set()
 
@@ -538,18 +579,47 @@ class LLMGateway:
             add_provider(route.provider_id)
             for fallback_id in route.fallback_provider_ids:
                 add_provider(fallback_id)
-            return ordered
+        else:
+            # No route matched — fall back to all enabled providers,
+            # preferring same-region first.
+            for provider in self._providers.values():
+                if provider.region == service_region:
+                    add_provider(provider.id)
 
-        # No route matched — fall back to all enabled providers,
-        # preferring same-region first.
-        for provider in self._providers.values():
-            if provider.region == service_region:
+            for provider in self._providers.values():
                 add_provider(provider.id)
 
-        for provider in self._providers.values():
-            add_provider(provider.id)
+        # Filter by capability requirements
+        required_caps = self._resolve_required_capabilities(step_key)
+        if required_caps:
+            filtered: list[ProviderRecord] = []
+            rejections: list[str] = []
+            for provider in ordered:
+                missing = [cap for cap in required_caps if not _provider_has_capability(provider, cap)]
+                if missing:
+                    rejections.append(f"{provider.name}:{','.join(missing)}")
+                    logger.debug(
+                        "Provider %s (%s) excluded from step %s: missing capabilities %s",
+                        provider.name, provider.id, step_key, missing,
+                    )
+                else:
+                    filtered.append(provider)
+            return filtered, rejections
+        return ordered, []
 
-        return ordered
+    @staticmethod
+    def _resolve_required_capabilities(step_key: str) -> tuple[str, ...]:
+        """Look up required capabilities for a step, including parent fallback."""
+        caps = STEP_REQUIRED_CAPABILITIES.get(step_key)
+        if caps:
+            return caps
+        parent = step_key
+        while "." in parent:
+            parent = parent.rsplit(".", 1)[0]
+            caps = STEP_REQUIRED_CAPABILITIES.get(parent)
+            if caps:
+                return caps
+        return ()
 
     @staticmethod
     def _provider_meets_output_floor(
@@ -602,6 +672,8 @@ class LLMGateway:
         append_candidates(region_matched=True)
         append_candidates(region_matched=False)
         return providers, implicit_ids
+
+
 
     def _prioritize_provider_candidates_for_output_floor(
         self,
@@ -688,6 +760,10 @@ class LLMGateway:
                 "tokenizer_family": provider.tokenizer_family,
                 "strict_admission": provider.strict_admission,
                 "safety_margin_tokens": provider.safety_margin_tokens,
+                "provider_capability_flags": {
+                    k: v for k, v in provider.capability_flags.items()
+                    if isinstance(v, (bool, str, int, float))
+                } if provider.capability_flags else {},
                 **(extra_route_snapshot or {}),
             },
         )
@@ -732,7 +808,9 @@ class LLMGateway:
             step_key=step_key,
             region=service_region,
         )
-        providers = self._ordered_provider_candidates(route=route, service_region=service_region)
+        providers, capability_rejections = self._ordered_provider_candidates(
+            route=route, service_region=service_region, step_key=step_key,
+        )
         base_provider_ids = {provider.id for provider in providers}
         providers, implicit_provider_ids = self._augment_provider_candidates_for_failover(
             providers,
@@ -763,6 +841,7 @@ class LLMGateway:
                 extra_route_snapshot={
                     "implicit_provider_failover": provider.id in implicit_provider_ids,
                     "required_output_tokens": _coerce_optional_positive_int(required_output_tokens),
+                    "capability_rejections": capability_rejections,
                 },
             )
             for provider in providers
@@ -831,6 +910,130 @@ class LLMGateway:
                 )
         except Exception as exc:
             logger.debug("Failed to relay task activity to game-service: %s", exc)
+
+    async def verify_provider_capabilities(
+        self,
+        provider_id: str,
+        *,
+        timeout_s: int = 30,
+    ) -> dict[str, Any]:
+        """Run capability verification tests on a provider."""
+        self._ensure_loaded()
+        provider = self._providers.get(provider_id)
+        if not provider:
+            return {"provider_id": provider_id, "passed": False, "error": "provider_not_found"}
+
+        from .llm_client import LLMClient
+        client = LLMClient()
+        results: dict[str, Any] = {
+            "provider_id": provider_id,
+            "provider_name": provider.name,
+            "tests": {},
+            "verified_at": _utc_now_iso(),
+        }
+        passed_all = True
+
+        # Test 1: Basic reachability (PONG)
+        try:
+            route = self._build_resolved_route(
+                provider=provider, route=None, step_key="verification.pong",
+                prefer_fast=True,
+            )
+            text = await asyncio.wait_for(
+                client._complete_single(
+                    route=route,
+                    messages=[{"role": "user", "content": "Reply with PONG"}],
+                    max_tokens=32,
+                    system=None,
+                ),
+                timeout=timeout_s,
+            )
+            results["tests"]["reachability"] = {"passed": bool(text and "PONG" in text.upper()), "output_preview": (text or "")[:100]}
+        except Exception as exc:
+            results["tests"]["reachability"] = {"passed": False, "error": str(exc)[:200]}
+            passed_all = False
+
+        # Test 2: Large output (1K+ tokens)
+        try:
+            route = self._build_resolved_route(
+                provider=provider, route=None, step_key="verification.large_output",
+            )
+            prompt = "Write a detailed step-by-step guide with at least 20 numbered steps on how to build a simple web page with HTML and CSS. Include code examples for each step. Be very detailed and thorough."
+            text = await asyncio.wait_for(
+                client._complete_single(
+                    route=route,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=4096,
+                    system="You are a helpful coding tutor. Always provide complete, detailed responses.",
+                ),
+                timeout=timeout_s * 2,
+            )
+            output_len = len(text or "")
+            results["tests"]["large_output"] = {
+                "passed": output_len >= 1000,
+                "output_chars": output_len,
+            }
+            if output_len < 1000:
+                passed_all = False
+        except Exception as exc:
+            results["tests"]["large_output"] = {"passed": False, "error": str(exc)[:200]}
+            passed_all = False
+
+        # Test 3: Structured JSON output
+        try:
+            route = self._build_resolved_route(
+                provider=provider, route=None, step_key="verification.structured_json",
+                prefer_fast=True,
+            )
+            prompt = 'Return ONLY valid JSON with this exact structure: {"patches":[{"section":"SCRIPT","operation":"replace_section","content":"console.log(1)"}]}'
+            text = await asyncio.wait_for(
+                client._complete_single(
+                    route=route,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=256,
+                    system="You are a JSON-only response bot. Return ONLY valid JSON, no markdown, no explanation.",
+                ),
+                timeout=timeout_s,
+            )
+            import json as json_mod
+            try:
+                parsed = json_mod.loads(text.strip().strip("`").strip())
+                has_patches = "patches" in parsed and isinstance(parsed["patches"], list)
+                results["tests"]["structured_json"] = {"passed": has_patches}
+            except Exception:
+                results["tests"]["structured_json"] = {"passed": False, "output_preview": (text or "")[:200]}
+                passed_all = False
+        except Exception as exc:
+            results["tests"]["structured_json"] = {"passed": False, "error": str(exc)[:200]}
+            passed_all = False
+
+        results["passed"] = passed_all
+
+        # Persist verification status to capability_flags via DB update
+        try:
+            conn = self._connect()
+            try:
+                with conn.cursor() as cur:
+                    # Update capability_flags JSON to include verified status
+                    cur.execute(
+                        """
+                        UPDATE llm_gateway_providers
+                        SET extra_config = JSON_SET(
+                            COALESCE(extra_config, '{}'),
+                            '$.capability_flags.verified', %s,
+                            '$.capability_flags.verified_at', %s
+                        )
+                        WHERE id = %s
+                        """,
+                        (passed_all, results["verified_at"], provider_id),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.warning("Failed to persist verification status for %s: %s", provider_id, exc)
+
+        return results
 
     def _resolved_route_for_provider(
         self,
