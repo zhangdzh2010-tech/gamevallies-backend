@@ -903,58 +903,7 @@ class QAPipeline:
             repair_family=repair_family,
         )
         llm_repaired = self._apply_deterministic_repairs(llm_fixed)
-        if repair_family == "syntax_structural":
-            llm_syntax_errors = self._check_l1_syntax(llm_repaired)
-            if self._has_syntax_structural_errors(llm_syntax_errors):
-                logger.warning(
-                    "Syntax repair candidate still has %s L1 syntax errors; attempting simplified rewrite",
-                    len(llm_syntax_errors),
-                )
-                simplified_candidate = await self._rewrite_with_simplified_budget(
-                    llm_repaired,
-                    llm_syntax_errors,
-                    game_spec,
-                    runtime_contract,
-                )
-                simplified_candidate = self._apply_deterministic_repairs(simplified_candidate)
-                simplified_errors = self._check_l1_syntax(simplified_candidate)
-                if (
-                    not self._introduces_structural_regression(repaired, simplified_candidate)
-                    and len(simplified_errors) < len(llm_syntax_errors)
-                ):
-                    llm_repaired = simplified_candidate
-                else:
-                    logger.warning("Simplified syntax rewrite did not improve structural validity; attempting spec-driven rebuild")
-                    rebuilt_candidate = await self._rebuild_from_spec_for_syntax_recovery(
-                        code=repaired,
-                        errors=llm_syntax_errors,
-                        game_spec=game_spec,
-                        runtime_contract=runtime_contract,
-                    )
-                    if rebuilt_candidate:
-                        rebuilt_candidate = self._apply_deterministic_repairs(rebuilt_candidate)
-                        rebuilt_errors = self._check_l1_syntax(rebuilt_candidate)
-                        if not self._has_syntax_structural_errors(rebuilt_errors):
-                            return rebuilt_candidate
-                        if len(rebuilt_errors) < len(llm_syntax_errors):
-                            llm_repaired = rebuilt_candidate
-                        else:
-                            return repaired
-                    else:
-                        return repaired
         if self._introduces_structural_regression(repaired, llm_repaired):
-            if repair_family == "syntax_structural":
-                rebuilt_candidate = await self._rebuild_from_spec_for_syntax_recovery(
-                    code=repaired,
-                    errors=self._check_l1_syntax(llm_repaired) or scoped_errors,
-                    game_spec=game_spec,
-                    runtime_contract=runtime_contract,
-                )
-                if rebuilt_candidate:
-                    rebuilt_candidate = self._apply_deterministic_repairs(rebuilt_candidate)
-                    rebuilt_errors = self._check_l1_syntax(rebuilt_candidate)
-                    if not self._has_syntax_structural_errors(rebuilt_errors):
-                        return rebuilt_candidate
             logger.warning(
                 "QA repair candidate rejected because it introduced structural regression; keeping previous stable candidate"
             )
