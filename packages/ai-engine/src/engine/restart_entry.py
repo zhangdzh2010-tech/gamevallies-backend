@@ -108,6 +108,88 @@ TEXT_HINT_TRIGGER_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+BOUND_HANDLER_NAME_RE = re.compile(
+    r"""
+    (?:
+        addEventListener\s*\(\s*['"]
+        (?:pointerdown|touchstart|click|mousedown|mouseup|touchend|keydown)
+        ['"]\s*,\s*
+        ((?!function\b)(?!async\b)[A-Za-z_$][\w$]*)
+      | \bon(?:pointerdown|touchstart|click|mousedown|mouseup|touchend|keydown)\s*=\s*
+        ((?!function\b)(?!async\b)[A-Za-z_$][\w$]*)
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+TERMINAL_MARKER_RE = re.compile(
+    r"(?:game_over|gameover|game\ over|level_complete|levelcomplete|completed|complete|victory|win|won|clear)",
+    re.IGNORECASE,
+)
+
+TERMINAL_STATE_RESET_RE = re.compile(
+    r"""
+    (?:
+        (?:state|gameState|currentState|status|gameStatus)\s*=\s*['"]?(?:ready|start|playing)['"]?
+      | (?:gameOver|game_over|isOver|isGameOver)\s*=\s*false
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+TERMINAL_PROGRESS_RESET_RE = re.compile(
+    r"""
+    (?:
+        (?:score|points|lives|life|level|round|stage|combo|inventory|tiles|board)\s*=
+      | generateLevel\s*\(
+      | createLevel\s*\(
+      | buildBoard\s*\(
+      | seedBoard\s*\(
+      | shuffleBoard\s*\(
+      | resetBoard\s*\(
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _extract_bound_handler_names(source: str) -> set[str]:
+    names: set[str] = set()
+    for match in BOUND_HANDLER_NAME_RE.finditer(source or ""):
+        for group in match.groups():
+            if group:
+                names.add(group)
+    return names
+
+
+def _handler_has_terminal_reset_path(source: str, handler_name: str) -> bool:
+    if not source or not handler_name:
+        return False
+
+    escaped_name = re.escape(handler_name)
+    match = None
+    for pattern in (
+        rf"function\s+{escaped_name}\s*\([^)]*\)\s*\{{",
+        rf"(?:const|let|var)\s+{escaped_name}\s*=\s*function\s*\([^)]*\)\s*\{{",
+        rf"(?:const|let|var)\s+{escaped_name}\s*=\s*(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>\s*\{{",
+    ):
+        match = re.search(pattern, source, re.IGNORECASE)
+        if match:
+            break
+    if not match:
+        return False
+
+    # We only need a local heuristic window after the handler declaration. The
+    # restart branch typically sits close to the top of the handler body.
+    snippet = source[match.start(): match.start() + 1800]
+    if not TERMINAL_MARKER_RE.search(snippet):
+        return False
+    if not TERMINAL_STATE_RESET_RE.search(snippet):
+        return False
+    if not TERMINAL_PROGRESS_RESET_RE.search(snippet):
+        return False
+    return True
+
 
 def has_restart_entry(code: str) -> bool:
     source = code or ""
@@ -125,5 +207,9 @@ def has_restart_entry(code: str) -> bool:
 
     if RESTART_TEXT_HINT_RE.search(source) and TEXT_HINT_TRIGGER_RE.search(source):
         return True
+
+    for handler_name in _extract_bound_handler_names(source):
+        if _handler_has_terminal_reset_path(source, handler_name):
+            return True
 
     return False

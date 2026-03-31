@@ -142,7 +142,7 @@
   {
     "key": "prompt.qa_instruction_terminal_state",
     "description": "Stage 6: targeted QA checklist for terminal-state issues",
-    "value": "- Add an explicit lose-state assignment such as `gameOver = true` or `gameState = 'game_over'`.\n- Make sure the render/update loop checks that terminal state and exposes a restart path.\n- Keep a restart entry point reachable from the game-over overlay or ready state.\n- Do not change unrelated scoring or movement systems while fixing the state flow."
+    "value": "- Add an explicit lose-state assignment such as `gameOver = true` or `gameState = 'game_over'`.\n- Make sure the render/update loop checks that terminal state and exposes a restart path.\n- Add or preserve one named restart/reset entry point such as `restartGame()` or `resetRound()` when practical.\n- If restart is handled inside a named input handler, make that terminal branch explicitly reset state flags and core progress values before returning to `ready` or `playing`.\n- Wire the same reachable restart path through the game-over overlay or the primary tap/click path; do not leave restart logic as scattered inline assignments only.\n- Do not change unrelated scoring or movement systems while fixing the state flow."
   },
   {
     "key": "prompt.qa_instruction_storage",
@@ -207,7 +207,7 @@
   {
     "key": "bundle.repair.terminal_state",
     "description": "V2 repair family: terminal state",
-    "value": "You are fixing ONLY the terminal_state family.\nReturn ONLY one complete HTML document.\nFix terminal-state and restart-flow issues only.\nChecklist:\n{targeted_instructions}\n{runtime_contract_block}\nIssues:\n{error_list}\nCurrent code:\n{code}"
+    "value": "You are fixing ONLY the terminal_state family.\nReturn ONLY one complete HTML document.\nFix terminal-state and restart-flow issues only.\nChecklist:\n{targeted_instructions}\n{runtime_contract_block}\nNon-negotiable:\n- Keep one reachable restart path after the game reaches a terminal state.\n- Prefer a named restart/reset function such as `restartGame()` or `resetRound()`.\n- If the existing game already uses a named input handler for start/restart, keep that handler and make its terminal branch explicitly reset state flags and core progress values before returning to `ready` or `playing`.\n- Keep the restart path reachable from the primary tap/click flow or the visible overlay control.\nIssues:\n{error_list}\nCurrent code:\n{code}"
   },
   {
     "key": "bundle.repair.mobile_layout",
