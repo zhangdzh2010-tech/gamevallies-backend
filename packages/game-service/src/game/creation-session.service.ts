@@ -2,8 +2,10 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  InternalServerErrorException,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import axios from 'axios';
 import { PrismaService } from '../prisma/prisma.service';
@@ -15,7 +17,8 @@ import {
   SkipCreationSessionQuestionDto,
 } from './dto';
 import {
-  CREATION_SESSION_ACTIVE_STATUSES,
+  CREATION_SESSION_GENERATING_EXPIRE_MS,
+  CREATION_SESSION_MUTABLE_STATUSES,
   DEFAULT_CREATION_SESSION_QUESTION_BUDGET,
 } from './creation-session.constants';
 import {
@@ -103,7 +106,7 @@ export class CreationSessionService {
     const conversation: CreationSessionConversationMessage[] = [
       this.userMessage(prompt, 'prompt'),
     ];
-    const analysis = await this.analyzeTurn({
+    const analysis = await this.analyzeTurnWithRetry({
       userId,
       conversation,
       current_slots: {},
@@ -154,13 +157,27 @@ export class CreationSessionService {
       },
     };
 
+    const generatingExpireCutoff = new Date(Date.now() - CREATION_SESSION_GENERATING_EXPIRE_MS);
+
     const created = this.prisma?.$transaction
       ? await this.prisma.$transaction(async (tx: any) => {
           const scopedRepo = tx?.gameCreationSession || repo;
+          // Auto-abandon mutable sessions (collecting / ready)
           await scopedRepo.updateMany({
             where: {
               userId,
-              status: { in: [...CREATION_SESSION_ACTIVE_STATUSES] },
+              status: { in: [...CREATION_SESSION_MUTABLE_STATUSES] },
+            },
+            data: {
+              status: 'abandoned',
+            },
+          });
+          // Auto-abandon stale generating sessions (older than 10 min)
+          await scopedRepo.updateMany({
+            where: {
+              userId,
+              status: 'generating',
+              updatedAt: { lt: generatingExpireCutoff },
             },
             data: {
               status: 'abandoned',
@@ -172,7 +189,17 @@ export class CreationSessionService {
           await repo.updateMany({
             where: {
               userId,
-              status: { in: [...CREATION_SESSION_ACTIVE_STATUSES] },
+              status: { in: [...CREATION_SESSION_MUTABLE_STATUSES] },
+            },
+            data: {
+              status: 'abandoned',
+            },
+          });
+          await repo.updateMany({
+            where: {
+              userId,
+              status: 'generating',
+              updatedAt: { lt: generatingExpireCutoff },
             },
             data: {
               status: 'abandoned',
@@ -186,10 +213,12 @@ export class CreationSessionService {
 
   async getActiveSession(userId: string): Promise<CreationSessionSnapshot | null> {
     const repo = this.getRepo();
+    // Only return mutable sessions (collecting / ready). Generating sessions no
+    // longer occupy the active slot so new creations are not blocked.
     const session = await repo.findFirst({
       where: {
         userId,
-        status: { in: [...CREATION_SESSION_ACTIVE_STATUSES] },
+        status: { in: [...CREATION_SESSION_MUTABLE_STATUSES] },
       },
       orderBy: { updatedAt: 'desc' },
     });
@@ -237,6 +266,12 @@ export class CreationSessionService {
       analysis.ambiguity_flags,
       analysis.missing_required,
     );
+    // Bug 4 fix: once a session reaches 'ready', it never reverts to 'collecting'.
+    // This prevents unstable oscillation near the AI engine's fill_pct threshold.
+    const nextStatus = analysis.ready_to_generate
+      ? 'ready'
+      : (session.status === 'ready' ? 'ready' : 'collecting');
+
     const updateResult = await repo.updateMany({
       where: {
         id: session.id,
@@ -245,7 +280,7 @@ export class CreationSessionService {
       },
       data: {
         revision: { increment: 1 },
-        status: analysis.ready_to_generate ? 'ready' : 'collecting',
+        status: nextStatus,
         slotState: analysis.slots || {},
         missingRequired: analysis.missing_required || [],
         skippedSlots,
@@ -256,7 +291,7 @@ export class CreationSessionService {
         ],
         metadata: {
           ...metadata,
-          readyToGenerate: Boolean(analysis.ready_to_generate),
+          readyToGenerate: Boolean(analysis.ready_to_generate || session.status === 'ready'),
           slotFillPct: this.clampSlotFillPct(analysis.slot_fill_pct, analysis.slots || {}),
           planDraft: normalizedPlanDraft,
           confidenceSummary,
@@ -313,6 +348,11 @@ export class CreationSessionService {
       analysis.missing_required,
     );
 
+    // Bug 4 fix: same single-direction locking as in appendMessage()
+    const nextStatus = analysis.ready_to_generate
+      ? 'ready'
+      : (session.status === 'ready' ? 'ready' : 'collecting');
+
     const updateResult = await repo.updateMany({
       where: {
         id: session.id,
@@ -321,7 +361,7 @@ export class CreationSessionService {
       },
       data: {
         revision: { increment: 1 },
-        status: analysis.ready_to_generate ? 'ready' : 'collecting',
+        status: nextStatus,
         missingRequired: analysis.missing_required || [],
         skippedSlots,
         currentQuestion: this.normalizeQuestion(analysis.current_question),
@@ -331,7 +371,7 @@ export class CreationSessionService {
         ],
         metadata: {
           ...metadata,
-          readyToGenerate: Boolean(analysis.ready_to_generate),
+          readyToGenerate: Boolean(analysis.ready_to_generate || session.status === 'ready'),
           slotFillPct: this.clampSlotFillPct(analysis.slot_fill_pct, session.slotState || {}),
           planDraft: normalizedPlanDraft,
           confidenceSummary,
@@ -379,7 +419,7 @@ export class CreationSessionService {
       variation_seed: session.id,
     }, this.asOptionalString(metadata.regionHint));
 
-    const claimedStatus = session.status === 'collecting' ? 'collecting' : 'ready';
+    const rollbackStatus = session.status === 'collecting' ? 'collecting' : 'ready';
     const claimResult = await repo.updateMany({
       where: {
         id: session.id,
@@ -417,9 +457,14 @@ export class CreationSessionService {
         sourceGameId: session.sourceGameId,
       });
 
+      // Bug 5 fix: mark session as 'completed' once the generation task is
+      // successfully queued. The session's role (slot collection → spec → kick
+      // off generation) is done; keeping it as 'generating' would block new
+      // session creation and cause active-slot residue (Bug 2).
       await repo.update({
         where: { id: session.id },
         data: {
+          status: 'completed',
           generatedGameId: result.gameId || null,
           generationTaskId: result.generationTask?.taskId || null,
           metadata: {
@@ -427,6 +472,7 @@ export class CreationSessionService {
             readyToGenerate: true,
             slotFillPct: specResponse.slot_fill_pct ?? this.computeSlotFillPct(session.slotState || {}),
             lastTaskStatus: 'queued',
+            completedAt: new Date().toISOString(),
           },
         },
       });
@@ -439,7 +485,7 @@ export class CreationSessionService {
       await Promise.resolve(repo.update({
         where: { id: session.id },
         data: {
-          status: claimedStatus,
+          status: rollbackStatus,
           metadata: {
             ...metadata,
             readyToGenerate: true,
@@ -456,6 +502,12 @@ export class CreationSessionService {
   async abandonSession(userId: string, sessionId: string): Promise<CreationSessionSnapshot> {
     const repo = this.getRepo();
     const session = await this.requireOwnedSession(userId, sessionId);
+    if (session.status === 'completed') {
+      throw new ConflictException('Creation session already completed');
+    }
+    if (session.status === 'abandoned') {
+      throw new ConflictException('Creation session was already abandoned');
+    }
     const metadata = this.normalizeMetadata(session.metadata);
     const next = await repo.update({
       where: { id: session.id },
@@ -484,7 +536,37 @@ export class CreationSessionService {
       );
       return response.data;
     } catch (error: any) {
-      throw new BadRequestException(this.extractAiError(error, 'Creation session analyze-turn failed'));
+      const message = this.extractAiError(error, 'Creation session analyze-turn failed');
+      const status = error?.response?.status;
+      // AI engine returned a client error → treat as bad request
+      if (status && status >= 400 && status < 500) {
+        throw new BadRequestException(message);
+      }
+      // Network timeout / connection refused / AI engine 5xx → upstream failure
+      if (error?.code === 'ECONNABORTED' || error?.code === 'ECONNREFUSED' || error?.code === 'ETIMEDOUT') {
+        throw new ServiceUnavailableException(message);
+      }
+      throw new InternalServerErrorException(message);
+    }
+  }
+
+  /**
+   * analyzeTurn with a single retry for transient (non-4xx) failures.
+   */
+  private async analyzeTurnWithRetry(
+    payload: Record<string, unknown>,
+    regionHint?: string,
+  ): Promise<AnalyzeTurnResponsePayload> {
+    try {
+      return await this.analyzeTurn(payload, regionHint);
+    } catch (error: any) {
+      // Only retry transient errors (5xx / network), not client errors (4xx)
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+      this.logger.warn(`analyzeTurn transient failure, retrying once: ${error?.message}`);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return this.analyzeTurn(payload, regionHint);
     }
   }
 
@@ -502,7 +584,15 @@ export class CreationSessionService {
       );
       return response.data;
     } catch (error: any) {
-      throw new BadRequestException(this.extractAiError(error, 'Creation session spec compilation failed'));
+      const message = this.extractAiError(error, 'Creation session spec compilation failed');
+      const status = error?.response?.status;
+      if (status && status >= 400 && status < 500) {
+        throw new BadRequestException(message);
+      }
+      if (error?.code === 'ECONNABORTED' || error?.code === 'ECONNREFUSED' || error?.code === 'ETIMEDOUT') {
+        throw new ServiceUnavailableException(message);
+      }
+      throw new InternalServerErrorException(message);
     }
   }
 
@@ -599,13 +689,24 @@ export class CreationSessionService {
     const planDraft = this.normalizePlanDraft(metadata.planDraft);
     const confidenceSummary = this.normalizeConfidenceSummary(metadata.confidenceSummary);
     const questionStrategy = this.normalizeQuestionStrategy(metadata.questionStrategy);
+    const sessionStatus = String(session.status || 'collecting');
+
+    // Bug 3 fix: when status is ready/generating/completed, clear currentQuestion
+    // to avoid semantic conflict (ready means "can generate", not "please answer more").
+    const effectiveQuestion = (sessionStatus === 'ready' || sessionStatus === 'generating' || sessionStatus === 'completed')
+      ? null
+      : currentQuestion;
+
+    // Use effectiveQuestion (not raw currentQuestion) so that ready/completed
+    // sessions always compute readyToGenerate=true even for legacy rows where
+    // metadata.readyToGenerate is missing.
     const readyToGenerate = Boolean(
-      metadata.readyToGenerate ?? (slotFillPct >= 0.67 || !currentQuestion),
+      metadata.readyToGenerate ?? (slotFillPct >= 0.67 || !effectiveQuestion),
     );
 
     return {
       id: String(session.id),
-      status: String(session.status || 'collecting') as CreationSessionSnapshot['status'],
+      status: sessionStatus as CreationSessionSnapshot['status'],
       entryMode: String(session.entryMode || 'create') as CreationSessionSnapshot['entryMode'],
       initialPrompt: String(session.initialPrompt || ''),
       titleDraft: session.titleDraft ? String(session.titleDraft) : null,
@@ -613,7 +714,7 @@ export class CreationSessionService {
       slotState,
       missingRequired: this.normalizeStringList(session.missingRequired),
       skippedSlots: this.normalizeStringList(session.skippedSlots),
-      currentQuestion,
+      currentQuestion: effectiveQuestion,
       conversation: this.normalizeConversation(session.conversation),
       slotFillPct,
       readyToGenerate,

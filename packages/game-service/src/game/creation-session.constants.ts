@@ -17,4 +17,13 @@ export const CREATION_SESSION_ACTIVE_STATUSES = [
   'generating',
 ] as const;
 
+/** Statuses where the session is still mutable (user can append messages / skip). */
+export const CREATION_SESSION_MUTABLE_STATUSES = [
+  'collecting',
+  'ready',
+] as const;
+
+/** Stale generating sessions older than this (ms) can be auto-abandoned. */
+export const CREATION_SESSION_GENERATING_EXPIRE_MS = 10 * 60 * 1000; // 10 min
+
 export const DEFAULT_CREATION_SESSION_QUESTION_BUDGET = 4;
