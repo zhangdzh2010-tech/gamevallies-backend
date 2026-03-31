@@ -1203,6 +1203,22 @@ class CodeGenerator:
 
         return code
 
+    @staticmethod
+    def _build_iteration_mobile_reminder(
+        runtime_contract: Optional[GameRuntimeContract] = None,
+    ) -> str:
+        """Minimal mobile layout reminder for mechanic_change iterations."""
+        orientation = (
+            runtime_contract.mobile_layout.orientation
+            if runtime_contract and runtime_contract.mobile_layout
+            else "portrait_first"
+        )
+        label = "landscape-first" if orientation == "landscape_first" else "portrait-first"
+        return (
+            f"MOBILE LAYOUT: Preserve {label} sizing. "
+            "Derive uiScale from Math.min(scaleX, scaleY) using both viewport width and height."
+        )
+
     async def _llm_iterate(
         self,
         code: str,
@@ -1219,7 +1235,13 @@ class CodeGenerator:
             f"{item.get('role', 'user')}: {item.get('content', '')}"
             for item in conversation[-4:]
         )
-        mobile_guardrails = self._build_iteration_mobile_layout_guardrails(runtime_contract)
+
+        # Determine whether element_change can use partial extraction
+        use_partial_element_change = False
+        if iter_type == IterationType.element_change:
+            script_content = _extract_script_content(code)
+            if script_content is not None:
+                use_partial_element_change = True
 
         if iter_type == IterationType.param_adjust:
             prompt = require_prompt("prompt.param_adjust").format(
@@ -1227,7 +1249,27 @@ class CodeGenerator:
                 code=code,
             )
             step_key = "iterate.param_adjust"
+        elif iter_type == IterationType.element_change and use_partial_element_change:
+            # Partial mode: send only the <script> block (+ optional <style>)
+            includes_style = _feedback_involves_style(feedback)
+            style_content = _extract_style_content(code) if includes_style else None
+            partial_code_parts = []
+            if style_content is not None:
+                partial_code_parts.append(f"/* === CURRENT <style> === */\n{style_content}")
+            partial_code_parts.append(f"/* === CURRENT <script> === */\n{script_content}")
+            partial_code = "\n\n".join(partial_code_parts)
+            return_instruction = (
+                "Return ONLY the updated <script> block content"
+                + (" and <style> block content (separated by the same === markers)" if style_content is not None else "")
+                + ". Do NOT return a full HTML document."
+            )
+            prompt = require_prompt("prompt.element_change").format(
+                feedback=feedback + "\n\n" + return_instruction,
+                code=partial_code,
+            )
+            step_key = "iterate.element_change"
         elif iter_type == IterationType.element_change:
+            # Fallback: no script block found, use full code
             prompt = require_prompt("prompt.element_change").format(
                 feedback=feedback,
                 code=code,
@@ -1240,38 +1282,38 @@ class CodeGenerator:
                 code=code,
             )
             step_key = "iterate.mechanic_change"
+
         contract_block = self._build_runtime_contract_block(
             runtime_contract,
             runtime_profile,
             prompt_bundle_snapshot,
         )
-        spec_block = self._build_critical_intent_block(game_spec, feedback) if game_spec else ""
-        source_context_block = self._build_source_bundle_context_block(source_bundle_context)
-        logic_generate_policy = self._resolved_bundle_prompt(prompt_bundle_snapshot, "logic_generate")
-        profile_few_shot = self._resolve_profile_few_shot(
-            prompt_bundle_snapshot,
-            runtime_profile,
-            runtime_contract=runtime_contract,
-        )
-        generation_tier_block = self._build_generation_tier_block(game_spec)
-        visual_pack_block = self._build_visual_pack_block(game_spec)
-        prompt = "\n\n".join(
-            part
-            for part in [
-                logic_generate_policy,
-                generation_tier_block,
-                visual_pack_block,
-                profile_few_shot,
-                contract_block,
-                spec_block,
-                source_context_block,
-                self._build_ui_language_block(game_spec.ui_language if game_spec else "en-US"),
-                self._build_implementation_budget_block(game_spec, feedback),
-                mobile_guardrails,
-                prompt,
-            ]
-            if part
-        )
+        ui_language_block = self._build_ui_language_block(game_spec.ui_language if game_spec else "en-US")
+
+        # Minimal context per iteration type:
+        # - param_adjust / element_change: contract + ui_language + prompt (code + feedback)
+        # - mechanic_change: adds a 2-line mobile layout reminder
+        if iter_type == IterationType.mechanic_change:
+            prompt = "\n\n".join(
+                part
+                for part in [
+                    contract_block,
+                    ui_language_block,
+                    self._build_iteration_mobile_reminder(runtime_contract),
+                    prompt,
+                ]
+                if part
+            )
+        else:
+            prompt = "\n\n".join(
+                part
+                for part in [
+                    contract_block,
+                    ui_language_block,
+                    prompt,
+                ]
+                if part
+            )
 
         try:
             long_generation_timeout_s = self._long_generation_timeout_s()
@@ -1300,6 +1342,28 @@ class CodeGenerator:
                 timeout_retry_increment_s=60,
                 timeout_retry_max_s=long_generation_timeout_s + 60,
             )
+            # Partial element_change: reassemble from extracted blocks
+            if use_partial_element_change:
+                raw = _extract_code_block(text)
+                # If the LLM returned a full HTML document anyway, use it directly
+                if re.search(r"<!DOCTYPE\s+html|<html", raw, re.IGNORECASE):
+                    return _extract_html(text)
+                # Split style and script if both were requested
+                result_html = code
+                if style_content is not None:
+                    style_marker = re.search(r"/\*\s*===\s*CURRENT\s*<style>\s*===\s*\*/", raw)
+                    script_marker = re.search(r"/\*\s*===\s*CURRENT\s*<script>\s*===\s*\*/", raw)
+                    if style_marker and script_marker:
+                        new_style = raw[style_marker.end():script_marker.start()].strip()
+                        new_script_raw = raw[script_marker.end():].strip()
+                        result_html = _replace_style_content(result_html, new_style)
+                        result_html = _replace_script_content(result_html, new_script_raw)
+                    else:
+                        # No markers found, treat entire response as script update
+                        result_html = _replace_script_content(result_html, raw)
+                else:
+                    result_html = _replace_script_content(result_html, raw)
+                return result_html
             return _extract_html(text)
         except Exception as exc:
             logger.error("LLM iterate failed: %s", exc)
@@ -1366,4 +1430,80 @@ def _extract_html(text: str) -> str:
     match = re.search(r"(<!DOCTYPE\s+html|<html)", text, re.IGNORECASE)
     if match:
         text = text[match.start():]
+    return text.strip()
+
+
+def _extract_script_content(html: str) -> Optional[str]:
+    """Extract the content of the last (main) inline <script> block."""
+    matches = list(re.finditer(
+        r"<script\b[^>]*>([\s\S]*?)</script>",
+        html,
+        re.IGNORECASE,
+    ))
+    if not matches:
+        return None
+    # The last <script> block is typically the game logic
+    content = matches[-1].group(1)
+    return content if content.strip() else None
+
+
+def _extract_style_content(html: str) -> Optional[str]:
+    """Extract the content of the first inline <style> block."""
+    match = re.search(
+        r"<style\b[^>]*>([\s\S]*?)</style>",
+        html,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    content = match.group(1)
+    return content if content.strip() else None
+
+
+def _replace_script_content(html: str, new_script: str) -> str:
+    """Replace the content of the last inline <script> block."""
+    matches = list(re.finditer(
+        r"(<script\b[^>]*>)([\s\S]*?)(</script>)",
+        html,
+        re.IGNORECASE,
+    ))
+    if not matches:
+        return html
+    last = matches[-1]
+    return html[:last.start(2)] + new_script + html[last.end(2):]
+
+
+def _replace_style_content(html: str, new_style: str) -> str:
+    """Replace the content of the first inline <style> block."""
+    match = re.search(
+        r"(<style\b[^>]*>)([\s\S]*?)(</style>)",
+        html,
+        re.IGNORECASE,
+    )
+    if not match:
+        return html
+    return html[:match.start(2)] + new_style + html[match.end(2):]
+
+
+_STYLE_FEEDBACK_KEYWORDS = (
+    "color", "colour", "font", "background", "border",
+    "css", "dark mode", "light mode",
+    "颜色", "背景", "字体", "主题色", "深色模式", "浅色模式",
+)
+
+
+def _feedback_involves_style(feedback: str) -> bool:
+    """Check if feedback mentions visual/CSS concerns."""
+    lower = feedback.lower()
+    return any(keyword in lower for keyword in _STYLE_FEEDBACK_KEYWORDS)
+
+
+def _extract_code_block(text: str) -> str:
+    """Extract content from markdown code fences, or return text as-is."""
+    text = text.lstrip("\ufeff")
+    previous = None
+    while previous != text:
+        previous = text
+        text = re.sub(r"```(?:javascript|js|css|html)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"```\s*(?:$|\n)", "", text, flags=re.MULTILINE)
     return text.strip()
