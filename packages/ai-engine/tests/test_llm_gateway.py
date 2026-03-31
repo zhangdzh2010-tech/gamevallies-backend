@@ -227,7 +227,11 @@ def test_resolve_candidates_exposes_provider_context_and_max_tokens_in_route_sna
         "_ensure_loaded",
         return_value=None,
     ):
-        candidates = gateway.resolve_candidates(step_key="code_generate.full")
+        candidates = gateway.resolve_candidates(
+            step_key="code_generate.full",
+            allow_implicit_fallbacks=True,
+            required_output_tokens=12288,
+        )
 
     assert candidates[0].context_window == 128000
     assert candidates[0].max_tokens == 8192
@@ -237,7 +241,7 @@ def test_resolve_candidates_exposes_provider_context_and_max_tokens_in_route_sna
     assert candidates[0].route_snapshot["strict_admission"] is True
 
 
-def test_resolve_candidates_can_promote_implicit_large_output_failover_provider():
+def test_resolve_candidates_does_not_promote_implicit_failover_provider_when_route_exists():
     deepseek = _provider("provider-deepseek", "DeepSeek Shanghai", max_tokens=8192)
     minimax = _provider("provider-minimax", "MiniMax Shanghai", max_tokens=16384, updated_at=90.0)
     gateway = _gateway(
@@ -256,12 +260,11 @@ def test_resolve_candidates_can_promote_implicit_large_output_failover_provider(
             required_output_tokens=12288,
         )
 
-    assert len(candidates) == 2
-    assert candidates[0].provider_id == minimax.id
-    assert candidates[0].route_snapshot["implicit_provider_failover"] is True
+    assert len(candidates) == 1
+    assert candidates[0].provider_id == deepseek.id
+    assert candidates[0].route_snapshot["implicit_provider_failover"] is False
     assert candidates[0].route_snapshot["required_output_tokens"] == 12288
-    assert candidates[0].route_snapshot["explicit_fallback_only"] is False
-    assert candidates[1].provider_id == deepseek.id
+    assert candidates[0].route_snapshot["explicit_fallback_only"] is True
 
 
 def test_invoke_test_completion_clamps_max_tokens_to_provider_limit():

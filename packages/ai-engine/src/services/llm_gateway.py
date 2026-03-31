@@ -570,11 +570,12 @@ class LLMGateway:
         self,
         providers: list[ProviderRecord],
         *,
+        route: Optional[RouteRecord],
         service_region: str,
         required_output_tokens: Optional[int],
         allow_implicit_fallbacks: bool,
     ) -> tuple[list[ProviderRecord], set[str]]:
-        if not allow_implicit_fallbacks:
+        if not allow_implicit_fallbacks or route is not None:
             return providers, set()
 
         existing_ids = {provider.id for provider in providers}
@@ -735,6 +736,7 @@ class LLMGateway:
         base_provider_ids = {provider.id for provider in providers}
         providers, implicit_provider_ids = self._augment_provider_candidates_for_failover(
             providers,
+            route=route,
             service_region=service_region,
             required_output_tokens=required_output_tokens,
             allow_implicit_fallbacks=allow_implicit_fallbacks,
