@@ -54,7 +54,7 @@ from .section_patch import (
     parse_patch_response,
     validate_patch_candidate,
 )
-from .terminal_state import has_terminal_state_transition
+from .terminal_state import has_required_state_presence, has_terminal_state_transition
 
 logger = logging.getLogger(__name__)
 
@@ -335,13 +335,39 @@ class QAPipeline:
         floor = 7168 if truncation_risk else 6144
         return min(ceiling, max(floor, approx_tokens + buffer))
 
-    @staticmethod
+    # ── Repair family timeout lookup (Phase 4 optimization) ────────────
+    _REPAIR_FAMILY_TIMEOUT_S: dict[str, int] = {
+        "forbidden_api": 45,
+        "input_contract": 45,
+        "score_feedback": 45,
+        "terminal_state": 60,
+        "mobile_layout": 60,
+        "runtime_startup": 60,
+        "syntax_structural": 120,
+        "generic": 120,
+    }
+
+    @classmethod
     def _estimate_repair_timeout_s(
+        cls,
         *,
         max_tokens: int,
         prefer_fast: bool,
         repair_family: str,
     ) -> int:
+        if getattr(settings, "LLM_ADAPTIVE_REPAIR_TIMEOUTS_ENABLED", False):
+            # Use family-based adaptive timeouts
+            base = cls._REPAIR_FAMILY_TIMEOUT_S.get(repair_family, 120)
+            # Scale up for very large token budgets
+            if max_tokens >= 12288:
+                base = max(base, settings.LLM_LONG_GENERATION_TIMEOUT_S)
+            elif max_tokens >= 8192:
+                base = max(base, 180)
+            elif max_tokens >= 6144:
+                base = max(base, min(base + 60, 180))
+            return base
+
+        # Legacy fixed timeout path
         timeout_key = "timeout.ai_engine.qa_fast_repair_s" if prefer_fast else "timeout.ai_engine.qa_repair_s"
         default_timeout = 120 if prefer_fast else 180
         timeout_s = get_timeout_int(timeout_key, default_timeout, min_value=30)
@@ -1945,6 +1971,8 @@ class QAPipeline:
                 return not self._still_has_unsafe_touch_coordinate_access(code)
             if repair_family == "forbidden_api" and errors:
                 return not self._still_contains_forbidden_api(code, errors)
+            if repair_family == "terminal_state" and errors:
+                return has_terminal_state_transition(code) and has_required_state_presence(code, "game_over")
             return False
 
         if not self._needs_input_bridge(errors):

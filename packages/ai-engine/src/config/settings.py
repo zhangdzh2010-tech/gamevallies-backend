@@ -47,10 +47,20 @@ class Settings(BaseSettings):
     MAX_ITERATIONS: int = 20
     PIPELINE_UPGRADE_LEGACY_ENDPOINTS_TO_V2: bool = True
 
+    # Provider capability governance
+    LLM_PROVIDER_VERIFICATION_ENABLED: bool = False
+    LLM_PROVIDER_VERIFICATION_TIMEOUT_S: int = 30
+    LLM_REQUIRE_VERIFIED_FOR_PRODUCTION: bool = False
+
     # Phase 3: Two-pass generation (design then code)
     ENABLE_LLM_DESIGN_PASS: bool = False
     LLM_DESIGN_PASS_MAX_TOKENS: int = 4096
     LLM_DESIGN_PASS_TIMEOUT_S: int = 60
+
+    # Adaptive timeouts & token budgets (Phase 4)
+    LLM_ADAPTIVE_REPAIR_TIMEOUTS_ENABLED: bool = True
+    LLM_ADAPTIVE_TOKEN_BUDGET_ENABLED: bool = True
+    LLM_ADAPTIVE_TOKEN_BUDGET_HISTORY_SIZE: int = 20
 
     # Slot Filling
     SLOT_MIN_FILL_PCT: float = 0.6   # >=60% required slots → move to clarifying

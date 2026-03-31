@@ -104,6 +104,46 @@ const TABLE_COLUMN_PATCHES: ColumnPatch[] = [
     name: 'total_tokens',
     sql: 'ALTER TABLE llm_call_logs ADD COLUMN total_tokens INT NULL AFTER output_tokens',
   },
+  {
+    table: 'llm_call_logs',
+    name: 'output_class',
+    sql: 'ALTER TABLE llm_call_logs ADD COLUMN output_class VARCHAR(32) NULL',
+  },
+  {
+    table: 'llm_call_logs',
+    name: 'is_primary_provider',
+    sql: 'ALTER TABLE llm_call_logs ADD COLUMN is_primary_provider BOOLEAN DEFAULT TRUE',
+  },
+  {
+    table: 'llm_call_logs',
+    name: 'failover_reason',
+    sql: 'ALTER TABLE llm_call_logs ADD COLUMN failover_reason VARCHAR(255) NULL',
+  },
+  {
+    table: 'llm_call_logs',
+    name: 'provider_verified',
+    sql: 'ALTER TABLE llm_call_logs ADD COLUMN provider_verified BOOLEAN DEFAULT NULL',
+  },
+  {
+    table: 'llm_step_catalog',
+    name: 'output_class',
+    sql: "ALTER TABLE llm_step_catalog ADD COLUMN output_class VARCHAR(32) DEFAULT 'medium_structured'",
+  },
+  {
+    table: 'llm_step_catalog',
+    name: 'min_output_tokens',
+    sql: 'ALTER TABLE llm_step_catalog ADD COLUMN min_output_tokens INT DEFAULT NULL',
+  },
+  {
+    table: 'llm_step_catalog',
+    name: 'max_output_tokens',
+    sql: 'ALTER TABLE llm_step_catalog ADD COLUMN max_output_tokens INT DEFAULT NULL',
+  },
+  {
+    table: 'llm_gateway_providers',
+    name: 'capability_flags',
+    sql: "ALTER TABLE llm_gateway_providers ADD COLUMN capability_flags JSON DEFAULT ('{}')",
+  },
 ];
 
 const GAME_SCHEMA_STATEMENTS = [
