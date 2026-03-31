@@ -41,9 +41,9 @@ def test_build_chat_url_appends_v1_for_bare_minimax_host():
     assert url == "https://api.minimaxi.com/v1/chat/completions"
 
 
-def test_build_chat_url_keeps_non_minimax_provider_shape():
+def test_build_chat_url_appends_v1_for_bare_deepseek_host():
     url = _build_openai_compatible_chat_url("https://api.deepseek.com")
-    assert url == "https://api.deepseek.com/chat/completions"
+    assert url == "https://api.deepseek.com/v1/chat/completions"
 
 
 def test_detects_anthropic_protocol_mismatch_from_openai_compatible_400():

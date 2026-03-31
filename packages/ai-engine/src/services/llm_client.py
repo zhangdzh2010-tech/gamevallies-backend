@@ -146,8 +146,8 @@ def _build_openai_compatible_chat_url(base_url: str) -> str:
     host = parsed.netloc.lower()
     path = parsed.path.rstrip("/")
 
-    if host in {"api.minimaxi.com", "api.minimax.io"} and not path:
-        logger.warning("MiniMax base URL missing /v1, auto-normalizing to /v1/chat/completions")
+    if host in {"api.minimaxi.com", "api.minimax.io", "api.deepseek.com"} and not path:
+        logger.warning("%s base URL missing /v1, auto-normalizing to /v1/chat/completions", host)
         normalized = urlunparse(parsed._replace(path="/v1"))
 
     return f"{normalized.rstrip('/')}/chat/completions"
