@@ -1482,3 +1482,23 @@ def test_rebuild_from_spec_for_syntax_recovery_uses_large_initial_budget_and_tim
     assert kwargs["step_key"] == "qa_fix.syntax_rebuild"
     assert kwargs["max_tokens"] > 8192
     assert kwargs["request_timeout_s"] >= 240
+
+
+def test_targeted_terminal_state_instructions_require_named_restart_or_explicit_reset_branch():
+    with patch(
+        "src.engine.qa_pipeline.require_prompt",
+        return_value=(
+            "- Add or preserve one named restart/reset entry point such as `restartGame()` or `resetRound()`.\n"
+            "- If restart is handled inside a named input handler, make that terminal branch explicitly reset state flags and core progress values before returning to `ready` or `playing`."
+        ),
+    ):
+        instructions = QAPipeline._build_targeted_fix_instructions([
+            QACheckError(
+                type="contract_gameplay",
+                message="Runtime contract requires a restart entry point",
+                severity="error",
+            )
+        ])
+
+    assert "named restart/reset entry point" in instructions
+    assert "terminal branch explicitly reset state flags and core progress values" in instructions
