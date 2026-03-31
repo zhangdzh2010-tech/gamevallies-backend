@@ -619,6 +619,16 @@ export class GenerationTaskService {
     });
   }
 
+  async findArtifactById(id: string) {
+    if (typeof id !== 'string' || !id.trim()) {
+      return null;
+    }
+
+    return this.prisma.generationArtifact.findUnique({
+      where: { id: id.trim() },
+    });
+  }
+
   async recordStageSummary(params: StageSummaryParams) {
     const task = await this.prisma.generationTask.findUnique({
       where: { id: params.taskId },

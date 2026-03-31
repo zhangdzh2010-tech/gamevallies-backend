@@ -162,12 +162,23 @@ interface SourceBundleContextPayload {
   recent_revisions?: SourceBundleRevisionPayload[];
 }
 
+interface CreateGameCommand extends CreateGameDto {
+  sourceSpec?: Record<string, unknown> | null;
+  creationSessionId?: string | null;
+  entryMode?: string | null;
+  sourceGameId?: string | null;
+}
+
 interface CreateExecutionOptions {
   pipelineVersion?: PipelineVersion;
   title?: string;
   orientation?: CreateGameOrientation;
   generationTier?: GenerationTier;
   access?: AccessGrantDecision;
+  sourceSpec?: Record<string, unknown> | null;
+  creationSessionId?: string | null;
+  entryMode?: string | null;
+  sourceGameId?: string | null;
   promptBundleSnapshot?: PromptBundleSnapshotPayload | null;
   runtimeContract?: RuntimeContractPayload | null;
 }
@@ -1148,6 +1159,10 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     orientation?: CreateGameOrientation;
     generationTier?: GenerationTier;
     access?: AccessGrantDecision;
+    sourceSpec?: Record<string, unknown> | null;
+    creationSessionId?: string | null;
+    entryMode?: string | null;
+    sourceGameId?: string | null;
     promptBundleSnapshot: PromptBundleSnapshotPayload;
     runtimeContract: RuntimeContractPayload;
   }): Record<string, unknown> {
@@ -1179,30 +1194,35 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         accessGrantSubscriptionId: params.access?.accessGrantSubscriptionId ?? null,
         quotaRemaining: params.access?.quotaRemaining ?? null,
         refundOnFailure: true,
-      }),
-      visibility_model: this.buildVisibilityModel({
-        status: GameStatus.draft,
-        visibility: 'private',
-        canPlay: params.access?.canPlay ?? true,
-      }),
-      prompt_bundle_snapshot: params.promptBundleSnapshot,
-      runtime_contract: params.runtimeContract,
-      normalized_request: {
-        description: params.description,
-        title: params.title || null,
-        region: params.executionRegion,
-        entrypoint: 'create',
-        generation_tier: generationTier,
-        ...(params.orientation ? { orientation: params.orientation } : {}),
-      },
-      metadata: {
-        adapter: 'compat_v1',
-        pipeline_version: 'v2',
-        generation_tier: generationTier,
-        ...(params.orientation ? { orientation: params.orientation } : {}),
-      },
-    };
-  }
+        }),
+        visibility_model: this.buildVisibilityModel({
+          status: GameStatus.draft,
+          visibility: 'private',
+          canPlay: params.access?.canPlay ?? true,
+        }),
+        source_spec: params.sourceSpec || null,
+        prompt_bundle_snapshot: params.promptBundleSnapshot,
+        runtime_contract: params.runtimeContract,
+        normalized_request: {
+          description: params.description,
+          title: params.title || null,
+          region: params.executionRegion,
+          entrypoint: 'create',
+          generation_tier: generationTier,
+          ...(params.orientation ? { orientation: params.orientation } : {}),
+          ...(params.creationSessionId ? { creation_session_id: params.creationSessionId } : {}),
+        },
+        metadata: {
+          adapter: 'compat_v1',
+          pipeline_version: 'v2',
+          generation_tier: generationTier,
+          ...(params.orientation ? { orientation: params.orientation } : {}),
+          ...(params.creationSessionId ? { creation_session_id: params.creationSessionId } : {}),
+          ...(params.entryMode ? { entry_mode: params.entryMode } : {}),
+          ...(params.sourceGameId ? { source_game_id: params.sourceGameId } : {}),
+        },
+      };
+    }
 
   private buildIterateV2Payload(params: {
     gameId: string;
@@ -1892,6 +1912,88 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  private async patchCreationSession(
+    sessionId: string | null | undefined,
+    patch: {
+      status?: string;
+      generatedGameId?: string | null;
+      generationTaskId?: string | null;
+      metadataPatch?: Record<string, unknown>;
+    },
+  ): Promise<void> {
+    if (!sessionId) {
+      return;
+    }
+
+    const repo = (this.prisma as any).gameCreationSession;
+    if (!repo?.findUnique || !repo?.update) {
+      return;
+    }
+
+    const existing = await Promise.resolve(repo.findUnique({
+      where: { id: sessionId },
+      select: { metadata: true },
+    })).catch(() => null);
+
+    const metadata = existing?.metadata && typeof existing.metadata === 'object'
+      ? existing.metadata as Record<string, unknown>
+      : {};
+
+    const nextMetadata = patch.metadataPatch
+      ? {
+          ...metadata,
+          ...patch.metadataPatch,
+        }
+      : metadata;
+
+    await Promise.resolve(repo.update({
+      where: { id: sessionId },
+      data: {
+        ...(patch.status ? { status: patch.status } : {}),
+        ...(patch.generatedGameId !== undefined ? { generatedGameId: patch.generatedGameId } : {}),
+        ...(patch.generationTaskId !== undefined ? { generationTaskId: patch.generationTaskId } : {}),
+        ...(patch.metadataPatch ? { metadata: nextMetadata } : {}),
+      },
+    })).catch((error: Error) => {
+      this.logger.warn(`Failed to patch creation session ${sessionId}: ${error.message}`);
+      return null;
+    });
+  }
+
+  private async syncCreationSessionByTaskId(
+    taskId: string | undefined,
+    patch: {
+      status?: string;
+      generatedGameId?: string | null;
+      generationTaskId?: string | null;
+      metadataPatch?: Record<string, unknown>;
+    },
+  ): Promise<void> {
+    if (!taskId) {
+      return;
+    }
+
+    let task: { metadata?: unknown } | null = null;
+    try {
+      const query = this.prisma?.generationTask?.findUnique?.({
+        where: { id: taskId },
+        select: { metadata: true },
+      });
+      task = await Promise.resolve(query ?? null);
+    } catch {
+      task = null;
+    }
+
+    const metadata = task?.metadata && typeof task.metadata === 'object'
+      ? task.metadata as Record<string, unknown>
+      : null;
+    const creationSessionId = typeof metadata?.creationSessionId === 'string'
+      ? metadata.creationSessionId
+      : null;
+
+    await this.patchCreationSession(creationSessionId, patch);
+  }
+
   private isTimeoutError(error: unknown): boolean {
     const message = this.extractErrorMessage(error as any);
     return /timed out|timeout|deadline exceeded|ECONNABORTED/i.test(message);
@@ -2464,7 +2566,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async persistTaskCancellation(task: any, reason: string) {
-    return this.prisma.$transaction(async (tx) => {
+    const canceled = await this.prisma.$transaction(async (tx) => {
       const currentTask = await tx.generationTask.findUnique({
         where: { id: task.id },
         include: {
@@ -2531,7 +2633,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         }
       }
 
-      const canceled = await tx.generationTask.update({
+      const canceledTask = await tx.generationTask.update({
         where: { id: currentTask.id },
         data: {
           status: 'canceled',
@@ -2556,8 +2658,18 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         },
       });
 
-      return canceled;
+      return canceledTask;
     });
+
+    await this.syncCreationSessionByTaskId(task.id, {
+      status: 'abandoned',
+      metadataPatch: {
+        lastTaskStatus: 'canceled',
+        lastErrorMessage: reason,
+      },
+    });
+
+    return canceled;
   }
 
   private async persistDerivedTaskResolution(task: any, game: any, resolution: EffectiveTaskResolution) {
@@ -2973,7 +3085,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     return freeRemaining + subscriptionRemaining;
   }
 
-  async create(userId: string, dto: CreateGameDto): Promise<any> {
+  async create(userId: string, dto: CreateGameCommand): Promise<any> {
     try {
       const gameId = randomUUID();
       const description = dto.description || dto.prompt || '';
@@ -2988,7 +3100,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         executionRegion,
       });
       const timeoutS = this.resolveTaskTimeoutForPipelineVersion(dto.timeoutS, pipelineVersion);
-      const runtimeProfileHint = this.inferRuntimeProfileHint(description, dto.title);
+        const runtimeProfileHint = this.inferRuntimeProfileHint(
+          this.resolveRuntimeHintGameType(dto.sourceSpec, null),
+          description,
+          dto.title,
+        );
       const promptBundleSnapshot = pipelineVersion === 'v2'
         ? await this.buildPromptBundleSnapshot('create', runtimeProfileHint, requestedGenerationTier)
         : null;
@@ -3068,15 +3184,18 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           promptBundleVersion: promptBundleSnapshot?.bundle_version ?? null,
           runtimeProfile: runtimeContract?.runtime_profile ?? null,
           contractVersion: runtimeContract?.version ?? null,
-          metadata: {
-            description,
-            region: executionRegion,
-            pipelineVersion,
-            orientation: requestedOrientation ?? null,
-            generationTier: requestedGenerationTier,
-          },
-          client: tx,
-        });
+            metadata: {
+              description,
+              region: executionRegion,
+              pipelineVersion,
+              orientation: requestedOrientation ?? null,
+              generationTier: requestedGenerationTier,
+              creationSessionId: dto.creationSessionId ?? null,
+              entryMode: dto.entryMode ?? null,
+              sourceGameId: dto.sourceGameId ?? null,
+            },
+            client: tx,
+          });
 
         return {
           access: {
@@ -3105,15 +3224,19 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           timeoutS,
           task.id,
           executionRegion,
-          {
-            pipelineVersion,
-            title,
-            orientation: requestedOrientation,
-            generationTier: requestedGenerationTier,
-            access,
-            promptBundleSnapshot,
-            runtimeContract,
-          },
+            {
+              pipelineVersion,
+              title,
+              orientation: requestedOrientation,
+              generationTier: requestedGenerationTier,
+              access,
+              sourceSpec: dto.sourceSpec ?? null,
+              creationSessionId: dto.creationSessionId ?? null,
+              entryMode: dto.entryMode ?? null,
+              sourceGameId: dto.sourceGameId ?? null,
+              promptBundleSnapshot,
+              runtimeContract,
+            },
         ).catch((error) => {
           this.logger.error(
             `Background pipeline task crashed for game ${gameId}: ${this.extractErrorMessage(error)}`,
@@ -3475,10 +3598,10 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    if (taskId) {
-      await this.generationTaskService.markSucceeded({
-        taskId,
-        previewUrl: bundlePreviewUrl,
+      if (taskId) {
+        await this.generationTaskService.markSucceeded({
+          taskId,
+          previewUrl: bundlePreviewUrl,
         primaryArtifactId:
           typeof primaryArtifactId === 'string' && primaryArtifactId.trim()
             ? primaryArtifactId
@@ -3493,11 +3616,21 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           generationTimeMs: genTimeMs,
           codeSizeBytes,
           qualityScore,
-          ...(coverUrl ? { coverGenerated: true } : {}),
-          ...runtimeQaSummary,
-        },
-      });
-    }
+            ...(coverUrl ? { coverGenerated: true } : {}),
+            ...runtimeQaSummary,
+          },
+        });
+        await this.syncCreationSessionByTaskId(taskId, {
+          status: 'completed',
+          generatedGameId: gameId,
+          generationTaskId: taskId,
+          metadataPatch: {
+            lastTaskStatus: 'succeeded',
+            generatedGameId: gameId,
+            generationTaskId: taskId,
+          },
+        });
+      }
 
     this.emitStage(userId, gameId, 'completed', {
       stage: 'completed',
@@ -3622,20 +3755,32 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       refundConsumedAccess: true,
     });
 
-    if (taskId) {
-      await Promise.resolve(this.generationTaskService.markFailed({
-        taskId,
-        failedStage: failure.failedStage || 'pipeline_run',
+      if (taskId) {
+        await Promise.resolve(this.generationTaskService.markFailed({
+          taskId,
+          failedStage: failure.failedStage || 'pipeline_run',
         errorMessage,
         retryCount: failure.retryCount,
         fallback: failure.fallback,
         timedOut: this.isTimeoutError(error),
         failureFamily: failure.failureFamily,
-        primaryArtifactId: failure.primaryArtifactId,
-      })).catch((taskError) => {
-        this.logger.warn(`Failed to update generation task ${taskId}: ${taskError.message}`);
-      });
-    }
+          primaryArtifactId: failure.primaryArtifactId,
+        })).catch((taskError) => {
+          this.logger.warn(`Failed to update generation task ${taskId}: ${taskError.message}`);
+        });
+        await this.syncCreationSessionByTaskId(taskId, {
+          status: 'failed',
+          generatedGameId: gameId,
+          generationTaskId: taskId,
+          metadataPatch: {
+            lastTaskStatus: 'failed',
+            lastErrorMessage: errorMessage,
+            lastFailedStage: failure.failedStage || 'pipeline_run',
+            generatedGameId: gameId,
+            generationTaskId: taskId,
+          },
+        });
+      }
 
     this.wsGateway.emitGenerationError(userId, gameId, errorMessage, {
       stage: failure.failedStage || 'pipeline_run',
@@ -4116,7 +4261,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       const aiEngineBaseUrls = await this.resolveAiEngineEndpointCandidates(executionRegion);
       const resolvedRegion = this.resolveExecutionRegion(executionRegion);
       const pipelineVersion = options.pipelineVersion === 'v1' ? 'v1' : 'v2';
-      const runtimeProfileHint = this.inferRuntimeProfileHint(description, options.title);
+        const runtimeProfileHint = this.inferRuntimeProfileHint(
+          this.resolveRuntimeHintGameType(options.sourceSpec, null),
+          description,
+          options.title,
+        );
       const promptBundleSnapshot = pipelineVersion === 'v2'
         ? (options.promptBundleSnapshot ?? await this.buildPromptBundleSnapshot('create', runtimeProfileHint, generationTier))
         : null;
@@ -4133,20 +4282,24 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           ? '/api/v1/ai/pipeline/v2/run/async'
           : '/api/v1/ai/pipeline/run/async',
         payload: pipelineVersion === 'v2'
-          ? this.buildCreateV2Payload({
-            gameId,
-            userId,
-            title: options.title,
-            description,
+            ? this.buildCreateV2Payload({
+              gameId,
+              userId,
+              title: options.title,
+              description,
             executionRegion: resolvedRegion,
             timeoutS: resolvedTimeoutS,
             taskId,
-            orientation: options.orientation,
-            generationTier,
-            access: options.access,
-            promptBundleSnapshot: promptBundleSnapshot!,
-            runtimeContract: runtimeContract!,
-          })
+              orientation: options.orientation,
+              generationTier,
+              access: options.access,
+              sourceSpec: options.sourceSpec,
+              creationSessionId: options.creationSessionId,
+              entryMode: options.entryMode,
+              sourceGameId: options.sourceGameId,
+              promptBundleSnapshot: promptBundleSnapshot!,
+              runtimeContract: runtimeContract!,
+            })
           : {
             game_id: gameId,
             description,

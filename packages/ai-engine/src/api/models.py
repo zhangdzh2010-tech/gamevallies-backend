@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from enum import Enum
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Dict, Optional, Any
 
 
@@ -17,10 +17,16 @@ class DialogueState(str, Enum):
     confirmed = "confirmed"
 
 
+class GenerationTier(str, Enum):
+    safe = "safe"
+    standard = "standard"
+    showcase = "showcase"
+
+
 class SlotState(BaseModel):
     """10 slots defined in the Pipeline doc (6 required + 4 optional)"""
     # Required slots
-    game_type: Optional[str] = None          # enum(12种)
+    game_type: Optional[str] = None          # enum(casual/puzzle/educational/funny)
     core_mechanic: Optional[str] = None      # string description
     theme: Optional[str] = None              # string
     input_method: Optional[str] = None       # touch/tap/swipe/tilt
@@ -38,14 +44,82 @@ class SlotState(BaseModel):
         exclude=True,
     )
 
+    @staticmethod
+    def _normalize_scalar_slot_value(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip()
+            return normalized or None
+        if isinstance(value, (list, tuple, set)):
+            parts = [
+                str(item).strip()
+                for item in value
+                if str(item).strip()
+            ]
+            if not parts:
+                return None
+            return ", ".join(parts)
+        if isinstance(value, dict):
+            preferred_keys = ("summary", "label", "title", "name", "value", "text", "description")
+            for key in preferred_keys:
+                raw = value.get(key)
+                normalized = SlotState._normalize_scalar_slot_value(raw)
+                if normalized:
+                    return normalized
+            parts = [
+                f"{str(key).strip()}: {str(raw).strip()}"
+                for key, raw in value.items()
+                if str(key).strip() and str(raw).strip()
+            ]
+            if not parts:
+                return None
+            return "; ".join(parts)
+        normalized = str(value).strip()
+        return normalized or None
+
+    @field_validator(
+        "game_type",
+        "core_mechanic",
+        "theme",
+        "input_method",
+        "win_condition",
+        "difficulty",
+        "visual_style",
+        "audio_style",
+        "reference_game",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_scalar_slots(cls, value: Any) -> Optional[str]:
+        return cls._normalize_scalar_slot_value(value)
+
+    @field_validator("special_rules", mode="before")
+    @classmethod
+    def _coerce_special_rules(cls, value: Any) -> Optional[List[str]]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip()
+            return [normalized] if normalized else None
+        if isinstance(value, (list, tuple, set)):
+            rules = [
+                str(item).strip()
+                for item in value
+                if str(item).strip()
+            ]
+            return rules or None
+        normalized = str(value).strip()
+        return [normalized] if normalized else None
+
     def fill_pct(self) -> float:
         required = ["game_type", "core_mechanic", "theme", "input_method", "win_condition", "difficulty"]
-        filled = sum(1 for s in required if getattr(self, s) is not None)
+        filled = sum(1 for s in required if str(getattr(self, s) or "").strip())
         return filled / len(required)
 
     def missing_required(self) -> List[str]:
         required = ["game_type", "core_mechanic", "theme", "input_method", "win_condition", "difficulty"]
-        return [s for s in required if getattr(self, s) is None]
+        return [s for s in required if not str(getattr(self, s) or "").strip()]
 
 
 class ConversationMessage(BaseModel):
@@ -66,6 +140,94 @@ class ChatResponse(BaseModel):
     slots_updated: List[str] = Field(default_factory=list)
     slot_fill_pct: float = Field(0.0, ge=0.0, le=1.0)
     ready_to_generate: bool = False
+
+
+class DialogueQuestion(BaseModel):
+    slot_key: str
+    label: str
+    prompt: str
+    skippable: bool = True
+
+
+class PlanDraft(BaseModel):
+    title: str = ""
+    summary: str = ""
+    concept: str = ""
+    interaction: str = ""
+    objective: str = ""
+    pacing: str = ""
+    visual_direction: str = ""
+    signature_moment: str = ""
+
+
+class QuestionStrategy(BaseModel):
+    mode: str = "missing_required"
+    slot_key: Optional[str] = None
+    reason: str = ""
+    impact: float = Field(0.0, ge=0.0, le=1.5)
+    confidence: float = Field(0.0, ge=0.0, le=1.0)
+    ambiguity_weight: float = Field(0.0, ge=0.0, le=1.0)
+
+
+class AnalyzeDialogueTurnRequest(BaseModel):
+    session_id: Optional[str] = None
+    user_id: Optional[str] = None
+    conversation: List[ConversationMessage] = Field(default_factory=list)
+    current_slots: SlotState = Field(default_factory=SlotState)
+    skipped_slots: List[str] = Field(default_factory=list)
+    entry_mode: str = "create"
+    generation_tier: GenerationTier = GenerationTier.standard
+    title: Optional[str] = None
+    initial_prompt: Optional[str] = None
+    advance_only: bool = False
+
+
+class AnalyzeDialogueTurnResponse(BaseModel):
+    reply: str
+    slots: SlotState = Field(default_factory=SlotState)
+    slots_updated: List[str] = Field(default_factory=list)
+    missing_required: List[str] = Field(default_factory=list)
+    slot_fill_pct: float = Field(0.0, ge=0.0, le=1.0)
+    ready_to_generate: bool = False
+    current_question: Optional[DialogueQuestion] = None
+    confidence_by_slot: Dict[str, float] = Field(default_factory=dict)
+    evidence_by_slot: Dict[str, str] = Field(default_factory=dict)
+    ambiguity_flags: List[str] = Field(default_factory=list)
+    next_best_question_reason: Optional[str] = None
+    question_strategy: Optional[QuestionStrategy] = None
+    plan_draft: Optional[PlanDraft] = None
+
+
+class DraftPlanFromInputRequest(BaseModel):
+    source_description: str = ""
+    title: Optional[str] = None
+    current_slots: SlotState = Field(default_factory=SlotState)
+    generation_tier: GenerationTier = GenerationTier.standard
+    entry_mode: str = "create"
+
+
+class DraftPlanFromInputResponse(BaseModel):
+    plan_draft: PlanDraft
+    confidence_by_slot: Dict[str, float] = Field(default_factory=dict)
+    evidence_by_slot: Dict[str, str] = Field(default_factory=dict)
+    ambiguity_flags: List[str] = Field(default_factory=list)
+
+
+class SpecFromSlotsRequest(BaseModel):
+    session_id: Optional[str] = None
+    slots: SlotState = Field(default_factory=SlotState)
+    source_description: str = ""
+    title: Optional[str] = None
+    generation_tier: GenerationTier = GenerationTier.standard
+    preferred_game_type: Optional[str] = None
+    skipped_slots: List[str] = Field(default_factory=list)
+    variation_seed: Optional[str] = None
+
+
+class SpecFromSlotsResponse(BaseModel):
+    spec: "GameSpec"
+    missing_required: List[str] = Field(default_factory=list)
+    slot_fill_pct: float = Field(0.0, ge=0.0, le=1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +262,8 @@ class VisualStyle(BaseModel):
     art_style: str = "geometric"
     background: str = "gradient"
     effects: List[str] = Field(default_factory=list)
+    visual_pack: Optional[str] = None
+    render_style_intensity: str = "balanced"
 
 
 class PlatformConstraints(BaseModel):
@@ -116,6 +280,7 @@ class GameSpec(BaseModel):
     """Complete game specification – the core data contract of the Pipeline"""
     version: str = "1.0"
     game_type: str
+    generation_tier: GenerationTier = GenerationTier.standard
     source_description: str = ""
     intent_summary: str = ""
     ui_language: str = "en-US"
@@ -125,6 +290,17 @@ class GameSpec(BaseModel):
     visual_style: VisualStyle = Field(default_factory=VisualStyle)
     audio_style: str = "none"
     difficulty_curve: str = "progressive"
+    session_length: Optional[str] = None
+    progression_shape: Optional[str] = None
+    reward_loop: Optional[str] = None
+    signature_moment: Optional[str] = None
+    target_audience: Optional[str] = None
+    tone: Optional[str] = None
+    reference_style: Optional[str] = None
+    complexity_budget: Optional[str] = None
+    teaching_mode: Optional[str] = None
+    comedy_device: Optional[str] = None
+    design_goals: List[str] = Field(default_factory=list)
     special_rules: List[str] = Field(default_factory=list)
     reference_game: Optional[str] = None
     platform_constraints: PlatformConstraints = Field(default_factory=PlatformConstraints)
@@ -165,6 +341,13 @@ class GDD(BaseModel):
     ui_layout: Dict[str, Any] = Field(default_factory=dict)
     input_map: Dict[str, str] = Field(default_factory=dict)
     state_machine: Dict[str, Any] = Field(default_factory=dict)
+    level_structure: List[Dict[str, Any]] = Field(default_factory=list)
+    phase_plan: List[Dict[str, Any]] = Field(default_factory=list)
+    reward_plan: Dict[str, Any] = Field(default_factory=dict)
+    tutorial_beats: List[str] = Field(default_factory=list)
+    signature_interactions: List[str] = Field(default_factory=list)
+    feedback_moments: List[str] = Field(default_factory=list)
+    failure_recovery_plan: Dict[str, Any] = Field(default_factory=dict)
     raw_description: str = ""
 
 
@@ -414,7 +597,7 @@ class GameplayContract(BaseModel):
 
 class GameRuntimeContract(BaseModel):
     version: str = "1.0"
-    runtime_profile: str = "portrait_arcade"
+    runtime_profile: str = "casual_arcade"
     canvas: CanvasContract = Field(default_factory=CanvasContract)
     input: InputContract = Field(default_factory=InputContract)
     state: StateContract = Field(default_factory=StateContract)
@@ -482,6 +665,7 @@ class SourceBundleContext(BaseModel):
     title: Optional[str] = None
     latest_bundle_version: Optional[int] = None
     latest_game_type: Optional[str] = None
+    latest_generation_tier: Optional[GenerationTier] = None
     latest_feedback: Optional[str] = None
     latest_iteration_type: Optional[str] = None
     summary: Optional[str] = None
@@ -492,6 +676,8 @@ class RunPipelineV2Request(BaseModel):
     game_id: str
     user_id: str
     raw_user_input: str
+    generation_tier: Optional[GenerationTier] = None
+    source_spec: Optional[GameSpec] = None
     title: Optional[str] = None
     platform: str = "wechat_webview"
     timeout_s: int = Field(default=600, ge=30, le=3600)
@@ -509,6 +695,7 @@ class IterateV2Request(BaseModel):
     game_id: str
     user_id: str
     current_code: str
+    generation_tier: Optional[GenerationTier] = None
     iteration_intent: IterationIntent
     existing_game: ExistingGameContext = Field(default_factory=ExistingGameContext)
     source_spec: Optional[GameSpec] = None
@@ -645,6 +832,28 @@ class ProviderTestChatResponse(BaseModel):
     error_message: Optional[str] = None
     reply: str = ""
     tested_at: str
+
+
+class CoverCaptureRequest(BaseModel):
+    game_id: str
+    user_id: str
+    html_code: str
+    orientation: Optional[str] = None
+    timeout_s: int = Field(default=10, ge=1, le=120)
+    title: Optional[str] = None
+    game_type: Optional[str] = None
+    theme: Optional[str] = None
+    runtime_profile: Optional[str] = None
+    visual_pack: Optional[str] = None
+    render_style_intensity: Optional[str] = None
+    updated: bool = False
+
+
+class CoverCaptureResponse(BaseModel):
+    captured: bool = False
+    content_type: Optional[str] = None
+    payload: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class GenerateProgress(BaseModel):

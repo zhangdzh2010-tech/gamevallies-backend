@@ -15,11 +15,25 @@ import axios from 'axios';
 import { GameService } from '../game/game.service';
 import promptCatalog from '../game/catalogs/prompt-catalog.json';
 import { TIMEOUT_CONFIG_CATALOG, TIMEOUT_CONFIG_CATALOG_BY_KEY } from '../game/catalogs/timeout-catalog';
+import { normalizeGameType } from '../game/game-type-catalog';
 
 interface LegacyPreviewBackfillOptions {
   limit?: number;
   dryRun?: boolean | string;
   gameIds?: string[] | string;
+}
+
+interface GameCoverBackfillOptions {
+  limit?: number;
+  dryRun?: boolean | string;
+  gameIds?: string[] | string;
+  overwriteExisting?: boolean | string;
+}
+
+interface AdminGameCoverUpdateInput {
+  imageDataUrl?: string;
+  imageUrl?: string;
+  fileName?: string;
 }
 
 interface LlmProviderCatalogConfig {
@@ -52,6 +66,226 @@ export class AdminService {
 
   private getFallbackAiEngineAdminBaseUrl(): string {
     return this.configService.get<string>('AI_ENGINE_URL', 'http://localhost:8000').replace(/\/$/, '');
+  }
+
+  private getPublicBaseUrl(): string {
+    const publicApiBaseUrl = this.configService.get<string>('PUBLIC_API_BASE_URL');
+    const appUrl = this.configService.get<string>('APP_URL', 'http://localhost:3002');
+    return (publicApiBaseUrl || appUrl).replace(/\/$/, '');
+  }
+
+  private getPublicApiBaseUrl(): string {
+    const baseUrl = this.getPublicBaseUrl();
+
+    try {
+      const parsed = new URL(baseUrl);
+      const normalizedPath = (parsed.pathname || '').replace(/\/$/, '');
+      parsed.pathname = normalizedPath.endsWith('/api/v1')
+        ? normalizedPath
+        : `${normalizedPath}/api/v1`.replace(/\/{2,}/g, '/');
+      return parsed.toString().replace(/\/$/, '');
+    } catch {
+      return baseUrl.endsWith('/api/v1') ? baseUrl : `${baseUrl}/api/v1`;
+    }
+  }
+
+  private buildPublicCoverUrl(gameId: string, version?: number | null): string {
+    const coverUrl = new URL(`${this.getPublicApiBaseUrl()}/games/${gameId}/cover`);
+    if (typeof version === 'number' && Number.isFinite(version) && version > 0) {
+      coverUrl.searchParams.set('v', String(version));
+    }
+    return coverUrl.toString();
+  }
+
+  private resolveAdminGameCoverUrl(game: any): string | null {
+    if (typeof game?.thumbnailUrl === 'string' && game.thumbnailUrl.trim()) {
+      return game.thumbnailUrl.trim();
+    }
+
+    const latestBundle = Array.isArray(game?.bundles) ? game.bundles[0] : null;
+    const metadata = latestBundle?.metadata;
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      return null;
+    }
+
+    const rawCoverUrl = (metadata as Record<string, unknown>).coverUrl
+      ?? (metadata as Record<string, unknown>).cover_url;
+    if (typeof rawCoverUrl === 'string' && rawCoverUrl.trim()) {
+      return rawCoverUrl.trim();
+    }
+
+    const hasCoverArtifact = typeof ((metadata as Record<string, unknown>).coverArtifactId
+      ?? (metadata as Record<string, unknown>).cover_artifact_id) === 'string';
+    const hasCoverTask = typeof ((metadata as Record<string, unknown>).coverTaskId
+      ?? (metadata as Record<string, unknown>).cover_task_id) === 'string';
+
+    if (hasCoverArtifact || hasCoverTask) {
+      return this.buildPublicCoverUrl(game.id, latestBundle?.version ?? game.version ?? null);
+    }
+
+    return null;
+  }
+
+  private attachAdminPreviewTokenToCoverUrl(
+    gameId: string,
+    status: string | null | undefined,
+    coverUrl: string | null,
+    previewUrl: string,
+  ): string | null {
+    if (!coverUrl || status === GameStatus.published) {
+      return coverUrl;
+    }
+
+    try {
+      const parsedCoverUrl = new URL(coverUrl, this.getPublicBaseUrl());
+      if (!parsedCoverUrl.pathname.endsWith(`/games/${gameId}/cover`)) {
+        return coverUrl;
+      }
+
+      const parsedPreviewUrl = new URL(previewUrl, this.getPublicBaseUrl());
+      const previewToken = parsedPreviewUrl.searchParams.get('previewToken');
+      if (!previewToken || parsedCoverUrl.searchParams.has('previewToken')) {
+        return parsedCoverUrl.toString();
+      }
+
+      parsedCoverUrl.searchParams.set('previewToken', previewToken);
+      return parsedCoverUrl.toString();
+    } catch {
+      return coverUrl;
+    }
+  }
+
+  private presentAdminGame(game: any) {
+    const adminPreviewUrls = this.gameService.buildAdminPreviewUrls(game.id);
+    return {
+      ...game,
+      gameType: normalizeGameType(game.gameType, game.title, game.description, game.tags),
+      coverUrl: this.attachAdminPreviewTokenToCoverUrl(
+        game.id,
+        game.status,
+        this.resolveAdminGameCoverUrl(game),
+        adminPreviewUrls.previewUrl,
+      ),
+      ...adminPreviewUrls,
+    };
+  }
+
+  private normalizeGameIds(ids: unknown): string[] {
+    const rawItems = Array.isArray(ids)
+      ? ids
+      : typeof ids === 'string'
+        ? ids.split(',')
+        : [];
+    const normalized = rawItems
+      .map((item) => (typeof item === 'string' ? item.trim() : String(item || '').trim()))
+      .filter(Boolean);
+    return Array.from(new Set(normalized));
+  }
+
+  private normalizeManualCoverUrl(rawValue: unknown): string | null {
+    if (typeof rawValue !== 'string' || !rawValue.trim()) {
+      return null;
+    }
+
+    const normalized = rawValue.trim();
+    try {
+      const parsed = new URL(normalized);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        throw new Error('unsupported protocol');
+      }
+      return parsed.toString();
+    } catch {
+      throw new BadRequestException('imageUrl must be a valid http(s) URL');
+    }
+  }
+
+  private decodeManualCoverImageDataUrl(rawValue: unknown): {
+    payload: string;
+    contentType: string;
+    sizeBytes: number;
+  } | null {
+    if (typeof rawValue !== 'string' || !rawValue.trim()) {
+      return null;
+    }
+
+    const trimmed = rawValue.trim();
+    const matched = trimmed.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([a-zA-Z0-9+/=]+)$/);
+    if (!matched) {
+      throw new BadRequestException('imageDataUrl must be a base64 data URL');
+    }
+
+    const [, contentType, base64Payload] = matched;
+    const allowedContentTypes = new Set([
+      'image/jpeg',
+      'image/png',
+      'image/webp',
+      'image/avif',
+      'image/gif',
+    ]);
+    if (!allowedContentTypes.has(contentType)) {
+      throw new BadRequestException(`Unsupported cover content type: ${contentType}`);
+    }
+
+    let buffer: Buffer;
+    try {
+      buffer = Buffer.from(base64Payload, 'base64');
+    } catch {
+      throw new BadRequestException('imageDataUrl contains invalid base64 payload');
+    }
+
+    if (!buffer.length) {
+      throw new BadRequestException('imageDataUrl payload is empty');
+    }
+
+    const maxBytes = 5 * 1024 * 1024;
+    if (buffer.length > maxBytes) {
+      throw new BadRequestException('Cover image must be 5 MB or smaller');
+    }
+
+    return {
+      payload: buffer.toString('base64'),
+      contentType,
+      sizeBytes: buffer.length,
+    };
+  }
+
+  private async resolveGameCoverTargetBundle(game: {
+    id: string;
+    status: GameStatus;
+    version: number;
+    bundles?: Array<{ id: string; version: number; metadata: Prisma.JsonValue }>;
+  }) {
+    let bundle = game.bundles?.[0] || null;
+
+    if (game.status === GameStatus.published && Number.isFinite(game.version) && Number(game.version) > 0) {
+      const liveVersion = Number(game.version);
+      if (!bundle || bundle.version !== liveVersion) {
+        bundle = await this.prisma.gameBundle.findFirst({
+          where: {
+            gameId: game.id,
+            version: liveVersion,
+          },
+          select: {
+            id: true,
+            version: true,
+            metadata: true,
+          },
+        });
+      }
+    }
+
+    if (!bundle) {
+      throw new NotFoundException('Game bundle not found');
+    }
+
+    return bundle;
+  }
+
+  private validateBatchStatus(status: string): 'published' | 'draft' {
+    if (status === 'published' || status === 'draft') {
+      return status;
+    }
+    throw new BadRequestException('status must be published or draft');
   }
 
   private normalizeExecutionRegion(rawValue?: string | null): string {
@@ -566,8 +800,12 @@ export class AdminService {
 
     return String(rawValue || '')
       .split(',')
-      .map((value) => value.trim())
-      .filter(Boolean);
+        .map((value) => value.trim())
+        .filter(Boolean);
+  }
+
+  private parseGameCoverBackfillOverwriteExisting(rawValue?: boolean | string): boolean {
+    return String(rawValue ?? 'false').trim().toLowerCase() === 'true';
   }
 
   async listGames(
@@ -602,6 +840,7 @@ export class AdminService {
               id: true,
               version: true,
               codeSizeBytes: true,
+              metadata: true,
               createdAt: true,
             },
             orderBy: { version: 'desc' },
@@ -616,10 +855,7 @@ export class AdminService {
     ]);
 
     return {
-      items: games.map((game: any) => ({
-        ...game,
-        ...this.gameService.buildAdminPreviewUrls(game.id),
-      })),
+      items: games.map((game: any) => this.presentAdminGame(game)),
       total,
       page,
       limit,
@@ -648,10 +884,7 @@ export class AdminService {
       throw new NotFoundException('Game not found');
     }
 
-    return {
-      ...game,
-      ...this.gameService.buildAdminPreviewUrls(game.id),
-    };
+    return this.presentAdminGame(game);
   }
 
   async createGame(data: {
@@ -708,13 +941,15 @@ export class AdminService {
       }
     }
 
+    const normalizedGameType = normalizeGameType(data.gameType, data.title, data.description, data.tags);
+
     const game = await this.prisma.game.create({
       data: {
         id: gameId,
         title: data.title,
         description: data.description || null,
         slug,
-        gameType: data.gameType || null,
+        gameType: normalizedGameType,
         tags: data.tags || [],
         author: { connect: { id: authorId! } },
         status: 'draft',
@@ -775,7 +1010,14 @@ export class AdminService {
     if (data.title !== undefined) gameUpdate.title = data.title;
     if (data.description !== undefined) gameUpdate.description = data.description;
     if (data.slug !== undefined) gameUpdate.slug = data.slug;
-    if (data.gameType !== undefined) gameUpdate.gameType = data.gameType;
+    if (data.gameType !== undefined) {
+      gameUpdate.gameType = normalizeGameType(
+        data.gameType,
+        data.title ?? existing.title,
+        data.description ?? existing.description,
+        data.tags ?? existing.tags,
+      );
+    }
     if (data.tags !== undefined) gameUpdate.tags = data.tags;
     if (data.status !== undefined) gameUpdate.status = data.status;
 
@@ -821,6 +1063,110 @@ export class AdminService {
     return this.getGame(id);
   }
 
+  async updateGameCover(id: string, data: AdminGameCoverUpdateInput) {
+    const game = await this.prisma.game.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        authorId: true,
+        status: true,
+        version: true,
+        bundles: {
+          select: {
+            id: true,
+            version: true,
+            metadata: true,
+          },
+          orderBy: { version: 'desc' },
+          take: 1,
+        },
+      },
+    });
+
+    if (!game) {
+      throw new NotFoundException('Game not found');
+    }
+
+    if (typeof game.authorId !== 'string' || !game.authorId.trim()) {
+      throw new BadRequestException('Game author is missing');
+    }
+
+    const uploadedImage = this.decodeManualCoverImageDataUrl(data?.imageDataUrl);
+    const externalImageUrl = uploadedImage ? null : this.normalizeManualCoverUrl(data?.imageUrl);
+    if (!uploadedImage && !externalImageUrl) {
+      throw new BadRequestException('Either imageDataUrl or imageUrl is required');
+    }
+
+    const bundle = await this.resolveGameCoverTargetBundle(game);
+    const metadata = bundle.metadata && typeof bundle.metadata === 'object' && !Array.isArray(bundle.metadata)
+      ? { ...(bundle.metadata as Record<string, any>) }
+      : {};
+    const manualUpdatedAt = new Date().toISOString();
+    let targetCoverUrl = externalImageUrl || '';
+    let coverArtifactId: string | null = null;
+
+    if (uploadedImage) {
+      const artifact = await this.prisma.generationArtifact.create({
+        data: {
+          id: randomUUID(),
+          taskId: undefined,
+          gameId: game.id,
+          userId: game.authorId,
+          artifactType: 'cover_image',
+          contentType: uploadedImage.contentType,
+          storageType: 'inline_text',
+          payloadText: uploadedImage.payload,
+          payloadJson: undefined,
+          payloadUrl: undefined,
+          sizeBytes: uploadedImage.sizeBytes,
+          metadata: {
+            encoding: 'base64',
+            manualCover: true,
+            manualCoverSource: 'admin_upload',
+            manualCoverFileName: typeof data?.fileName === 'string' && data.fileName.trim()
+              ? data.fileName.trim().slice(0, 255)
+              : undefined,
+            manualCoverUpdatedAt: manualUpdatedAt,
+          } as Prisma.InputJsonValue,
+        },
+      });
+      coverArtifactId = artifact.id;
+      targetCoverUrl = this.buildPublicCoverUrl(game.id, bundle.version);
+    }
+
+    const nextMetadata = {
+      ...metadata,
+      coverUrl: targetCoverUrl,
+      manualCover: true,
+      manualCoverSource: uploadedImage ? 'admin_upload' : 'admin_url',
+      manualCoverUpdatedAt: manualUpdatedAt,
+      ...(coverArtifactId ? { coverArtifactId } : {}),
+    };
+    delete (nextMetadata as any).coverTaskId;
+    delete (nextMetadata as any).cover_task_id;
+    delete (nextMetadata as any).cover_artifact_id;
+    if (!coverArtifactId) {
+      delete (nextMetadata as any).coverArtifactId;
+    }
+
+    await this.prisma.gameBundle.update({
+      where: { id: bundle.id },
+      data: {
+        metadata: nextMetadata as Prisma.InputJsonValue,
+      },
+    });
+
+    await this.prisma.game.update({
+      where: { id: game.id },
+      data: {
+        thumbnailUrl: targetCoverUrl,
+      },
+    });
+
+    await this.invalidateFeedCache();
+    return this.getGame(id);
+  }
+
   async deleteGame(id: string) {
     const game = await this.prisma.game.findUnique({ where: { id } });
     if (!game) {
@@ -837,6 +1183,88 @@ export class AdminService {
     await this.invalidateFeedCache();
 
     return { deleted: true };
+  }
+
+  async batchUpdateGameStatus(ids: unknown, status: string) {
+    const normalizedIds = this.normalizeGameIds(ids);
+    if (!normalizedIds.length) {
+      throw new BadRequestException('ids must contain at least one game id');
+    }
+
+    const nextStatus = this.validateBatchStatus(status);
+    const games = await this.prisma.game.findMany({
+      where: { id: { in: normalizedIds } },
+      select: {
+        id: true,
+        publishedAt: true,
+      },
+    });
+
+    const foundIdSet = new Set(games.map((game: any) => game.id));
+    const missingIds = normalizedIds.filter((id) => !foundIdSet.has(id));
+    const updatedAt = new Date();
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const game of games) {
+        const updateData: Prisma.GameUpdateInput = { status: nextStatus as any };
+        if (nextStatus === 'published' && !game.publishedAt) {
+          updateData.publishedAt = updatedAt;
+        }
+        await tx.game.update({
+          where: { id: game.id },
+          data: updateData,
+        });
+      }
+    });
+
+    if (games.length > 0) {
+      await this.invalidateFeedCache();
+    }
+
+    return {
+      requested: normalizedIds.length,
+      updated: games.length,
+      status: nextStatus,
+      updatedIds: games.map((game: any) => game.id),
+      missingIds,
+    };
+  }
+
+  async batchDeleteGames(ids: unknown) {
+    const normalizedIds = this.normalizeGameIds(ids);
+    if (!normalizedIds.length) {
+      throw new BadRequestException('ids must contain at least one game id');
+    }
+
+    const games = await this.prisma.game.findMany({
+      where: { id: { in: normalizedIds } },
+      select: { id: true },
+    });
+
+    const foundIds = games.map((game: any) => game.id);
+    const foundIdSet = new Set(foundIds);
+    const missingIds = normalizedIds.filter((id) => !foundIdSet.has(id));
+
+    await Promise.all(
+      foundIds.map((gameId) => this.gameService.terminateActiveTasksForGame(gameId, {
+        reason: 'Task canceled because the game was batch-deleted by admin',
+      })),
+    );
+
+    if (foundIds.length > 0) {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.gameBundle.deleteMany({ where: { gameId: { in: foundIds } } });
+        await tx.game.deleteMany({ where: { id: { in: foundIds } } });
+      });
+      await this.invalidateFeedCache();
+    }
+
+    return {
+      requested: normalizedIds.length,
+      deleted: foundIds.length,
+      deletedIds: foundIds,
+      missingIds,
+    };
   }
 
   async toggleStatus(id: string, status: string) {
@@ -864,6 +1292,203 @@ export class AdminService {
     await this.invalidateFeedCache();
 
     return this.getGame(id);
+  }
+
+  async refreshGameTypes(options: { dryRun?: boolean | string } = {}) {
+    const dryRun = String(options?.dryRun ?? 'false').trim().toLowerCase() === 'true';
+    const batchSize = 200;
+    const summary = {
+      dryRun,
+      gamesScanned: 0,
+      gamesUpdated: 0,
+      bundlesScanned: 0,
+      bundlesUpdated: 0,
+      tasksScanned: 0,
+      tasksUpdated: 0,
+    };
+
+    let gameCursor: string | undefined;
+    while (true) {
+      const games = await this.prisma.game.findMany({
+        ...(gameCursor ? { cursor: { id: gameCursor }, skip: 1 } : {}),
+        take: batchSize,
+        orderBy: { id: 'asc' },
+        select: {
+          id: true,
+          title: true,
+          description: true,
+          tags: true,
+          gameType: true,
+        },
+      });
+      if (games.length === 0) {
+        break;
+      }
+
+      for (const game of games) {
+        summary.gamesScanned += 1;
+        const normalizedGameType = normalizeGameType(
+          game.gameType,
+          game.title,
+          game.description,
+          game.tags,
+        );
+        if (game.gameType !== normalizedGameType) {
+          summary.gamesUpdated += 1;
+          if (!dryRun) {
+            await this.prisma.game.update({
+              where: { id: game.id },
+              data: { gameType: normalizedGameType },
+            });
+          }
+        }
+      }
+
+      gameCursor = games[games.length - 1]?.id;
+    }
+
+    let bundleCursor: string | undefined;
+    while (true) {
+      const bundles = await this.prisma.gameBundle.findMany({
+        ...(bundleCursor ? { cursor: { id: bundleCursor }, skip: 1 } : {}),
+        take: batchSize,
+        orderBy: { id: 'asc' },
+        select: {
+          id: true,
+          metadata: true,
+          game: {
+            select: {
+              title: true,
+              description: true,
+              tags: true,
+              gameType: true,
+            },
+          },
+        },
+      });
+      if (bundles.length === 0) {
+        break;
+      }
+
+      for (const bundle of bundles) {
+        summary.bundlesScanned += 1;
+        const metadata = this.asPlainObject(bundle.metadata);
+        const metadataGameSpec = this.asPlainObject(metadata.gameSpec);
+        const normalizedGameType = normalizeGameType(
+          metadata.gameType,
+          metadataGameSpec.game_type,
+          bundle.game?.gameType,
+          bundle.game?.title,
+          bundle.game?.description,
+          bundle.game?.tags,
+        );
+        if (metadata.gameType !== normalizedGameType) {
+          summary.bundlesUpdated += 1;
+          if (!dryRun) {
+            await this.prisma.gameBundle.update({
+              where: { id: bundle.id },
+              data: {
+                metadata: {
+                  ...metadata,
+                  gameType: normalizedGameType,
+                } as Prisma.InputJsonValue,
+              },
+            });
+          }
+        }
+      }
+
+      bundleCursor = bundles[bundles.length - 1]?.id;
+    }
+
+    let taskCursor: string | undefined;
+    while (true) {
+      const tasks = await this.prisma.generationTask.findMany({
+        ...(taskCursor ? { cursor: { id: taskCursor }, skip: 1 } : {}),
+        take: batchSize,
+        orderBy: { id: 'asc' },
+        select: {
+          id: true,
+          resultSummary: true,
+          metadata: true,
+          game: {
+            select: {
+              title: true,
+              description: true,
+              tags: true,
+              gameType: true,
+            },
+          },
+        },
+      });
+      if (tasks.length === 0) {
+        break;
+      }
+
+      for (const task of tasks) {
+        summary.tasksScanned += 1;
+        const resultSummary = this.asPlainObject(task.resultSummary);
+        const metadata = this.asPlainObject(task.metadata);
+        const normalizedGameType = normalizeGameType(
+          resultSummary.gameType,
+          metadata.selectedGameType,
+          metadata.gameType,
+          task.game?.gameType,
+          task.game?.title,
+          task.game?.description,
+          task.game?.tags,
+        );
+
+        let nextResultSummary = resultSummary;
+        let nextMetadata = metadata;
+        let changed = false;
+
+        if (resultSummary.gameType !== normalizedGameType) {
+          nextResultSummary = {
+            ...resultSummary,
+            gameType: normalizedGameType,
+          };
+          changed = true;
+        }
+
+        if (Object.prototype.hasOwnProperty.call(metadata, 'selectedGameType') && metadata.selectedGameType !== normalizedGameType) {
+          nextMetadata = {
+            ...nextMetadata,
+            selectedGameType: normalizedGameType,
+          };
+          changed = true;
+        }
+
+        if (Object.prototype.hasOwnProperty.call(metadata, 'gameType') && metadata.gameType !== normalizedGameType) {
+          nextMetadata = {
+            ...nextMetadata,
+            gameType: normalizedGameType,
+          };
+          changed = true;
+        }
+
+        if (changed) {
+          summary.tasksUpdated += 1;
+          if (!dryRun) {
+            await this.prisma.generationTask.update({
+              where: { id: task.id },
+              data: {
+                resultSummary: nextResultSummary as Prisma.InputJsonValue,
+                metadata: nextMetadata as Prisma.InputJsonValue,
+              },
+            });
+          }
+        }
+      }
+
+      taskCursor = tasks[tasks.length - 1]?.id;
+    }
+
+    if (!dryRun && (summary.gamesUpdated > 0 || summary.bundlesUpdated > 0 || summary.tasksUpdated > 0)) {
+      await this.invalidateFeedCache();
+    }
+
+    return summary;
   }
 
   async backfillLegacyPreviewGames(options: LegacyPreviewBackfillOptions = {}) {
@@ -1020,6 +1645,284 @@ export class AdminService {
         targetVisibility: 'unlisted',
       })),
     };
+  }
+
+  async backfillGameCovers(options: GameCoverBackfillOptions = {}) {
+    const limit = this.normalizeLegacyPreviewBackfillLimit(options.limit);
+    const dryRun = this.parseLegacyPreviewBackfillDryRun(options.dryRun);
+    const gameIds = this.parseLegacyPreviewBackfillGameIds(options.gameIds);
+    const overwriteExisting = this.parseGameCoverBackfillOverwriteExisting(options.overwriteExisting);
+    const summary = {
+      dryRun,
+      overwriteExisting,
+      scanned: 0,
+      eligible: 0,
+      regenerated: 0,
+      skipped: 0,
+      failed: 0,
+      items: [] as Array<Record<string, unknown>>,
+    };
+
+    const candidates = await this.prisma.game.findMany({
+      where: {
+        status: {
+          in: [GameStatus.draft, GameStatus.review, GameStatus.published],
+        },
+        bundles: {
+          some: {},
+        },
+        ...(!overwriteExisting
+          ? {
+              OR: [
+                { thumbnailUrl: null },
+                { thumbnailUrl: '' },
+              ],
+            }
+          : {}),
+        ...(gameIds.length > 0
+          ? {
+              id: {
+                in: gameIds,
+              },
+            }
+          : {}),
+      },
+      select: {
+        id: true,
+        authorId: true,
+        title: true,
+        description: true,
+        status: true,
+        visibility: true,
+        version: true,
+        gameType: true,
+        thumbnailUrl: true,
+        bundles: {
+          select: {
+            id: true,
+            version: true,
+            htmlCode: true,
+            metadata: true,
+          },
+          orderBy: {
+            version: 'desc',
+          },
+          take: 1,
+        },
+      },
+      orderBy: {
+        createdAt: 'asc',
+      },
+      take: limit,
+    });
+
+    summary.scanned = candidates.length;
+
+    for (const game of candidates) {
+      if (typeof game.authorId !== 'string' || !game.authorId.trim()) {
+        summary.skipped += 1;
+        summary.items.push({
+          id: game.id,
+          title: game.title,
+          status: 'skipped',
+          reason: 'missing_author',
+        });
+        continue;
+      }
+
+      let bundle: {
+        id: string;
+        version: number;
+        htmlCode: string;
+        metadata: Prisma.JsonValue;
+      } | null = game.bundles[0] || null;
+      if (game.status === GameStatus.published && Number.isFinite(game.version) && Number(game.version) > 0) {
+        const liveVersion = Number(game.version);
+        if (!bundle || bundle.version !== liveVersion) {
+          bundle = await this.prisma.gameBundle.findFirst({
+            where: {
+              gameId: game.id,
+              version: liveVersion,
+            },
+            select: {
+              id: true,
+              version: true,
+              htmlCode: true,
+              metadata: true,
+            },
+          });
+        }
+      }
+
+      const metadata = bundle?.metadata && typeof bundle.metadata === 'object' && !Array.isArray(bundle.metadata)
+        ? { ...(bundle.metadata as Record<string, any>) }
+        : {};
+      const hasPlayableBundle = typeof bundle?.htmlCode === 'string' && bundle.htmlCode.trim().length > 0;
+      const hasExistingCover = Boolean(
+        game.thumbnailUrl
+        || metadata.coverUrl
+        || metadata.coverTaskId
+        || metadata.coverArtifactId
+        || metadata.cover_task_id
+        || metadata.cover_artifact_id
+      );
+
+      if (!bundle || !hasPlayableBundle) {
+        summary.skipped += 1;
+        summary.items.push({
+          id: game.id,
+          title: game.title,
+          status: 'skipped',
+          reason: 'no_playable_bundle',
+        });
+        continue;
+      }
+
+      if (!overwriteExisting && hasExistingCover) {
+        summary.skipped += 1;
+        summary.items.push({
+          id: game.id,
+          title: game.title,
+          status: 'skipped',
+          reason: 'existing_cover',
+          bundleVersion: bundle.version,
+        });
+        continue;
+      }
+
+      summary.eligible += 1;
+      const gameSpec = metadata.gameSpec && typeof metadata.gameSpec === 'object' && !Array.isArray(metadata.gameSpec)
+        ? metadata.gameSpec as Record<string, any>
+        : {};
+      const visualStyle = gameSpec.visual_style && typeof gameSpec.visual_style === 'object' && !Array.isArray(gameSpec.visual_style)
+        ? gameSpec.visual_style as Record<string, any>
+        : {};
+      const runtimeOrientation = typeof metadata.runtimeOrientation === 'string'
+        ? metadata.runtimeOrientation
+        : typeof metadata.requestedOrientation === 'string'
+          ? (metadata.requestedOrientation === 'landscape' ? 'landscape_first' : 'portrait_first')
+          : undefined;
+
+      try {
+        const captureResponse = await this.postAiEngineAdminWithFailover<any>(
+          undefined,
+          '/api/v1/ai/covers/capture',
+          {
+            game_id: game.id,
+            user_id: game.authorId,
+            html_code: bundle.htmlCode,
+            orientation: runtimeOrientation,
+            title: game.title,
+            game_type: normalizeGameType(
+              game.gameType,
+              game.title,
+              game.description,
+              Array.isArray(gameSpec.tags) ? gameSpec.tags : [],
+            ),
+            theme: typeof visualStyle.theme === 'string' ? visualStyle.theme : null,
+            runtime_profile: typeof metadata.runtimeProfile === 'string' ? metadata.runtimeProfile : null,
+            visual_pack: typeof visualStyle.visual_pack === 'string' ? visualStyle.visual_pack : null,
+            render_style_intensity: typeof visualStyle.render_style_intensity === 'string'
+              ? visualStyle.render_style_intensity
+              : null,
+            updated: game.status === GameStatus.published && bundle.version < Number(game.version || bundle.version),
+          },
+          60000,
+          'No reachable ai-engine endpoint found for cover backfill',
+        );
+        const captured = captureResponse.data?.captured !== false;
+        const payload = typeof captureResponse.data?.payload === 'string' ? captureResponse.data.payload : '';
+        const contentType = typeof captureResponse.data?.content_type === 'string'
+          ? captureResponse.data.content_type
+          : (typeof captureResponse.data?.contentType === 'string' ? captureResponse.data.contentType : 'image/jpeg');
+        const coverMetadata = captureResponse.data?.metadata && typeof captureResponse.data.metadata === 'object'
+          ? captureResponse.data.metadata
+          : {};
+
+        if (!captured || !payload) {
+          summary.failed += 1;
+          summary.items.push({
+            id: game.id,
+            title: game.title,
+            status: 'failed',
+            reason: 'cover_capture_empty',
+            bundleVersion: bundle.version,
+          });
+          continue;
+        }
+
+        const targetCoverUrl = this.buildPublicCoverUrl(game.id, bundle.version);
+        if (!dryRun) {
+          const artifact = await this.prisma.generationArtifact.create({
+            data: {
+              id: randomUUID(),
+              taskId: undefined,
+              gameId: game.id,
+              userId: game.authorId,
+              artifactType: 'cover_image',
+              contentType,
+              storageType: 'inline_text',
+              payloadText: payload,
+              payloadJson: undefined,
+              payloadUrl: undefined,
+              metadata: {
+                encoding: 'base64',
+                backfillSource: 'admin_cover_backfill',
+                backfilledAt: new Date().toISOString(),
+                ...(coverMetadata as Record<string, unknown>),
+              } as Prisma.InputJsonValue,
+            },
+          });
+
+          const nextMetadata = {
+            ...metadata,
+            coverArtifactId: artifact.id,
+            coverUrl: targetCoverUrl,
+          };
+          delete (nextMetadata as any).coverTaskId;
+          delete (nextMetadata as any).cover_task_id;
+
+          await this.prisma.gameBundle.update({
+            where: { id: bundle.id },
+            data: {
+              metadata: nextMetadata as Prisma.InputJsonValue,
+            },
+          });
+
+          await this.prisma.game.update({
+            where: { id: game.id },
+            data: {
+              thumbnailUrl: targetCoverUrl,
+            },
+          });
+        }
+
+        summary.regenerated += 1;
+        summary.items.push({
+          id: game.id,
+          title: game.title,
+          status: dryRun ? 'planned' : 'regenerated',
+          bundleVersion: bundle.version,
+          coverUrl: targetCoverUrl,
+          overlayStyle: coverMetadata.coverStyle || null,
+        });
+      } catch (error: any) {
+        summary.failed += 1;
+        summary.items.push({
+          id: game.id,
+          title: game.title,
+          status: 'failed',
+          reason: this.extractAiEngineAdminErrorMessage(error),
+          bundleVersion: bundle.version,
+        });
+      }
+    }
+
+    if (!dryRun && summary.regenerated > 0) {
+      await this.invalidateFeedCache();
+    }
+
+    return summary;
   }
 
   // ===================== User Management =====================
@@ -1409,7 +2312,12 @@ export class AdminService {
       failedReason: task ? (task.errorMessage || null) : (game.failedReason || null),
       retryCount: task ? (task.retryCount ?? 0) : game.retryCount,
       lastErrorAt: task ? (taskHasError ? (task.completedAt || null) : null) : (game.lastErrorAt || null),
-      gameType: this.pickFirstString(summary.gameType, bundleMeta.gameType, game.gameType),
+      gameType: normalizeGameType(
+        this.pickFirstString(summary.gameType, bundleMeta.gameType, game.gameType),
+        game.title,
+        game.description,
+        game.tags,
+      ),
       createdAt: task?.createdAt || bundle?.createdAt || game.createdAt,
       updatedAt: task?.updatedAt || game.updatedAt,
       author: game.author,
@@ -2128,7 +3036,7 @@ export class AdminService {
       },
     });
 
-    await this.refreshLlmGateway();
+    await this.refreshLlmGateway(regionTarget.id);
     return this.presentLlmProvider({
       ...provider,
       apiKey,
@@ -2138,8 +3046,14 @@ export class AdminService {
   }
 
   async deleteLlmProvider(id: string) {
+    const existing = await this.prisma.llmGatewayProvider.findUnique({
+      where: { id },
+      select: {
+        regionTargetId: true,
+      },
+    });
     await this.prisma.llmGatewayProvider.delete({ where: { id } });
-    await this.refreshLlmGateway();
+    await this.refreshLlmGateway(existing?.regionTargetId || undefined);
     return { deleted: true };
   }
 
@@ -2310,7 +3224,7 @@ export class AdminService {
       },
     });
 
-    await this.refreshLlmGateway();
+    await this.refreshLlmGateway(route.provider?.regionTargetId || undefined);
     return {
       ...route,
       stepMeta: step,
@@ -2318,15 +3232,28 @@ export class AdminService {
   }
 
   async deleteLlmRoute(id: string) {
+    const existing = await this.prisma.llmStepRoute.findUnique({
+      where: { id },
+      select: {
+        provider: {
+          select: {
+            regionTargetId: true,
+          },
+        },
+      },
+    });
     await this.prisma.llmStepRoute.delete({ where: { id } });
-    await this.refreshLlmGateway();
+    await this.refreshLlmGateway(existing?.provider?.regionTargetId || undefined);
     return { deleted: true };
   }
 
-  async refreshLlmGateway() {
-    const urls = await this.getAiEngineAdminBaseUrls();
-    const responses = await Promise.all(
-      urls.map(async (baseUrl) => {
+  async refreshLlmGateway(regionTargetId?: string) {
+    const urls = await this.getAiEngineAdminBaseUrls(regionTargetId);
+    const responses: Array<{ baseUrl: string; data: any }> = [];
+    const failures: Array<{ baseUrl: string; message: string }> = [];
+
+    for (const baseUrl of urls) {
+      try {
         const response = await axios.post(
           `${baseUrl}/api/v1/ai/llm-gateway/refresh`,
           {},
@@ -2337,15 +3264,33 @@ export class AdminService {
             timeout: 10000,
           },
         );
-        return {
+        responses.push({
           baseUrl,
           data: response.data,
-        };
-      }),
-    );
+        });
+      } catch (error) {
+        failures.push({
+          baseUrl,
+          message: this.extractAiEngineAdminErrorMessage(error),
+        });
+      }
+    }
+
+    if (!responses.length) {
+      const summary = failures
+        .map((entry) => `${entry.baseUrl}: ${entry.message}`)
+        .join(' | ');
+      throw new BadGatewayException(
+        `All ai-engine admin endpoints failed during llm gateway refresh. ${summary || 'No upstream error details available.'}`,
+      );
+    }
+
     return {
       refreshed: responses.length,
+      failed: failures.length,
+      partialFailure: failures.length > 0,
       results: responses,
+      failures,
     };
   }
 

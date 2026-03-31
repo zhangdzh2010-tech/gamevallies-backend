@@ -15,13 +15,27 @@ describe('AdminService', () => {
       $transaction: jest.fn(),
       game: {
         findMany: jest.fn(),
+        findUnique: jest.fn(),
         update: jest.fn(),
+        deleteMany: jest.fn(),
         count: jest.fn(),
         aggregate: jest.fn(),
         groupBy: jest.fn(),
+        create: jest.fn(),
+      },
+      gameBundle: {
+        create: jest.fn(),
+        findMany: jest.fn(),
+        findFirst: jest.fn(),
+        update: jest.fn(),
+        deleteMany: jest.fn(),
+      },
+      generationArtifact: {
+        create: jest.fn(),
       },
       user: {
         findUnique: jest.fn(),
+        findFirst: jest.fn(),
         create: jest.fn(),
         update: jest.fn(),
         count: jest.fn(),
@@ -61,6 +75,7 @@ describe('AdminService', () => {
         findMany: jest.fn(),
         count: jest.fn(),
         findUnique: jest.fn(),
+        update: jest.fn(),
       },
       generationTaskEvent: {
         findMany: jest.fn(),
@@ -79,6 +94,7 @@ describe('AdminService', () => {
         findUnique: jest.fn(),
         findMany: jest.fn(),
         upsert: jest.fn(),
+        delete: jest.fn(),
       },
       llmGatewayTestRecord: {
         findMany: jest.fn(),
@@ -87,6 +103,7 @@ describe('AdminService', () => {
         findMany: jest.fn(),
         findUnique: jest.fn(),
         upsert: jest.fn(),
+        delete: jest.fn(),
       },
     };
     prisma.$transaction.mockImplementation(async (callback: (tx: any) => any) => callback(prisma));
@@ -96,6 +113,8 @@ describe('AdminService', () => {
           AI_ENGINE_URL: 'http://ai-engine.test',
           AI_ENGINE_URL_CN_SHANGHAI: 'https://ai-cn.test',
           AI_ENGINE_URL_AP_SOUTHEAST_JOHOR: 'https://ai-jh.test',
+          PUBLIC_API_BASE_URL: 'https://gamevallies.com',
+          APP_URL: 'https://gamevallies.com',
         };
         return values[key] ?? defaultValue;
       }),
@@ -526,6 +545,137 @@ describe('AdminService', () => {
     invalidateFeedCacheSpy.mockRestore();
   });
 
+  it('backfills historical covers by capturing a polished cover artifact and wiring it to the live bundle', async () => {
+    prisma.game.findMany.mockResolvedValue([
+      {
+        id: 'game-cover-backfill',
+        authorId: 'user-cover-backfill',
+        title: 'Orbital Office',
+        description: 'A funny office chaos game',
+        status: 'draft',
+        visibility: 'private',
+        version: 1,
+        gameType: 'funny',
+        thumbnailUrl: null,
+        bundles: [
+          {
+            id: 'bundle-cover-backfill',
+            version: 1,
+            htmlCode: '<!DOCTYPE html><html><body>orbital office</body></html>',
+            metadata: {
+              gameSpec: {
+                tags: ['office', 'chaos'],
+                visual_style: {
+                  theme: 'neon_city',
+                },
+              },
+              runtimeOrientation: 'landscape_first',
+              runtimeProfile: 'casual_arcade',
+            },
+          },
+        ],
+      },
+    ]);
+    prisma.generationArtifact.create.mockResolvedValue({
+      id: 'artifact-cover-backfill',
+    });
+    prisma.gameBundle.update.mockResolvedValue({});
+    prisma.game.update.mockResolvedValue({});
+    const captureSpy = jest
+      .spyOn(service as any, 'postAiEngineAdminWithFailover')
+      .mockResolvedValue({
+        data: {
+          captured: true,
+          payload: 'ZmFrZS1jb3Zlcg==',
+          content_type: 'image/jpeg',
+          metadata: {
+            coverStyle: 'posterized_overlay',
+            coverVariant: 'neon_glass_poster_v2',
+          },
+        },
+      } as any);
+    const invalidateFeedCacheSpy = jest
+      .spyOn(service as any, 'invalidateFeedCache')
+      .mockResolvedValue(undefined);
+
+    const result = await service.backfillGameCovers({
+      limit: 10,
+    });
+
+    expect(prisma.game.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        OR: [
+          { thumbnailUrl: null },
+          { thumbnailUrl: '' },
+        ],
+      }),
+    }));
+    expect(captureSpy).toHaveBeenCalledWith(
+      undefined,
+      '/api/v1/ai/covers/capture',
+      expect.objectContaining({
+        game_id: 'game-cover-backfill',
+        user_id: 'user-cover-backfill',
+        orientation: 'landscape_first',
+        title: 'Orbital Office',
+        game_type: 'funny',
+        theme: 'neon_city',
+        runtime_profile: 'casual_arcade',
+      }),
+      60000,
+      'No reachable ai-engine endpoint found for cover backfill',
+    );
+    expect(prisma.generationArtifact.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        gameId: 'game-cover-backfill',
+        userId: 'user-cover-backfill',
+        artifactType: 'cover_image',
+        contentType: 'image/jpeg',
+        storageType: 'inline_text',
+        payloadText: 'ZmFrZS1jb3Zlcg==',
+        metadata: expect.objectContaining({
+          encoding: 'base64',
+          backfillSource: 'admin_cover_backfill',
+          coverStyle: 'posterized_overlay',
+          coverVariant: 'neon_glass_poster_v2',
+        }),
+      }),
+    });
+    expect(prisma.gameBundle.update).toHaveBeenCalledWith({
+      where: { id: 'bundle-cover-backfill' },
+      data: {
+        metadata: expect.objectContaining({
+          coverArtifactId: 'artifact-cover-backfill',
+          coverUrl: 'https://gamevallies.com/api/v1/games/game-cover-backfill/cover?v=1',
+        }),
+      },
+    });
+    expect(prisma.game.update).toHaveBeenCalledWith({
+      where: { id: 'game-cover-backfill' },
+      data: {
+        thumbnailUrl: 'https://gamevallies.com/api/v1/games/game-cover-backfill/cover?v=1',
+      },
+    });
+    expect(invalidateFeedCacheSpy).toHaveBeenCalledTimes(1);
+    expect(result).toEqual(expect.objectContaining({
+      dryRun: false,
+      scanned: 1,
+      eligible: 1,
+      regenerated: 1,
+      failed: 0,
+    }));
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        id: 'game-cover-backfill',
+        status: 'regenerated',
+        overlayStyle: 'posterized_overlay',
+      }),
+    ]);
+
+    captureSpy.mockRestore();
+    invalidateFeedCacheSpy.mockRestore();
+  });
+
   it('aggregates generation log rows from the latest task summary instead of stale game failure fields', async () => {
     const gameCreatedAt = new Date('2026-03-20T08:00:00.000Z');
     const taskCreatedAt = new Date('2026-03-25T01:10:00.000Z');
@@ -685,7 +835,7 @@ describe('AdminService', () => {
       failedStage: null,
       failedReason: null,
       retryCount: 1,
-      gameType: 'runner',
+      gameType: 'casual',
       strategy: 'task-first',
       qaPassed: true,
       qaRetries: 2,
@@ -973,7 +1123,7 @@ describe('AdminService', () => {
         },
       },
     });
-    jest.spyOn(service, 'refreshLlmGateway').mockResolvedValue({ ok: true } as any);
+    const refreshSpy = jest.spyOn(service, 'refreshLlmGateway').mockResolvedValue({ ok: true } as any);
 
     const result = await service.upsertLlmProvider(undefined, {
       name: 'MiniMax Shanghai',
@@ -1020,6 +1170,132 @@ describe('AdminService', () => {
     expect(result.maxTokens).toBe(16384);
     expect(result.catalogApiKeyMasked).toBe('cata...1234');
     expect(result.extraConfig).toBeUndefined();
+    expect(refreshSpy).toHaveBeenCalledWith('target-1');
+  });
+
+  it('creates admin games for a selected author and normalizes game type to the curated catalog', async () => {
+    prisma.game.create.mockResolvedValue({ id: 'game-create-1' });
+    prisma.gameBundle.create.mockResolvedValue({ id: 'bundle-create-1' });
+    prisma.game.findUnique.mockResolvedValue({
+      id: 'game-create-1',
+      title: 'Action Demo',
+      description: 'test',
+      slug: 'action-demo',
+      gameType: 'casual',
+      tags: [],
+      author: {
+        id: 'user-owner',
+        username: 'owner',
+        displayName: 'Owner',
+      },
+      bundles: [],
+    });
+
+    await service.createGame({
+      title: 'Action Demo',
+      description: 'test',
+      gameType: 'action',
+      htmlCode: '<!DOCTYPE html><html><body>demo</body></html>',
+      authorId: 'user-owner',
+    });
+
+    expect(prisma.game.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        author: { connect: { id: 'user-owner' } },
+        gameType: 'casual',
+      }),
+    }));
+    expect(prisma.user.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('refreshes historical game types across games, bundles, and task summaries', async () => {
+    const invalidateFeedCacheSpy = jest
+      .spyOn(service as any, 'invalidateFeedCache')
+      .mockResolvedValue(undefined);
+
+    prisma.game.findMany
+      .mockResolvedValueOnce([
+        {
+          id: 'game-legacy-1',
+          title: 'Runner Legacy',
+          description: 'a classic runner',
+          tags: [],
+          gameType: 'runner',
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    prisma.gameBundle.findMany
+      .mockResolvedValueOnce([
+        {
+          id: 'bundle-legacy-1',
+          metadata: {
+            gameType: 'action',
+            gameSpec: { game_type: 'runner' },
+          },
+          game: {
+            title: 'Runner Legacy',
+            description: 'a classic runner',
+            tags: [],
+            gameType: 'runner',
+          },
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    prisma.generationTask.findMany
+      .mockResolvedValueOnce([
+        {
+          id: 'task-legacy-1',
+          resultSummary: {
+            gameType: 'action',
+          },
+          metadata: {
+            selectedGameType: 'other',
+          },
+          game: {
+            title: 'Runner Legacy',
+            description: 'a classic runner',
+            tags: [],
+            gameType: 'runner',
+          },
+        },
+      ])
+      .mockResolvedValueOnce([]);
+
+    const result = await service.refreshGameTypes();
+
+    expect(prisma.game.update).toHaveBeenCalledWith({
+      where: { id: 'game-legacy-1' },
+      data: { gameType: 'casual' },
+    });
+    expect(prisma.gameBundle.update).toHaveBeenCalledWith({
+      where: { id: 'bundle-legacy-1' },
+      data: {
+        metadata: {
+          gameType: 'casual',
+          gameSpec: { game_type: 'runner' },
+        },
+      },
+    });
+    expect(prisma.generationTask.update).toHaveBeenCalledWith({
+      where: { id: 'task-legacy-1' },
+      data: {
+        resultSummary: {
+          gameType: 'casual',
+        },
+        metadata: {
+          selectedGameType: 'casual',
+        },
+      },
+    });
+    expect(result).toEqual(expect.objectContaining({
+      dryRun: false,
+      gamesUpdated: 1,
+      bundlesUpdated: 1,
+      tasksUpdated: 1,
+    }));
+    expect(invalidateFeedCacheSpy).toHaveBeenCalledTimes(1);
+
+    invalidateFeedCacheSpy.mockRestore();
   });
 
   it('proxies provider catalog preview to the selected ai-engine region', async () => {
@@ -1119,6 +1395,295 @@ describe('AdminService', () => {
     } finally {
       postSpy.mockRestore();
     }
+  });
+
+  it('lists games with a resolved coverUrl from the latest bundle metadata', async () => {
+    prisma.game.findMany.mockResolvedValue([
+      {
+        id: 'game-1',
+        title: 'Cover Ready',
+        description: 'desc',
+        slug: 'cover-ready',
+        gameType: 'casual',
+        tags: [],
+        status: 'draft',
+        playCount: 0,
+        likeCount: 0,
+        qualityScore: 0,
+        thumbnailUrl: null,
+        version: 3,
+        author: {
+          id: 'user-1',
+          username: 'tester',
+          displayName: 'Tester',
+        },
+        bundles: [
+          {
+            id: 'bundle-1',
+            version: 3,
+            codeSizeBytes: 1024,
+            createdAt: new Date('2026-03-29T08:00:00.000Z'),
+            metadata: {
+              coverArtifactId: 'artifact-1',
+            },
+          },
+        ],
+      },
+    ]);
+    prisma.game.count.mockResolvedValue(1);
+
+    const result = await service.listGames(1, 20, '', 'all');
+
+    expect(result.items[0]).toEqual(expect.objectContaining({
+      id: 'game-1',
+      coverUrl: 'https://gamevallies.com/api/v1/games/game-1/cover?v=3&previewToken=admin',
+    }));
+  });
+
+  it('updates a game cover from an uploaded image and stores a cover artifact', async () => {
+    prisma.game.findUnique
+      .mockResolvedValueOnce({
+        id: 'game-1',
+        authorId: 'user-1',
+        status: 'draft',
+        version: 4,
+        bundles: [
+          {
+            id: 'bundle-4',
+            version: 4,
+            metadata: {
+              runtimeProfile: 'casual_arcade',
+            },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        id: 'game-1',
+        title: 'Cover Ready',
+        description: 'desc',
+        slug: 'cover-ready',
+        gameType: 'casual',
+        tags: [],
+        status: 'draft',
+        playCount: 0,
+        likeCount: 0,
+        forkCount: 0,
+        avgPlayTime: 0,
+        qualityScore: 0,
+        version: 4,
+        thumbnailUrl: 'https://gamevallies.com/api/v1/games/game-1/cover?v=4',
+        author: {
+          id: 'user-1',
+          username: 'cover_user',
+          displayName: 'Cover User',
+        },
+        bundles: [
+          {
+            id: 'bundle-4',
+            version: 4,
+            metadata: {
+              coverArtifactId: 'artifact-cover-upload',
+              coverUrl: 'https://gamevallies.com/api/v1/games/game-1/cover?v=4',
+            },
+          },
+        ],
+      });
+    prisma.generationArtifact.create.mockResolvedValue({
+      id: 'artifact-cover-upload',
+    });
+    prisma.gameBundle.update.mockResolvedValue({});
+    prisma.game.update.mockResolvedValue({});
+    const invalidateFeedCacheSpy = jest
+      .spyOn(service as any, 'invalidateFeedCache')
+      .mockResolvedValue(undefined);
+
+    const result = await service.updateGameCover('game-1', {
+      imageDataUrl: 'data:image/png;base64,aGVsbG8=',
+      fileName: 'cover.png',
+    });
+
+    expect(prisma.generationArtifact.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        gameId: 'game-1',
+        userId: 'user-1',
+        artifactType: 'cover_image',
+        contentType: 'image/png',
+        storageType: 'inline_text',
+        payloadText: 'aGVsbG8=',
+        sizeBytes: 5,
+        metadata: expect.objectContaining({
+          encoding: 'base64',
+          manualCover: true,
+          manualCoverSource: 'admin_upload',
+          manualCoverFileName: 'cover.png',
+        }),
+      }),
+    });
+    expect(prisma.gameBundle.update).toHaveBeenCalledWith({
+      where: { id: 'bundle-4' },
+      data: {
+        metadata: expect.objectContaining({
+          coverArtifactId: 'artifact-cover-upload',
+          coverUrl: 'https://gamevallies.com/api/v1/games/game-1/cover?v=4',
+          manualCover: true,
+          manualCoverSource: 'admin_upload',
+        }),
+      },
+    });
+    expect(prisma.game.update).toHaveBeenCalledWith({
+      where: { id: 'game-1' },
+      data: {
+        thumbnailUrl: 'https://gamevallies.com/api/v1/games/game-1/cover?v=4',
+      },
+    });
+    expect(invalidateFeedCacheSpy).toHaveBeenCalledTimes(1);
+    expect(result).toEqual(expect.objectContaining({
+      id: 'game-1',
+      coverUrl: 'https://gamevallies.com/api/v1/games/game-1/cover?v=4&previewToken=admin',
+    }));
+  });
+
+  it('updates a game cover from an external image url without creating an artifact', async () => {
+    prisma.game.findUnique
+      .mockResolvedValueOnce({
+        id: 'game-2',
+        authorId: 'user-2',
+        status: 'draft',
+        version: 2,
+        bundles: [
+          {
+            id: 'bundle-2',
+            version: 2,
+            metadata: {
+              coverArtifactId: 'artifact-old',
+              coverTaskId: 'task-old',
+            },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        id: 'game-2',
+        title: 'External Cover',
+        description: 'desc',
+        slug: 'external-cover',
+        gameType: 'casual',
+        tags: [],
+        status: 'draft',
+        playCount: 0,
+        likeCount: 0,
+        forkCount: 0,
+        avgPlayTime: 0,
+        qualityScore: 0,
+        version: 2,
+        thumbnailUrl: 'https://cdn.example.com/covers/game-2.jpg',
+        author: {
+          id: 'user-2',
+          username: 'external_user',
+          displayName: 'External User',
+        },
+        bundles: [
+          {
+            id: 'bundle-2',
+            version: 2,
+            metadata: {
+              coverUrl: 'https://cdn.example.com/covers/game-2.jpg',
+              manualCover: true,
+              manualCoverSource: 'admin_url',
+            },
+          },
+        ],
+      });
+    prisma.gameBundle.update.mockResolvedValue({});
+    prisma.game.update.mockResolvedValue({});
+    const invalidateFeedCacheSpy = jest
+      .spyOn(service as any, 'invalidateFeedCache')
+      .mockResolvedValue(undefined);
+
+    const result = await service.updateGameCover('game-2', {
+      imageUrl: 'https://cdn.example.com/covers/game-2.jpg',
+    });
+
+    expect(prisma.generationArtifact.create).not.toHaveBeenCalled();
+    expect(prisma.gameBundle.update).toHaveBeenCalledWith({
+      where: { id: 'bundle-2' },
+      data: {
+        metadata: expect.objectContaining({
+          coverUrl: 'https://cdn.example.com/covers/game-2.jpg',
+          manualCover: true,
+          manualCoverSource: 'admin_url',
+        }),
+      },
+    });
+    const metadata = prisma.gameBundle.update.mock.calls[0][0].data.metadata;
+    expect(metadata.coverArtifactId).toBeUndefined();
+    expect(metadata.coverTaskId).toBeUndefined();
+    expect(prisma.game.update).toHaveBeenCalledWith({
+      where: { id: 'game-2' },
+      data: {
+        thumbnailUrl: 'https://cdn.example.com/covers/game-2.jpg',
+      },
+    });
+    expect(invalidateFeedCacheSpy).toHaveBeenCalledTimes(1);
+    expect(result).toEqual(expect.objectContaining({
+      id: 'game-2',
+      coverUrl: 'https://cdn.example.com/covers/game-2.jpg',
+    }));
+  });
+
+  it('batch updates game statuses and reports missing ids', async () => {
+    prisma.game.findMany.mockResolvedValue([
+      { id: 'game-1', publishedAt: null },
+      { id: 'game-2', publishedAt: new Date('2026-03-20T00:00:00.000Z') },
+    ]);
+    const invalidateFeedCacheSpy = jest
+      .spyOn(service as any, 'invalidateFeedCache')
+      .mockResolvedValue(undefined);
+    prisma.game.update.mockResolvedValue({});
+
+    const result = await service.batchUpdateGameStatus(['game-1', 'game-2', 'game-missing'], 'published');
+
+    expect(prisma.game.findMany).toHaveBeenCalledWith({
+      where: { id: { in: ['game-1', 'game-2', 'game-missing'] } },
+      select: { id: true, publishedAt: true },
+    });
+    expect(prisma.game.update).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({
+      requested: 3,
+      updated: 2,
+      status: 'published',
+      updatedIds: ['game-1', 'game-2'],
+      missingIds: ['game-missing'],
+    });
+    expect(invalidateFeedCacheSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('batch deletes games after terminating active tasks', async () => {
+    prisma.game.findMany.mockResolvedValue([
+      { id: 'game-1' },
+      { id: 'game-2' },
+    ]);
+    prisma.gameBundle.deleteMany.mockResolvedValue({ count: 2 });
+    prisma.game.deleteMany.mockResolvedValue({ count: 2 });
+    const invalidateFeedCacheSpy = jest
+      .spyOn(service as any, 'invalidateFeedCache')
+      .mockResolvedValue(undefined);
+
+    const result = await service.batchDeleteGames(['game-1', 'game-2', 'game-3']);
+
+    expect(gameService.terminateActiveTasksForGame).toHaveBeenCalledTimes(2);
+    expect(prisma.gameBundle.deleteMany).toHaveBeenCalledWith({
+      where: { gameId: { in: ['game-1', 'game-2'] } },
+    });
+    expect(prisma.game.deleteMany).toHaveBeenCalledWith({
+      where: { id: { in: ['game-1', 'game-2'] } },
+    });
+    expect(result).toEqual({
+      requested: 3,
+      deleted: 2,
+      deletedIds: ['game-1', 'game-2'],
+      missingIds: ['game-3'],
+    });
+    expect(invalidateFeedCacheSpy).toHaveBeenCalledTimes(1);
   });
 
   it('proxies provider chat tests and returns recent test records', async () => {
@@ -1479,7 +2044,7 @@ describe('AdminService', () => {
         fastModel: 'MiniMax-M2.5-fast',
       },
     });
-    jest.spyOn(service, 'refreshLlmGateway').mockResolvedValue({ ok: true } as any);
+    const refreshSpy = jest.spyOn(service, 'refreshLlmGateway').mockResolvedValue({ ok: true } as any);
 
     const result = await service.upsertLlmRoute(undefined, {
       stepKey: 'code_generate.hybrid',
@@ -1510,6 +2075,97 @@ describe('AdminService', () => {
     );
     expect(result.stepMeta.stepKey).toBe('code_generate.hybrid');
     expect(result.region).toBe('cn_shanghai');
+    expect(refreshSpy).toHaveBeenCalledWith('target-1');
+  });
+
+  it('refreshes only the selected llm gateway region and tolerates a stale endpoint when another one succeeds', async () => {
+    prisma.aiEngineRegionTarget.findUnique.mockResolvedValue({
+      id: 'target-1',
+      executionRegion: 'cn_shanghai',
+      aiEngineUrl: 'https://ai-stale.example.com',
+      deployEnabled: true,
+      deployStatus: 'deployed',
+    });
+    const postSpy = jest.spyOn(axios, 'post')
+      .mockResolvedValueOnce({
+        data: { refreshed: 3 },
+      } as any)
+      .mockRejectedValueOnce(Object.assign(new Error('connect ECONNREFUSED'), {
+        isAxiosError: true,
+        response: {
+          data: { message: 'region runtime unreachable' },
+        },
+      }));
+
+    try {
+      const result = await service.refreshLlmGateway('target-1');
+
+      expect(postSpy).toHaveBeenNthCalledWith(
+        1,
+        'https://ai-cn.test/api/v1/ai/llm-gateway/refresh',
+        {},
+        expect.objectContaining({
+          headers: { 'x-admin-token': expect.any(String) },
+          timeout: 10000,
+        }),
+      );
+      expect(postSpy).toHaveBeenNthCalledWith(
+        2,
+        'https://ai-stale.example.com/api/v1/ai/llm-gateway/refresh',
+        {},
+        expect.any(Object),
+      );
+      expect(result).toEqual({
+        refreshed: 1,
+        failed: 1,
+        partialFailure: true,
+        results: [
+          {
+            baseUrl: 'https://ai-cn.test',
+            data: { refreshed: 3 },
+          },
+        ],
+        failures: [
+          {
+            baseUrl: 'https://ai-stale.example.com',
+            message: 'region runtime unreachable',
+          },
+        ],
+      });
+    } finally {
+      postSpy.mockRestore();
+    }
+  });
+
+  it('surfaces a clear refresh error when every llm gateway admin endpoint fails', async () => {
+    prisma.aiEngineRegionTarget.findUnique.mockResolvedValue({
+      id: 'target-1',
+      executionRegion: 'cn_shanghai',
+      aiEngineUrl: 'https://ai-stale.example.com',
+      deployEnabled: true,
+      deployStatus: 'deployed',
+    });
+    const postSpy = jest.spyOn(axios, 'post')
+      .mockRejectedValueOnce(Object.assign(new Error('configured failure'), {
+        isAxiosError: true,
+        response: {
+          data: { detail: 'configured gateway unavailable' },
+        },
+      }))
+      .mockRejectedValueOnce(Object.assign(new Error('stale failure'), {
+        isAxiosError: true,
+        response: {
+          data: { message: 'region runtime unreachable' },
+        },
+      }));
+
+    try {
+      await expect(service.refreshLlmGateway('target-1')).rejects.toThrow(
+        'All ai-engine admin endpoints failed during llm gateway refresh. https://ai-cn.test: configured gateway unavailable | https://ai-stale.example.com: region runtime unreachable',
+      );
+    } finally {
+      postSpy.mockRestore();
+    }
   });
 
   it('returns a single llm route by id for legacy admin callers', async () => {

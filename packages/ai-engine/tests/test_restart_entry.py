@@ -52,6 +52,33 @@ NAMED_RESTART_GAME_CODE = """
 </html>
 """
 
+TERMINAL_CREATE_RESET_CODE = """
+<!DOCTYPE html>
+<html>
+  <body>
+    <canvas id="gameCanvas"></canvas>
+    <script>
+      let state = 'ready';
+      function create() {
+        state = 'ready';
+      }
+      function handleTap() {
+        if (state === 'level_complete' || state === 'game_over') {
+          state = 'ready';
+          create();
+          return;
+        }
+        if (state === 'ready') {
+          state = 'playing';
+        }
+      }
+      const canvas = document.getElementById('gameCanvas');
+      canvas.addEventListener('pointerdown', handleTap);
+    </script>
+  </body>
+</html>
+"""
+
 
 def test_restart_entry_helper_accepts_boot_init_terminal_branch():
     assert has_restart_entry(BOOT_INIT_RESTART_CODE) is True
@@ -59,6 +86,10 @@ def test_restart_entry_helper_accepts_boot_init_terminal_branch():
 
 def test_restart_entry_helper_accepts_named_restart_game_function():
     assert has_restart_entry(NAMED_RESTART_GAME_CODE) is True
+
+
+def test_restart_entry_helper_accepts_terminal_branch_that_resets_state_and_recreates_board():
+    assert has_restart_entry(TERMINAL_CREATE_RESET_CODE) is True
 
 
 def test_contract_runtime_validation_accepts_boot_init_terminal_branch():
@@ -75,5 +106,23 @@ def test_contract_runtime_validation_accepts_boot_init_terminal_branch():
 def test_l4_playability_warning_accepts_boot_init_terminal_branch():
     pipeline = QAPipeline()
     _errors, warnings = pipeline._check_l4_playability(BOOT_INIT_RESTART_CODE)
+
+    assert not any("restart/reset function" in warning.message for warning in warnings)
+
+
+def test_contract_runtime_validation_accepts_terminal_branch_that_recreates_board():
+    runner = V2PipelineRunner()
+    errors = runner._validate_runtime_contract(TERMINAL_CREATE_RESET_CODE, GameRuntimeContract())
+
+    assert not any(
+        error.type == "contract_gameplay"
+        and "restart entry point" in error.message
+        for error in errors
+    )
+
+
+def test_l4_playability_warning_accepts_terminal_branch_that_recreates_board():
+    pipeline = QAPipeline()
+    _errors, warnings = pipeline._check_l4_playability(TERMINAL_CREATE_RESET_CODE)
 
     assert not any("restart/reset function" in warning.message for warning in warnings)

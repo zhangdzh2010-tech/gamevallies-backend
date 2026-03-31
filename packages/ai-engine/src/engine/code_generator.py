@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -20,7 +21,9 @@ from ..config.settings import settings
 from ..config.timeout_store import get_int as get_timeout_int
 from ..services.llm_client import LLMClient
 from .code_template_cache import CodeTemplateCache
-from .prompt_store import get_active_prompt_bundle, get_runtime_profile, require_prompt
+from .prompt_store import get_active_prompt_bundle, get_prompt, get_runtime_profile, require_prompt
+from .runtime_profile_ids import normalize_runtime_profile_id
+from .visual_pack_catalog import get_visual_pack, visual_pack_direction_lines
 
 logger = logging.getLogger(__name__)
 
@@ -32,28 +35,18 @@ class _SafePromptFormatDict(dict):
         return "{" + key + "}"
 
 GAME_TYPE_CORE_MECHANIC_SUMMARY: Dict[str, str] = {
-    "dodge": "Move to avoid hazards and survive as long as possible.",
-    "platformer": "Jump across platforms, avoid gaps, and reach the goal.",
-    "runner": "Keep moving forward, dodge obstacles, and survive the run.",
-    "shooter": "Aim, shoot enemies, and stay alive under pressure.",
-    "puzzle": "Solve spatial or logical puzzles to clear the objective.",
-    "rhythm": "Tap in time with the beat to score points and maintain flow.",
-    "tower_defense": "Place defenses and stop incoming waves before they breach.",
-    "idle": "Accumulate resources automatically and upgrade progression.",
-    "rpg": "Explore, battle, and grow the character through encounters.",
+    "casual": "Deliver one readable arcade loop with quick feedback and a clear round goal.",
+    "puzzle": "Solve a compact logic or board problem with clear player feedback.",
+    "educational": "Teach or reinforce one learning objective through a short interactive challenge.",
+    "funny": "Build around one surprising or comedic interaction that stays readable on mobile.",
 }
 
 LOCALIZED_CORE_MECHANIC_SUMMARY: Dict[str, Dict[str, str]] = {
     "zh-CN": {
-        "dodge": "移动并躲开危险，尽量坚持更久。",
-        "platformer": "跨越平台、避开空隙，并抵达终点。",
-        "runner": "持续前进、躲开障碍，并保持跑酷节奏。",
-        "shooter": "瞄准并射击敌人，在压力下保持生存。",
-        "puzzle": "通过空间或逻辑推理完成关卡目标。",
-        "rhythm": "按节奏点击，保持连击并获得高分。",
-        "tower_defense": "布置防御并挡住一波波来袭的敌人。",
-        "idle": "积累资源并升级系统，推动自动成长。",
-        "rpg": "探索、战斗并逐步强化角色。",
+        "casual": "用简洁清晰的休闲玩法循环，让反馈快、目标明确。",
+        "puzzle": "通过紧凑的逻辑或棋盘挑战来完成目标。",
+        "educational": "把学习目标变成一个短平快的交互挑战。",
+        "funny": "围绕一个好懂又有梗的搞笑交互展开。",
     },
 }
 
@@ -86,17 +79,11 @@ EDUCATIONAL_REQUEST_MARKERS: tuple[str, ...] = (
 )
 
 PLAYER_SIZE_BY_GAME_TYPE: Dict[str, tuple[int, int]] = {
-    "dodge": (36, 36),
-    "platformer": (40, 40),
-    "runner": (40, 40),
-    "shooter": (42, 42),
+    "casual": (40, 40),
     "puzzle": (56, 56),
-    "rhythm": (48, 48),
-    "tower_defense": (44, 44),
-    "idle": (48, 48),
-    "rpg": (42, 42),
+    "educational": (52, 52),
+    "funny": (44, 44),
 }
-
 
 class CodeGenerator:
     """Stage 05: LLM-only HTML5 game code generator."""
@@ -115,6 +102,14 @@ class CodeGenerator:
         )
 
     @staticmethod
+    def _resolve_generation_tier(spec: Optional[GameSpec]) -> str:
+        raw_value = getattr(spec, "generation_tier", "standard")
+        value = str(getattr(raw_value, "value", raw_value) or "standard").strip().lower()
+        if value in {"safe", "showcase"}:
+            return value
+        return "standard"
+
+    @staticmethod
     def _select_token_budget(spec: Optional[GameSpec] = None, budget_override: Optional[str] = None) -> int:
         """Select token budget based on game complexity or explicit override."""
         if budget_override:
@@ -122,6 +117,11 @@ class CodeGenerator:
                 "simple": settings.LLM_GENERATION_TOKEN_BUDGET_SIMPLE,
                 "standard": settings.LLM_GENERATION_TOKEN_BUDGET_STANDARD,
                 "complex": settings.LLM_GENERATION_TOKEN_BUDGET_COMPLEX,
+                "safe": settings.LLM_GENERATION_TOKEN_BUDGET_SIMPLE,
+                "showcase": max(
+                    settings.LLM_GENERATION_TOKEN_BUDGET_COMPLEX,
+                    settings.LLM_LONG_GENERATION_MAX_TOKENS,
+                ),
             }
             return max(1024, mapping.get(budget_override, settings.LLM_LONG_GENERATION_MAX_TOKENS))
 
@@ -131,12 +131,40 @@ class CodeGenerator:
         special_rules_count = len(spec.special_rules or [])
         entity_count = len(spec.entities or [])
         game_type = (spec.game_type or "").lower()
+        generation_tier = CodeGenerator._resolve_generation_tier(spec)
 
-        if special_rules_count >= 3 or entity_count >= 5 or game_type in ("rpg", "tower_defense"):
+        if generation_tier == "showcase":
+            return max(
+                1024,
+                max(
+                    settings.LLM_GENERATION_TOKEN_BUDGET_COMPLEX,
+                    settings.LLM_LONG_GENERATION_MAX_TOKENS,
+                ),
+            )
+
+        if generation_tier == "safe":
+            if special_rules_count >= 3 or entity_count >= 5 or game_type in ("educational",):
+                return max(1024, settings.LLM_GENERATION_TOKEN_BUDGET_STANDARD)
+            if special_rules_count == 0 and entity_count <= 2 and game_type in ("casual", "funny"):
+                return max(1024, settings.LLM_GENERATION_TOKEN_BUDGET_SIMPLE)
+            return max(1024, settings.LLM_GENERATION_TOKEN_BUDGET_STANDARD)
+
+        if special_rules_count >= 3 or entity_count >= 5 or game_type in ("educational",):
             return max(1024, settings.LLM_GENERATION_TOKEN_BUDGET_COMPLEX)
-        if special_rules_count == 0 and entity_count <= 2 and game_type in ("dodge", "runner"):
-            return max(1024, settings.LLM_GENERATION_TOKEN_BUDGET_SIMPLE)
         return max(1024, settings.LLM_GENERATION_TOKEN_BUDGET_STANDARD)
+
+    @staticmethod
+    def _response_size_hint_from_budget(token_budget: int) -> str:
+        if token_budget >= max(
+            settings.LLM_GENERATION_TOKEN_BUDGET_COMPLEX,
+            settings.LLM_LONG_GENERATION_MAX_TOKENS,
+        ):
+            return "xlarge"
+        if token_budget >= settings.LLM_GENERATION_TOKEN_BUDGET_STANDARD:
+            return "large"
+        if token_budget <= settings.LLM_GENERATION_TOKEN_BUDGET_SIMPLE:
+            return "medium"
+        return "large"
 
     async def generate(
         self,
@@ -210,6 +238,8 @@ class CodeGenerator:
             runtime_profile,
             runtime_contract=runtime_contract,
         )
+        generation_tier_block = self._build_generation_tier_block(spec)
+        visual_pack_block = self._build_visual_pack_block(spec)
         implementation_budget = self._build_implementation_budget_block(spec, request_text)
         mechanic_diversity = self._build_mechanic_diversity_block(spec, request_text, runtime_profile)
         full_prompt = "\n\n".join(
@@ -217,8 +247,11 @@ class CodeGenerator:
             for part in [
                 request_context.strip(),
                 logic_generate_policy,
+                generation_tier_block,
+                visual_pack_block,
                 profile_few_shot,
                 structured_design,
+                self._build_design_program_block(spec, gdd),
                 self._build_critical_intent_block(spec, request_text),
                 mechanic_diversity,
                 self._build_ui_language_block(spec.ui_language),
@@ -246,15 +279,30 @@ class CodeGenerator:
 
         try:
             long_generation_timeout_s = self._long_generation_timeout_s()
-            text = await self._client.complete(
-                max_tokens=self._select_token_budget(spec, budget_override),
-                system=self._build_system_prompt(prompt_bundle_snapshot),
+            token_budget = self._select_token_budget(spec, budget_override)
+            truncation_retry_cap = max(
+                token_budget,
+                settings.LLM_LONG_GENERATION_MAX_TOKENS,
+                settings.LLM_GENERATION_TOKEN_BUDGET_COMPLEX,
+            )
+            text = await self._client.complete_with_truncation_retry(
+                max_tokens=token_budget,
+                system=self._build_system_prompt(prompt_bundle_snapshot, spec=spec),
                 messages=[{"role": "user", "content": full_prompt}],
                 step_key="code_generate.full",
                 stage="code_generating",
                 request_timeout_s=long_generation_timeout_s,
                 overall_timeout_s=long_generation_timeout_s,
                 allow_provider_fallback=True,
+                response_size_hint=self._response_size_hint_from_budget(token_budget),
+                context_scope="task",
+                compression_policy="code_generation",
+                truncation_retry_attempts=1,
+                truncation_retry_increment=2048,
+                truncation_retry_max_tokens=truncation_retry_cap,
+                timeout_retry_attempts=1,
+                timeout_retry_increment_s=60,
+                timeout_retry_max_s=long_generation_timeout_s + 60,
             )
             return _extract_html(text)
         except Exception as exc:
@@ -271,6 +319,7 @@ class CodeGenerator:
         input_map_str: str,
     ) -> Dict[str, Any]:
         palette = spec.visual_style.palette or ["#0a0a2e", "#6366f1", "#22c55e", "#f43f5e", "#ffffff"]
+        visual_pack = get_visual_pack(spec.visual_style.visual_pack) or {}
         player_entity = next((entity for entity in spec.entities if entity.role == "player"), None)
         player_shape = (player_entity.shape or "circle") if player_entity else "circle"
         player_color = (
@@ -298,6 +347,15 @@ class CodeGenerator:
             "ui_text_examples": self._build_ui_copy_examples(gdd, spec.ui_language),
             "theme": spec.visual_style.theme,
             "art_style": spec.visual_style.art_style,
+            "visual_pack": spec.visual_style.visual_pack or "none",
+            "render_style_intensity": spec.visual_style.render_style_intensity or "balanced",
+            "font_family": visual_pack.get("fontFamily", "system-ui, sans-serif"),
+            "hud_style": visual_pack.get("hudStyle", "clean_cards"),
+            "button_style": visual_pack.get("buttonStyle", "rounded_button"),
+            "background_style": visual_pack.get("backgroundStyle", spec.visual_style.background),
+            "motion_style": visual_pack.get("motionStyle", "responsive"),
+            "particle_style": visual_pack.get("particleStyle", "minimal"),
+            "accent_shapes": ", ".join(visual_pack.get("accentShapes", [])) or "none",
             "reference_game": spec.reference_game or "none",
             "palette": ", ".join(palette),
             "canvas_w": gdd.canvas.width,
@@ -338,6 +396,24 @@ class CodeGenerator:
             "player_h": player_h,
             "player_init_pos": self._derive_player_init_pos(spec.game_type, gdd.canvas.width, gdd.canvas.height),
             "difficulty_initial": spec.difficulty_curve,
+            "session_length": spec.session_length or "short_bursts",
+            "progression_shape": spec.progression_shape or "score_chase",
+            "reward_loop": spec.reward_loop or "none",
+            "signature_moment": spec.signature_moment or "none",
+            "target_audience": spec.target_audience or "general mobile players",
+            "tone": spec.tone or "readable and playful",
+            "reference_style": spec.reference_style or "none",
+            "complexity_budget": spec.complexity_budget or self._resolve_generation_tier(spec),
+            "teaching_mode": spec.teaching_mode or "none",
+            "comedy_device": spec.comedy_device or "none",
+            "design_goals": "; ".join(spec.design_goals or []) or "none",
+            "level_structure_json": self._json_block(gdd.level_structure),
+            "phase_plan_json": self._json_block(gdd.phase_plan),
+            "reward_plan_json": self._json_block(gdd.reward_plan),
+            "tutorial_beats_json": self._json_block(gdd.tutorial_beats),
+            "signature_interactions_json": self._json_block(gdd.signature_interactions),
+            "feedback_moments_json": self._json_block(gdd.feedback_moments),
+            "failure_recovery_json": self._json_block(gdd.failure_recovery_plan),
             "max_speed": max_speed,
             "spawn_decay_formula": (
                 f"max({min_spawn_interval}, {spawn_interval} - elapsed_s * 8)"
@@ -346,13 +422,23 @@ class CodeGenerator:
             ),
             "min_spawn_interval": min_spawn_interval,
             "combo_desc": "none",
-            "invincible_frames": 45 if spec.game_type not in ("puzzle", "rhythm") else 0,
+            "invincible_frames": 45 if spec.game_type not in ("puzzle", "educational") else 0,
             "ui_score_x": score_layout.get("x", 16),
             "ui_score_y": score_layout.get("y", 36),
             "ui_font_size": ui_font_size,
             "state_flow": self._format_state_flow(gdd.state_machine),
             "special_rules_list": self._format_special_rules(spec),
         }
+
+    @staticmethod
+    def _json_block(value: Any) -> str:
+        if value is None or value == "":
+            return "[]"
+        if value == {}:
+            return "{}"
+        if value == []:
+            return "[]"
+        return json.dumps(value, ensure_ascii=False, indent=2)
 
     def _derive_core_mechanic_text(self, spec: GameSpec, description: str) -> str:
         if spec.intent_summary.strip():
@@ -406,6 +492,43 @@ class CodeGenerator:
             ui_language=self._describe_ui_language(spec.ui_language),
         )
 
+    def _build_design_program_block(self, spec: GameSpec, gdd: GDD) -> str:
+        design_goal_lines = [f"  - {goal}" for goal in (spec.design_goals or [])]
+        if not design_goal_lines:
+            design_goal_lines = ["  - none"]
+        return "\n".join(
+            [
+                "DESIGN PROGRAM (HIGH PRIORITY):",
+                f"- Session length: {spec.session_length or 'short_bursts'}",
+                f"- Progression shape: {spec.progression_shape or 'score_chase'}",
+                f"- Reward loop: {spec.reward_loop or 'none'}",
+                f"- Signature moment: {spec.signature_moment or 'none'}",
+                f"- Target audience: {spec.target_audience or 'general mobile players'}",
+                f"- Tone: {spec.tone or 'readable and playful'}",
+                f"- Reference style: {spec.reference_style or 'none'}",
+                f"- Complexity budget: {spec.complexity_budget or self._resolve_generation_tier(spec)}",
+                f"- Teaching mode: {spec.teaching_mode or 'none'}",
+                f"- Comedy device: {spec.comedy_device or 'none'}",
+                "- Design goals:",
+                *design_goal_lines,
+                "- Level structure:",
+                self._json_block(gdd.level_structure),
+                "- Phase plan:",
+                self._json_block(gdd.phase_plan),
+                "- Reward plan:",
+                self._json_block(gdd.reward_plan),
+                "- Tutorial beats:",
+                self._json_block(gdd.tutorial_beats),
+                "- Signature interactions:",
+                self._json_block(gdd.signature_interactions),
+                "- Feedback moments:",
+                self._json_block(gdd.feedback_moments),
+                "- Failure recovery plan:",
+                self._json_block(gdd.failure_recovery_plan),
+                "- Preserve this design program unless a requirement directly conflicts with it.",
+            ]
+        )
+
     @staticmethod
     def _describe_ui_language(ui_language: str) -> str:
         normalized = (ui_language or "en-US").strip() or "en-US"
@@ -421,16 +544,66 @@ class CodeGenerator:
         )
 
     @staticmethod
+    def _build_visual_pack_block(spec: Optional[GameSpec]) -> str:
+        if spec is None:
+            return ""
+        pack = get_visual_pack(spec.visual_style.visual_pack)
+        lines = visual_pack_direction_lines(pack)
+        if not lines:
+            return ""
+        intensity = spec.visual_style.render_style_intensity or "balanced"
+        pack_id = spec.visual_style.visual_pack or "none"
+        return "\n".join([
+            "VISUAL PACK DIRECTION:",
+            f"- Pack id: {pack_id}",
+            f"- Render style intensity: {intensity}",
+            *lines,
+            "- Follow this direction across HUD, buttons, overlays, backgrounds, and feedback animation.",
+            "- Keep the playfield readable, but avoid generic default UI if the selected pack suggests a stronger style.",
+        ])
+
+    @classmethod
+    def _build_generation_tier_block(cls, spec: Optional[GameSpec]) -> str:
+        generation_tier = cls._resolve_generation_tier(spec)
+        if generation_tier == "safe":
+            return (
+                "GENERATION TIER: SAFE\n"
+                "- Prioritize stability, clarity, and QA-friendly structure.\n"
+                "- Keep the implementation compact, but do not collapse the brief into a generic stock loop."
+            )
+        if generation_tier == "showcase":
+            custom = get_prompt("prompt.generation_tier_showcase")
+            if custom:
+                return custom.strip()
+            return (
+                "GENERATION TIER: SHOWCASE\n"
+                "- Aim for a premium-feeling result with stronger presentation, richer feedback, and a more distinctive loop.\n"
+                "- It is acceptable to add 2-3 linked subsystems as long as they share one main update/render loop.\n"
+                "- Prefer a memorable mechanic framing, stronger pacing, and more expressive HUD/FX instead of the smallest generic implementation."
+            )
+        custom = get_prompt("prompt.generation_tier_standard")
+        if custom:
+            return custom.strip()
+        return (
+            "GENERATION TIER: STANDARD\n"
+            "- Balance stability with delight.\n"
+            "- Build a more polished and distinctive result than the minimal safe baseline.\n"
+            "- Allow one supporting subsystem, stronger presentation, and clearer progression when they fit the brief."
+        )
+
+    @staticmethod
     def _build_mechanic_diversity_block(
         spec: GameSpec,
         request_text: str,
         runtime_profile: Optional[str],
     ) -> str:
+        runtime_profile = normalize_runtime_profile_id(runtime_profile)
+        generation_tier = CodeGenerator._resolve_generation_tier(spec)
         diversity_rules = [
             rule for rule in (spec.special_rules or [])
             if "distinctive gameplay loop" in rule.lower() or "avoid the stock" in rule.lower()
         ]
-        if not diversity_rules:
+        if generation_tier != "showcase" and not diversity_rules:
             return ""
         prompt_lines = [
             "MECHANIC DIVERSITY GOAL:",
@@ -438,9 +611,13 @@ class CodeGenerator:
             "- Do not fall back to the most common stock implementation for the selected genre/profile unless the request explicitly requires it.",
             "- Vary the objective loop, pacing, failure condition, and spatial structure while staying readable on mobile.",
         ]
-        if runtime_profile in {"portrait_arcade", "topdown_action"}:
+        if runtime_profile in {"casual_arcade", "casual_action", "casual_arcade_burst", "casual_arcade_orbit", "casual_arcade_rescue", "casual_action_arena", "casual_action_survival"}:
             prompt_lines.append(
                 "- Prefer a more distinctive loop such as rescue, delivery, orbit control, area capture, chase, escort, or combo routing if it still fits the brief."
+            )
+        if generation_tier == "showcase":
+            prompt_lines.append(
+                "- Because this is a showcase-tier generation, prefer a signature mechanic framing and stronger pacing instead of the safest default structure."
             )
         if request_text.strip():
             prompt_lines.append(f"- Keep alignment with the user brief: {request_text.strip()[:160]}")
@@ -459,34 +636,56 @@ class CodeGenerator:
         spec: Optional[GameSpec],
         request_text: str,
         *,
-        fallback_game_type: str = "dodge",
+        fallback_game_type: str = "casual",
     ) -> str:
         game_type = spec.game_type if spec else fallback_game_type
         source_description = spec.source_description if spec else ""
         intent_summary = spec.intent_summary if spec else ""
+        generation_tier = cls._resolve_generation_tier(spec)
         lines = [
             "IMPLEMENTATION BUDGET (NON-NEGOTIABLE):",
-            "- Use one canvas, one primary state object, and one requestAnimationFrame loop.",
-            "- Keep only one main HUD and at most one overlay screen for ready/game-over or level-complete states.",
-            "- Avoid scene managers, dialogue trees, worksheet generators, multi-page courseware, inventories, or parallel mini-games unless they are absolutely required for the core mechanic.",
-            "- Prefer the smallest complete mechanic that satisfies the request and runtime contract before adding optional polish.",
-            "- Reuse the same controls and state machine across the whole experience instead of creating separate subsystems.",
+            "- Use one canvas and one primary requestAnimationFrame loop.",
+            "- Keep the whole experience coherent inside one HTML file and one shared state model.",
+            "- Reuse the same controls and state machine across the whole experience instead of creating disconnected subsystems.",
         ]
-        if game_type == "runner":
+        if generation_tier == "safe":
             lines.extend([
-                "- Keep one obstacle loop and at most one collectible loop.",
-                "- Reuse the same lane/survival loop for progression instead of adding side modes.",
+                "- Keep one main HUD and at most one overlay screen for ready/game-over or level-complete states.",
+                "- Avoid scene managers, dialogue trees, worksheet generators, inventories, or parallel mini-games unless absolutely required for the core mechanic.",
+                "- Prefer the smallest complete mechanic that satisfies the request and runtime contract before adding optional polish.",
             ])
-        if game_type == "puzzle":
+        elif generation_tier == "showcase":
             lines.extend([
-                "- Keep one board or playfield and one clear solve condition.",
-                "- Prefer concise tap/drag interactions over multiple modal interfaces.",
+                "- Allow a richer presentation layer, a stronger HUD, and 2-3 linked subsystems as long as they all plug into the same loop.",
+                "- Favor one signature mechanic plus one support system such as combos, waves, rescue targets, route goals, risk-reward pickups, or finale beats.",
+                "- Spend budget on clarity, juice, pacing, and progression once boot, input, restart, and visible feedback are secure.",
+            ])
+        else:
+            lines.extend([
+                "- Allow one stronger support subsystem and a more expressive HUD if they improve the brief.",
+                "- Build beyond the minimal safe demo when the brief supports it, while keeping the loop readable and QA-friendly.",
+            ])
+
+        if game_type == "casual":
+            lines.extend([
+                "- Keep the round structure readable and avoid spawning multiple unrelated subsystems.",
+                "- Use one main action loop, but supporting pickups, rescue targets, combo chains, or chase goals are allowed when they share the same controls.",
+            ])
+        if game_type in {"puzzle", "educational"}:
+            lines.extend([
+                "- Keep one board or playfield, but it may support layered goals such as route building, merge progression, or timed challenge beats.",
+                "- Prefer concise tap/drag interactions over modal UI sprawl.",
+            ])
+        if game_type == "funny":
+            lines.extend([
+                "- Build one memorable comic payoff or absurd loop, and allow one supporting gag system if it improves the pacing.",
+                "- Keep the humor readable through gameplay, feedback, and staging rather than long text setup.",
             ])
         if cls._looks_like_educational_request(request_text, source_description, intent_summary):
             lines.extend([
-                "- For classroom or knowledge-check requests, convert the idea into one touch-friendly puzzle/quiz loop, not a lesson plan, worksheet, or long teaching document.",
+                "- For classroom or knowledge-check requests, build one touch-friendly challenge flow instead of a lesson plan or long teaching document.",
                 "- Keep the challenge set compact, such as 3-5 levels or prompts on one shared board/layout.",
-                "- Use short player-visible prompts and immediate feedback instead of generating long explanatory text blocks.",
+                "- Use short player-visible prompts and immediate feedback instead of long explanatory text blocks.",
             ])
         return "\n".join(lines)
 
@@ -709,7 +908,7 @@ class CodeGenerator:
         runtime_contract: Optional[GameRuntimeContract] = None,
     ) -> str:
         prompt = ""
-        profile_id = (runtime_profile or "").strip()
+        profile_id = normalize_runtime_profile_id((runtime_profile or "").strip())
         if profile_id:
             profile = get_runtime_profile(profile_id)
             if isinstance(profile, dict):
@@ -746,11 +945,80 @@ class CodeGenerator:
             )
         return updated
 
-    def _build_system_prompt(self, prompt_bundle_snapshot: Optional[Dict[str, Any]]) -> str:
+    @classmethod
+    def _rewrite_system_prompt_for_generation_tier(
+        cls,
+        system_prompt: str,
+        spec: Optional[GameSpec] = None,
+    ) -> str:
+        generation_tier = cls._resolve_generation_tier(spec)
+        rewritten = system_prompt or ""
+        if generation_tier == "safe":
+            return rewritten
+
+        replacements: List[Tuple[str, str]] = [
+            (
+                r"(?im)^.*smallest implementation.*$",
+                (
+                    "Choose the smallest implementation that still feels polished, intentional, "
+                    "and distinct from stock examples."
+                    if generation_tier == "standard"
+                    else "Choose the most distinctive implementation that still stays stable, readable, and mobile-friendly."
+                ),
+            ),
+            (
+                r"(?im)^.*one clear gameplay loop.*$",
+                (
+                    "Prefer one clear primary loop, but a supporting subsystem is allowed when it improves pacing or delight."
+                    if generation_tier == "standard"
+                    else "Prefer one signature primary loop with up to two linked support systems when they enhance pacing, progression, or spectacle."
+                ),
+            ),
+            (
+                r"(?im)^.*avoid optional polish before core loop.*$",
+                (
+                    "Secure the core loop first, then spend remaining budget on stronger feedback, pacing, and presentation."
+                    if generation_tier == "standard"
+                    else "Secure boot, input, restart, and visible feedback first, then actively spend budget on presentation, juice, and memorable payoff."
+                ),
+            ),
+        ]
+        for pattern, replacement in replacements:
+            rewritten = re.sub(pattern, replacement, rewritten)
+
+        extra_block = get_prompt(f"prompt.code_gen_system_{generation_tier}")
+        if extra_block:
+            extra = extra_block.strip()
+        elif generation_tier == "showcase":
+            extra = (
+                "SHOWCASE OVERRIDE:\n"
+                "- A premium-feeling result is preferred over the smallest generic implementation.\n"
+                "- Strong visual hierarchy, richer feedback, and clearer progression are encouraged.\n"
+                "- Preserve mobile readability, restartability, and performance while aiming for a more memorable result."
+            )
+        else:
+            extra = (
+                "STANDARD OVERRIDE:\n"
+                "- Do not collapse the brief into the safest stock demo.\n"
+                "- Favor clearer progression, stronger feedback, and a more intentional presentation when they fit the request."
+            )
+
+        if extra:
+            rewritten = "\n\n".join(part for part in [rewritten.strip(), extra] if part)
+        return rewritten
+
+    def _build_system_prompt(
+        self,
+        prompt_bundle_snapshot: Optional[Dict[str, Any]],
+        spec: Optional[GameSpec] = None,
+    ) -> str:
         sections = [
             self._resolved_bundle_prompt(prompt_bundle_snapshot, "locked_contract"),
             self._resolved_bundle_prompt(prompt_bundle_snapshot, "product_policy"),
-            require_prompt("prompt.code_gen_system"),
+            self._rewrite_system_prompt_for_generation_tier(
+                require_prompt("prompt.code_gen_system"),
+                spec=spec,
+            ),
         ]
 
         deduped: List[str] = []
@@ -782,10 +1050,8 @@ class CodeGenerator:
 
     @staticmethod
     def _derive_player_init_pos(game_type: str, canvas_w: int, canvas_h: int) -> str:
-        if game_type in {"dodge", "runner", "shooter"}:
+        if game_type in {"casual", "funny"}:
             return f"bottom-center ({canvas_w // 2}, {canvas_h - 72})"
-        if game_type == "platformer":
-            return f"lower-left quarter ({canvas_w // 4}, {canvas_h - 96})"
         return f"center ({canvas_w // 2}, {canvas_h // 2})"
 
     def _format_entities_yaml(
@@ -869,7 +1135,7 @@ class CodeGenerator:
 
     async def _classify_iteration(self, feedback: str) -> IterationType:
         try:
-            text = await self._client.complete(
+            text = await self._client.complete_with_truncation_retry(
                 max_tokens=512,
                 messages=[{
                     "role": "user",
@@ -878,6 +1144,15 @@ class CodeGenerator:
                 step_key="iterate.classify",
                 stage="code_generating",
                 prefer_fast=True,
+                response_size_hint="small",
+                context_scope="task",
+                compression_policy="iteration_classify",
+                truncation_retry_attempts=1,
+                truncation_retry_increment=256,
+                truncation_retry_max_tokens=1024,
+                timeout_retry_attempts=1,
+                timeout_retry_increment_s=30,
+                timeout_retry_max_s=120,
             )
             label = text.strip().lower()
             for iter_type in IterationType:
@@ -978,10 +1253,14 @@ class CodeGenerator:
             runtime_profile,
             runtime_contract=runtime_contract,
         )
+        generation_tier_block = self._build_generation_tier_block(game_spec)
+        visual_pack_block = self._build_visual_pack_block(game_spec)
         prompt = "\n\n".join(
             part
             for part in [
                 logic_generate_policy,
+                generation_tier_block,
+                visual_pack_block,
                 profile_few_shot,
                 contract_block,
                 spec_block,
@@ -996,15 +1275,30 @@ class CodeGenerator:
 
         try:
             long_generation_timeout_s = self._long_generation_timeout_s()
-            text = await self._client.complete(
-                max_tokens=self._select_token_budget(game_spec),
-                system=self._build_system_prompt(prompt_bundle_snapshot),
+            token_budget = self._select_token_budget(game_spec)
+            truncation_retry_cap = max(
+                token_budget,
+                settings.LLM_LONG_GENERATION_MAX_TOKENS,
+                settings.LLM_GENERATION_TOKEN_BUDGET_COMPLEX,
+            )
+            text = await self._client.complete_with_truncation_retry(
+                max_tokens=token_budget,
+                system=self._build_system_prompt(prompt_bundle_snapshot, spec=game_spec),
                 messages=[{"role": "user", "content": prompt}],
                 step_key=step_key,
                 stage="code_generating",
                 request_timeout_s=long_generation_timeout_s,
                 overall_timeout_s=long_generation_timeout_s,
                 allow_provider_fallback=True,
+                response_size_hint=self._response_size_hint_from_budget(token_budget),
+                context_scope="task",
+                compression_policy="iteration_rewrite",
+                truncation_retry_attempts=1,
+                truncation_retry_increment=2048,
+                truncation_retry_max_tokens=truncation_retry_cap,
+                timeout_retry_attempts=1,
+                timeout_retry_increment_s=60,
+                timeout_retry_max_s=long_generation_timeout_s + 60,
             )
             return _extract_html(text)
         except Exception as exc:

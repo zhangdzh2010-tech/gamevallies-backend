@@ -10,16 +10,25 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..api.models import (
+    AnalyzeDialogueTurnRequest,
+    AnalyzeDialogueTurnResponse,
     ChatRequest,
     ChatResponse,
     ConversationMessage,
     CoreMechanic,
+    DraftPlanFromInputRequest,
+    DraftPlanFromInputResponse,
+    DialogueQuestion,
     DialogueSession,
     DialogueState,
     GameEntity,
     GameRules,
     GameSpec,
+    PlanDraft,
     PlatformConstraints,
+    QuestionStrategy,
+    SpecFromSlotsRequest,
+    SpecFromSlotsResponse,
     SlotState,
     VisualStyle,
 )
@@ -30,119 +39,61 @@ logger = logging.getLogger(__name__)
 
 _sessions: Dict[str, DialogueSession] = {}
 
+CURATED_GAME_TYPES = ("casual", "puzzle", "educational", "funny")
+
 LOCALIZED_GAME_TYPE_DEFAULTS: Dict[str, Dict[str, Dict[str, str]]] = {
-    "dodge": {
+    "casual": {
         "en-US": {
-            "core_mechanic": "Move through the arena, avoid hazards, and stay alive.",
-            "win_condition": "Survive long enough to beat your best run.",
+            "core_mechanic": "Use one readable arcade loop with fast feedback and a clear short-term goal.",
+            "win_condition": "Beat the target score or complete the short challenge.",
             "input_method": "touch",
         },
         "zh-CN": {
-            "core_mechanic": "在场地中移动，躲开危险并尽量坚持更久。",
-            "win_condition": "尽可能长时间存活并刷新自己的成绩。",
-            "input_method": "touch",
-        },
-    },
-    "platformer": {
-        "en-US": {
-            "core_mechanic": "Jump across gaps, use moving platforms, and reach the end safely.",
-            "win_condition": "Reach the finish marker without losing all lives.",
-            "input_method": "tap",
-        },
-        "zh-CN": {
-            "core_mechanic": "跨越空隙、利用平台移动，并安全抵达终点。",
-            "win_condition": "在生命耗尽前抵达终点标记。",
-            "input_method": "tap",
-        },
-    },
-    "runner": {
-        "en-US": {
-            "core_mechanic": "Keep running, switch lanes or dodge obstacles, and maintain momentum.",
-            "win_condition": "Run as far as possible while collecting bonuses.",
-            "input_method": "tap",
-        },
-        "zh-CN": {
-            "core_mechanic": "持续前进，切换路线或躲开障碍，并保持节奏。",
-            "win_condition": "尽可能跑得更远，同时收集加成道具。",
-            "input_method": "tap",
-        },
-    },
-    "shooter": {
-        "en-US": {
-            "core_mechanic": "Aim, fire at threats, and control space under pressure.",
-            "win_condition": "Clear enough enemies or reach the target score.",
-            "input_method": "touch",
-        },
-        "zh-CN": {
-            "core_mechanic": "瞄准并攻击威胁目标，在压力中控制场面。",
-            "win_condition": "消灭足够多的敌人或达到目标分数。",
+            "core_mechanic": "\u7528\u4e00\u4e2a\u76f4\u89c2\u7684\u4f11\u95f2\u73a9\u6cd5\u5faa\u73af\uff0c\u4fdd\u6301\u53cd\u9988\u5feb\u3001\u76ee\u6807\u6e05\u6670\u3002",
+            "win_condition": "\u8fbe\u6210\u76ee\u6807\u5206\u6570\u6216\u5b8c\u6210\u4e00\u8f6e\u77ed\u6311\u6218\u3002",
             "input_method": "touch",
         },
     },
     "puzzle": {
         "en-US": {
-            "core_mechanic": "Solve the board through matching, ordering, or spatial logic.",
-            "win_condition": "Clear the board or satisfy the puzzle target.",
+            "core_mechanic": "Solve one compact logic or board challenge through tap or drag interactions.",
+            "win_condition": "Clear the board or satisfy the puzzle objective.",
             "input_method": "touch",
         },
         "zh-CN": {
-            "core_mechanic": "通过匹配、排序或空间逻辑来解开棋盘谜题。",
-            "win_condition": "清空棋盘或完成谜题目标。",
-            "input_method": "touch",
-        },
-    },
-    "rhythm": {
-        "en-US": {
-            "core_mechanic": "Tap in rhythm and chain accurate hits for a combo.",
-            "win_condition": "Finish the song or section with a passing score.",
-            "input_method": "tap",
-        },
-        "zh-CN": {
-            "core_mechanic": "按节奏点击，并通过精准命中维持连击。",
-            "win_condition": "以达标分数完成当前曲段或整首曲目。",
-            "input_method": "tap",
-        },
-    },
-    "tower_defense": {
-        "en-US": {
-            "core_mechanic": "Place defenses and react to incoming waves efficiently.",
-            "win_condition": "Hold the line until every wave is cleared.",
-            "input_method": "touch",
-        },
-        "zh-CN": {
-            "core_mechanic": "摆放防御单位，并高效应对不断来袭的波次。",
-            "win_condition": "守住防线直到所有波次结束。",
+            "core_mechanic": "\u901a\u8fc7\u70b9\u51fb\u6216\u62d6\u62fd\u89e3\u5f00\u4e00\u4e2a\u7d27\u51d1\u7684\u76ca\u667a\u6311\u6218\u3002",
+            "win_condition": "\u6e05\u7a7a\u68cb\u76d8\u6216\u8fbe\u6210\u8c1c\u9898\u76ee\u6807\u3002",
             "input_method": "touch",
         },
     },
-    "idle": {
+    "educational": {
         "en-US": {
-            "core_mechanic": "Accumulate resources, automate production, and unlock upgrades.",
-            "win_condition": "Reach the target progression milestone.",
+            "core_mechanic": "Turn the learning goal into one mobile-friendly challenge with immediate feedback.",
+            "win_condition": "Complete the learning objective with a short series of correct answers or actions.",
             "input_method": "tap",
         },
         "zh-CN": {
-            "core_mechanic": "积累资源、自动化产出，并逐步解锁升级。",
-            "win_condition": "达成目标成长里程碑。",
+            "core_mechanic": "\u628a\u5b66\u4e60\u76ee\u6807\u8f6c\u6210\u4e00\u4e2a\u79fb\u52a8\u7aef\u53cb\u597d\u7684\u4ea4\u4e92\u6311\u6218\uff0c\u5e76\u7acb\u5373\u7ed9\u51fa\u53cd\u9988\u3002",
+            "win_condition": "\u901a\u8fc7\u7b80\u77ed\u7684\u9898\u76ee\u6216\u64cd\u4f5c\u5b8c\u6210\u6559\u80b2\u76ee\u6807\u3002",
             "input_method": "tap",
         },
     },
-    "rpg": {
+    "funny": {
         "en-US": {
-            "core_mechanic": "Explore encounters, fight threats, and grow the hero.",
-            "win_condition": "Complete the main quest objective.",
+            "core_mechanic": "Build around one surprising or comedic interaction that stays easy to understand.",
+            "win_condition": "Land enough funny moments, combos, or progress beats to finish the round.",
             "input_method": "touch",
         },
         "zh-CN": {
-            "core_mechanic": "探索遭遇、战胜敌人，并逐步强化主角。",
-            "win_condition": "完成主要任务目标。",
+            "core_mechanic": "\u56f4\u7ed5\u4e00\u4e2a\u597d\u61c2\u53c8\u6709\u6897\u7684\u641e\u7b11\u4ea4\u4e92\u5c55\u5f00\u3002",
+            "win_condition": "\u5728\u4e00\u5c40\u5185\u5b8c\u6210\u8db3\u591f\u7684\u7b11\u70b9\u3001\u8fde\u51fb\u6216\u8fdb\u5ea6\u76ee\u6807\u3002",
             "input_method": "touch",
         },
     },
 }
 
 ENTITY_VARIANTS: Dict[str, List[List[Dict[str, Any]]]] = {
-    "dodge": [
+    "casual": [
         [
             {"name": "glider", "role": "player", "shape": "triangle", "color": "#6366f1"},
             {"name": "meteor", "role": "obstacle", "shape": "diamond", "color": "#f43f5e"},
@@ -159,57 +110,6 @@ ENTITY_VARIANTS: Dict[str, List[List[Dict[str, Any]]]] = {
             {"name": "spark", "role": "collectible", "shape": "circle", "color": "#facc15"},
         ],
     ],
-    "platformer": [
-        [
-            {"name": "hero", "role": "player", "shape": "square", "color": "#6366f1"},
-            {"name": "platform", "role": "obstacle", "shape": "rectangle", "color": "#475569"},
-            {"name": "pickup", "role": "collectible", "shape": "circle", "color": "#22c55e"},
-        ],
-        [
-            {"name": "climber", "role": "player", "shape": "circle", "color": "#06b6d4"},
-            {"name": "ledge", "role": "obstacle", "shape": "rectangle", "color": "#f59e0b"},
-            {"name": "badge", "role": "collectible", "shape": "diamond", "color": "#f43f5e"},
-        ],
-        [
-            {"name": "mascot", "role": "player", "shape": "triangle", "color": "#8b5cf6"},
-            {"name": "crate", "role": "obstacle", "shape": "square", "color": "#f97316"},
-            {"name": "gem", "role": "collectible", "shape": "diamond", "color": "#10b981"},
-        ],
-    ],
-    "runner": [
-        [
-            {"name": "runner", "role": "player", "shape": "square", "color": "#6366f1"},
-            {"name": "obstacle", "role": "obstacle", "shape": "rectangle", "color": "#f43f5e"},
-            {"name": "coin", "role": "collectible", "shape": "circle", "color": "#22c55e"},
-        ],
-        [
-            {"name": "courier", "role": "player", "shape": "circle", "color": "#0ea5e9"},
-            {"name": "cone", "role": "obstacle", "shape": "triangle", "color": "#f97316"},
-            {"name": "ticket", "role": "collectible", "shape": "rectangle", "color": "#eab308"},
-        ],
-        [
-            {"name": "rocket", "role": "player", "shape": "diamond", "color": "#8b5cf6"},
-            {"name": "gate", "role": "obstacle", "shape": "square", "color": "#ef4444"},
-            {"name": "energy", "role": "collectible", "shape": "circle", "color": "#14b8a6"},
-        ],
-    ],
-    "shooter": [
-        [
-            {"name": "ship", "role": "player", "shape": "triangle", "color": "#6366f1"},
-            {"name": "enemy", "role": "enemy", "shape": "square", "color": "#f43f5e"},
-            {"name": "powerup", "role": "collectible", "shape": "diamond", "color": "#22c55e"},
-        ],
-        [
-            {"name": "ranger", "role": "player", "shape": "circle", "color": "#06b6d4"},
-            {"name": "drone", "role": "enemy", "shape": "diamond", "color": "#ef4444"},
-            {"name": "charge", "role": "collectible", "shape": "rectangle", "color": "#f59e0b"},
-        ],
-        [
-            {"name": "turret", "role": "player", "shape": "square", "color": "#8b5cf6"},
-            {"name": "phantom", "role": "enemy", "shape": "triangle", "color": "#fb7185"},
-            {"name": "shield", "role": "collectible", "shape": "circle", "color": "#10b981"},
-        ],
-    ],
     "puzzle": [
         [
             {"name": "piece", "role": "player", "shape": "square", "color": "#6366f1"},
@@ -224,18 +124,38 @@ ENTITY_VARIANTS: Dict[str, List[List[Dict[str, Any]]]] = {
             {"name": "marker", "role": "collectible", "shape": "rectangle", "color": "#14b8a6"},
         ],
     ],
-    "rhythm": [
+    "educational": [
         [
-            {"name": "note", "role": "collectible", "shape": "rectangle", "color": "#6366f1"},
-            {"name": "marker", "role": "obstacle", "shape": "rectangle", "color": "#f43f5e"},
+            {"name": "student", "role": "player", "shape": "circle", "color": "#6366f1"},
+            {"name": "prompt", "role": "collectible", "shape": "rectangle", "color": "#22c55e"},
+            {"name": "hint", "role": "obstacle", "shape": "diamond", "color": "#f59e0b"},
         ],
         [
-            {"name": "beat", "role": "collectible", "shape": "circle", "color": "#06b6d4"},
-            {"name": "pulse", "role": "obstacle", "shape": "diamond", "color": "#f97316"},
+            {"name": "card", "role": "player", "shape": "rectangle", "color": "#0ea5e9"},
+            {"name": "answer", "role": "collectible", "shape": "circle", "color": "#eab308"},
+            {"name": "timer", "role": "obstacle", "shape": "triangle", "color": "#ef4444"},
         ],
         [
-            {"name": "tone", "role": "collectible", "shape": "diamond", "color": "#8b5cf6"},
-            {"name": "bar", "role": "obstacle", "shape": "rectangle", "color": "#e11d48"},
+            {"name": "teacher", "role": "player", "shape": "square", "color": "#8b5cf6"},
+            {"name": "badge", "role": "collectible", "shape": "diamond", "color": "#10b981"},
+            {"name": "mistake", "role": "obstacle", "shape": "circle", "color": "#ef4444"},
+        ],
+    ],
+    "funny": [
+        [
+            {"name": "office_hero", "role": "player", "shape": "square", "color": "#6366f1"},
+            {"name": "boss_call", "role": "obstacle", "shape": "rectangle", "color": "#f43f5e"},
+            {"name": "snack", "role": "collectible", "shape": "circle", "color": "#22c55e"},
+        ],
+        [
+            {"name": "goose", "role": "player", "shape": "circle", "color": "#06b6d4"},
+            {"name": "banana_peel", "role": "obstacle", "shape": "diamond", "color": "#ef4444"},
+            {"name": "cheer", "role": "collectible", "shape": "rectangle", "color": "#f59e0b"},
+        ],
+        [
+            {"name": "cat", "role": "player", "shape": "triangle", "color": "#8b5cf6"},
+            {"name": "vacuum", "role": "obstacle", "shape": "square", "color": "#fb7185"},
+            {"name": "meme_star", "role": "collectible", "shape": "diamond", "color": "#10b981"},
         ],
     ],
 }
@@ -274,37 +194,202 @@ THEME_STYLE_PRESETS: Dict[str, Dict[str, Any]] = {
 }
 
 VISUAL_VARIANTS_BY_GAME_TYPE: Dict[str, List[Dict[str, Any]]] = {
-    "dodge": [
+    "casual": [
         {"theme": "garden", "palette": ["#365314", "#4ade80", "#f472b6", "#facc15", "#fefce8"], "background": "meadow", "art_style": "soft_geometric", "effects": ["petals"]},
         {"theme": "city", "palette": ["#1f2937", "#38bdf8", "#a3e635", "#fb7185", "#f9fafb"], "background": "skyline", "art_style": "flat", "effects": ["speed_lines"]},
         {"theme": "toy", "palette": ["#1d4ed8", "#60a5fa", "#f97316", "#ef4444", "#fefce8"], "background": "playroom", "art_style": "playful", "effects": []},
-    ],
-    "runner": [
-        {"theme": "city", "palette": ["#1f2937", "#38bdf8", "#a3e635", "#fb7185", "#f9fafb"], "background": "skyline", "art_style": "flat", "effects": ["speed_lines"]},
-        {"theme": "forest", "palette": ["#14532d", "#22c55e", "#84cc16", "#f59e0b", "#f7fee7"], "background": "canopy", "art_style": "storybook", "effects": ["leaf_trails"]},
-        {"theme": "sports", "palette": ["#0f172a", "#22c55e", "#38bdf8", "#f97316", "#f8fafc"], "background": "arena", "art_style": "bold_flat", "effects": ["streaks"]},
-    ],
-    "platformer": [
-        {"theme": "fantasy", "palette": ["#312e81", "#8b5cf6", "#22c55e", "#f59e0b", "#fef3c7"], "background": "mist", "art_style": "storybook", "effects": ["sparkles"]},
-        {"theme": "garden", "palette": ["#365314", "#4ade80", "#f472b6", "#facc15", "#fefce8"], "background": "meadow", "art_style": "soft_geometric", "effects": ["petals"]},
-        {"theme": "toy", "palette": ["#1d4ed8", "#60a5fa", "#f97316", "#ef4444", "#fefce8"], "background": "playroom", "art_style": "playful", "effects": []},
-    ],
-    "shooter": [
-        {"theme": "city", "palette": ["#111827", "#8b5cf6", "#06b6d4", "#f43f5e", "#f8fafc"], "background": "night_grid", "art_style": "neon", "effects": ["glow"]},
-        {"theme": "ocean", "palette": ["#0f172a", "#0ea5e9", "#14b8a6", "#facc15", "#ecfeff"], "background": "waves", "art_style": "soft_geometric", "effects": ["bubbles"]},
-        {"theme": "fantasy", "palette": ["#312e81", "#8b5cf6", "#22c55e", "#f59e0b", "#fef3c7"], "background": "mist", "art_style": "storybook", "effects": ["sparkles"]},
     ],
     "puzzle": [
         {"theme": "candy", "palette": ["#831843", "#f472b6", "#38bdf8", "#facc15", "#fff1f2"], "background": "sweetscape", "art_style": "playful", "effects": ["sparkles"]},
         {"theme": "garden", "palette": ["#365314", "#4ade80", "#f472b6", "#facc15", "#fefce8"], "background": "meadow", "art_style": "soft_geometric", "effects": ["petals"]},
         {"theme": "toy", "palette": ["#1d4ed8", "#60a5fa", "#f97316", "#ef4444", "#fefce8"], "background": "playroom", "art_style": "playful", "effects": []},
     ],
-    "rhythm": [
+    "educational": [
+        {"theme": "ocean", "palette": ["#0f172a", "#0ea5e9", "#14b8a6", "#facc15", "#ecfeff"], "background": "waves", "art_style": "soft_geometric", "effects": ["bubbles"]},
+        {"theme": "forest", "palette": ["#14532d", "#22c55e", "#84cc16", "#f59e0b", "#f7fee7"], "background": "canopy", "art_style": "storybook", "effects": ["leaf_trails"]},
+        {"theme": "toy", "palette": ["#1d4ed8", "#60a5fa", "#f97316", "#ef4444", "#fefce8"], "background": "playroom", "art_style": "playful", "effects": []},
+    ],
+    "funny": [
         {"theme": "neon", "palette": ["#111827", "#8b5cf6", "#06b6d4", "#f43f5e", "#f8fafc"], "background": "dark_gradient", "art_style": "neon", "effects": ["glow"]},
-        {"theme": "festival", "palette": ["#581c87", "#a855f7", "#06b6d4", "#f59e0b", "#fdf4ff"], "background": "stage_lights", "art_style": "bold_flat", "effects": ["pulse"]},
-        {"theme": "sports", "palette": ["#0f172a", "#22c55e", "#38bdf8", "#f97316", "#f8fafc"], "background": "arena", "art_style": "bold_flat", "effects": ["streaks"]},
+        {"theme": "city", "palette": ["#1f2937", "#38bdf8", "#a3e635", "#fb7185", "#f9fafb"], "background": "skyline", "art_style": "flat", "effects": ["speed_lines"]},
+        {"theme": "food", "palette": ["#7c2d12", "#fb923c", "#facc15", "#ef4444", "#fff7ed"], "background": "tabletop", "art_style": "cartoon", "effects": []},
     ],
 }
+
+SPARSE_REQUEST_MARKERS = (
+    "continue",
+    "another",
+    "more",
+    "add",
+    "increase",
+    "update",
+    "adjust",
+    "modify",
+    "tweak",
+    "improve",
+    "expand",
+    "set to",
+    "\u7ee7\u7eed",
+    "\u518d",
+    "\u65b0\u589e",
+    "\u6dfb\u52a0",
+    "\u589e\u52a0",
+    "\u6269\u5c55",
+    "\u8bbe\u7f6e",
+    "\u8c03\u6574",
+    "\u4fee\u6539",
+    "\u4f18\u5316",
+    "\u5173\u5361",
+)
+
+EDUCATIONAL_REQUEST_MARKERS = (
+    "classroom",
+    "teacher",
+    "lesson",
+    "quiz",
+    "worksheet",
+    "practice",
+    "practice question",
+    "learning game",
+    "teaching",
+    "knowledge point",
+    "study guide",
+    "\u8bfe\u5802",
+    "\u6559\u5b66",
+    "\u8001\u5e08",
+    "\u7ec3\u4e60\u9898",
+    "\u7ec3\u4e60",
+    "\u77e5\u8bc6\u70b9",
+    "\u95ee\u7b54",
+    "\u6d4b\u9a8c",
+    "\u5c0f\u6d4b",
+    "\u6559\u5177",
+    "\u5b66\u4e60\u6e38\u620f",
+    "\u6559\u5b66\u6e38\u620f",
+)
+
+FUNNY_REQUEST_MARKERS = (
+    "funny",
+    "comedy",
+    "joke",
+    "jokes",
+    "meme",
+    "memes",
+    "parody",
+    "goofy",
+    "silly",
+    "prank",
+    "\u641e\u7b11",
+    "\u6076\u641e",
+    "\u6574\u6d3b",
+    "\u6897",
+    "\u5e7d\u9ed8",
+)
+
+PUZZLE_REQUEST_MARKERS = (
+    "puzzle",
+    "match",
+    "merge",
+    "sort",
+    "solve",
+    "logic",
+    "2048",
+    "sudoku",
+    "circuit",
+    "wire",
+    "battery",
+    "bulb",
+    "switch",
+    "connect",
+    "assemble",
+    "\u8c1c\u9898",
+    "\u76ca\u667a",
+    "\u6d88\u9664",
+    "\u914d\u5bf9",
+    "\u8fde\u7ebf",
+    "\u7535\u8def",
+    "\u5bfc\u7ebf",
+    "\u5f00\u5173",
+    "\u7ec4\u88c5",
+)
+
+CASUAL_REQUEST_MARKERS = (
+    "casual",
+    "arcade",
+    "action",
+    "run",
+    "race",
+    "chase",
+    "catch",
+    "avoid",
+    "survive",
+    "escape",
+    "jump",
+    "platform",
+    "shoot",
+    "tap",
+    "drag",
+    "\u4f11\u95f2",
+    "\u8857\u673a",
+    "\u8dd1",
+    "\u8ffd",
+    "\u6293",
+    "\u8df3",
+    "\u95ea",
+    "\u907f",
+    "\u751f\u5b58",
+    "\u5c04\u51fb",
+)
+
+LEGACY_GAME_TYPE_ALIASES = {
+    "dodge": "casual",
+    "runner": "casual",
+    "platformer": "casual",
+    "shooter": "casual",
+    "rhythm": "funny",
+    "tower_defense": "puzzle",
+    "idle": "casual",
+    "rpg": "casual",
+    "lane runner": "casual",
+    "endless runner": "casual",
+    "top down shooter": "casual",
+    "top-down shooter": "casual",
+}
+
+CONTEXT_GAME_TYPE_RULES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+    ("educational", EDUCATIONAL_REQUEST_MARKERS),
+    ("funny", FUNNY_REQUEST_MARKERS),
+    ("puzzle", PUZZLE_REQUEST_MARKERS),
+    ("casual", CASUAL_REQUEST_MARKERS),
+)
+
+CONTEXT_THEME_RULES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+    ("space", ("space", "galaxy", "star", "planet", "\u592a\u7a7a", "\u5b87\u5b99", "\u661f")),
+    ("zoo", ("animal", "zoo", "pig", "cat", "dog", "panda", "\u52a8\u7269", "\u5c0f\u732a", "\u732a", "\u732b", "\u72d7", "\u718a\u732b")),
+    ("ocean", ("ocean", "sea", "water", "fish", "\u6d77", "\u6d0b", "\u6c34", "\u9c7c")),
+    ("forest", ("forest", "jungle", "tree", "\u68ee\u6797", "\u4e1b\u6797", "\u6811")),
+    ("city", ("city", "street", "car", "traffic", "\u57ce\u5e02", "\u8857", "\u6c7d\u8f66", "\u4ea4\u901a")),
+    ("food", ("food", "kitchen", "chef", "candy", "dessert", "\u98df\u7269", "\u53a8\u623f", "\u7cd6", "\u751c\u54c1")),
+    ("toy", ("toy", "block", "brick", "\u73a9\u5177", "\u79ef\u6728", "\u65b9\u5757")),
+    ("fantasy", ("fantasy", "magic", "dragon", "\u5947\u5e7b", "\u9b54\u6cd5", "\u9f99")),
+)
+
+EXPLICIT_GAME_TYPE_MARKERS: Dict[str, Tuple[str, ...]] = {
+    "casual": ("casual", "arcade", "\u4f11\u95f2", "\u8857\u673a"),
+    "puzzle": ("puzzle", "logic", "brain teaser", "\u8c1c\u9898", "\u76ca\u667a"),
+    "educational": ("educational", "education", "learning game", "quiz game", "\u6559\u80b2", "\u5b66\u4e60", "\u95ee\u7b54"),
+    "funny": ("funny", "comedy", "meme", "\u641e\u7b11", "\u6076\u641e"),
+}
+
+SPARSE_GAME_TYPE_VARIANTS: Dict[str, Tuple[str, ...]] = {
+    "casual": ("casual", "funny", "puzzle"),
+    "puzzle": ("puzzle", "casual", "educational"),
+    "educational": ("educational", "puzzle", "casual"),
+    "funny": ("funny", "casual", "puzzle"),
+}
+
+SPARSE_DEFAULT_GAME_TYPES = CURATED_GAME_TYPES
+SPARSE_DEFAULT_THEMES = ("arcade", "neon", "fantasy", "ocean", "forest", "city", "food", "toy")
 
 SLOT_LABELS = {
     "game_type": "Game Type",
@@ -315,6 +400,34 @@ SLOT_LABELS = {
     "difficulty": "Difficulty",
     "visual_style": "Visual Style",
     "audio_style": "Audio Style",
+}
+
+SLOT_IMPACT_WEIGHTS: Dict[str, float] = {
+    "core_mechanic": 1.0,
+    "win_condition": 0.95,
+    "input_method": 0.9,
+    "game_type": 0.82,
+    "theme": 0.74,
+    "difficulty": 0.55,
+    "visual_style": 0.42,
+    "audio_style": 0.18,
+}
+
+ENTRY_MODE_SLOT_BIAS: Dict[str, Dict[str, float]] = {
+    "create": {},
+    "fork": {
+        "theme": 0.08,
+        "visual_style": 0.06,
+        "game_type": -0.2,
+        "difficulty": -0.15,
+    },
+    "iterate": {
+        "core_mechanic": 0.12,
+        "win_condition": 0.08,
+        "theme": 0.04,
+        "game_type": -0.22,
+        "difficulty": -0.18,
+    },
 }
 
 SLOT_JSON_SCHEMA = """{
@@ -443,6 +556,21 @@ NULLISH_TEXT = {
     "\u4e0d\u786e\u5b9a",
 }
 
+NORMALIZED_INPUT_METHOD_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("swipe", ("swipe", "slide", "flick", "touch tap swipe", "touch swipe")),
+    ("drag", ("drag", "dragging", "pull")),
+    ("touch", ("touch only", "touch control", "touch")),
+    ("tap", ("tap", "click", "touch tap")),
+    ("hold", ("hold", "press", "long press")),
+)
+
+NORMALIZED_DIFFICULTY_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("easy", ("easy", "relaxed", "simple", "casual")),
+    ("medium", ("medium", "normal", "standard")),
+    ("hard", ("hard", "difficult", "challenging")),
+    ("progressive", ("progressive", "escalating", "ramping")),
+)
+
 SPARSE_REQUEST_MARKERS = (
     "continue",
     "another",
@@ -468,83 +596,6 @@ SPARSE_REQUEST_MARKERS = (
     "\u4f18\u5316",
     "\u5173\u5361",
 )
-
-EDUCATIONAL_REQUEST_MARKERS = (
-    "classroom",
-    "teacher",
-    "lesson",
-    "quiz",
-    "worksheet",
-    "practice",
-    "practice question",
-    "learning game",
-    "teaching",
-    "knowledge point",
-    "study guide",
-    "\u8bfe\u5802",
-    "\u6559\u5b66",
-    "\u8001\u5e08",
-    "\u7ec3\u4e60\u9898",
-    "\u7ec3\u4e60",
-    "\u77e5\u8bc6\u70b9",
-    "\u95ee\u7b54",
-    "\u6d4b\u9a8c",
-    "\u5c0f\u6d4b",
-    "\u6559\u5177",
-    "\u5b66\u4e60\u6e38\u620f",
-    "\u6559\u5b66\u6e38\u620f",
-)
-
-CONTEXT_GAME_TYPE_RULES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
-    ("puzzle", EDUCATIONAL_REQUEST_MARKERS),
-    ("tower_defense", ("tower defense", "defend", "\u5854\u9632", "\u9632\u5b88", "\u5b88\u536b")),
-    ("idle", ("idle", "incremental", "auto", "\u653e\u7f6e", "\u6302\u673a", "\u81ea\u52a8")),
-    ("rpg", ("rpg", "quest", "hero", "adventure", "\u5192\u9669", "\u89d2\u8272", "\u82f1\u96c4")),
-    ("rhythm", ("rhythm", "beat", "music", "dance", "\u8282\u594f", "\u97f3\u4e50", "\u821e")),
-    ("shooter", ("shoot", "shooter", "gun", "attack", "\u5c04\u51fb", "\u5f00\u706b", "\u653b\u51fb")),
-    ("platformer", ("jump", "platform", "climb", "\u8df3", "\u5e73\u53f0", "\u722c")),
-    ("runner", ("run", "runner", "race", "chase", "catch", "\u8dd1", "\u8ffd", "\u9017", "\u6293")),
-    ("puzzle", ("puzzle", "match", "merge", "sort", "solve", "circuit", "wire", "battery", "bulb", "switch", "connect", "drag", "assemble", "\u8c1c\u9898", "\u6d88\u9664", "\u62fc", "\u914d\u5bf9", "\u7535\u8def", "\u5bfc\u7ebf", "\u7535\u6c60", "\u706f\u6ce1", "\u5f00\u5173", "\u8fde\u63a5", "\u62d6\u62fd", "\u7ec4\u88c5")),
-    ("dodge", ("dodge", "avoid", "survive", "escape", "\u95ea", "\u8e32", "\u907f", "\u751f\u5b58", "\u9003")),
-)
-
-CONTEXT_THEME_RULES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
-    ("space", ("space", "galaxy", "star", "planet", "\u592a\u7a7a", "\u5b87\u5b99", "\u661f")),
-    ("zoo", ("animal", "zoo", "pig", "cat", "dog", "panda", "\u52a8\u7269", "\u5c0f\u732a", "\u732a", "\u732b", "\u72d7", "\u718a\u732b")),
-    ("ocean", ("ocean", "sea", "water", "fish", "\u6d77", "\u6d0b", "\u6c34", "\u9c7c")),
-    ("forest", ("forest", "jungle", "tree", "\u68ee\u6797", "\u4e1b\u6797", "\u6811")),
-    ("city", ("city", "street", "car", "traffic", "\u57ce\u5e02", "\u8857", "\u6c7d\u8f66", "\u4ea4\u901a")),
-    ("food", ("food", "kitchen", "chef", "candy", "dessert", "\u98df\u7269", "\u53a8\u623f", "\u539f\u70b9", "\u7cd6", "\u751c\u54c1")),
-    ("toy", ("toy", "block", "brick", "\u73a9\u5177", "\u79ef\u6728", "\u65b9\u5757")),
-    ("fantasy", ("fantasy", "magic", "dragon", "\u5947\u5e7b", "\u9b54\u6cd5", "\u9f99")),
-)
-
-EXPLICIT_GAME_TYPE_MARKERS: Dict[str, Tuple[str, ...]] = {
-    "dodge": ("dodge", "\u8e32\u907f", "\u95ea\u907f"),
-    "runner": ("runner", "endless runner", "\u8dd1\u9177"),
-    "platformer": ("platformer", "\u5e73\u53f0\u8df3\u8dc3"),
-    "shooter": ("shooter", "shoot", "\u5c04\u51fb"),
-    "puzzle": ("puzzle", "match-3", "merge", "\u8c1c\u9898"),
-    "rhythm": ("rhythm", "beat game", "\u97f3\u4e50\u8282\u594f"),
-    "idle": ("idle", "incremental", "\u653e\u7f6e"),
-    "rpg": ("rpg", "role playing", "\u89d2\u8272\u626e\u6f14"),
-    "tower_defense": ("tower defense", "\u5854\u9632"),
-}
-
-SPARSE_GAME_TYPE_VARIANTS: Dict[str, Tuple[str, ...]] = {
-    "dodge": ("dodge", "shooter", "runner", "rhythm"),
-    "runner": ("runner", "platformer", "dodge", "rhythm"),
-    "platformer": ("platformer", "runner", "dodge"),
-    "shooter": ("shooter", "dodge", "runner"),
-    "puzzle": ("puzzle", "idle", "rhythm"),
-    "rhythm": ("rhythm", "runner", "puzzle"),
-    "idle": ("idle", "puzzle", "rpg"),
-    "rpg": ("rpg", "dodge", "idle"),
-}
-
-SPARSE_DEFAULT_GAME_TYPES = ("puzzle", "runner", "platformer", "dodge", "shooter", "rhythm", "idle", "rpg")
-SPARSE_DEFAULT_THEMES = ("arcade", "neon", "fantasy", "ocean", "forest", "city", "food", "toy")
-
 
 class SlotExtractionFailure(ValueError):
     """Raised when slot extraction cannot produce a minimally valid payload."""
@@ -824,13 +875,32 @@ def _normalize_slot_payload(slot_data: Dict[str, Any]) -> Dict[str, Any]:
                     normalized[key] = rules
                 continue
             continue
-        if isinstance(value, str):
-            text = value.strip()
-            if text:
-                normalized[key] = text
-            continue
-        normalized[key] = value
+        scalar = SlotState._normalize_scalar_slot_value(value)
+        if scalar:
+            normalized[key] = _normalize_slot_text_value(key, scalar)
     return normalized
+
+
+def _normalize_slot_text_value(field: str, value: str) -> str:
+    text = re.sub(r"[_\-]+", " ", str(value or "").strip())
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return ""
+
+    lowered = text.lower()
+    if field == "input_method":
+        for normalized, hints in NORMALIZED_INPUT_METHOD_HINTS:
+            if any(hint in lowered for hint in hints):
+                return normalized
+    if field == "difficulty":
+        for normalized, hints in NORMALIZED_DIFFICULTY_HINTS:
+            if any(hint in lowered for hint in hints):
+                return normalized
+    if field == "game_type":
+        normalized_game_type = _normalize_game_type_label(text, "")
+        if normalized_game_type:
+            return normalized_game_type
+    return text
 
 
 def _merge_slot_payloads(*payloads: Dict[str, Any]) -> Dict[str, Any]:
@@ -887,6 +957,40 @@ def _looks_like_educational_request(*texts: str) -> bool:
     return any(_contains_marker(combined, marker) for marker in EDUCATIONAL_REQUEST_MARKERS)
 
 
+def _looks_like_funny_request(*texts: str) -> bool:
+    normalized_texts = [_normalize_free_text(text) for text in texts if _normalize_free_text(text)]
+    if not normalized_texts:
+        return False
+    combined = " ".join(normalized_texts)
+    return any(_contains_marker(combined, marker) for marker in FUNNY_REQUEST_MARKERS)
+
+
+def _looks_like_puzzle_request(*texts: str) -> bool:
+    normalized_texts = [_normalize_free_text(text) for text in texts if _normalize_free_text(text)]
+    if not normalized_texts:
+        return False
+    combined = " ".join(normalized_texts)
+    return any(_contains_marker(combined, marker) for marker in PUZZLE_REQUEST_MARKERS)
+
+
+def _normalize_game_type_label(game_type: str, *texts: str) -> str:
+    normalized = re.sub(r"[^a-z_-]+", " ", (game_type or "").strip().lower()).strip()
+    normalized = normalized.replace("-", " ")
+    normalized = re.sub(r"\s+", " ", normalized)
+    mapped = LEGACY_GAME_TYPE_ALIASES.get(normalized, normalized)
+
+    context = " ".join(_normalize_free_text(text) for text in texts if _normalize_free_text(text))
+    if _looks_like_educational_request(context):
+        return "educational"
+    if _looks_like_funny_request(context):
+        return "funny"
+    if _looks_like_puzzle_request(context):
+        return "puzzle"
+    if mapped in CURATED_GAME_TYPES:
+        return mapped
+    return "casual"
+
+
 def _build_intent_parse_input(description: str, *, title: Optional[str] = None) -> str:
     normalized_description = _normalize_free_text(description)
     normalized_title = _normalize_free_text(title or "")
@@ -923,6 +1027,10 @@ def _infer_game_type_from_sparse_context(
         return preferred_game_type
 
     if _looks_like_educational_request(*normalized_texts):
+        return "educational"
+    if _looks_like_funny_request(*normalized_texts):
+        return "funny"
+    if _looks_like_puzzle_request(*normalized_texts):
         return "puzzle"
 
     sparse = any(_looks_like_sparse_request(text) for text in normalized_texts) or _looks_like_sparse_request(combined)
@@ -950,8 +1058,12 @@ def _infer_game_type_from_sparse_context(
         r"(?<!\d)(\d{1,2})\s*(?:\u4e2a)?\u5173\u5361",
         combined,
     ):
-        if any(_contains_marker(combined, marker) for marker in ("run", "race", "catch", "\u8ffd", "\u6293", "\u9017")):
-            return "runner"
+        if _looks_like_educational_request(combined):
+            return "educational"
+        if _looks_like_puzzle_request(combined):
+            return "puzzle"
+        if _looks_like_funny_request(combined):
+            return "funny"
         return "puzzle"
 
     index = _stable_variant_index(
@@ -1027,14 +1139,10 @@ def _build_sparse_diversity_rules(game_type: str) -> List[str]:
         "Favor a distinctive gameplay loop instead of the most common default for this genre.",
     ]
     genre_specific = {
-        "dodge": "Avoid the stock meteor-survival setup unless the brief explicitly asks for it.",
-        "runner": "Avoid defaulting to a plain three-lane endless runner when another readable loop can fit.",
-        "platformer": "Avoid a generic left-to-right jump course if a more novel traversal loop fits the brief.",
-        "shooter": "Avoid a stock top-down wave-survival arena unless the request explicitly asks for it.",
         "puzzle": "Avoid turning every open brief into a match-3 clone.",
-        "rhythm": "Avoid a bare tap-on-beat lane if a more characterful rhythm loop still reads clearly on mobile.",
-        "idle": "Avoid a bare number-increment loop if a clearer fantasy or objective can be surfaced.",
-        "rpg": "Avoid reducing the loop to simple survive-and-score arcade play when a light quest structure can fit.",
+        "educational": "Avoid turning every learning brief into a worksheet or plain flash-card list.",
+        "funny": "Avoid reducing the joke to a generic survive-and-score loop with only reskinned art.",
+        "casual": "Avoid defaulting to the same hazard-dodging survival loop when another clear arcade objective can fit.",
     }
     rule = genre_specific.get(game_type)
     return shared + ([rule] if rule else [])
@@ -1122,18 +1230,8 @@ def _detect_ui_language(text: str) -> str:
 
 
 def _coerce_game_type_for_request(game_type: str, source_description: str) -> str:
-    normalized_game_type = (game_type or "").strip()
     normalized_description = _normalize_free_text(source_description)
-    if not normalized_game_type or not normalized_description:
-        return normalized_game_type
-
-    if not _looks_like_educational_request(normalized_description):
-        return normalized_game_type
-
-    if normalized_game_type in {"runner", "lane runner", "platformer", "dodge", "shooter", "top down shooter"}:
-        return "puzzle"
-
-    return normalized_game_type
+    return _normalize_game_type_label(game_type, normalized_description)
 
 
 def _stable_variant_index(*parts: str, count: int) -> int:
@@ -1141,7 +1239,7 @@ def _stable_variant_index(*parts: str, count: int) -> int:
         return 0
     seed = "|".join((part or "").strip() for part in parts if part is not None)
     digest = hashlib.sha256(seed.encode("utf-8")).digest()
-    return digest[0] % count
+    return int.from_bytes(digest, "big") % count
 
 
 def _localized_game_type_defaults(game_type: str, ui_language: str) -> Dict[str, str]:
@@ -1182,7 +1280,7 @@ def _select_visual_variant(
             "effects": list(preset.get("effects", [])),
         }
 
-    variants = VISUAL_VARIANTS_BY_GAME_TYPE.get(game_type, VISUAL_VARIANTS_BY_GAME_TYPE.get("dodge", []))
+    variants = VISUAL_VARIANTS_BY_GAME_TYPE.get(game_type, VISUAL_VARIANTS_BY_GAME_TYPE.get("casual", []))
     if not variants:
         return {
             "theme": normalized_theme or "arcade",
@@ -1219,16 +1317,10 @@ def _infer_slots_from_text(text: str) -> Dict[str, Any]:
     ui_language = _detect_ui_language(source)
 
     game_type_rules = (
-        ("puzzle", EDUCATIONAL_REQUEST_MARKERS),
-        ("tower_defense", ("塔防", "defense", "tower defense", "守塔")),
-        ("idle", ("放置", "idle", "挂机", "incremental")),
-        ("rpg", ("角色扮演", "冒险", "rpg", "quest")),
-        ("dodge", ("躲避", "闪避", "dodge", "avoid hazards")),
-        ("runner", ("跑酷", "runner", "endless run", "endless runner")),
-        ("platformer", ("平台", "跳跃", "platformer", "jump between")),
-        ("shooter", ("射击", "枪战", "shooter", "shoot")),
-        ("puzzle", ("谜题", "拼图", "消除", "puzzle", "match-3", "merge")),
-        ("rhythm", ("节奏", "音游", "rhythm", "beat")),
+        ("educational", EDUCATIONAL_REQUEST_MARKERS),
+        ("funny", FUNNY_REQUEST_MARKERS),
+        ("puzzle", PUZZLE_REQUEST_MARKERS),
+        ("casual", CASUAL_REQUEST_MARKERS),
     )
     for game_type, markers in game_type_rules:
         if any(_contains_marker(source, marker) or _contains_marker(lowered, marker) for marker in markers):
@@ -1324,6 +1416,9 @@ class DialogueEngine:
                 stage=stage,
                 prefer_fast=False,
                 allow_provider_fallback=True,
+                response_size_hint="small",
+                context_scope="task",
+                compression_policy="intent_parse" if step_key == "intent_parse" else "dialogue",
             )
         except LLMResponseTruncatedError as exc:
             excerpt = _clean_llm_output(exc.response_excerpt or "")
@@ -1335,7 +1430,24 @@ class DialogueEngine:
                     exc.output_tokens,
                 )
                 return excerpt
-            raise
+            return await self._client.complete_with_truncation_retry(
+                max_tokens=max_tokens,
+                system=system,
+                messages=messages,
+                step_key=step_key,
+                stage=stage,
+                prefer_fast=False,
+                allow_provider_fallback=True,
+                response_size_hint="small",
+                context_scope="task",
+                compression_policy="intent_parse" if step_key == "intent_parse" else "dialogue",
+                truncation_retry_attempts=1,
+                truncation_retry_increment=512,
+                truncation_retry_max_tokens=max(max_tokens, 2048),
+                timeout_retry_attempts=1,
+                timeout_retry_increment_s=30,
+                timeout_retry_max_s=120,
+            )
 
     def get_or_create_session(self, session_id: str, user_id: str) -> DialogueSession:
         if session_id not in _sessions:
@@ -1364,6 +1476,161 @@ class DialogueEngine:
             slots_updated=updated_slots,
             slot_fill_pct=session.slots.fill_pct(),
             ready_to_generate=session.state == DialogueState.confirmed,
+        )
+
+    async def analyze_turn(self, req: AnalyzeDialogueTurnRequest) -> AnalyzeDialogueTurnResponse:
+        if not self._client.is_enabled():
+            raise RuntimeError("Real LLM mode is required for dialogue analysis")
+
+        history = [
+            ConversationMessage(role=item.role, content=item.content)
+            for item in (req.conversation or [])
+        ]
+        session = DialogueSession(
+            session_id=req.session_id or "stateless",
+            user_id=req.user_id or "system",
+            state=DialogueState.clarifying,
+            slots=req.current_slots.model_copy(deep=True),
+            history=history,
+        )
+
+        skipped_slots = {
+            str(slot).strip()
+            for slot in (req.skipped_slots or [])
+            if str(slot).strip()
+        }
+
+        if req.advance_only:
+            updated_slots: list[str] = []
+        else:
+            updated_slots = await self._extract_slots_from_conversation(
+                session,
+                source_text=req.initial_prompt or _source_description_from_history(history),
+                title=req.title,
+            )
+
+        confidence_by_slot, evidence_by_slot, ambiguity_flags = _build_slot_confidence_report(
+            session.slots,
+            source_text=req.initial_prompt or _source_description_from_history(history),
+            title=req.title,
+            history=history,
+            updated_slots=updated_slots,
+        )
+        current_question, question_strategy = _build_dialogue_question(
+            session.slots,
+            skipped_slots=sorted(skipped_slots),
+            source_text=req.initial_prompt or _source_description_from_history(history),
+            entry_mode=req.entry_mode,
+            confidence_by_slot=confidence_by_slot,
+            ambiguity_flags=ambiguity_flags,
+        )
+        fill_pct = session.slots.fill_pct()
+        ready_to_generate = bool(fill_pct >= 0.67 or current_question is None)
+        plan_draft = _build_plan_draft(
+            session.slots,
+            source_text=req.initial_prompt or _source_description_from_history(history),
+            title=req.title,
+            generation_tier=req.generation_tier,
+            entry_mode=req.entry_mode,
+        )
+        question_reason = (
+            question_strategy.reason
+            if question_strategy and question_strategy.reason
+            else None
+        )
+        reply = _compose_creation_session_reply(
+            slots=session.slots,
+            current_question=current_question,
+            ready_to_generate=ready_to_generate,
+            source_text=req.initial_prompt or _source_description_from_history(history),
+            title=req.title,
+        )
+
+        return AnalyzeDialogueTurnResponse(
+            reply=reply,
+            slots=session.slots,
+            slots_updated=updated_slots,
+            missing_required=session.slots.missing_required(),
+            slot_fill_pct=fill_pct,
+            ready_to_generate=ready_to_generate,
+            current_question=current_question,
+            confidence_by_slot=confidence_by_slot,
+            evidence_by_slot=evidence_by_slot,
+            ambiguity_flags=ambiguity_flags,
+            next_best_question_reason=question_reason,
+            question_strategy=question_strategy,
+            plan_draft=plan_draft,
+        )
+
+    async def draft_plan_from_input(self, req: DraftPlanFromInputRequest) -> DraftPlanFromInputResponse:
+        slots = req.current_slots.model_copy(deep=True)
+        source_text = (req.source_description or "").strip()
+        title = (req.title or "").strip()
+        if source_text or title:
+            inferred = _normalize_slot_payload(
+                _infer_slots_from_text(" ".join(part for part in [title, source_text] if part))
+            )
+            explicit_theme = _infer_theme_from_context(title, source_text)
+            if not explicit_theme:
+                inferred.pop("theme", None)
+            for key, value in inferred.items():
+                if not getattr(slots, key, None) and value is not None:
+                    setattr(slots, key, value)
+
+        confidence_by_slot, evidence_by_slot, ambiguity_flags = _build_slot_confidence_report(
+            slots,
+            source_text=source_text,
+            title=title,
+            history=[],
+            updated_slots=[],
+        )
+        return DraftPlanFromInputResponse(
+            plan_draft=_build_plan_draft(
+                slots,
+                source_text=source_text,
+                title=title,
+                generation_tier=req.generation_tier,
+                entry_mode=req.entry_mode,
+            ),
+            confidence_by_slot=confidence_by_slot,
+            evidence_by_slot=evidence_by_slot,
+            ambiguity_flags=ambiguity_flags,
+        )
+
+    async def spec_from_slots(self, req: SpecFromSlotsRequest) -> SpecFromSlotsResponse:
+        slots = req.slots.model_copy(deep=True)
+        source_text = (req.source_description or "").strip()
+        title = (req.title or "").strip()
+        if source_text or title:
+            inferred = _infer_slots_from_text(" ".join(part for part in [title, source_text] if part))
+            normalized = _normalize_slot_payload(inferred)
+            for key, value in normalized.items():
+                if not getattr(slots, key, None) and value is not None:
+                    setattr(slots, key, value)
+
+        if not (slots.game_type or "").strip():
+            preferred = (req.preferred_game_type or "").strip()
+            if preferred:
+                slots.game_type = preferred
+            else:
+                slots.game_type = "casual"
+
+        spec = _build_game_spec(
+            slots,
+            source_description=source_text,
+            variation_seed=req.variation_seed or req.session_id,
+        )
+        spec.generation_tier = req.generation_tier
+        spec.complexity_budget = str(getattr(req.generation_tier, "value", req.generation_tier) or "standard")
+        if title:
+            if spec.intent_summary:
+                spec.intent_summary = f"{title}: {spec.intent_summary}"
+            if not spec.source_description:
+                spec.source_description = source_text
+        return SpecFromSlotsResponse(
+            spec=spec,
+            missing_required=slots.missing_required(),
+            slot_fill_pct=slots.fill_pct(),
         )
 
     async def slots_to_game_spec(self, session_id: str) -> GameSpec:
@@ -1451,13 +1718,22 @@ class DialogueEngine:
         )
 
         try:
-            reply = await self._client.complete(
+            reply = await self._client.complete_with_truncation_retry(
                 max_tokens=2048,
                 system=system,
                 messages=_history_to_messages(session.history),
                 step_key="dialogue.reply",
                 stage="dialogue",
                 prefer_fast=True,
+                response_size_hint="medium",
+                context_scope="task",
+                compression_policy="dialogue",
+                truncation_retry_attempts=1,
+                truncation_retry_increment=512,
+                truncation_retry_max_tokens=3072,
+                timeout_retry_attempts=1,
+                timeout_retry_increment_s=30,
+                timeout_retry_max_s=120,
             )
             reply = reply.strip()
         except Exception as exc:
@@ -1465,6 +1741,45 @@ class DialogueEngine:
             reply = _fallback_reply(session.state, session.slots)
 
         return reply, updated
+
+    async def _extract_slots_from_conversation(
+        self,
+        session: DialogueSession,
+        *,
+        source_text: str,
+        title: Optional[str] = None,
+    ) -> List[str]:
+        old_slots = session.slots.model_copy()
+        messages = _history_to_messages(session.history)
+        if not messages and source_text.strip():
+            messages = [{"role": "user", "content": source_text.strip()}]
+
+        slot_text = await self._complete_slot_request(
+            max_tokens=640,
+            system=_with_slot_json_contract(
+                require_prompt("prompt.slot_extraction_system")
+            ),
+            messages=messages,
+            step_key="dialogue.slot_extract",
+            stage="dialogue",
+        )
+        slot_data = await self._extract_slot_payload_with_repair(
+            raw_text=slot_text,
+            source_text=source_text,
+            step_key="dialogue.slot_extract",
+            stage="dialogue",
+            title=title,
+            variation_seed=session.session_id,
+        )
+
+        for key, value in slot_data.items():
+            if value is not None and hasattr(session.slots, key):
+                setattr(session.slots, key, value)
+
+        return [
+            key for key in SlotState.model_fields
+            if getattr(session.slots, key) != getattr(old_slots, key)
+        ]
 
     async def _extract_slot_payload_with_repair(
         self,
@@ -1478,17 +1793,43 @@ class DialogueEngine:
         preferred_game_type: Optional[str] = None,
         variation_seed: Optional[str] = None,
     ) -> Dict[str, Any]:
+        normalized_preferred_game_type = (
+            _normalize_game_type_label(
+                preferred_game_type,
+                source_text,
+                title or "",
+                raw_text,
+            )
+            if preferred_game_type
+            else None
+        )
         heuristic_slot_data = _normalize_slot_payload({
             **_infer_slots_from_text(raw_text),
             **_infer_slots_from_text(source_text),
             **_infer_slots_from_text(title or ""),
         })
+        if normalized_preferred_game_type:
+            heuristic_slot_data["game_type"] = normalized_preferred_game_type
         raw_slot_data = _normalize_slot_payload(_safe_parse_json(raw_text) or {})
         slot_data = _merge_slot_payloads(
             heuristic_slot_data,
             raw_slot_data,
         )
-        if raw_slot_data and _has_minimum_viable_slot_payload(slot_data):
+        raw_explicit_game_type = (
+            _normalize_game_type_label(
+                str(raw_slot_data.get("game_type") or ""),
+                source_text,
+                title or "",
+                raw_text,
+            )
+            if raw_slot_data.get("game_type")
+            else None
+        )
+        if raw_explicit_game_type:
+            slot_data["game_type"] = raw_explicit_game_type
+        elif normalized_preferred_game_type:
+            slot_data["game_type"] = normalized_preferred_game_type
+        if raw_slot_data and _has_minimum_viable_slot_payload(raw_slot_data):
             return slot_data
 
         repair_input = require_prompt("prompt.slot_json_repair_user_template").format(
@@ -1508,8 +1849,52 @@ class DialogueEngine:
             heuristic_slot_data,
             _normalize_slot_payload(_safe_parse_json(repaired_text) or {}),
         )
+        repaired_explicit_game_type = (
+            _normalize_game_type_label(
+                str(repaired_slot_data.get("game_type") or ""),
+                source_text,
+                title or "",
+                raw_text,
+                repaired_text,
+            )
+            if repaired_slot_data.get("game_type")
+            else None
+        )
+        if repaired_explicit_game_type:
+            repaired_slot_data["game_type"] = repaired_explicit_game_type
+        elif normalized_preferred_game_type:
+            repaired_slot_data["game_type"] = normalized_preferred_game_type
+        if allow_fallback and _looks_like_sparse_request(source_text):
+            repaired_slot_data = _merge_slot_payloads(
+                _build_sparse_slot_fallback(
+                    source_text=source_text,
+                    title=title,
+                    raw_text=raw_text,
+                    repaired_text=repaired_text,
+                    preferred_game_type=normalized_preferred_game_type,
+                    variation_seed=variation_seed,
+                ),
+                repaired_slot_data,
+            )
         if _has_minimum_viable_slot_payload(repaired_slot_data):
             return repaired_slot_data
+
+        if allow_fallback and _looks_like_sparse_request(source_text):
+            fallback_slot_data = _build_sparse_slot_fallback(
+                source_text=source_text,
+                title=title,
+                raw_text=raw_text,
+                repaired_text=repaired_text,
+                preferred_game_type=normalized_preferred_game_type,
+                variation_seed=variation_seed,
+            )
+            merged_heuristic_fallback = _merge_slot_payloads(fallback_slot_data, heuristic_slot_data)
+            if _has_minimum_viable_slot_payload(merged_heuristic_fallback):
+                logger.warning(
+                    "LLM slot extraction repair failed; enriching heuristic sparse inference for source=%s",
+                    source_text[:120],
+                )
+                return merged_heuristic_fallback
 
         if heuristic_slot_data.get("game_type"):
             logger.warning(
@@ -1524,7 +1909,7 @@ class DialogueEngine:
                 title=title,
                 raw_text=raw_text,
                 repaired_text=repaired_text,
-                preferred_game_type=preferred_game_type,
+                preferred_game_type=normalized_preferred_game_type,
                 variation_seed=variation_seed,
             )
             merged_fallback_slot_data = _merge_slot_payloads(fallback_slot_data, repaired_slot_data)
@@ -1540,7 +1925,7 @@ class DialogueEngine:
             diagnostics={
                 "sourceText": source_text,
                 "title": title,
-                "preferredGameType": preferred_game_type,
+                "preferredGameType": normalized_preferred_game_type,
                 "rawParserOutput": _clean_llm_output(raw_text),
                 "repairedParserOutput": _clean_llm_output(repaired_text),
                 "heuristicSlotData": heuristic_slot_data,
@@ -1618,6 +2003,15 @@ def _build_game_spec(
         effects=visual_variant["effects"],
     )
     intent_summary = (slots.core_mechanic or defaults.get("core_mechanic", "")).strip()
+    quality_fields = _derive_quality_spec_fields(
+        game_type=game_type,
+        source_description=normalized_description,
+        ui_language=ui_language,
+        theme=visual_variant["theme"],
+        mechanic=intent_summary,
+        art_style=visual_variant["art_style"],
+        slots=slots,
+    )
     special_rules = [
         re.sub(r"\s+", " ", str(rule).strip())
         for rule in (slots.special_rules or [])
@@ -1636,12 +2030,140 @@ def _build_game_spec(
         visual_style=visual,
         audio_style=slots.audio_style or "none",
         difficulty_curve=slots.difficulty or "progressive",
+        **quality_fields,
         special_rules=special_rules,
         reference_game=reference_game,
         platform_constraints=PlatformConstraints(
             input_mode=slots.input_method or defaults.get("input_method", "touch"),
         ),
     )
+
+
+def _derive_quality_spec_fields(
+    *,
+    game_type: str,
+    source_description: str,
+    ui_language: str,
+    theme: str,
+    mechanic: str,
+    art_style: str,
+    slots: SlotState,
+) -> Dict[str, Any]:
+    zh = ui_language == "zh-CN"
+    normalized = _normalize_free_text(source_description)
+    session_length_defaults = {
+        "casual": "short_bursts",
+        "puzzle": "short_stages",
+        "educational": "guided_mini_sessions",
+        "funny": "rapid_sketch_rounds",
+    }
+    progression_defaults = {
+        "casual": "score_chase",
+        "puzzle": "level_ladder",
+        "educational": "lesson_steps",
+        "funny": "escalating_gags",
+    }
+    reward_defaults_zh = {
+        "casual": "通过分数提升、收集反馈和短回合连胜获得满足感。",
+        "puzzle": "通过解开下一步、清盘和关卡推进获得持续奖励。",
+        "educational": "通过即时纠错、知识点强化和阶段完成获得正反馈。",
+        "funny": "通过连续笑点、反转触发和夸张演出获得奖励感。",
+    }
+    reward_defaults_en = {
+        "casual": "Keep the player engaged with quick score climbs, pickups, and short win streaks.",
+        "puzzle": "Reward each solve step with clearer board progress and level advancement.",
+        "educational": "Reinforce learning through immediate correctness feedback and visible milestone progress.",
+        "funny": "Reward the player with escalating punchlines, reversals, and expressive payoffs.",
+    }
+    target_audience = (
+        "students"
+        if game_type == "educational"
+        else "office meme players"
+        if _contains_any_marker(normalized, ["office", "work", "boss", "上班", "办公室", "老板"])
+        else "mobile casual players"
+    )
+    tone = (
+        "light and playful"
+        if game_type == "casual"
+        else "curious and rewarding"
+        if game_type == "puzzle"
+        else "encouraging and clear"
+        if game_type == "educational"
+        else "absurd and punchy"
+    )
+    if zh:
+        target_audience = (
+            "课堂学习者"
+            if game_type == "educational"
+            else "职场梗用户"
+            if _contains_any_marker(normalized, ["office", "work", "boss", "上班", "办公室", "老板"])
+            else "泛移动休闲玩家"
+        )
+        tone = (
+            "轻快有参与感"
+            if game_type == "casual"
+            else "清晰、解题反馈强"
+            if game_type == "puzzle"
+            else "鼓励式、讲解清楚"
+            if game_type == "educational"
+            else "荒诞、有梗、反转快"
+        )
+
+    teaching_mode = None
+    if game_type == "educational":
+        if _contains_any_marker(normalized, ["quiz", "question", "测验", "问答", "练习题"]):
+            teaching_mode = "guided_quiz"
+        elif _contains_any_marker(normalized, ["experiment", "lab", "实验", "操作"]):
+            teaching_mode = "interactive_experiment"
+        else:
+            teaching_mode = "guided_exploration"
+
+    comedy_device = None
+    if game_type == "funny":
+        if _contains_any_marker(normalized, ["boss", "巡查", "老板", "抓包"]):
+            comedy_device = "near_miss_reversal"
+        elif _contains_any_marker(normalized, ["mistake", "误会", "尴尬"]):
+            comedy_device = "awkward_escalation"
+        else:
+            comedy_device = "surprise_punchline"
+
+    signature_moment = (
+        _plan_signature_moment(game_type, theme, mechanic, zh)
+        if not getattr(slots, "reference_game", None)
+        else (
+            f"做出一个向“{slots.reference_game}”致敬、但更适合当前主题的高光时刻。"
+            if zh else
+            f"Create one standout payoff that nods to {slots.reference_game} while fitting this theme."
+        )
+    )
+
+    design_goals = (
+        [
+            f"让玩家在 10 秒内理解“{mechanic or '核心玩法'}”。",
+            f"通过 {theme} 主题建立第一眼识别度。",
+            "确保每一轮都有明确的目标反馈和下一步驱动力。",
+        ]
+        if zh else
+        [
+            f"Teach the core loop of {mechanic or 'the main mechanic'} within the first 10 seconds.",
+            f"Use the {theme} framing to create instant visual recognition.",
+            "Give every round a clear payoff plus an obvious next action.",
+        ]
+    )
+
+    return {
+        "session_length": session_length_defaults.get(game_type, "short_bursts"),
+        "progression_shape": progression_defaults.get(game_type, "score_chase"),
+        "reward_loop": (reward_defaults_zh if zh else reward_defaults_en).get(game_type, ""),
+        "signature_moment": signature_moment,
+        "target_audience": target_audience,
+        "tone": tone,
+        "reference_style": (slots.visual_style or art_style or "").strip() or None,
+        "complexity_budget": "standard",
+        "teaching_mode": teaching_mode,
+        "comedy_device": comedy_device,
+        "design_goals": design_goals,
+    }
 
 
 def _history_to_messages(history: List[ConversationMessage]) -> List[Dict[str, str]]:
@@ -1657,6 +2179,531 @@ def _format_slot_summary(slots: SlotState) -> str:
     return "\n".join(lines)
 
 
+def _build_slot_confidence_report(
+    slots: SlotState,
+    *,
+    source_text: str = "",
+    title: Optional[str] = None,
+    history: Optional[List[ConversationMessage]] = None,
+    updated_slots: Optional[List[str]] = None,
+) -> Tuple[Dict[str, float], Dict[str, str], List[str]]:
+    history = history or []
+    updated_slots = updated_slots or []
+    combined_text = " ".join(
+        part
+        for part in [title or "", source_text, *(item.content for item in history[-6:])]
+        if str(part or "").strip()
+    )
+    language = _detect_ui_language(combined_text)
+    zh = language.startswith("zh")
+    confidence: Dict[str, float] = {}
+    evidence: Dict[str, str] = {}
+    ambiguity_flags: List[str] = []
+
+    for field in ["game_type", "core_mechanic", "theme", "input_method", "win_condition", "difficulty"]:
+        value = getattr(slots, field, None)
+        score, evidence_text, ambiguous = _score_slot_confidence(
+            field,
+            value,
+            combined_text,
+            updated=field in updated_slots,
+            zh=zh,
+        )
+        confidence[field] = score
+        if evidence_text:
+            evidence[field] = evidence_text
+        if value is None or str(value).strip() == "":
+            ambiguity_flags.append(f"{field}:missing")
+        elif ambiguous:
+            ambiguity_flags.append(f"{field}:ambiguous")
+        elif score < 0.72:
+            ambiguity_flags.append(f"{field}:low_confidence")
+
+    return confidence, evidence, ambiguity_flags
+
+
+def _score_slot_confidence(
+    field: str,
+    value: Any,
+    text: str,
+    *,
+    updated: bool,
+    zh: bool,
+) -> Tuple[float, str, bool]:
+    value_text = ""
+    if isinstance(value, list):
+        value_text = " ".join(str(item).strip() for item in value if str(item).strip())
+    else:
+        value_text = str(value or "").strip()
+    if not value_text:
+        return 0.0, ("尚未明确" if zh else "Missing from the current brief."), False
+
+    lowered_text = text.lower()
+    explicit_terms = _slot_evidence_terms(field, value_text)
+    matched_term = next((term for term in explicit_terms if term and term.lower() in lowered_text), None)
+    base = 0.38
+    ambiguous = False
+
+    if matched_term:
+        base = 0.88
+    elif field == "game_type":
+        explicit_type = _infer_explicit_game_type(text)
+        if explicit_type == value_text:
+            base = 0.82
+        else:
+            base = 0.58
+            ambiguous = explicit_type is not None and explicit_type != value_text
+    elif field == "input_method":
+        input_hint = _infer_input_method_from_text(text)
+        if input_hint and input_hint == value_text:
+            base = 0.84
+        elif input_hint and input_hint != value_text:
+            base = 0.44
+            ambiguous = True
+        else:
+            base = 0.52
+    elif field == "difficulty":
+        difficulty_hint = _infer_difficulty_from_text(text)
+        if difficulty_hint and difficulty_hint == value_text:
+            base = 0.8
+        elif difficulty_hint and difficulty_hint != value_text:
+            base = 0.4
+            ambiguous = True
+        else:
+            base = 0.42
+    elif field == "theme":
+        base = 0.78 if matched_term else 0.56
+    elif field == "win_condition":
+        base = 0.78 if matched_term else 0.46
+    elif field == "core_mechanic":
+        base = 0.8 if matched_term else 0.6
+
+    if updated:
+        base += 0.04
+
+    base = max(0.0, min(base, 0.97))
+    if matched_term:
+        evidence = (
+            f"提到了“{matched_term}”，和当前{SLOT_LABELS.get(field, field)}一致。"
+            if zh
+            else f'Mentioned "{matched_term}", which matches the current {SLOT_LABELS.get(field, field)}.'
+        )
+    elif ambiguous:
+        evidence = (
+            "当前对话里出现了可能冲突的线索，系统先按更强信号做了归纳。"
+            if zh
+            else "The current brief contains conflicting hints, so this slot is only a best-effort guess."
+        )
+    else:
+        evidence = (
+            "主要根据当前创意和上下文做了推断。"
+            if zh
+            else "Mainly inferred from the current idea and surrounding context."
+        )
+    return round(base, 3), evidence, ambiguous
+
+
+def _slot_evidence_terms(field: str, value_text: str) -> List[str]:
+    normalized = value_text.lower()
+    if field == "game_type":
+        marker_map = {
+            "casual": CASUAL_REQUEST_MARKERS,
+            "puzzle": PUZZLE_REQUEST_MARKERS,
+            "educational": EDUCATIONAL_REQUEST_MARKERS,
+            "funny": FUNNY_REQUEST_MARKERS,
+        }
+        return list(marker_map.get(normalized, (value_text,)))
+    if field == "input_method":
+        marker_map = {
+            "tap": ("tap", "click", "点击", "点按"),
+            "touch": ("touch", "tap", "点击", "触屏"),
+            "swipe": ("swipe", "slide", "滑动", "滑屏"),
+            "drag": ("drag", "拖拽", "拖动"),
+        }
+        return list(marker_map.get(normalized, (value_text,)))
+    if field == "difficulty":
+        marker_map = {
+            "easy": ("easy", "casual", "轻松", "简单", "休闲"),
+            "medium": ("medium", "standard", "标准", "普通"),
+            "hard": ("hard", "challenging", "困难", "硬核"),
+            "progressive": ("progressive", "ramp", "越来越难", "逐步变难"),
+        }
+        return list(marker_map.get(normalized, (value_text,)))
+    value_terms = [
+        token.strip()
+        for token in re.split(r"[\s,，、/]+", value_text)
+        if token.strip()
+    ]
+    value_terms.append(value_text)
+    return sorted(set(term for term in value_terms if len(term) >= 2), key=len, reverse=True)
+
+
+def _infer_explicit_game_type(text: str) -> Optional[str]:
+    lowered = text.lower()
+    marker_map = {
+        "funny": FUNNY_REQUEST_MARKERS,
+        "educational": EDUCATIONAL_REQUEST_MARKERS,
+        "puzzle": PUZZLE_REQUEST_MARKERS,
+        "casual": CASUAL_REQUEST_MARKERS,
+    }
+    for game_type, markers in marker_map.items():
+        if any(marker.lower() in lowered for marker in markers):
+            return game_type
+    return None
+
+
+def _infer_input_method_from_text(text: str) -> Optional[str]:
+    lowered = text.lower()
+    marker_map = {
+        "drag": ("drag", "拖拽", "拖动"),
+        "swipe": ("swipe", "slide", "滑动", "滑屏"),
+        "tap": ("tap", "click", "点击", "点按"),
+        "touch": ("touch", "触屏"),
+    }
+    for input_method, markers in marker_map.items():
+        if any(marker.lower() in lowered for marker in markers):
+            return input_method
+    return None
+
+
+def _infer_difficulty_from_text(text: str) -> Optional[str]:
+    lowered = text.lower()
+    marker_map = {
+        "easy": ("easy", "casual", "轻松", "简单", "休闲"),
+        "medium": ("medium", "standard", "标准", "普通"),
+        "hard": ("hard", "challenging", "困难", "硬核"),
+        "progressive": ("progressive", "越来越难", "逐步变难", "ramp"),
+    }
+    for difficulty, markers in marker_map.items():
+        if any(marker.lower() in lowered for marker in markers):
+            return difficulty
+    return None
+
+
+def _build_plan_draft(
+    slots: SlotState,
+    *,
+    source_text: str = "",
+    title: Optional[str] = None,
+    generation_tier: str = "standard",
+    entry_mode: str = "create",
+) -> PlanDraft:
+    language = _detect_ui_language(" ".join(part for part in [title or "", source_text] if part))
+    zh = language.startswith("zh")
+    game_type = str(slots.game_type or "casual").strip() or "casual"
+    game_type_label = _localized_game_type_name(game_type, zh)
+    theme = str(
+        slots.theme
+        or _infer_theme_from_context(title or "", source_text)
+        or (title or "").strip()
+        or ("创意世界" if zh else "a clear world")
+    ).strip()
+    mechanic = str(
+        slots.core_mechanic
+        or (
+            "一个直观、反馈快的主交互"
+            if zh else
+            "one readable main interaction with immediate feedback"
+        )
+    ).strip()
+    objective = str(
+        slots.win_condition
+        or (
+            "完成一轮短局目标"
+            if zh else
+            "finish a short round objective"
+        )
+    ).strip()
+    input_method = str(slots.input_method or ("触屏" if zh else "touch controls")).strip()
+    visual_style = str(slots.visual_style or ("鲜明移动端风格" if zh else "a bold mobile-first look")).strip()
+    title_value = (title or "").strip() or _plan_title_fallback(game_type, theme, zh)
+    pacing = _plan_pacing_text(game_type, slots.difficulty, generation_tier, entry_mode, zh)
+    visual_direction = (
+        f"以{theme}为主场景，整体视觉偏{visual_style}，强调移动端可读性和记忆点。"
+        if zh else
+        f"Set it in {theme} with a {visual_style} presentation that still reads clearly on mobile."
+    )
+    signature_moment = _plan_signature_moment(game_type, theme, mechanic, zh)
+    summary = (
+        f"这是一款{game_type_label}，围绕“{mechanic}”展开，在“{theme}”设定下，玩家通过{input_method}操作去{objective}。"
+        if zh else
+        f"This is a {game_type_label} game built around {mechanic}, set in {theme}, where the player uses {input_method} to {objective}."
+    )
+    concept = (
+        f"把“{(title or '').strip() or theme}”这个创意包装成一局上手快、目标清晰的{game_type_label}体验。"
+        if zh else
+        f"Package {(title or '').strip() or theme} into a {game_type_label} experience that is easy to grasp and has a clear objective."
+    )
+    interaction = (
+        f"核心交互是“{mechanic}”，输入方式以{input_method}为主，保证玩家每 3 到 5 秒都能获得一次明确反馈。"
+        if zh else
+        f"The core interaction is {mechanic}, primarily controlled through {input_method}, with clear feedback every few seconds."
+    )
+
+    return PlanDraft(
+        title=title_value,
+        summary=summary,
+        concept=concept,
+        interaction=interaction,
+        objective=objective,
+        pacing=pacing,
+        visual_direction=visual_direction,
+        signature_moment=signature_moment,
+    )
+
+
+def _localized_game_type_name(game_type: str, zh: bool) -> str:
+    mapping = {
+        "casual": "休闲小游戏" if zh else "casual mobile game",
+        "puzzle": "益智小游戏" if zh else "puzzle mobile game",
+        "educational": "教育小游戏" if zh else "educational mobile game",
+        "funny": "搞笑小游戏" if zh else "comedic mobile game",
+    }
+    return mapping.get(game_type, game_type)
+
+
+def _plan_title_fallback(game_type: str, theme: str, zh: bool) -> str:
+    if zh:
+        prefix = {
+            "casual": "灵感挑战",
+            "puzzle": "谜题实验室",
+            "educational": "知识小挑战",
+            "funny": "整活现场",
+        }.get(game_type, "创意小游戏")
+        return f"{prefix}·{theme}"
+    prefix = {
+        "casual": "Arcade Spark",
+        "puzzle": "Puzzle Lab",
+        "educational": "Learning Quest",
+        "funny": "Comedy Jam",
+    }.get(game_type, "Creative Game")
+    return f"{prefix}: {theme}"
+
+
+def _plan_pacing_text(
+    game_type: str,
+    difficulty: Optional[str],
+    generation_tier: str,
+    entry_mode: str,
+    zh: bool,
+) -> str:
+    difficulty = str(difficulty or "progressive").strip() or "progressive"
+    if zh:
+        base = {
+            "casual": "短局快反馈，玩家很快就能进入循环并看到分数或进度变化。",
+            "puzzle": "每局都要快速进入题面，再逐步制造“差一步就成功”的解题张力。",
+            "educational": "用短回合和即时纠错保证学习节奏，避免信息灌输感。",
+            "funny": "以短局和高密度笑点推进，让每个回合都像一个小段子。",
+        }.get(game_type, "保持移动端友好的短局节奏。")
+        tier_line = {
+            "safe": "整体结构保持克制，优先保证上手顺滑。",
+            "standard": "节奏上增加一层递进或阶段变化，让游戏更完整。",
+            "showcase": "加入更明显的阶段推进、高潮时刻和演出反馈，形成更像成品的节奏。",
+        }.get(str(generation_tier or "standard"), "")
+        mode_line = "如果是基于已有作品继续优化，优先围绕本次改动目标集中打磨。" if entry_mode in {"fork", "iterate"} else ""
+        diff_line = f"难度目标偏“{difficulty}”。"
+        return " ".join(part for part in [base, tier_line, mode_line, diff_line] if part)
+
+    base = {
+        "casual": "Keep the session short and punchy so the player quickly enters the loop and sees visible progress.",
+        "puzzle": "Start each round quickly, then build tension around the final few moves.",
+        "educational": "Use short rounds and immediate correction so the learning rhythm stays light.",
+        "funny": "Drive the experience with short rounds and a dense cadence of comedic beats.",
+    }.get(game_type, "Keep the pacing readable and mobile-friendly.")
+    tier_line = {
+        "safe": "Stay conservative and prioritize a smooth first-play experience.",
+        "standard": "Add one extra layer of progression or phase changes so the game feels fuller.",
+        "showcase": "Add clearer phase transitions, highlight moments, and stronger presentation beats.",
+    }.get(str(generation_tier or "standard"), "")
+    mode_line = "Since this starts from an existing game, focus the pacing around the requested change." if entry_mode in {"fork", "iterate"} else ""
+    diff_line = f"Target difficulty: {difficulty}."
+    return " ".join(part for part in [base, tier_line, mode_line, diff_line] if part)
+
+
+def _plan_signature_moment(game_type: str, theme: str, mechanic: str, zh: bool) -> str:
+    if zh:
+        mapping = {
+            "casual": f"在{theme}主题里，让“{mechanic}”触发一次明显的连击、险胜或收集高潮。",
+            "puzzle": "制造一个只差一步就解开的关键盘面，让玩家记住破解瞬间。",
+            "educational": "把关键知识点变成一次“答对就立刻被点亮/解锁”的高光时刻。",
+            "funny": f"把“{mechanic}”做成一次夸张反转或连锁笑点，让玩家愿意分享。",
+        }
+        return mapping.get(game_type, "安排一个足够清晰、值得记住的高光时刻。")
+    mapping = {
+        "casual": f"Turn {mechanic} into a clear combo, clutch dodge, or collection spike inside the {theme} theme.",
+        "puzzle": "Create a final near-solved board state that makes the breakthrough memorable.",
+        "educational": "Turn the key learning beat into an immediate unlock or reveal moment.",
+        "funny": f"Use {mechanic} to trigger an exaggerated reversal or comedic chain reaction.",
+    }
+    return mapping.get(game_type, "Create one obvious signature moment the player can remember.")
+
+
+def _build_dialogue_question(
+    slots: SlotState,
+    *,
+    skipped_slots: Optional[List[str]] = None,
+    source_text: str = "",
+    entry_mode: str = "create",
+    confidence_by_slot: Optional[Dict[str, float]] = None,
+    ambiguity_flags: Optional[List[str]] = None,
+) -> Tuple[Optional[DialogueQuestion], Optional[QuestionStrategy]]:
+    skipped = {
+        str(item).strip()
+        for item in (skipped_slots or [])
+        if str(item).strip()
+    }
+    confidence_by_slot = confidence_by_slot or {}
+    ambiguity_flags = ambiguity_flags or []
+    best_slot: Optional[str] = None
+    best_score = -1.0
+    best_mode = "missing_required"
+    best_confidence = 0.0
+    best_ambiguity_weight = 0.0
+    language = _detect_ui_language(source_text or " ".join(
+        str(getattr(slots, field, "") or "")
+        for field in ["theme", "core_mechanic", "win_condition"]
+    ))
+    zh = language.startswith("zh")
+    for slot_key in ["core_mechanic", "win_condition", "input_method", "theme", "game_type", "difficulty"]:
+        if slot_key in skipped:
+            continue
+        value = getattr(slots, slot_key, None)
+        missing = value is None or str(value).strip() == ""
+        confidence = float(confidence_by_slot.get(slot_key, 0.0 if missing else 0.5))
+        ambiguity_weight = 0.25 if any(flag.startswith(f"{slot_key}:") for flag in ambiguity_flags) else 0.0
+        impact = SLOT_IMPACT_WEIGHTS.get(slot_key, 0.4) + ENTRY_MODE_SLOT_BIAS.get(entry_mode, {}).get(slot_key, 0.0)
+        if missing:
+            score = impact + 0.45 + ambiguity_weight
+            mode = "missing_required"
+        else:
+            threshold = 0.72 if slot_key in {"core_mechanic", "win_condition", "input_method", "game_type"} else 0.64
+            if confidence >= threshold:
+                continue
+            score = impact + max(0.0, threshold - confidence) + ambiguity_weight
+            mode = "ambiguity_resolution" if ambiguity_weight > 0 else "low_confidence"
+        if score > best_score:
+            best_score = score
+            best_slot = slot_key
+            best_mode = mode
+            best_confidence = confidence
+            best_ambiguity_weight = ambiguity_weight
+
+    if not best_slot:
+        return None, None
+
+    slot_key = best_slot
+    prompts = {
+        "game_type": (
+            "这个游戏更偏休闲、益智、教育还是搞笑？",
+            "Game Type",
+        ),
+        "core_mechanic": (
+            "玩家在这个游戏里最核心、最常做的操作是什么？",
+            "Core Mechanic",
+        ),
+        "theme": (
+            "你希望游戏呈现什么主题、世界观或情境？",
+            "Theme",
+        ),
+        "input_method": (
+            "玩家主要通过点击、滑动还是拖拽来操作？",
+            "Input Method",
+        ),
+        "win_condition": (
+            "这一局里玩家怎样算赢，或者达成了什么目标？",
+            "Win Condition",
+        ),
+        "difficulty": (
+            "整体难度你更想要轻松、标准还是逐步变难？",
+            "Difficulty",
+        ),
+    }
+    en_prompts = {
+        "game_type": ("Should this feel more casual, puzzle, educational, or funny?", "Game Type"),
+        "core_mechanic": ("What is the main thing the player does most of the time?", "Core Mechanic"),
+        "theme": ("What theme, world, or situation should the game use?", "Theme"),
+        "input_method": ("Should the player mainly tap, swipe, or drag?", "Input Method"),
+        "win_condition": ("What counts as winning or clearing the round?", "Win Condition"),
+        "difficulty": ("Should the difficulty feel easy, standard, or progressively harder?", "Difficulty"),
+    }
+    prompt, label = (prompts if zh else en_prompts).get(slot_key, (
+        "请再补充一个关键设定。",
+        SLOT_LABELS.get(slot_key, slot_key),
+    ))
+    if zh:
+        if best_mode == "missing_required":
+            reason = f"因为“{label}”会直接决定玩法能否成型，而当前还没有明确答案。"
+        elif best_mode == "ambiguity_resolution":
+            reason = f"因为“{label}”目前存在歧义，我想先把方向锁准，避免后续生成跑偏。"
+        else:
+            reason = f"因为“{label}”会明显影响生成质量，但当前把握度只有 {round(best_confidence * 100)}%。"
+    else:
+        if best_mode == "missing_required":
+            reason = f'I am asking about "{label}" because it directly shapes the game and is still missing.'
+        elif best_mode == "ambiguity_resolution":
+            reason = f'I am asking about "{label}" because there are conflicting hints and I want to lock the direction before generation.'
+        else:
+            reason = f'I am asking about "{label}" because it strongly affects quality and the current confidence is only {round(best_confidence * 100)}%.'
+
+    return (
+        DialogueQuestion(
+            slot_key=slot_key,
+            label=label,
+            prompt=prompt,
+            skippable=True,
+        ),
+        QuestionStrategy(
+            mode=best_mode,
+            slot_key=slot_key,
+            reason=reason,
+            impact=round(max(0.0, min(SLOT_IMPACT_WEIGHTS.get(slot_key, 0.4), 1.5)), 3),
+            confidence=round(max(0.0, min(best_confidence, 1.0)), 3),
+            ambiguity_weight=round(max(0.0, min(best_ambiguity_weight, 1.0)), 3),
+        ),
+    )
+
+
+def _compose_creation_session_reply(
+    *,
+    slots: SlotState,
+    current_question: Optional[DialogueQuestion],
+    ready_to_generate: bool,
+    source_text: str = "",
+    title: Optional[str] = None,
+) -> str:
+    language = _detect_ui_language(" ".join(part for part in [title or "", source_text] if part))
+    zh = language.startswith("zh")
+    summary_bits = [
+        str(slots.game_type or "").strip(),
+        str(slots.theme or "").strip(),
+        str(slots.core_mechanic or "").strip(),
+    ]
+    compact_summary = " / ".join(bit for bit in summary_bits if bit) or ("这款游戏" if zh else "this game")
+
+    if ready_to_generate and current_question:
+        if zh:
+            return (
+                f"我已经整理出一版可以开始生成的方案了，目前方向是：{compact_summary}。"
+                f"如果你愿意继续打磨，我还想确认一个点：{current_question.prompt}"
+            )
+        return (
+            f"I already have a solid draft for generation: {compact_summary}. "
+            f"If you want to refine it a bit more, one helpful detail is: {current_question.prompt}"
+        )
+
+    if ready_to_generate:
+        if zh:
+            return f"我已经整理出一版可生成方案了，当前方向是：{compact_summary}。如果满意，可以直接开始创作。"
+        return f"I have enough to generate a strong first version: {compact_summary}. You can start creating now."
+
+    if current_question:
+        if zh:
+            return f"我先补一个最关键的信息：{current_question.prompt}"
+        return f"Let me lock one key detail first: {current_question.prompt}"
+
+    return "请再补充一点你想要的游戏方向。" if zh else "Tell me one more thing about the direction you want."
+
+
 def _fallback_reply(state: DialogueState, slots: SlotState) -> str:
     missing = slots.missing_required()
     if state == DialogueState.greeting:
@@ -1669,7 +2716,7 @@ def _fallback_reply(state: DialogueState, slots: SlotState) -> str:
         )
     next_field = missing[0]
     prompts = {
-        "game_type": "What kind of game is it: runner, puzzle, RPG, shooter, or something else?",
+        "game_type": "What kind of game is it: casual, puzzle, educational, funny, or another light mobile-friendly direction?",
         "core_mechanic": "What does the player do most of the time?",
         "theme": "What theme or world should the game use?",
         "input_method": "How should the player control it on mobile?",

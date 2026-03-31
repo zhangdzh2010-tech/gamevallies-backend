@@ -1204,7 +1204,7 @@ const SEED_GAMES = [
     slug: 'seed-space-shooter',
     title: '太空射击',
     description: '紧张刺激的太空射击游戏！驾驶飞船消灭来袭的外星舰队，躲避子弹，升级武器。你能守住地球吗？',
-    gameType: 'action',
+    gameType: 'casual',
     tags: ['动作', '射击', '太空'],
     platform: 'desktop',
     qualityScore: 9.3,
@@ -1233,7 +1233,7 @@ const SEED_GAMES = [
     slug: 'seed-fruit-ninja',
     title: '水果忍者',
     description: '手指滑动切开飞来的水果，小心别碰到炸弹！连切多个水果触发连击加分。60秒内追求最高分，体验畅快的切割快感！',
-    gameType: 'action',
+    gameType: 'casual',
     tags: ['动作', '滑动', '反应', '休闲'],
     platform: 'mobile',
     qualityScore: 9.4,
@@ -1338,7 +1338,7 @@ const SEED_GAMES = [
     description:
       '赛博朋克风重力翻转平台跳跃！点击屏幕切换重力方向，躲避障碍物。' +
       '10个精心设计关卡，3星收集系统，连击加分，挑战最快通关时间！',
-    gameType: 'action',
+    gameType: 'casual',
     tags: ['动作', '平台跳跃', '物理', '关卡', '挑战'],
     platform: 'mobile',
     qualityScore: 9.3,
@@ -1354,7 +1354,7 @@ const SEED_GAMES = [
     description:
       '太空采矿资源管理！采集4种稀有矿石，返回基地升级飞船。' +
       '4大升级系统，躲避陨石雨、太空海盗和黑洞，日夜交替影响资源分布！',
-    gameType: 'action',
+    gameType: 'casual',
     tags: ['动作', '资源管理', '太空', '升级', '生存'],
     platform: 'mobile',
     qualityScore: 9.2,

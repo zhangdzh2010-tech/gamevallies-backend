@@ -21,7 +21,7 @@ def test_resolver_merges_system_prompt_bundle_and_runtime_profile_sources():
         "bundle.repair.forbidden_api": "FORBIDDEN_REPAIR_FROM_SYSTEM",
         "bundle.repair.runtime_startup": "STARTUP_REPAIR_FROM_SYSTEM",
         "bundle.repair.generic": "GENERIC_REPAIR_FROM_SYSTEM",
-        "bundle.runtime.profile.lane_runner": "PROFILE_FROM_SYSTEM",
+        "bundle.runtime.profile.casual_lane": "PROFILE_FROM_SYSTEM",
     }
 
     bundle_row = {
@@ -38,16 +38,13 @@ def test_resolver_merges_system_prompt_bundle_and_runtime_profile_sources():
         },
     }
     runtime_profile_row = {
-        "id": "lane_runner",
+        "id": "casual_lane",
         "few_shot_prompt": "PROFILE_FROM_RUNTIME_PROFILE_TABLE",
     }
 
     with patch(
         "src.engine.prompt_bundle_resolver.get_prompt",
         side_effect=lambda key: prompt_map.get(key),
-    ), patch(
-        "src.engine.prompt_bundle_resolver.require_prompt",
-        side_effect=lambda key: prompt_map[key],
     ), patch(
         "src.engine.prompt_bundle_resolver.get_prompt_bundle",
         return_value=bundle_row,
@@ -57,7 +54,7 @@ def test_resolver_merges_system_prompt_bundle_and_runtime_profile_sources():
     ):
         resolved = resolve_prompt_bundle_snapshot(
             PromptBundleSnapshot(bundle_id="runtime-v1", bundle_version=1, layers={}),
-            runtime_profile="lane_runner",
+            runtime_profile="casual_lane",
         )
 
     resolved_prompts = resolved.layers["resolved_prompts"]

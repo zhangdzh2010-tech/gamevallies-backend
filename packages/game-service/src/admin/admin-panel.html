@@ -79,6 +79,7 @@ a{color:#2563eb;text-decoration:none}
 .btn-success{background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0}
 .btn-warning{background:#fffbeb;color:#d97706;border:1px solid #fde68a}
 .btn-sm{padding:5px 10px;font-size:12px}
+.btn:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
 
 /* Table */
 .table-wrap{background:#fff;border-radius:10px;border:1px solid #e5e7eb;overflow:hidden}
@@ -432,6 +433,28 @@ tbody tr:hover{background:#f8fafc}
 .abtn-delete:hover{background:#fee2e2}
 .abtn-edit{background:#f1f5f9;color:#475569;border-color:#e2e8f0}
 .abtn-edit:hover{background:#e2e8f0}
+.games-batch-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:14px 18px;border-bottom:1px solid #e2e8f0;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%)}
+.games-batch-summary{font-size:12px;color:#64748b;line-height:1.7}
+.games-batch-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.games-cover-cell{display:flex;align-items:center;gap:12px;min-width:0}
+.games-cover-thumb{width:56px;height:56px;border-radius:14px;border:1px solid #dbe4f0;background:linear-gradient(135deg,#eff6ff 0%,#eef2ff 50%,#f5f3ff 100%);box-shadow:0 8px 18px rgba(15,23,42,.08);overflow:hidden;display:flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer}
+.games-cover-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.games-cover-empty{font-size:11px;font-weight:800;color:#94a3b8;letter-spacing:.04em}
+#page-games .action-cell{flex-wrap:wrap}
+.cover-preview-stage{flex:1;display:flex;align-items:center;justify-content:center;padding:28px;background:radial-gradient(circle at top,rgba(96,165,250,.18),transparent 30%),linear-gradient(180deg,#020617 0%,#111827 100%)}
+.cover-preview-image{max-width:min(92vw,520px);max-height:calc(100vh - 120px);border-radius:28px;box-shadow:0 30px 80px rgba(15,23,42,.5);border:1px solid rgba(255,255,255,.12);background:#0f172a;object-fit:contain}
+.cover-detail-card{display:flex;align-items:flex-start;gap:18px;flex-wrap:wrap;padding:16px 18px;border-radius:18px;border:1px solid #dbe4f0;background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%);box-shadow:0 10px 22px rgba(15,23,42,.05)}
+.cover-detail-card img{width:180px;max-width:100%;aspect-ratio:3/4;object-fit:cover;border-radius:18px;border:1px solid #dbe4f0;box-shadow:0 12px 24px rgba(15,23,42,.08);cursor:pointer}
+.cover-detail-meta{display:flex;flex-direction:column;gap:10px;min-width:min(100%,260px);flex:1}
+.cover-detail-actions{display:flex;gap:8px;flex-wrap:wrap}
+.cover-editor-card{display:flex;flex-direction:column;gap:14px;padding:16px 18px;border-radius:18px;border:1px solid #dbe4f0;background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%);box-shadow:0 10px 22px rgba(15,23,42,.05);margin-top:14px}
+.cover-editor-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;align-items:start}
+.cover-editor-preview{min-height:280px;border-radius:20px;border:1px solid #dbe4f0;background:radial-gradient(circle at top,rgba(96,165,250,.16),transparent 30%),linear-gradient(180deg,#0f172a 0%,#111827 100%);display:flex;align-items:center;justify-content:center;overflow:hidden;padding:12px}
+.cover-editor-preview img{width:100%;height:100%;max-height:420px;object-fit:contain;border-radius:16px;display:block}
+.cover-editor-placeholder{display:flex;align-items:center;justify-content:center;text-align:center;color:#cbd5e1;font-size:13px;line-height:1.7;min-height:240px;padding:24px}
+.cover-editor-actions{display:flex;gap:8px;flex-wrap:wrap}
+.cover-editor-note{font-size:12px;color:#64748b;line-height:1.8}
+.cover-url-input{width:100%}
 
 /* Detail view */
 .detail-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px}
@@ -760,6 +783,7 @@ tbody tr:hover{background:#f8fafc}
                 <option value="failed">失败</option>
               </select>
               <button class="btn btn-secondary" onclick="loadGames()">刷新</button>
+              <button class="btn btn-secondary" onclick="refreshGameTypes()">刷新类型</button>
               <button class="btn btn-primary" onclick="switchTab('create')">+ 添加游戏</button>
             </div>
           </div>
@@ -772,6 +796,7 @@ tbody tr:hover{background:#f8fafc}
               </div>
               <div class="workspace-summary-row" id="gamesSummary"></div>
             </div>
+            <div id="gamesBatchBar" class="games-batch-bar"></div>
             <div class="workspace-table-wrap" id="gameTableWrap"></div>
           </div>
         </div>
@@ -1490,17 +1515,16 @@ tbody tr:hover{background:#f8fafc}
             <label>游戏类型</label>
             <select id="c-gameType">
               <option value="">选择类型</option>
-              <option value="puzzle">益智 (Puzzle)</option>
-              <option value="action">动作 (Action)</option>
-              <option value="arcade">街机 (Arcade)</option>
-              <option value="strategy">策略 (Strategy)</option>
-              <option value="casual">休闲 (Casual)</option>
-              <option value="racing">竞速 (Racing)</option>
-              <option value="sports">体育 (Sports)</option>
-              <option value="simulation">模拟 (Simulation)</option>
-              <option value="adventure">冒险 (Adventure)</option>
-              <option value="educational">教育 (Educational)</option>
-              <option value="other">其他 (Other)</option>
+              <option value="casual">休闲</option>
+              <option value="puzzle">益智</option>
+              <option value="educational">教育</option>
+              <option value="funny">搞笑</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>归属用户</label>
+            <select id="c-authorId">
+              <option value="">系统默认作者</option>
             </select>
           </div>
           <div class="form-group">
@@ -1561,6 +1585,20 @@ tbody tr:hover{background:#f8fafc}
   <iframe id="previewFrame2" class="play-frame" sandbox="allow-scripts allow-same-origin allow-popups"></iframe>
 </div>
 
+<!-- Cover Preview Modal -->
+<div id="coverPreviewOverlay" class="play-overlay" style="display:none">
+  <div class="play-topbar">
+    <div class="title" id="coverPreviewTitle">封面预览</div>
+    <div class="actions">
+      <button class="btn-newwin" onclick="openCoverPreviewNewWindow()">新窗口打开</button>
+      <button class="btn-close-play" onclick="closeCoverPreview()">关闭预览</button>
+    </div>
+  </div>
+  <div class="cover-preview-stage">
+    <img id="coverPreviewImage" class="cover-preview-image" alt="游戏封面预览">
+  </div>
+</div>
+
 <!-- Toast container -->
 <div class="toast-container" id="toastContainer"></div>
 
@@ -1586,6 +1624,13 @@ let currentTaskDetailId = null;
 let taskDetailRefreshTimer = null;
 let subscriptionPlans = [];
 let currentSubscriptionPlanId = null;
+let createAuthorOptionsLoaded = false;
+let selectedGameIds = new Set();
+let currentGameListItems = [];
+let lastGameListResponse = null;
+let currentCoverPreviewUrl = null;
+let pendingGameCoverDataUrl = null;
+let pendingGameCoverFileName = '';
 
 // ===================== Auth =====================
 function checkAuth() {
@@ -1891,6 +1936,7 @@ function switchTab(tab) {
   document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === 'page-' + tab));
   if (tab === 'dashboard') loadStats();
   if (tab === 'games') { showGameList(); loadGames(); }
+  if (tab === 'create') loadCreateAuthorOptions();
   if (tab === 'logs') loadLogs();
   if (tab === 'tasks') loadTasks();
   if (tab === 'users') { showUserList(); loadUsers(); }
@@ -2084,9 +2130,29 @@ async function loadGames() {
   try {
     const d = await api(`/games?page=${currentPage}&limit=20&search=${encodeURIComponent(search)}&status=${status}`);
     totalPages = d.totalPages || 1;
+    lastGameListResponse = d;
+    currentGameListItems = Array.isArray(d.items) ? d.items : [];
+    syncSelectedGameIdsWithCurrentList();
     renderGameTable(d);
   } catch (e) {
     wrap.innerHTML = `<div class="loading" style="color:#dc2626">加载失败: ${escHtml(e.message)}</div>`;
+    lastGameListResponse = null;
+    currentGameListItems = [];
+    selectedGameIds = new Set();
+    renderGameBatchBar();
+  }
+}
+
+async function refreshGameTypes() {
+  const yes = await confirmDialog('刷新游戏类型', '将历史游戏和生成记录的类型统一刷新为 4 个运营分类，是否继续？');
+  if (!yes) return;
+
+  try {
+    const result = await api('/games/refresh-types', { method: 'POST', body: {} });
+    toast(`类型刷新完成：游戏 ${result.gamesUpdated} 条，Bundle ${result.bundlesUpdated} 条，任务 ${result.tasksUpdated} 条`);
+    loadGames();
+  } catch (e) {
+    toast('刷新类型失败: ' + e.message, 'error');
   }
 }
 
@@ -2099,17 +2165,23 @@ function renderGameTable(d) {
   if (summaryPill) {
     summaryPill.textContent = `${status === 'all' ? '全部状态' : statusLabel(status)} · ${search ? `关键词「${search}」` : '默认排序'}`;
   }
+  renderGameBatchBar();
   if (!d.items || d.items.length === 0) {
     wrap.innerHTML = '<div class="workspace-empty">暂无游戏数据</div>';
     return;
   }
-  let html = '<div class="table-wrap"><table><thead><tr><th>标题</th><th>类型</th><th>状态</th><th>播放</th><th>点赞</th><th>质量分</th><th>大小</th><th style="min-width:240px">操作</th></tr></thead><tbody>';
+  let html = '<div class="table-wrap"><table><thead><tr><th style="width:44px"><input id="gameSelectAllInput" type="checkbox" onchange="toggleAllGameSelection(this.checked)" ' + (isAllGamesSelected() ? 'checked' : '') + '></th><th>标题</th><th>类型</th><th>状态</th><th>播放</th><th>点赞</th><th>质量分</th><th>大小</th><th style="min-width:280px">操作</th></tr></thead><tbody>';
   for (const g of d.items) {
     const bundle = g.bundles && g.bundles[0];
     const size = bundle && bundle.codeSizeBytes ? fmtSize(bundle.codeSizeBytes) : '-';
     const isPub = g.status === 'published';
+    const isSelected = selectedGameIds.has(g.id);
+    const coverThumb = g.coverUrl
+      ? `<button class="games-cover-thumb" title="预览封面" onclick="event.stopPropagation();previewGameCover('${g.id}','${escAttr(g.title)}','${escAttr(g.coverUrl)}')"><img src="${escAttr(g.coverUrl)}" alt="${escAttr(g.title)}"></button>`
+      : `<div class="games-cover-thumb" title="暂无封面"><span class="games-cover-empty">无封面</span></div>`;
     html += `<tr>
-      <td><strong style="cursor:pointer" onclick="showGameDetail('${g.id}')">${escHtml(g.title)}</strong><div style="font-size:11px;color:#94a3b8;margin-top:2px">${escHtml(g.author?.displayName || g.author?.username || '')}</div></td>
+      <td><input type="checkbox" ${isSelected ? 'checked' : ''} onchange="toggleGameSelection('${g.id}', this.checked)"></td>
+      <td><div class="games-cover-cell">${coverThumb}<div style="min-width:0"><strong style="cursor:pointer" onclick="showGameDetail('${g.id}')">${escHtml(g.title)}</strong><div style="font-size:11px;color:#94a3b8;margin-top:2px">${escHtml(g.author?.displayName || g.author?.username || '')}</div></div></div></td>
       <td>${escHtml(g.gameType || '-')}</td>
       <td><span class="badge badge-${g.status}">${statusLabel(g.status)}</span></td>
       <td>${fmtNum(g.playCount)}</td>
@@ -2117,6 +2189,7 @@ function renderGameTable(d) {
       <td>${Number(g.qualityScore || 0).toFixed(1)}</td>
       <td>${size}</td>
       <td><div class="action-cell">
+        <button class="abtn abtn-preview" onclick="event.stopPropagation();previewGameCover('${g.id}','${escAttr(g.title)}','${escAttr(g.coverUrl || '')}')">封面</button>
         <button class="abtn abtn-preview" onclick="event.stopPropagation();previewGame('${g.id}','${escAttr(g.title)}','${escAttr(g.previewUrl || '')}')">预览</button>
         <button class="abtn abtn-play" onclick="event.stopPropagation();playGame('${g.id}','${escAttr(g.title)}','${escAttr(g.previewUrl || '')}')">试玩</button>
         ${isPub
@@ -2140,6 +2213,121 @@ function renderGameTable(d) {
   html += `<button ${d.page >= d.totalPages ? 'disabled' : ''} onclick="currentPage=${d.page + 1};loadGames()">下一页</button>`;
   html += '</div></div></div>';
   wrap.innerHTML = html;
+  refreshGameSelectionUi();
+}
+
+function syncSelectedGameIdsWithCurrentList() {
+  const currentIdSet = new Set((currentGameListItems || []).map(item => item.id));
+  selectedGameIds = new Set(Array.from(selectedGameIds).filter(id => currentIdSet.has(id)));
+}
+
+function isAllGamesSelected() {
+  return currentGameListItems.length > 0
+    && currentGameListItems.every(item => selectedGameIds.has(item.id));
+}
+
+function renderGameBatchBar() {
+  const wrap = document.getElementById('gamesBatchBar');
+  if (!wrap) return;
+  const total = currentGameListItems.length;
+  const selectedCount = selectedGameIds.size;
+  wrap.innerHTML = `
+    <div class="games-batch-summary">
+      当前页 ${fmtNum(total)} 条，已选择 <strong style="color:#0f172a">${fmtNum(selectedCount)}</strong> 条
+    </div>
+    <div class="games-batch-actions">
+      <button class="btn btn-secondary" onclick="clearGameSelection()" ${selectedCount ? '' : 'disabled'}>清空选择</button>
+      <button class="btn btn-success" onclick="batchUpdateGameStatus('published')" ${selectedCount ? '' : 'disabled'}>批量上线</button>
+      <button class="btn btn-warning" onclick="batchUpdateGameStatus('draft')" ${selectedCount ? '' : 'disabled'}>批量下线</button>
+      <button class="btn btn-danger" onclick="batchDeleteSelectedGames()" ${selectedCount ? '' : 'disabled'}>批量删除</button>
+    </div>
+  `;
+}
+
+function refreshGameSelectionUi() {
+  const selectAllInput = document.getElementById('gameSelectAllInput');
+  if (!selectAllInput) return;
+  const selectedCount = selectedGameIds.size;
+  const total = currentGameListItems.length;
+  selectAllInput.checked = total > 0 && selectedCount === total;
+  selectAllInput.indeterminate = selectedCount > 0 && selectedCount < total;
+}
+
+function toggleGameSelection(id, checked) {
+  if (checked) {
+    selectedGameIds.add(id);
+  } else {
+    selectedGameIds.delete(id);
+  }
+  renderGameBatchBar();
+  refreshGameSelectionUi();
+}
+
+function toggleAllGameSelection(checked) {
+  if (checked) {
+    currentGameListItems.forEach(item => selectedGameIds.add(item.id));
+  } else {
+    currentGameListItems.forEach(item => selectedGameIds.delete(item.id));
+  }
+  renderGameTable(lastGameListResponse || {
+    items: currentGameListItems,
+    total: currentGameListItems.length,
+    page: currentPage,
+    totalPages,
+  });
+}
+
+function clearGameSelection() {
+  selectedGameIds = new Set();
+  renderGameTable(lastGameListResponse || {
+    items: currentGameListItems,
+    total: currentGameListItems.length,
+    page: currentPage,
+    totalPages,
+  });
+}
+
+async function batchUpdateGameStatus(status) {
+  const ids = Array.from(selectedGameIds);
+  if (!ids.length) {
+    toast('请先选择要处理的游戏', 'error');
+    return;
+  }
+  const label = status === 'published' ? '批量上线' : '批量下线';
+  const yes = await confirmDialog(label, `确定要对已选择的 ${ids.length} 条游戏执行${label}吗？`);
+  if (!yes) return;
+  try {
+    const result = await api('/games/batch-status', {
+      method: 'POST',
+      body: { ids, status },
+    });
+    toast(`${label}完成：成功 ${result.updated} 条${result.missingIds?.length ? `，缺失 ${result.missingIds.length} 条` : ''}`);
+    clearGameSelection();
+    loadGames();
+  } catch (e) {
+    toast(`${label}失败: ${e.message}`, 'error');
+  }
+}
+
+async function batchDeleteSelectedGames() {
+  const ids = Array.from(selectedGameIds);
+  if (!ids.length) {
+    toast('请先选择要删除的游戏', 'error');
+    return;
+  }
+  const yes = await confirmDialog('批量删除', `删除后将无法恢复，确定要删除已选择的 ${ids.length} 条游戏吗？`);
+  if (!yes) return;
+  try {
+    const result = await api('/games/batch-delete', {
+      method: 'POST',
+      body: { ids },
+    });
+    toast(`批量删除完成：成功 ${result.deleted} 条${result.missingIds?.length ? `，缺失 ${result.missingIds.length} 条` : ''}`);
+    clearGameSelection();
+    loadGames();
+  } catch (e) {
+    toast('批量删除失败: ' + e.message, 'error');
+  }
 }
 
 // ===================== Quick Actions (from table) =====================
@@ -2172,6 +2360,32 @@ let currentPlayPreviewUrl = null;
 
 function resolvePreviewUrl(id, previewUrl) {
   return previewUrl || (window.location.origin + '/games/' + id + '/preview');
+}
+
+function previewGameCover(id, title, coverUrl) {
+  const resolvedUrl = (coverUrl || '').trim();
+  if (!resolvedUrl) {
+    toast('当前游戏暂无可预览封面', 'error');
+    return;
+  }
+  currentCoverPreviewUrl = resolvedUrl;
+  document.getElementById('coverPreviewTitle').textContent = '封面预览: ' + title;
+  document.getElementById('coverPreviewImage').src = resolvedUrl;
+  document.getElementById('coverPreviewOverlay').style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+}
+
+function closeCoverPreview() {
+  document.getElementById('coverPreviewOverlay').style.display = 'none';
+  document.getElementById('coverPreviewImage').src = '';
+  currentCoverPreviewUrl = null;
+  document.body.style.overflow = '';
+}
+
+function openCoverPreviewNewWindow() {
+  if (currentCoverPreviewUrl) {
+    window.open(currentCoverPreviewUrl, '_blank');
+  }
 }
 
 function previewGame(id, title, previewUrl) {
@@ -2243,10 +2457,14 @@ async function showGameDetail(id) {
 function renderGameDetail(g) {
   const bundle = g.bundles && g.bundles[0];
   const dv = document.getElementById('gameDetailView');
+  const coverUrl = (g.coverUrl || g.thumbnailUrl || '').trim();
+  pendingGameCoverDataUrl = null;
+  pendingGameCoverFileName = '';
 
   let html = '<div class="workspace-detail-shell">';
   html += `<div class="back-btn" onclick="showGameList()">&#8592; 返回列表</div>`;
   html += `<div class="detail-header"><h2>${escHtml(g.title)}</h2><div style="display:flex;gap:8px;flex-wrap:wrap">`;
+  html += `<button class="btn btn-secondary btn-sm" onclick="previewGameCover('${g.id}','${escAttr(g.title)}','${escAttr(coverUrl)}')" ${coverUrl ? '' : 'disabled'}>封面预览</button>`;
   html += `<button class="btn btn-secondary btn-sm" onclick="previewGame('${g.id}','${escAttr(g.title)}','${escAttr(g.previewUrl || '')}')">预览</button>`;
   html += `<button class="btn btn-success btn-sm" onclick="playGame('${g.id}','${escAttr(g.title)}','${escAttr(g.previewUrl || '')}')">试玩</button>`;
   if (g.status === 'published') {
@@ -2278,6 +2496,57 @@ function renderGameDetail(g) {
   html += `<span style="margin-left:8px;font-size:13px;color:#94a3b8">当前: <span class="badge badge-${g.status}">${statusLabel(g.status)}</span></span>`;
   html += '</div>';
 
+  html += '<div class="section-title">封面</div>';
+  if (coverUrl) {
+    html += `<div class="cover-detail-card">
+      <img src="${escAttr(coverUrl)}" alt="${escAttr(g.title)}" onclick="previewGameCover('${g.id}','${escAttr(g.title)}','${escAttr(coverUrl)}')">
+      <div class="cover-detail-meta">
+        <div style="font-size:13px;color:#475569;line-height:1.8">当前后台将优先展示这张封面。你可以点击图片查看大图，或在新窗口打开原始封面地址。</div>
+        <div class="cover-detail-actions">
+          <button class="btn btn-secondary btn-sm" onclick="previewGameCover('${g.id}','${escAttr(g.title)}','${escAttr(coverUrl)}')">查看大图</button>
+          <button class="btn btn-secondary btn-sm" onclick="window.open('${escAttr(coverUrl)}','_blank')">新窗口打开</button>
+        </div>
+        <div style="font-size:12px;color:#94a3b8;word-break:break-all">${escHtml(coverUrl)}</div>
+      </div>
+    </div>`;
+  } else {
+    html += '<div class="workspace-empty">当前还没有可用封面</div>';
+  }
+
+  html += '<div class="section-title">封面维护</div>';
+  html += `<div class="cover-editor-card">
+    <div class="cover-editor-grid">
+      <div>
+        <div class="upload-area" onclick="document.getElementById('coverFileInput').click()">
+          <input type="file" id="coverFileInput" accept="image/png,image/jpeg,image/webp,image/avif,image/gif" onchange="handleCoverFileSelect(event)">
+          <div class="icon">&#128247;</div>
+          <div class="text">点击上传新的封面图片，支持 PNG / JPG / WEBP / AVIF / GIF</div>
+          <div class="filename" id="coverFileName" style="display:none"></div>
+        </div>
+        <div class="cover-editor-note">运营可以上传一张精修后的封面图，系统会优先展示这张图片，覆盖当前自动生成封面。</div>
+        <div class="form-group" style="margin-top:12px">
+          <label>外部图片地址</label>
+          <input class="cover-url-input" type="text" id="e-coverUrl" placeholder="https://example.com/cover.jpg" oninput="previewPendingCoverUrl()">
+          <div class="hint">也可以直接粘贴一个可公开访问的图片 URL。若同时上传了本地图片，将优先使用本地图片。</div>
+        </div>
+        <input type="hidden" id="e-currentCoverUrl" value="${escAttr(coverUrl)}">
+        <input type="hidden" id="coverEditorGameTitle" value="${escAttr(g.title)}">
+        <div class="cover-editor-actions">
+          <button class="btn btn-primary" id="saveGameCoverBtn" onclick="saveGameCover('${g.id}')">保存封面</button>
+          <button class="btn btn-secondary" onclick="clearPendingGameCoverSelection()">清空已选图片</button>
+        </div>
+      </div>
+      <div>
+        <div class="cover-editor-preview" id="coverEditorPreviewBox">
+          ${coverUrl
+            ? `<img src="${escAttr(coverUrl)}" alt="${escAttr(g.title)}">`
+            : '<div class="cover-editor-placeholder">上传图片或填写图片地址后，可在这里预览新的封面效果。</div>'}
+        </div>
+        <div class="cover-editor-note" id="coverEditorPreviewLabel">${coverUrl ? '当前封面预览' : '等待新的封面内容'}</div>
+      </div>
+    </div>
+  </div>`;
+
   // Edit form
   html += '<div class="section-title">编辑信息</div>';
   html += '<div class="form-grid">';
@@ -2285,17 +2554,10 @@ function renderGameDetail(g) {
   html += `<div class="form-group"><label>Slug</label><input type="text" id="e-slug" value="${escAttr(g.slug || '')}"></div>`;
   html += `<div class="form-group"><label>类型</label><select id="e-gameType">
     <option value="">选择</option>
-    <option value="puzzle" ${g.gameType==='puzzle'?'selected':''}>益智</option>
-    <option value="action" ${g.gameType==='action'?'selected':''}>动作</option>
-    <option value="arcade" ${g.gameType==='arcade'?'selected':''}>街机</option>
-    <option value="strategy" ${g.gameType==='strategy'?'selected':''}>策略</option>
     <option value="casual" ${g.gameType==='casual'?'selected':''}>休闲</option>
-    <option value="racing" ${g.gameType==='racing'?'selected':''}>竞速</option>
-    <option value="sports" ${g.gameType==='sports'?'selected':''}>体育</option>
-    <option value="simulation" ${g.gameType==='simulation'?'selected':''}>模拟</option>
-    <option value="adventure" ${g.gameType==='adventure'?'selected':''}>冒险</option>
+    <option value="puzzle" ${g.gameType==='puzzle'?'selected':''}>益智</option>
     <option value="educational" ${g.gameType==='educational'?'selected':''}>教育</option>
-    <option value="other" ${g.gameType==='other'?'selected':''}>其他</option>
+    <option value="funny" ${g.gameType==='funny'?'selected':''}>搞笑</option>
   </select></div>`;
   const tagsStr = Array.isArray(g.tags) ? g.tags.join(', ') : '';
   html += `<div class="form-group"><label>标签</label><input type="text" id="e-tags" value="${escAttr(tagsStr)}"></div>`;
@@ -2333,6 +2595,102 @@ function handleEditFileSelect(e) {
     toast('文件已加载: ' + file.name, 'info');
   };
   reader.readAsText(file);
+}
+
+function renderPendingCoverPreview(url, label) {
+  const previewBox = document.getElementById('coverEditorPreviewBox');
+  const previewLabel = document.getElementById('coverEditorPreviewLabel');
+  const gameTitle = document.getElementById('coverEditorGameTitle')?.value || '封面预览';
+  if (!previewBox || !previewLabel) return;
+
+  const resolvedUrl = (url || '').trim();
+  if (resolvedUrl) {
+    previewBox.innerHTML = `<img src="${escAttr(resolvedUrl)}" alt="${escAttr(gameTitle)}">`;
+  } else {
+    previewBox.innerHTML = '<div class="cover-editor-placeholder">上传图片或填写图片地址后，可在这里预览新的封面效果。</div>';
+  }
+  previewLabel.textContent = label;
+}
+
+function previewPendingCoverUrl() {
+  if (pendingGameCoverDataUrl) return;
+  const pendingUrl = document.getElementById('e-coverUrl')?.value?.trim() || '';
+  const currentUrl = document.getElementById('e-currentCoverUrl')?.value?.trim() || '';
+  if (pendingUrl) {
+    renderPendingCoverPreview(pendingUrl, '待保存的外链封面预览');
+    return;
+  }
+  renderPendingCoverPreview(currentUrl, currentUrl ? '当前封面预览' : '等待新的封面内容');
+}
+
+function clearPendingGameCoverSelection() {
+  pendingGameCoverDataUrl = null;
+  pendingGameCoverFileName = '';
+  const fileInput = document.getElementById('coverFileInput');
+  const fileName = document.getElementById('coverFileName');
+  if (fileInput) {
+    fileInput.value = '';
+  }
+  if (fileName) {
+    fileName.textContent = '';
+    fileName.style.display = 'none';
+  }
+  previewPendingCoverUrl();
+}
+
+function handleCoverFileSelect(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    pendingGameCoverDataUrl = String(ev.target.result || '');
+    pendingGameCoverFileName = file.name || '';
+    const fileName = document.getElementById('coverFileName');
+    if (fileName) {
+      fileName.textContent = pendingGameCoverFileName;
+      fileName.style.display = 'block';
+    }
+    renderPendingCoverPreview(pendingGameCoverDataUrl, '待保存的本地图片预览');
+    toast('封面图片已加载: ' + pendingGameCoverFileName, 'info');
+  };
+  reader.readAsDataURL(file);
+}
+
+async function saveGameCover(id) {
+  const saveBtn = document.getElementById('saveGameCoverBtn');
+  const imageUrl = document.getElementById('e-coverUrl')?.value?.trim() || '';
+  if (!pendingGameCoverDataUrl && !imageUrl) {
+    toast('请先上传图片或填写图片地址', 'error');
+    return;
+  }
+
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.textContent = '保存中...';
+  }
+
+  try {
+    await api('/games/' + id + '/cover', {
+      method: 'PUT',
+      body: pendingGameCoverDataUrl
+        ? {
+            imageDataUrl: pendingGameCoverDataUrl,
+            fileName: pendingGameCoverFileName || undefined,
+          }
+        : {
+            imageUrl,
+          },
+    });
+    toast('封面已更新');
+    showGameDetail(id);
+  } catch (e) {
+    toast('封面更新失败: ' + e.message, 'error');
+  } finally {
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.textContent = '保存封面';
+    }
+  }
 }
 
 function previewEdit() {
@@ -2441,6 +2799,35 @@ function previewCreate() {
   document.getElementById('createPreviewFrame').srcdoc = code;
 }
 
+async function loadCreateAuthorOptions(force = false) {
+  if (createAuthorOptionsLoaded && !force) return;
+
+  const select = document.getElementById('c-authorId');
+  if (!select) return;
+
+  const currentValue = select.value;
+  select.disabled = true;
+
+  try {
+    const result = await api('/users?page=1&limit=100&role=all');
+    const items = Array.isArray(result?.items) ? result.items : [];
+    const options = ['<option value="">系统默认作者</option>'];
+    for (const user of items) {
+      const label = `${escHtml(user.displayName || user.username)} (${escHtml(user.username)})`;
+      options.push(`<option value="${escAttr(user.id)}">${label}</option>`);
+    }
+    select.innerHTML = options.join('');
+    if (currentValue) {
+      select.value = currentValue;
+    }
+    createAuthorOptionsLoaded = true;
+  } catch (e) {
+    toast('加载用户列表失败: ' + e.message, 'error');
+  } finally {
+    select.disabled = false;
+  }
+}
+
 async function submitCreate() {
   const title = document.getElementById('c-title').value.trim();
   const htmlCode = document.getElementById('c-htmlCode').value;
@@ -2451,6 +2838,7 @@ async function submitCreate() {
     title,
     slug: document.getElementById('c-slug').value.trim() || undefined,
     gameType: document.getElementById('c-gameType').value || undefined,
+    authorId: document.getElementById('c-authorId').value || undefined,
     tags: document.getElementById('c-tags').value.split(',').map(t => t.trim()).filter(Boolean),
     description: document.getElementById('c-desc').value.trim(),
     htmlCode,
@@ -2467,6 +2855,7 @@ async function submitCreate() {
     document.getElementById('c-title').value = '';
     document.getElementById('c-slug').value = '';
     document.getElementById('c-gameType').value = '';
+    document.getElementById('c-authorId').value = '';
     document.getElementById('c-tags').value = '';
     document.getElementById('c-desc').value = '';
     document.getElementById('c-htmlCode').value = '';
@@ -5143,6 +5532,7 @@ function init() {
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
     if (document.getElementById('playOverlay').style.display !== 'none') closePlay();
+    else if (document.getElementById('coverPreviewOverlay').style.display !== 'none') closeCoverPreview();
     else if (document.getElementById('previewOverlay').style.display !== 'none') closePreview();
   }
 });

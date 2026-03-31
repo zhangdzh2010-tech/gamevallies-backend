@@ -12,6 +12,7 @@ import re
 from typing import Dict, Optional
 
 from ..api.models import GameSpec
+from .runtime_profile_ids import normalize_runtime_profile_id
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ class CodeTemplateCache:
 
     @staticmethod
     def _key(spec: GameSpec, runtime_profile: str) -> str:
+        normalized_profile = normalize_runtime_profile_id(runtime_profile)
         theme = (spec.visual_style.theme or "arcade").lower()
         input_mode = (
             spec.platform_constraints.input_mode
@@ -52,7 +54,7 @@ class CodeTemplateCache:
         goal_bucket = CodeTemplateCache._goal_bucket(spec.rules.win_condition)
         return ":".join([
             (spec.game_type or "unknown").lower(),
-            (runtime_profile or "default").lower(),
+            (normalized_profile or "default").lower(),
             theme,
             input_mode,
             goal_bucket,

@@ -60,13 +60,22 @@ class CodeReviewer:
         system = require_prompt("prompt.code_review_system")
 
         try:
-            raw = await self._client.complete(
+            raw = await self._client.complete_with_truncation_retry(
                 max_tokens=1024,
                 system=system,
                 messages=[{"role": "user", "content": prompt}],
                 step_key="code_review",
                 stage="qa_checking",
                 prefer_fast=True,
+                response_size_hint="small",
+                context_scope="task",
+                compression_policy="code_review",
+                truncation_retry_attempts=1,
+                truncation_retry_increment=512,
+                truncation_retry_max_tokens=2048,
+                timeout_retry_attempts=1,
+                timeout_retry_increment_s=30,
+                timeout_retry_max_s=120,
             )
             return self._parse_review(raw)
         except Exception as exc:

@@ -119,6 +119,7 @@ model User {
   generationTaskEvents GenerationTaskEvent[] @relation("UserGenerationTaskEvents")
   llmCallLogs        LlmCallLog[]        @relation("UserLlmCallLogs")
   generationArtifacts GenerationArtifact[] @relation("UserGenerationArtifacts")
+  creationSessions   GameCreationSession[]
 
   @@map("users")
 }
@@ -311,6 +312,35 @@ model GameBundle {
   @@index([gameId])
   @@index([createdAt])
   @@map("game_bundles")
+}
+
+model GameCreationSession {
+  id               String   @id @default(uuid()) @db.VarChar(36)
+  userId           String   @map("user_id") @db.VarChar(36)
+  status           String   @default("collecting") @db.VarChar(32)
+  entryMode        String   @default("create") @map("entry_mode") @db.VarChar(32)
+  initialPrompt    String   @map("initial_prompt") @db.LongText
+  titleDraft       String?  @map("title_draft") @db.VarChar(64)
+  revision         Int      @default(1)
+  slotState        Json     @map("slot_state")
+  missingRequired  Json     @map("missing_required")
+  skippedSlots     Json     @map("skipped_slots")
+  currentQuestion  Json?    @map("current_question")
+  conversation     Json     @default("[]")
+  generatedGameId  String?  @map("generated_game_id") @db.VarChar(36)
+  generationTaskId String?  @map("generation_task_id") @db.VarChar(36)
+  sourceGameId     String?  @map("source_game_id") @db.VarChar(36)
+  questionBudget   Int      @default(4) @map("question_budget")
+  metadata         Json?
+  createdAt        DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status, updatedAt])
+  @@index([generatedGameId])
+  @@index([generationTaskId])
+  @@map("game_creation_sessions")
 }
 
 // ==================== 游戏模板（原 MongoDB game_templates） ====================

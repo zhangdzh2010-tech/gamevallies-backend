@@ -20,6 +20,9 @@ export default () => ({
   wechat: {
     miniappAppId: process.env.WECHAT_MINIAPP_APP_ID,
     miniappAppSecret: process.env.WECHAT_MINIAPP_APP_SECRET,
+    h5AppId: process.env.WECHAT_H5_APP_ID,
+    h5AppSecret: process.env.WECHAT_H5_APP_SECRET,
+    h5OauthScope: process.env.WECHAT_H5_OAUTH_SCOPE || 'snsapi_base',
   },
   app: {
     name: 'PlayForge User Service',

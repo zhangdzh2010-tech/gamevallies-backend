@@ -15,12 +15,18 @@ import { resolve } from 'path';
 
 type UnifiedOrderInput = {
   appId: string;
-  openId: string;
+  openId?: string;
   description: string;
   outTradeNo: string;
   amount: number;
   notifyUrl: string;
   clientIp: string;
+  tradeType?: 'jsapi' | 'h5';
+  h5Info?: {
+    type?: 'Wap';
+    appName?: string;
+    appUrl?: string;
+  };
 };
 
 type WxRequestPayment = {
@@ -31,9 +37,13 @@ type WxRequestPayment = {
   paySign: string;
 };
 
+type WechatH5Payment = {
+  mwebUrl: string;
+};
+
 type UnifiedOrderResult = {
-  payment: WxRequestPayment;
-  prepayId: string;
+  payment: WxRequestPayment | WechatH5Payment;
+  prepayId: string | null;
   rawResponse: Record<string, unknown>;
 };
 
@@ -103,6 +113,19 @@ export class WechatPayService {
   }
 
   private async createMockPayment(input: UnifiedOrderInput): Promise<UnifiedOrderResult> {
+    if (input.tradeType === 'h5') {
+      return {
+        prepayId: null,
+        rawResponse: {
+          mock: true,
+          h5_url: `https://pay.mock.gamevallies.com/wechat/${input.outTradeNo}`,
+        },
+        payment: {
+          mwebUrl: `https://pay.mock.gamevallies.com/wechat/${input.outTradeNo}`,
+        },
+      };
+    }
+
     const timeStamp = `${Math.floor(Date.now() / 1000)}`;
     const nonceStr = randomBytes(12).toString('hex');
     const prepayId = `mock_${input.outTradeNo}`;
@@ -127,12 +150,14 @@ export class WechatPayService {
   }
 
   private async createRealPayment(input: UnifiedOrderInput): Promise<UnifiedOrderResult> {
-    const appId = input.appId || this.getRequiredConfig('WECHAT_MINIAPP_APP_ID');
+    const tradeType = input.tradeType || 'jsapi';
+    const appId = tradeType === 'h5'
+      ? (input.appId || '')
+      : (input.appId || this.getRequiredConfig('WECHAT_MINIAPP_APP_ID'));
     const mchid = this.getRequiredConfig('WECHAT_PAY_MERCHANT_ID');
     const notifyUrl = input.notifyUrl || this.getRequiredConfig('WECHAT_PAY_NOTIFY_URL');
-    const path = '/v3/pay/transactions/jsapi';
-    const body = {
-      appid: appId,
+    const path = tradeType === 'h5' ? '/v3/pay/transactions/h5' : '/v3/pay/transactions/jsapi';
+    const body: Record<string, unknown> = {
       mchid,
       description: input.description,
       out_trade_no: input.outTradeNo,
@@ -141,14 +166,51 @@ export class WechatPayService {
         total: input.amount,
         currency: 'CNY',
       },
-      payer: {
-        openid: input.openId,
-      },
       scene_info: {
         payer_client_ip: input.clientIp || '127.0.0.1',
       },
     };
+
+    if (appId) {
+      body.appid = appId;
+    }
+
+    if (tradeType === 'jsapi') {
+      if (!input.openId) {
+        throw new InternalServerErrorException('JSAPI payment requires openId');
+      }
+
+      body.payer = {
+        openid: input.openId,
+      };
+    } else {
+      body.scene_info = {
+        payer_client_ip: input.clientIp || '127.0.0.1',
+        h5_info: {
+          type: input.h5Info?.type || 'Wap',
+          app_name: input.h5Info?.appName || 'GameVallies',
+          app_url: input.h5Info?.appUrl || this.configService.get<string>('PUBLIC_WEB_BASE_URL') || 'https://gamevallies.com',
+        },
+      };
+    }
+
     const response = await this.callWechatApi(path, 'POST', body);
+    if (tradeType === 'h5') {
+      const mwebUrl = response.h5_url;
+
+      if (!mwebUrl) {
+        throw new InternalServerErrorException('WeChat Pay response missing h5_url');
+      }
+
+      return {
+        prepayId: null,
+        rawResponse: response,
+        payment: {
+          mwebUrl,
+        },
+      };
+    }
+
     const prepayId = response.prepay_id;
 
     if (!prepayId) {

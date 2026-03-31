@@ -2289,3 +2289,370 @@ lastGenerateKey    String?  @map("last_generate_key") @db.VarChar(64)
 - fork 1 到 2 题差异化会话
 - abandon / 更完整完成页
 - 更精细的灰度与监控增强
+
+---
+
+## 27. 质量导向 V2 优化补充
+
+配套执行文档：
+
+- [DYNAMIC_CREATION_DIALOGUE_EXECUTION_PLAN_2026-03-30.md](/d:/Project/gamevallies/gamevallies-backend/docs/integration/DYNAMIC_CREATION_DIALOGUE_EXECUTION_PLAN_2026-03-30.md)
+
+本节是在原方案基础上的质量升级版补充，目标不是推翻一期的“后端驱动补问”，而是把创作会话从“收集能生成的信息”升级成“收集能生成高质量游戏的信息”。
+
+### 27.1 为什么要做 V2
+
+当前生成质量不稳定，根因不只在代码生成阶段，而在于：
+
+1. 用户输入在进入 pipeline 前被过早压缩成较薄的意图
+2. 补问只解决“缺什么”，没有解决“理解是否足够准”
+3. `GameSpec` 对“精品感”相关信息表达能力不足
+4. `showcase` 目前主要还是 prompt 加强版，而不是独立的高质量链路
+5. QA 仍然更偏向“修到能跑”，容易把复杂结果修回保守版本
+
+### 27.2 V2 总目标
+
+V2 目标是把链路升级成：
+
+`用户创意输入 -> 方案摘要草案 -> 高影响低置信追问 -> richer spec -> 设计程序 -> 分层生成 -> 候选选优 -> tier-aware QA`
+
+其中最关键的变化是：
+
+1. 系统先给出“文字方案草案”，而不是直接开生成
+2. 追问从“缺失槽位驱动”升级成“高影响、低置信驱动”
+3. `showcase` 档不再只是更强 prompt，而是拥有更完整 spec 和候选选优能力
+
+### 27.3 用户交互升级
+
+#### 27.3.1 新的用户交互流程
+
+建议把创建流程升级为：
+
+1. 用户输入一句创意
+2. 后端创建创作会话
+3. 后端先返回一版“游戏方案草案”
+4. 用户可直接确认，或继续回答当前关键问题
+5. 系统每轮只追问 1 个高价值问题
+6. 信息足够后进入生成
+7. 生成完成后进入试玩 / 继续优化 / 发布
+
+#### 27.3.2 方案草案的作用
+
+方案草案不是 prompt 拼接结果，而是面向用户的自然语言摘要。其目的：
+
+1. 让用户先确认 AI 是否理解正确
+2. 在生成前发现“方向理解偏了”的问题
+3. 提前暴露玩法、节奏、视觉、亮点是否足够清晰
+4. 为后续追问建立上下文
+
+建议草案至少包含：
+
+- 游戏定位
+- 核心玩法循环
+- 操作方式
+- 胜负条件
+- 节奏 / 关卡结构
+- 视觉方向
+- 一个记忆点 / 卖点
+
+### 27.4 槽位模型升级
+
+原方案中的 6 个必填槽位足以支持“能生成”，但不足以支持“生成得好”。建议在一期槽位之上增加质量相关槽位。
+
+#### 27.4.1 保留的一期核心槽位
+
+- `game_type`
+- `core_mechanic`
+- `theme`
+- `input_method`
+- `win_condition`
+- `difficulty`
+
+#### 27.4.2 建议新增的质量槽位
+
+- `session_length`
+  - 单局时长，短局 / 中局 / 多阶段
+- `progression_shape`
+  - 递进方式，线性 / 波次 / 关卡 / 组合成长
+- `reward_loop`
+  - 玩家持续玩的奖励反馈来源
+- `signature_moment`
+  - 最希望被记住的一个高光时刻
+- `target_audience`
+  - 面向谁，儿童 / 泛休闲 / 职场梗 / 课堂
+- `tone`
+  - 情绪和表达风格，轻松 / 紧张 / 荒诞 / 温和
+- `reference_style`
+  - 参考的视觉气质，不一定是具体游戏
+- `complexity_budget`
+  - safe / standard / showcase 对应的复杂度期望
+- `teaching_mode`
+  - 教育类专用，题答型 / 操作实验型 / 引导探索型
+- `comedy_device`
+  - 搞笑类专用，反转 / 误会 / 夸张 / 节奏梗
+
+#### 27.4.3 槽位分类建议
+
+建议将槽位拆为 3 层：
+
+1. 结构骨架层
+   - 直接决定生成结构
+   - 如 `game_type/core_mechanic/input_method/win_condition`
+2. 品质增强层
+   - 决定节奏、奖励、体验层次
+   - 如 `progression_shape/reward_loop/session_length/signature_moment`
+3. 风格表达层
+   - 决定视觉、情绪、主题表达
+   - 如 `theme/tone/reference_style/visual_style/comedy_device`
+
+### 27.5 从“缺失槽位”升级为“低置信高影响槽位”
+
+原方案中 `currentQuestion` 的出现逻辑主要基于“缺失必填槽位”。V2 建议改为：
+
+`question_priority = slot_impact * (1 - confidence) * ambiguity_weight`
+
+也就是说，后端不只关心“缺不缺”，还要关心：
+
+1. 这个槽位是否影响生成结构
+2. 当前理解是否低置信
+3. 当前用户输入是否存在明显歧义
+
+#### 27.5.1 `ai-engine analyze-turn` 建议新增返回
+
+在现有 `slots/missingRequired/slotFillPct` 基础上增加：
+
+```json
+{
+  "confidenceBySlot": {
+    "game_type": 0.92,
+    "core_mechanic": 0.44,
+    "theme": 0.88,
+    "input_method": 0.31
+  },
+  "evidenceBySlot": {
+    "game_type": ["用户提到“益智”", "提到“解谜”"],
+    "core_mechanic": ["仅提到“做一个关于光的游戏”，未明确互动方式"]
+  },
+  "ambiguityFlags": [
+    {
+      "slotKey": "core_mechanic",
+      "reason": "主题明确，但互动方式不明确"
+    }
+  ],
+  "nextBestQuestionReason": "core_mechanic has high impact and low confidence"
+}
+```
+
+#### 27.5.2 问题选择规则建议
+
+优先选择满足以下条件的槽位：
+
+1. 结构影响高
+2. 置信度低
+3. 已经有足够上下文，用户能回答
+4. 不与上一题高度重复
+
+### 27.6 新增“方案草案”对象
+
+建议在 `SessionSnapshot` 中新增：
+
+```json
+{
+  "planDraft": {
+    "title": "光的折射",
+    "summary": "这是一个用光线反射与折射来完成目标路径的教育解谜游戏。",
+    "concept": "玩家通过调整镜面与介质，让光线穿过关卡中的关键节点。",
+    "interaction": "主要通过点击选择和拖拽摆放来操作。",
+    "objective": "引导光线命中目标并完成多关递进挑战。",
+    "pacing": "每关引入一个新的光学概念，关卡时长短，反馈明确。",
+    "visualDirection": "几何科教风，带轻微未来感。",
+    "signatureMoment": "当多次折射后的光束成功贯穿全部目标时，出现强反馈演出。"
+  }
+}
+```
+
+#### 27.6.1 方案草案的来源
+
+建议由 `ai-engine` 提供一个新的无状态能力：
+
+- `POST /api/v1/ai/dialogue/draft-plan-from-input`
+
+输入：
+
+- `initial_prompt`
+- `current_slots`
+- `locale`
+- `entry_mode`
+
+输出：
+
+- `planDraft`
+- `draftConfidence`
+- `recommendedQuestions`
+
+### 27.7 `GameSpec` 升级方向
+
+当前 `GameSpec` 更像“足够生成的技术合同”，V2 建议把它升级成“可表达精品体验的创作合同”。
+
+建议新增字段：
+
+- `session_length`
+- `progression_shape`
+- `reward_loop`
+- `signature_moment`
+- `target_audience`
+- `tone`
+- `reference_style`
+- `complexity_budget`
+- `teaching_mode`
+- `comedy_device`
+- `design_goals`
+  - 用于承载“希望玩家感受到什么”
+
+### 27.8 Designer 层升级
+
+当前 `GameDesigner` 偏向：
+
+- 数值
+- HUD 基本布局
+- 输入映射
+
+V2 建议让 Designer 额外输出以下结构：
+
+- `level_structure`
+- `phase_plan`
+- `reward_plan`
+- `tutorial_beats`
+- `signature_interactions`
+- `feedback_moments`
+- `failure_recovery_plan`
+
+这样 `CodeGenerator` 就不再需要独自凭 prompt“脑补”完整体验结构。
+
+### 27.9 `showcase` 升级为独立精品链路
+
+#### 27.9.1 当前问题
+
+当前 `showcase` 已经有：
+
+- 更高 token budget
+- 更强 prompt
+- visual pack direction
+
+但本质仍然是单候选单次生成。
+
+#### 27.9.2 建议改法
+
+对 `showcase` 档采用：
+
+1. richer spec
+2. richer designer output
+3. 2 到 3 个候选方案生成
+4. 借助 QA + 结构评分 + 视觉评分做选优
+
+建议评分来源包括：
+
+- 运行时 QA 通过率
+- 玩法可见性
+- 反馈强度
+- 视觉层次
+- 与方案草案一致性
+
+### 27.10 QA 分层
+
+当前 QA 更偏“修到能跑”。V2 需要按 tier 分层：
+
+#### `safe`
+
+- 保持当前保守策略
+- 优先稳定性和通过率
+
+#### `standard`
+
+- 允许适中复杂度
+- repair 时尽量保留 HUD / feedback / phase
+
+#### `showcase`
+
+- repair 不应轻易删子系统
+- 优先局部修 bug，而不是把复杂结构整体修平
+- 增加“保持高光时刻和 signature interaction”的提示
+
+### 27.11 V2 API 建议
+
+在原有 API 之外建议新增：
+
+1. `POST /api/v1/ai/dialogue/draft-plan-from-input`
+   - 生成文字方案草案
+2. `POST /api/v1/ai/dialogue/analyze-turn`
+   - 增加 `confidenceBySlot/evidenceBySlot/ambiguityFlags`
+3. `POST /api/v1/ai/dialogue/spec-from-slots`
+   - 支持 richer spec 字段
+
+在 `game-service` 的 `SessionSnapshot` 中增加：
+
+- `planDraft`
+- `confidenceSummary`
+- `questionStrategy`
+
+### 27.12 前端体验建议
+
+创建页状态机建议升级为：
+
+- `idle`
+- `creating_session`
+- `drafting_plan`
+- `collecting`
+- `ready_to_generate`
+- `generating`
+- `completed`
+- `failed`
+
+新增 UI 区块：
+
+1. 方案草案卡片
+   - 支持“确认方向”
+   - 支持“我想改一下”
+2. 当前关键问题卡片
+3. 生成准备度条
+4. `showcase` 提示
+   - 告知会更慢，但更精致
+
+### 27.13 实施优先级建议
+
+#### V2-A：最小质量升级
+
+1. `analyze-turn` 增加置信度输出
+2. 增加 `planDraft`
+3. 创建页先展示“方案草案 + 当前问题”
+4. `spec` 直通 pipeline
+
+这是最值得优先做的一批，因为它直接改善输入质量。
+
+#### V2-B：精品 spec 升级
+
+1. 扩 `GameSpec`
+2. 扩 Designer 输出
+3. 新增 `quality slots`
+
+#### V2-C：showcase 精品链路
+
+1. 多候选生成
+2. 候选选优
+3. QA 分层
+
+### 27.14 推荐结论
+
+推荐将本方案正式升级为：
+
+**“后端驱动的质量导向创作会话方案”**
+
+它不再只是解决“前端补问逻辑不统一”，而是承担 3 个更高价值目标：
+
+1. 提升用户创意被正确理解的概率
+2. 提升进入 pipeline 的 `spec` 质量
+3. 为 `showcase` 档建立真正可扩展的精品生成前置链路
+
+一句话总结：
+
+> 一期解决“后端驱动补问”，V2 解决“高质量创意理解与精品生成输入”。

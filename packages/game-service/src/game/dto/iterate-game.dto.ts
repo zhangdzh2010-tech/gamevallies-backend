@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
-import { IsString, IsNotEmpty, MinLength, IsOptional, IsInt, Min, Max } from 'class-validator';
+import { IsString, IsNotEmpty, MinLength, IsOptional, IsInt, Min, Max, IsIn } from 'class-validator';
+import { CREATE_GAME_GENERATION_TIERS, CreateGameGenerationTier } from './create-game.dto';
 
 export class IterateGameDto {
   @IsString()
@@ -10,6 +11,11 @@ export class IterateGameDto {
   @IsOptional()
   @IsString()
   regionHint?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(CREATE_GAME_GENERATION_TIERS)
+  generationTier?: CreateGameGenerationTier;
 
   @IsOptional()
   @Type(() => Number)

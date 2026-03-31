@@ -8,11 +8,18 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.api.models import ChatRequest
+from src.api.models import (
+    AnalyzeDialogueTurnRequest,
+    ChatRequest,
+    ConversationMessage,
+    DraftPlanFromInputRequest,
+    SpecFromSlotsRequest,
+)
 from src.engine.dialogue_engine import (
     DialogueEngine,
     _infer_game_type_from_sparse_context,
     _infer_slots_from_text,
+    _normalize_slot_payload,
     _safe_parse_json,
 )
 from src.services.llm_client import LLMResponseTruncatedError
@@ -35,6 +42,176 @@ DIALOGUE_TEST_PROMPTS = {
 
 
 class TestDialogueEngine(unittest.TestCase):
+    def test_analyze_turn_returns_next_question_and_slot_progress(self):
+        engine = DialogueEngine()
+
+        async def fake_extract_slots(session, *, source_text, title=None):
+            session.slots.game_type = "funny"
+            session.slots.core_mechanic = "tap to hide"
+            session.slots.input_method = "tap"
+            return ["game_type", "core_mechanic", "input_method"]
+
+        with patch.object(engine._client, "is_enabled", return_value=True), patch.object(
+            engine,
+            "_extract_slots_from_conversation",
+            new=AsyncMock(side_effect=fake_extract_slots),
+        ):
+            response = asyncio.run(
+                engine.analyze_turn(
+                    AnalyzeDialogueTurnRequest(
+                        session_id="creation-1",
+                        user_id="user-1",
+                        conversation=[
+                            ConversationMessage(role="user", content="做一个办公室摸鱼游戏"),
+                        ],
+                        initial_prompt="做一个办公室摸鱼游戏",
+                    )
+                )
+            )
+
+        self.assertEqual(response.slots.game_type, "funny")
+        self.assertIn("game_type", response.slots_updated)
+        self.assertFalse(response.ready_to_generate)
+        self.assertIsNotNone(response.current_question)
+        self.assertEqual(response.current_question.slot_key, "win_condition")
+        self.assertIsNotNone(response.question_strategy)
+        self.assertEqual(response.question_strategy.slot_key, "win_condition")
+        self.assertIn("win_condition", response.confidence_by_slot)
+        self.assertGreater(response.confidence_by_slot["core_mechanic"], 0.6)
+        self.assertIsNotNone(response.plan_draft)
+        self.assertTrue(response.plan_draft.summary)
+        self.assertIn("最关键的信息", response.reply)
+
+    def test_draft_plan_from_input_returns_plan_and_confidence_metadata(self):
+        engine = DialogueEngine()
+
+        response = asyncio.run(
+            engine.draft_plan_from_input(
+                DraftPlanFromInputRequest(
+                    title="上班摸鱼",
+                    source_description="做一个办公室摸鱼游戏，玩家点击伪装摸鱼，在老板巡查时快速切回工作。",
+                    generation_tier="showcase",
+                )
+            )
+        )
+
+        self.assertIsNotNone(response.plan_draft)
+        self.assertEqual(response.plan_draft.title, "上班摸鱼")
+        self.assertIn("上班摸鱼", response.plan_draft.concept)
+        self.assertIn("core_mechanic", response.confidence_by_slot)
+        self.assertIn("theme", response.evidence_by_slot)
+        self.assertIsInstance(response.ambiguity_flags, list)
+
+    def test_analyze_turn_advance_only_skips_slot_extraction(self):
+        engine = DialogueEngine()
+
+        with patch.object(engine._client, "is_enabled", return_value=True), patch.object(
+            engine,
+            "_extract_slots_from_conversation",
+            new=AsyncMock(),
+        ) as mock_extract:
+            response = asyncio.run(
+                engine.analyze_turn(
+                    AnalyzeDialogueTurnRequest(
+                        session_id="creation-2",
+                        user_id="user-2",
+                        current_slots={
+                            "game_type": "casual",
+                            "core_mechanic": "tap to collect",
+                            "theme": "fruit market",
+                            "input_method": "tap",
+                            "win_condition": "collect all fruit",
+                            "difficulty": "easy",
+                        },
+                        skipped_slots=["difficulty"],
+                        initial_prompt="做一个接水果游戏",
+                        advance_only=True,
+                    )
+                )
+            )
+
+        mock_extract.assert_not_called()
+        self.assertTrue(response.ready_to_generate)
+        self.assertIsNotNone(response.current_question)
+        self.assertEqual(response.current_question.slot_key, "win_condition")
+        self.assertEqual(response.question_strategy.mode, "ambiguity_resolution")
+
+    def test_spec_from_slots_preserves_tier_and_uses_preferred_game_type_fallback(self):
+        engine = DialogueEngine()
+
+        response = asyncio.run(
+            engine.spec_from_slots(
+                SpecFromSlotsRequest(
+                    session_id="creation-3",
+                    slots={
+                        "core_mechanic": "tap to hide",
+                        "theme": "office",
+                        "input_method": "tap",
+                        "win_condition": "stay undiscovered",
+                        "difficulty": "medium",
+                    },
+                    source_description="做一个办公室摸鱼游戏",
+                    title="上班摸鱼",
+                    generation_tier="showcase",
+                    preferred_game_type="funny",
+                )
+            )
+        )
+
+        self.assertEqual(response.spec.game_type, "funny")
+        self.assertEqual(response.spec.generation_tier, "showcase")
+        self.assertEqual(response.spec.complexity_budget, "showcase")
+        self.assertTrue(response.spec.progression_shape)
+        self.assertTrue(response.spec.reward_loop)
+        self.assertTrue(response.spec.design_goals)
+        self.assertIn("上班摸鱼", response.spec.intent_summary)
+        self.assertEqual(response.slot_fill_pct, 1.0)
+
+    def test_spec_from_slots_accepts_list_core_mechanic_from_creation_session_slots(self):
+        engine = DialogueEngine()
+
+        response = asyncio.run(
+            engine.spec_from_slots(
+                SpecFromSlotsRequest(
+                    session_id="creation-4",
+                    slots={
+                        "game_type": "casual",
+                        "core_mechanic": ["dash", "avoid", "drop"],
+                        "theme": "landscape delivery",
+                        "input_method": "swipe",
+                        "win_condition": "deliver parcels to target balconies",
+                        "difficulty": "medium",
+                        "special_rules": "drones patrol rooftops",
+                    },
+                    source_description="Make a landscape delivery game where the hero dashes across rooftops and drops parcels.",
+                    title="Parkour Delivery",
+                    generation_tier="showcase",
+                )
+            )
+        )
+
+        self.assertEqual(response.spec.game_type, "casual")
+        self.assertIn("dash, avoid, drop", response.spec.intent_summary)
+        self.assertIn("drones patrol rooftops", response.spec.special_rules)
+        self.assertEqual(response.spec.generation_tier, "showcase")
+
+    def test_normalize_slot_payload_humanizes_machine_like_creation_session_values(self):
+        normalized = _normalize_slot_payload({
+            "game_type": "funny",
+            "core_mechanic": "stealth_timing",
+            "theme": "modern_office_satire",
+            "input_method": "touch_tap_swipe",
+            "win_condition": "complete_5_levels",
+            "difficulty": "standard",
+        })
+
+        self.assertEqual(normalized["game_type"], "funny")
+        self.assertEqual(normalized["core_mechanic"], "stealth timing")
+        self.assertEqual(normalized["theme"], "modern office satire")
+        self.assertEqual(normalized["input_method"], "swipe")
+        self.assertEqual(normalized["win_condition"], "complete 5 levels")
+        self.assertEqual(normalized["difficulty"], "medium")
+
     def test_parse_description_to_spec_uses_primary_model_not_fast_model(self):
         engine = DialogueEngine()
 
@@ -53,7 +230,7 @@ class TestDialogueEngine(unittest.TestCase):
             "complete",
             new=AsyncMock(
                 return_value=(
-                    '{"game_type":"dodge","core_mechanic":"躲避障碍","theme":"space",'
+                    '{"game_type":"casual","core_mechanic":"躲避障碍","theme":"space",'
                     '"input_method":"swipe","win_condition":"survive","difficulty":"progressive",'
                     '"special_rules":"avoid black holes","reference_game":"星际闪避"}'
                 )
@@ -61,7 +238,7 @@ class TestDialogueEngine(unittest.TestCase):
         ) as mock_complete:
             spec = asyncio.run(engine.parse_description_to_spec("做一个太空躲避游戏"))
 
-        self.assertEqual(spec.game_type, "dodge")
+        self.assertEqual(spec.game_type, "casual")
         self.assertEqual(spec.intent_summary, "躲避障碍")
         self.assertEqual(spec.special_rules, ["avoid black holes"])
         self.assertEqual(spec.reference_game, "星际闪避")
@@ -76,11 +253,11 @@ class TestDialogueEngine(unittest.TestCase):
 
     def test_safe_parse_json_extracts_embedded_object_from_verbose_text(self):
         parsed = _safe_parse_json(
-            '分析如下：先理解用户意图。\n{"game_type":"dodge","core_mechanic":"躲避障碍","theme":"space"}\n以上是结果。'
+            '分析如下：先理解用户意图。\n{"game_type":"casual","core_mechanic":"躲避障碍","theme":"space"}\n以上是结果。'
         )
 
         self.assertIsNotNone(parsed)
-        self.assertEqual(parsed["game_type"], "dodge")
+        self.assertEqual(parsed["game_type"], "casual")
         self.assertEqual(parsed["theme"], "space")
 
     def test_dialogue_slot_extraction_uses_primary_model_while_reply_keeps_fast_model(self):
@@ -102,7 +279,7 @@ class TestDialogueEngine(unittest.TestCase):
             new=AsyncMock(
                 side_effect=[
                     (
-                        '{"game_type":"runner","core_mechanic":"左右滑动躲避管理员","theme":"zoo",'
+                        '{"game_type":"casual","core_mechanic":"左右滑动躲避管理员","theme":"zoo",'
                         '"input_method":"swipe","win_condition":"rescue animals","difficulty":"easy"}'
                     ),
                     "明白了，我会做成动物园逃脱跑酷游戏。",
@@ -121,18 +298,18 @@ class TestDialogueEngine(unittest.TestCase):
         self.assertEqual(mock_complete.await_args_list[1].kwargs["step_key"], "dialogue.reply")
         self.assertTrue(mock_complete.await_args_list[1].kwargs["prefer_fast"])
 
-    def test_educational_prompt_biases_to_puzzle_slots(self):
+    def test_educational_prompt_biases_to_educational_slots(self):
         inferred = _infer_slots_from_text(
             "请设计一个课堂小游戏，包含3道配套练习题，帮助学生巩固浮力知识点。",
         )
-        self.assertEqual(inferred.get("game_type"), "puzzle")
+        self.assertEqual(inferred.get("game_type"), "educational")
 
-    def test_sparse_educational_context_prefers_puzzle(self):
+    def test_sparse_educational_context_prefers_educational(self):
         game_type = _infer_game_type_from_sparse_context(
             "浮力的故事",
             "课堂互动小游戏，帮助老师讲解浮力知识点，并附练习题",
         )
-        self.assertEqual(game_type, "puzzle")
+        self.assertEqual(game_type, "educational")
 
     def test_sparse_non_explicit_action_prompt_can_vary_by_seed(self):
         first = _infer_game_type_from_sparse_context(
@@ -144,8 +321,8 @@ class TestDialogueEngine(unittest.TestCase):
             variation_seed="game-b",
         )
 
-        self.assertIn(first, {"dodge", "shooter", "runner", "rhythm"})
-        self.assertIn(second, {"dodge", "shooter", "runner", "rhythm"})
+        self.assertIn(first, {"casual", "funny", "puzzle"})
+        self.assertIn(second, {"casual", "funny", "puzzle"})
         self.assertNotEqual(first, second)
 
     def test_sparse_parse_adds_diversity_rules_for_open_briefs(self):
@@ -174,9 +351,9 @@ class TestDialogueEngine(unittest.TestCase):
         self.assertTrue(
             any("distinctive gameplay loop" in rule.lower() for rule in spec.special_rules)
         )
-        self.assertIn(spec.game_type, {"dodge", "shooter", "runner", "rhythm"})
+        self.assertIn(spec.game_type, {"casual", "funny", "puzzle"})
 
-    def test_parse_description_to_spec_coerces_educational_runner_prompt_to_puzzle(self):
+    def test_parse_description_to_spec_coerces_educational_runner_prompt_to_educational(self):
         engine = DialogueEngine()
 
         def fake_get_prompt(key: str, default=None):
@@ -192,7 +369,7 @@ class TestDialogueEngine(unittest.TestCase):
             "complete",
             new=AsyncMock(
                 return_value=(
-                    '{"game_type":"runner","core_mechanic":"move through buoyancy checkpoints",'
+                    '{"game_type":"casual","core_mechanic":"move through buoyancy checkpoints",'
                     '"theme":"classroom","input_method":"touch","win_condition":"clear the lesson","difficulty":"medium"}'
                 )
             ),
@@ -203,7 +380,7 @@ class TestDialogueEngine(unittest.TestCase):
                 )
             )
 
-        self.assertEqual(spec.game_type, "puzzle")
+        self.assertEqual(spec.game_type, "educational")
         self.assertEqual(spec.platform_constraints.input_mode, "touch")
 
     def test_parse_description_to_spec_salvages_truncated_intent_parse_excerpt(self):

@@ -92,6 +92,17 @@ export class AdminController {
     return ok(game, 'Game updated successfully');
   }
 
+  @Put('admin/games/:id/cover')
+  async updateGameCover(
+    @Headers('x-admin-token') token: string,
+    @Param('id') id: string,
+    @Body() body: any,
+  ) {
+    checkAdminToken(token);
+    const game = await this.adminService.updateGameCover(id, body || {});
+    return ok(game, 'Game cover updated successfully');
+  }
+
   @Delete('admin/games/:id')
   async deleteGame(
     @Headers('x-admin-token') token: string,
@@ -100,6 +111,26 @@ export class AdminController {
     checkAdminToken(token);
     const result = await this.adminService.deleteGame(id);
     return ok(result, 'Game deleted successfully');
+  }
+
+  @Post('admin/games/batch-status')
+  async batchUpdateGameStatus(
+    @Headers('x-admin-token') token: string,
+    @Body() body: any,
+  ) {
+    checkAdminToken(token);
+    const result = await this.adminService.batchUpdateGameStatus(body?.ids, body?.status);
+    return ok(result, 'Batch game status updated successfully');
+  }
+
+  @Post('admin/games/batch-delete')
+  async batchDeleteGames(
+    @Headers('x-admin-token') token: string,
+    @Body() body: any,
+  ) {
+    checkAdminToken(token);
+    const result = await this.adminService.batchDeleteGames(body?.ids);
+    return ok(result, 'Batch games deleted successfully');
   }
 
   @Post('admin/game-status/:id')
@@ -123,6 +154,29 @@ export class AdminController {
     return ok(
       result,
       body?.dryRun ? 'Legacy preview link dry run completed' : 'Legacy preview links repaired successfully',
+    );
+  }
+
+  @Post('admin/games/refresh-types')
+  async refreshGameTypes(
+    @Headers('x-admin-token') token: string,
+    @Body() body: any,
+  ) {
+    checkAdminToken(token);
+    const result = await this.adminService.refreshGameTypes(body || {});
+    return ok(result, result.dryRun ? 'Game type refresh dry run completed' : 'Game types refreshed successfully');
+  }
+
+  @Post('admin/games/backfill-covers')
+  async backfillGameCovers(
+    @Headers('x-admin-token') token: string,
+    @Body() body: any,
+  ) {
+    checkAdminToken(token);
+    const result = await this.adminService.backfillGameCovers(body || {});
+    return ok(
+      result,
+      result.dryRun ? 'Game cover backfill dry run completed' : 'Game covers backfilled successfully',
     );
   }
 

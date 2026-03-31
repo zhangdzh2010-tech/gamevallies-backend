@@ -75,7 +75,7 @@ const PREMIUM_GAMES = [
     description:
       '赛博朋克风格重力翻转平台跳跃！点击屏幕切换重力方向，躲避尖刺、活动平台、碾压器和传送门。' +
       '10个精心设计的关卡，3星收集系统，连击加分，检查点存档。挑战最快通关时间！',
-    gameType: 'action',
+    gameType: 'casual',
     tags: ['动作', '平台跳跃', '物理', '关卡', '挑战'],
     platform: 'mobile' as const,
     qualityScore: 9.3,
@@ -91,7 +91,7 @@ const PREMIUM_GAMES = [
     description:
       '太空采矿资源管理游戏！驾驶飞船采集4种稀有矿石，返回基地出售资源并升级飞船。' +
       '4大升级系统（引擎/货舱/激光/护盾），躲避陨石雨、太空海盗和黑洞。日夜交替影响资源分布！',
-    gameType: 'action',
+    gameType: 'casual',
     tags: ['动作', '资源管理', '太空', '升级', '生存'],
     platform: 'mobile' as const,
     qualityScore: 9.2,

@@ -7,6 +7,11 @@ interface JwtPayload {
   sub: string;
   username: string;
   role: string;
+  wechat?: {
+    platform?: 'miniapp' | 'h5';
+    openId?: string;
+    appId?: string;
+  };
   iat?: number;
   exp?: number;
 }
@@ -31,6 +36,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       userId: payload.sub,
       username: payload.username,
       role: payload.role,
+      wechatPlatform: payload.wechat?.platform,
+      wechatOpenId: payload.wechat?.openId,
+      wechatAppId: payload.wechat?.appId,
     };
   }
 }

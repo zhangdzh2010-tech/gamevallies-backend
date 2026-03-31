@@ -28,7 +28,7 @@ NAMED_RESTART_ENTRY_RE = re.compile(
 TERMINAL_BRANCH_RESTART_RE = re.compile(
     r"""
     if\s*\([^)]*
-    (?:game_over|gameover|game\ over)
+    (?:game_over|gameover|game\ over|level_complete|levelcomplete|completed|complete|victory|win|won|clear)
     [^)]*\)
     \s*\{?
     [\s\S]{0,260}?
@@ -44,6 +44,31 @@ TERMINAL_BRANCH_RESTART_RE = re.compile(
       | boot\w*game\s*\(
       | boot\s*\(\)\s*;?\s*init\s*\(
       | init\s*\(
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+TERMINAL_READY_RESET_RE = re.compile(
+    r"""
+    if\s*\([^)]*
+    (?:game_over|gameover|game\ over|level_complete|levelcomplete|completed|complete|victory|win|won|clear)
+    [^)]*\)
+    \s*\{?
+    [\s\S]{0,320}?
+    (?:
+        (?:state|gameState|currentState|status|gameStatus)\s*=\s*['\"]?(?:ready|start)['\"]?
+      | (?:gameOver|game_over|isOver|isGameOver)\s*=\s*false
+    )
+    [\s\S]{0,220}?
+    (?:
+        create\s*\(
+      | init\s*\(
+      | setup\w*\s*\(
+      | build\w*\s*\(
+      | seed\w*\s*\(
+      | reset\w*\s*\(
+      | restart\w*\s*\(
     )
     """,
     re.IGNORECASE | re.VERBOSE,
@@ -93,6 +118,9 @@ def has_restart_entry(code: str) -> bool:
         return True
 
     if TERMINAL_BRANCH_RESTART_RE.search(source):
+        return True
+
+    if TERMINAL_READY_RESET_RE.search(source):
         return True
 
     if RESTART_TEXT_HINT_RE.search(source) and TEXT_HINT_TRIGGER_RE.search(source):

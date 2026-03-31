@@ -13,7 +13,7 @@ from src.engine.quality_scorer import RuntimeQAResult
 
 
 def make_spec() -> GameSpec:
-    return GameSpec(game_type="runner")
+    return GameSpec(game_type="casual")
 
 
 def make_progress_sink():

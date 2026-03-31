@@ -2,6 +2,7 @@ import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { CreatorReputationService } from '../src/game/creator-reputation.service';
+import { CreationSessionService } from '../src/game/creation-session.service';
 import { GameController } from '../src/game/game.controller';
 import { GameService } from '../src/game/game.service';
 
@@ -29,6 +30,18 @@ describe('GameController routing', () => {
             getReputation: jest.fn(),
           },
         },
+        {
+          provide: CreationSessionService,
+          useValue: {
+            createSession: jest.fn(),
+            getActiveSession: jest.fn(),
+            getSession: jest.fn(),
+            appendMessage: jest.fn(),
+            skipCurrentQuestion: jest.fn(),
+            generateFromSession: jest.fn(),
+            abandonSession: jest.fn(),
+          },
+        },
       ],
     }).compile();
 
@@ -38,7 +51,7 @@ describe('GameController routing', () => {
   });
 
   afterAll(async () => {
-    await app.close();
+    await app?.close();
   });
 
   beforeEach(() => {
@@ -53,7 +66,7 @@ describe('GameController routing', () => {
     expect(response.body).toEqual(
       expect.objectContaining({
         code: 0,
-        data: ['casual', 'puzzle', 'education'],
+        data: ['casual', 'puzzle', 'education', 'funny'],
       }),
     );
     expect(gameService.findById).not.toHaveBeenCalled();

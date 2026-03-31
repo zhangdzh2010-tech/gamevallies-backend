@@ -94,20 +94,20 @@ def _fake_qa_prompt(key: str, default=None):
 
 def test_build_game_spec_infers_chinese_ui_language_and_non_space_visual_defaults():
     spec = _build_game_spec(
-        SlotState(game_type="runner"),
+        SlotState(game_type="casual"),
         source_description="做一个轻松的跑酷小游戏，画面温暖一点",
     )
 
     assert spec.ui_language == "zh-CN"
-    assert "持续前进" in spec.intent_summary
-    assert spec.rules.win_condition.startswith("尽可能")
+    assert spec.intent_summary == "用一个直观的休闲玩法循环，保持反馈快、目标清晰。"
+    assert spec.rules.win_condition == "达成目标分数或完成一轮短挑战。"
     assert spec.visual_style.theme != "space"
     assert spec.visual_style.palette != ["#0a0a2e", "#6366f1", "#22c55e", "#f43f5e", "#ffffff"]
 
 
 def test_game_designer_emits_localized_ui_labels():
     spec = _build_game_spec(
-        SlotState(game_type="dodge", theme="forest"),
+        SlotState(game_type="casual", theme="forest"),
         source_description="做一个森林主题的躲避游戏",
     )
 
@@ -121,7 +121,7 @@ def test_game_designer_emits_localized_ui_labels():
 def test_code_generator_prompt_includes_ui_language_contract_and_examples():
     generator = CodeGenerator(llm_mode="real")
     spec = _build_game_spec(
-        SlotState(game_type="runner", theme="city"),
+        SlotState(game_type="casual", theme="city"),
         source_description="做一个城市跑酷小游戏",
     )
     gdd = GDD(
@@ -161,7 +161,7 @@ def test_code_generator_prompt_includes_ui_language_contract_and_examples():
 def test_qa_pipeline_repair_prompt_preserves_ui_language():
     pipeline = QAPipeline()
     spec = _build_game_spec(
-        SlotState(game_type="dodge"),
+        SlotState(game_type="casual"),
         source_description="做一个中文界面的躲避游戏",
     )
     errors = [QACheckError(type="runtime_qa", message="overlay text is incorrect", severity="error")]

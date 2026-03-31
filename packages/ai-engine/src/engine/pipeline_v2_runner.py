@@ -11,6 +11,7 @@ from typing import Any, Callable, Optional
 
 from ..api.models import (
     GDD,
+    GenerationTier,
     GameRuntimeContract,
     GameSpec,
     IterateResponse,
@@ -23,6 +24,8 @@ from ..api.models import (
 )
 from ..config.settings import settings
 from ..config.timeout_store import get_float as get_timeout_float, get_int as get_timeout_int
+from ..services.llm_gateway import get_request_context
+from ..services.task_memory import task_memory
 from .code_generator import CodeGenerator
 from .code_reviewer import CodeReviewer
 from .dialogue_engine import (
@@ -39,9 +42,11 @@ from .prompt_store import get_default_runtime_profile, require_prompt
 from .qa_pipeline import QAPipeline
 from .quality_scorer import LLMReviewResult, QAStaticResult, QualityScorer, RuntimeQAResult
 from .restart_entry import has_restart_entry
+from .runtime_profile_ids import DEFAULT_RUNTIME_PROFILE_ID, normalize_runtime_profile_id
 from .runtime_qa import run_runtime_qa
 from .scoring_loop import has_visible_scoring_loop
 from .terminal_state import has_required_state_presence, has_terminal_state_transition
+from .visual_pack_catalog import apply_visual_pack_defaults
 
 logger = logging.getLogger(__name__)
 
@@ -49,55 +54,105 @@ DEFAULT_STAGE_TOTAL_ATTEMPTS = 3
 ProgressCallback = Optional[Callable[[str, int, str, Optional[dict[str, Any]]], None]]
 
 PROFILE_CANDIDATES_BY_GAME_TYPE: dict[str, tuple[str, ...]] = {
-    "runner": ("lane_runner", "portrait_arcade"),
-    "endless runner": ("lane_runner", "portrait_arcade"),
-    "lane runner": ("lane_runner", "portrait_arcade"),
-    "racing": ("lane_runner", "portrait_arcade"),
-    "platformer": ("portrait_arcade", "lane_runner"),
-    "puzzle": ("grid_puzzle",),
-    "grid puzzle": ("grid_puzzle",),
-    "match3": ("grid_puzzle",),
-    "merge": ("grid_puzzle",),
-    "shooter": ("topdown_shooter", "topdown_action", "portrait_arcade"),
-    "top down shooter": ("topdown_shooter", "topdown_action"),
-    "top-down shooter": ("topdown_shooter", "topdown_action"),
-    "dodge": ("topdown_action", "portrait_arcade", "topdown_dodge"),
-    "rhythm": ("tap_timing", "portrait_arcade"),
-    "tower_defense": ("grid_puzzle",),
-    "idle": ("portrait_arcade", "grid_puzzle"),
-    "rpg": ("topdown_action", "portrait_arcade"),
+    "casual": (
+        "casual_arcade_burst",
+        "casual_arcade_orbit",
+        "casual_arcade_rescue",
+        "casual_lane_dash",
+        "casual_lane_chase",
+        "casual_action_arena",
+        "casual_action_survival",
+        "casual_arcade",
+        "casual_action",
+        "casual_lane",
+    ),
+    "puzzle": (
+        "puzzle_grid_match",
+        "puzzle_grid_merge",
+        "puzzle_grid_route",
+        "puzzle_grid",
+        "tap_challenge_timing",
+        "casual_arcade_rescue",
+    ),
+    "educational": (
+        "puzzle_grid_route",
+        "puzzle_grid_match",
+        "tap_challenge_timing",
+        "puzzle_grid",
+        "casual_arcade_rescue",
+    ),
+    "funny": (
+        "tap_challenge_combo",
+        "casual_arcade_burst",
+        "casual_action_arena",
+        "casual_arcade_rescue",
+        "casual_arcade",
+        "casual_action",
+    ),
 }
 
 PROFILE_KEYWORD_FALLBACKS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("runner", ("lane_runner", "portrait_arcade")),
-    ("race", ("lane_runner", "portrait_arcade")),
-    ("platform", ("portrait_arcade", "lane_runner")),
-    ("puzzle", ("grid_puzzle",)),
-    ("match", ("grid_puzzle",)),
-    ("merge", ("grid_puzzle",)),
-    ("shooter", ("topdown_shooter", "topdown_action")),
-    ("top down", ("topdown_shooter", "topdown_action")),
-    ("dodge", ("topdown_action", "portrait_arcade", "topdown_dodge")),
-    ("action", ("topdown_action", "portrait_arcade")),
-    ("rhythm", ("tap_timing", "portrait_arcade")),
-    ("timing", ("tap_timing", "portrait_arcade")),
+    ("quiz", ("puzzle_grid_route", "tap_challenge_timing", "puzzle_grid_match")),
+    ("learn", ("puzzle_grid_route", "tap_challenge_timing", "puzzle_grid")),
+    ("teach", ("puzzle_grid_route", "puzzle_grid_match")),
+    ("answer", ("puzzle_grid_route", "tap_challenge_timing")),
+    ("puzzle", ("puzzle_grid_match", "puzzle_grid_merge", "puzzle_grid")),
+    ("match", ("puzzle_grid_match", "puzzle_grid_merge")),
+    ("merge", ("puzzle_grid_merge", "puzzle_grid_match")),
+    ("logic", ("puzzle_grid_route", "puzzle_grid")),
+    ("connect", ("puzzle_grid_route", "puzzle_grid")),
+    ("route", ("puzzle_grid_route", "casual_arcade_rescue")),
+    ("run", ("casual_lane_dash", "casual_lane", "casual_arcade_burst")),
+    ("race", ("casual_lane_dash", "casual_lane_chase", "casual_lane")),
+    ("chase", ("casual_lane_chase", "casual_lane_dash", "casual_action_survival")),
+    ("rescue", ("casual_arcade_rescue", "casual_arcade_orbit")),
+    ("orbit", ("casual_arcade_orbit", "casual_arcade_burst")),
+    ("timing", ("tap_challenge_timing", "tap_challenge_combo")),
+    ("rhythm", ("tap_challenge_timing", "tap_challenge_combo")),
+    ("music", ("tap_challenge_timing", "tap_challenge_combo")),
+    ("combo", ("tap_challenge_combo", "casual_arcade_burst")),
+    ("funny", ("tap_challenge_combo", "casual_arcade_burst", "casual_action_arena")),
+    ("meme", ("tap_challenge_combo", "casual_arcade_burst")),
+    ("comedy", ("tap_challenge_combo", "casual_action_arena")),
+    ("shoot", ("casual_action_arena", "casual_action_survival", "casual_action")),
+    ("arena", ("casual_action_arena", "casual_action_survival")),
+    ("survive", ("casual_action_survival", "casual_arcade_orbit", "casual_action")),
+    ("drag", ("casual_arcade_orbit", "puzzle_grid_route", "casual_action")),
 )
 
 PROFILE_TO_GAME_TYPE_HINT: dict[str, str] = {
-    "portrait_arcade": "runner",
-    "lane_runner": "runner",
-    "grid_puzzle": "puzzle",
-    "topdown_action": "dodge",
-    "topdown_dodge": "dodge",
-    "topdown_shooter": "shooter",
-    "tap_timing": "rhythm",
+    "casual_arcade": "casual",
+    "casual_lane": "casual",
+    "puzzle_grid": "puzzle",
+    "casual_action": "casual",
+    "tap_challenge": "funny",
+    "casual_arcade_burst": "casual",
+    "casual_arcade_orbit": "casual",
+    "casual_arcade_rescue": "casual",
+    "casual_lane_dash": "casual",
+    "casual_lane_chase": "casual",
+    "casual_action_arena": "casual",
+    "casual_action_survival": "casual",
+    "puzzle_grid_match": "puzzle",
+    "puzzle_grid_merge": "puzzle",
+    "puzzle_grid_route": "educational",
+    "tap_challenge_timing": "funny",
+    "tap_challenge_combo": "funny",
+}
+
+BASELINE_RUNTIME_PROFILES = {
+    "casual_arcade",
+    "casual_lane",
+    "puzzle_grid",
+    "casual_action",
+    "tap_challenge",
 }
 
 
 def _default_runtime_profile_id() -> str:
     profile = get_default_runtime_profile()
     if isinstance(profile, dict) and profile.get("id"):
-        return str(profile["id"])
+        return normalize_runtime_profile_id(str(profile["id"]))
     raise PipelineExecutionError(
         "No enabled runtime profile is configured",
         stage="runtime_profile_select",
@@ -144,6 +199,28 @@ class V2PipelineRunner:
         self.quality_scorer = QualityScorer()
         self.code_reviewer = CodeReviewer()
         self.pre_gen_validator = PreGenerationValidator()
+
+    @staticmethod
+    def _current_task_id() -> Optional[str]:
+        return get_request_context().get("task_id")
+
+    async def _remember_spec(self, spec: Optional[GameSpec]) -> None:
+        await task_memory.remember_spec(self._current_task_id(), spec)
+
+    async def _remember_runtime_contract(
+        self,
+        *,
+        runtime_profile: Optional[str],
+        contract: Optional[GameRuntimeContract],
+    ) -> None:
+        await task_memory.remember_runtime_contract(
+            self._current_task_id(),
+            runtime_profile=runtime_profile,
+            contract=contract,
+        )
+
+    async def _remember_code(self, code: Optional[str], *, label: str) -> None:
+        await task_memory.remember_code(self._current_task_id(), code, label=label)
 
     async def run(
         self,
@@ -218,6 +295,11 @@ class V2PipelineRunner:
         })
         stage_context["stage"] = "spec_build"
         spec = await self._build_create_spec(request)
+        await self._remember_spec(spec)
+        await task_memory.append_decision(
+            self._current_task_id(),
+            f"Built create spec with game_type={spec.game_type}",
+        )
 
         self._notify(progress_cb, "runtime_profile_select", 30, "Selecting runtime profile", {
             "gameId": request.game_id,
@@ -229,6 +311,10 @@ class V2PipelineRunner:
             spec,
             request.runtime_contract.runtime_profile,
             variation_seed=request.game_id,
+        )
+        await task_memory.append_decision(
+            self._current_task_id(),
+            f"Selected runtime profile {runtime_profile}",
         )
 
         self._notify(progress_cb, "contract_compose", 40, "Composing runtime contract", {
@@ -243,6 +329,7 @@ class V2PipelineRunner:
             runtime_profile=runtime_profile,
             entrypoint="create",
         )
+        await self._remember_runtime_contract(runtime_profile=runtime_profile, contract=runtime_contract)
         gdd = await self._build_gdd(spec, runtime_contract)
 
         if settings.ENABLE_LLM_DESIGN_PASS:
@@ -266,6 +353,7 @@ class V2PipelineRunner:
         })
         stage_context["stage"] = "logic_generate"
         generated = await self._generate_create_code(request, spec, gdd, runtime_contract)
+        await self._remember_code(generated.html_code, label="generated_candidate")
 
         qa_result, runtime_qa, runtime_retries, qa_warnings = await self._run_contract_and_runtime_flow(
             code=generated.html_code,
@@ -290,6 +378,7 @@ class V2PipelineRunner:
             generated = await self._generate_create_code(
                 request, spec, gdd, runtime_contract, budget_override="complex",
             )
+            await self._remember_code(generated.html_code, label="regenerated_candidate")
             qa_result, runtime_qa, runtime_retries, qa_warnings = await self._run_contract_and_runtime_flow(
                 code=generated.html_code,
                 spec=spec,
@@ -305,6 +394,7 @@ class V2PipelineRunner:
         elapsed = int(time.time() * 1000) - start_ms
         code_bytes = len(qa_result.code.encode("utf-8"))
         final_check = self.qa_pipeline.check(qa_result.code)
+        await self._remember_code(qa_result.code, label="final_code")
         review = await self.code_reviewer.review(qa_result.code)
         quality = self.quality_scorer.compute(
             static=QAStaticResult(
@@ -373,6 +463,11 @@ class V2PipelineRunner:
         })
         stage_context["stage"] = "spec_build"
         spec = await self._build_iteration_spec(request)
+        await self._remember_spec(spec)
+        await task_memory.append_decision(
+            self._current_task_id(),
+            f"Built iteration spec with game_type={spec.game_type}",
+        )
 
         self._notify(progress_cb, "runtime_profile_select", 30, "Selecting runtime profile", {
             "gameId": request.game_id,
@@ -384,6 +479,10 @@ class V2PipelineRunner:
             spec,
             request.runtime_contract.runtime_profile,
             variation_seed=request.game_id,
+        )
+        await task_memory.append_decision(
+            self._current_task_id(),
+            f"Selected runtime profile {runtime_profile}",
         )
 
         self._notify(progress_cb, "contract_compose", 40, "Refreshing runtime contract", {
@@ -398,6 +497,7 @@ class V2PipelineRunner:
             runtime_profile=runtime_profile,
             entrypoint="iterate",
         )
+        await self._remember_runtime_contract(runtime_profile=runtime_profile, contract=runtime_contract)
 
         self._notify(progress_cb, "logic_generate", 60, "Applying spec-driven iteration", {
             "gameId": request.game_id,
@@ -406,6 +506,11 @@ class V2PipelineRunner:
         })
         stage_context["stage"] = "logic_generate"
         updated_code, iteration_type = await self._generate_iteration_code(request, spec, runtime_contract)
+        await self._remember_code(updated_code, label=f"iteration_{iteration_type.value}")
+        await task_memory.append_decision(
+            self._current_task_id(),
+            f"Iteration classified as {iteration_type.value}",
+        )
 
         qa_result, runtime_qa, runtime_retries, qa_warnings = await self._run_contract_and_runtime_flow(
             code=updated_code,
@@ -420,6 +525,7 @@ class V2PipelineRunner:
         )
 
         elapsed = int(time.time() * 1000) - start_ms
+        await self._remember_code(qa_result.code, label="final_code")
         stage_context["stage"] = "completed"
         self._notify(progress_cb, "completed", 100, "V2 iteration completed", {
             "gameId": request.game_id,
@@ -449,13 +555,35 @@ class V2PipelineRunner:
         )
 
     async def _build_create_spec(self, request: RunPipelineV2Request) -> GameSpec:
+        if request.source_spec:
+            spec = request.source_spec.model_copy(deep=True)
+            spec.generation_tier = self._resolve_generation_tier(
+                request.generation_tier,
+                request.metadata.get("generation_tier"),
+                request.normalized_request.get("generation_tier"),
+                request.request_context.metadata.get("generation_tier"),
+                request.prompt_bundle_snapshot.layers.get("generation_tier"),
+                request.runtime_contract.metadata.get("generation_tier"),
+                getattr(spec, "generation_tier", None),
+            )
+            spec.complexity_budget = str(
+                getattr(spec.generation_tier, "value", spec.generation_tier)
+                or spec.complexity_budget
+                or "standard"
+            )
+            if request.raw_user_input.strip():
+                spec.source_description = request.raw_user_input.strip()
+            if request.title and spec.intent_summary:
+                spec.intent_summary = f"{request.title}: {spec.intent_summary}"
+            return apply_visual_pack_defaults(spec, variation_seed=request.game_id)
+
         description = request.raw_user_input.strip() or str(
             request.normalized_request.get("description", "")
         ).strip()
         if not description:
             raise PipelineExecutionError("raw_user_input is required", stage="spec_build")
 
-        return await self._parse_spec_with_retries(
+        spec = await self._parse_spec_with_retries(
             description=description,
             stage="spec_build",
             title=request.title,
@@ -464,6 +592,16 @@ class V2PipelineRunner:
             ),
             variation_seed=request.game_id,
         )
+        spec.generation_tier = self._resolve_generation_tier(
+            request.generation_tier,
+            request.metadata.get("generation_tier"),
+            request.normalized_request.get("generation_tier"),
+            request.request_context.metadata.get("generation_tier"),
+            request.prompt_bundle_snapshot.layers.get("generation_tier"),
+            request.runtime_contract.metadata.get("generation_tier"),
+        )
+        spec.complexity_budget = str(getattr(spec.generation_tier, "value", spec.generation_tier) or "standard")
+        return apply_visual_pack_defaults(spec, variation_seed=request.game_id)
 
     async def _build_iteration_spec(self, request: IterateV2Request) -> GameSpec:
         feedback = request.iteration_intent.feedback.strip()
@@ -505,21 +643,58 @@ class V2PipelineRunner:
             )
         except PipelineExecutionError as exc:
             if base_spec and self._should_fallback_iteration_spec(exc):
-                return self._build_iteration_fallback_spec(
+                spec = self._build_iteration_fallback_spec(
                     base_spec=base_spec,
                     feedback=feedback,
                     title=title,
                     source_bundle_context=request.source_bundle_context,
                 )
+                spec.generation_tier = self._resolve_generation_tier(
+                    request.generation_tier,
+                    request.metadata.get("generation_tier"),
+                    request.normalized_request.get("generation_tier"),
+                    request.request_context.metadata.get("generation_tier"),
+                    request.prompt_bundle_snapshot.layers.get("generation_tier"),
+                    request.runtime_contract.metadata.get("generation_tier"),
+                    request.source_bundle_context.latest_generation_tier,
+                    base_spec.generation_tier if base_spec else None,
+                )
+                spec.complexity_budget = str(getattr(spec.generation_tier, "value", spec.generation_tier) or "standard")
+                return apply_visual_pack_defaults(spec, variation_seed=request.game_id)
             raise
 
-        return self._merge_iteration_spec(
+        spec = self._merge_iteration_spec(
             base_spec=base_spec,
             parsed_spec=parsed_spec,
             feedback=feedback,
             title=title,
             source_bundle_context=request.source_bundle_context,
         )
+        spec.generation_tier = self._resolve_generation_tier(
+            request.generation_tier,
+            request.metadata.get("generation_tier"),
+            request.normalized_request.get("generation_tier"),
+            request.request_context.metadata.get("generation_tier"),
+            request.prompt_bundle_snapshot.layers.get("generation_tier"),
+            request.runtime_contract.metadata.get("generation_tier"),
+            request.source_bundle_context.latest_generation_tier,
+            base_spec.generation_tier if base_spec else None,
+        )
+        spec.complexity_budget = str(getattr(spec.generation_tier, "value", spec.generation_tier) or "standard")
+        return apply_visual_pack_defaults(spec, variation_seed=request.game_id)
+
+    @staticmethod
+    def _resolve_generation_tier(*candidates: Any) -> GenerationTier:
+        for candidate in candidates:
+            raw_value = getattr(candidate, "value", candidate)
+            value = str(raw_value or "").strip().lower()
+            if value == "safe":
+                return GenerationTier.safe
+            if value == "showcase":
+                return GenerationTier.showcase
+            if value == "standard":
+                return GenerationTier.standard
+        return GenerationTier.standard
 
     async def _parse_spec_with_retries(
         self,
@@ -581,7 +756,7 @@ class V2PipelineRunner:
         *,
         variation_seed: Optional[str] = None,
     ) -> str:
-        requested = (requested_profile or "").strip()
+        requested = normalize_runtime_profile_id((requested_profile or "").strip())
         if requested:
             try:
                 default_profile = _default_runtime_profile_id()
@@ -594,7 +769,7 @@ class V2PipelineRunner:
             spec.intent_summary,
             " ".join(spec.special_rules or []),
         ):
-            return "grid_puzzle"
+            return "puzzle_grid"
         normalized = re.sub(r"[^a-z0-9]+", " ", (spec.game_type or "").lower()).strip()
         candidates = list(PROFILE_CANDIDATES_BY_GAME_TYPE.get(normalized, ()))
         if not candidates:
@@ -632,46 +807,97 @@ class V2PipelineRunner:
         ]).lower()
         input_mode = (spec.platform_constraints.input_mode or "").lower()
         sparse = self._should_allow_profile_variation(spec)
+        raw_generation_tier = getattr(spec, "generation_tier", GenerationTier.standard)
+        generation_tier = str(getattr(raw_generation_tier, "value", raw_generation_tier))
         score = 0
 
         base_scores = (
-            ("grid_puzzle", {"puzzle", "tower_defense"}, 8),
-            ("lane_runner", {"runner", "platformer"}, 7),
-            ("topdown_shooter", {"shooter"}, 8),
-            ("topdown_action", {"dodge", "shooter", "rpg"}, 6),
-            ("topdown_dodge", {"dodge"}, 7),
-            ("tap_timing", {"rhythm"}, 8),
-            ("portrait_arcade", {"runner", "platformer", "dodge", "idle"}, 5),
+            ("puzzle_grid", {"puzzle", "educational"}, 4),
+            ("puzzle_grid_match", {"puzzle", "educational"}, 7),
+            ("puzzle_grid_merge", {"puzzle"}, 7),
+            ("puzzle_grid_route", {"puzzle", "educational"}, 8),
+            ("casual_lane", {"casual", "funny"}, 3),
+            ("casual_lane_dash", {"casual", "funny"}, 6),
+            ("casual_lane_chase", {"casual", "funny"}, 6),
+            ("casual_action", {"casual", "funny"}, 3),
+            ("casual_action_arena", {"casual", "funny"}, 6),
+            ("casual_action_survival", {"casual", "funny"}, 6),
+            ("tap_challenge", {"funny", "educational"}, 4),
+            ("tap_challenge_timing", {"funny", "educational"}, 7),
+            ("tap_challenge_combo", {"funny", "casual"}, 7),
+            ("casual_arcade", {"casual", "funny", "puzzle"}, 4),
+            ("casual_arcade_burst", {"casual", "funny"}, 7),
+            ("casual_arcade_orbit", {"casual", "funny"}, 7),
+            ("casual_arcade_rescue", {"casual", "funny", "educational"}, 7),
         )
         for candidate, game_types, value in base_scores:
             if profile == candidate and spec.game_type in game_types:
                 score += value
 
-        if "swipe" in input_mode and profile == "lane_runner":
+        if "swipe" in input_mode and profile in {"casual_lane", "casual_lane_dash", "casual_lane_chase"}:
             score += 3
-        if "drag" in input_mode and profile in {"topdown_action", "topdown_dodge", "grid_puzzle"}:
+        if "drag" in input_mode and profile in {
+            "casual_action",
+            "casual_action_arena",
+            "casual_action_survival",
+            "puzzle_grid",
+            "puzzle_grid_route",
+            "casual_arcade_orbit",
+        }:
             score += 2
-        if "tap" in input_mode and profile in {"portrait_arcade", "tap_timing", "grid_puzzle"}:
+        if "tap" in input_mode and profile in {
+            "casual_arcade",
+            "casual_arcade_burst",
+            "casual_arcade_rescue",
+            "tap_challenge",
+            "tap_challenge_timing",
+            "tap_challenge_combo",
+            "puzzle_grid",
+            "puzzle_grid_match",
+            "puzzle_grid_merge",
+        }:
             score += 2
 
-        if any(token in combined for token in ("shoot", "projectile", "weapon", "fire")) and profile == "topdown_shooter":
+        if any(token in combined for token in ("quiz", "lesson", "teacher", "learn", "math", "word", "spell", "answer")) and profile in {"puzzle_grid", "puzzle_grid_match", "puzzle_grid_route", "tap_challenge_timing"}:
+            score += 4
+        if any(token in combined for token in ("match", "sort", "logic", "connect", "solve")) and profile in {"puzzle_grid", "puzzle_grid_match", "puzzle_grid_route"}:
             score += 3
-        if any(token in combined for token in ("avoid", "survive", "escape", "hazard")) and profile == "topdown_dodge":
+        if "merge" in combined and profile in {"puzzle_grid_merge", "puzzle_grid_match"}:
+            score += 4
+        if any(token in combined for token in ("beat", "rhythm", "music", "timing", "tempo")) and profile in {"tap_challenge", "tap_challenge_timing", "tap_challenge_combo"}:
+            score += 4
+        if any(token in combined for token in ("run", "race", "dash")) and profile in {"casual_lane", "casual_lane_dash"}:
+            score += 4
+        if any(token in combined for token in ("chase", "pursuit", "escape")) and profile in {"casual_lane_chase", "casual_action_survival"}:
+            score += 4
+        if any(token in combined for token in ("shoot", "projectile", "weapon", "fire")) and profile in {"casual_action", "casual_action_arena"}:
+            score += 5
+        if any(token in combined for token in ("avoid", "survive", "hazard")) and profile in {"casual_action", "casual_action_survival", "casual_arcade_orbit"}:
             score += 2
-        if any(token in combined for token in ("collect", "rescue", "delivery", "escort")) and profile in {"portrait_arcade", "topdown_action"}:
+        if any(token in combined for token in ("collect", "rescue", "delivery", "escort")) and profile in {"casual_arcade", "casual_arcade_rescue", "casual_action", "puzzle_grid_route"}:
             score += 2
-        if any(token in combined for token in ("boss", "arena", "combat", "battle")) and profile == "topdown_action":
+        if any(token in combined for token in ("boss", "combat", "battle", "fight", "arena")) and profile in {"casual_action", "casual_action_arena"}:
             score += 2
+        if any(token in combined for token in ("funny", "comedy", "meme", "prank", "office", "goose", "slacker")) and profile in {"casual_arcade", "casual_arcade_burst", "casual_action_arena", "tap_challenge_combo"}:
+            score += 3
 
-        if sparse and profile in {"portrait_arcade", "topdown_action"}:
+        if sparse and profile in {"casual_arcade_burst", "casual_arcade_orbit", "casual_arcade_rescue", "puzzle_grid_route", "tap_challenge_combo"}:
             score += 2
-        if sparse and profile == "topdown_dodge":
-            score -= 2
+        if sparse and profile in {"casual_action", "puzzle_grid", "casual_arcade"}:
+            score -= 1
+
+        if generation_tier == "safe":
+            score += 2 if profile in BASELINE_RUNTIME_PROFILES else -2
+        elif generation_tier == "showcase":
+            score += 3 if profile not in BASELINE_RUNTIME_PROFILES else -1
 
         return score
 
     @staticmethod
     def _should_allow_profile_variation(spec: GameSpec) -> bool:
+        raw_generation_tier = getattr(spec, "generation_tier", GenerationTier.standard)
+        if str(getattr(raw_generation_tier, "value", raw_generation_tier)) == "showcase":
+            return True
         return any(
             "Favor a distinctive gameplay loop" in rule
             for rule in (spec.special_rules or [])
@@ -693,7 +919,7 @@ class V2PipelineRunner:
             if item and item.strip()
         )
         digest = hashlib.sha256(seed.encode("utf-8")).digest()
-        return digest[0] % count
+        return int.from_bytes(digest, "big") % count
 
     def _compose_runtime_contract(
         self,
@@ -703,6 +929,7 @@ class V2PipelineRunner:
         runtime_profile: str,
         entrypoint: str,
     ) -> GameRuntimeContract:
+        runtime_profile = normalize_runtime_profile_id(runtime_profile)
         contract = base_contract.model_copy(deep=True)
         contract.runtime_profile = runtime_profile
         requested_orientation = self._resolve_contract_orientation(base_contract)
@@ -744,23 +971,29 @@ class V2PipelineRunner:
         return "portrait_first"
 
     def _profile_input_overrides(self, runtime_profile: str) -> dict[str, Any]:
-        if runtime_profile == "grid_puzzle":
+        if runtime_profile.startswith("puzzle_grid"):
             return {
                 "required_modes": ["touch"],
                 "allow_mouse_fallback": True,
                 "gestures": ["tap", "drag"],
             }
-        if runtime_profile == "lane_runner":
+        if runtime_profile.startswith("casual_lane"):
             return {
                 "required_modes": ["touch", "pointer"],
                 "allow_mouse_fallback": True,
                 "gestures": ["tap", "swipe"],
             }
-        if runtime_profile == "tap_timing":
+        if runtime_profile.startswith("tap_challenge"):
             return {
                 "required_modes": ["touch", "pointer"],
                 "allow_mouse_fallback": True,
                 "gestures": ["tap"],
+            }
+        if runtime_profile in {"casual_arcade_orbit", "casual_arcade_rescue"}:
+            return {
+                "required_modes": ["touch", "pointer"],
+                "allow_mouse_fallback": True,
+                "gestures": ["drag", "tap"],
             }
         return {
             "required_modes": ["touch", "pointer"],
@@ -769,7 +1002,7 @@ class V2PipelineRunner:
         }
 
     def _profile_state_overrides(self, runtime_profile: str) -> dict[str, Any]:
-        if runtime_profile == "grid_puzzle":
+        if runtime_profile.startswith("puzzle_grid"):
             return {
                 "required_states": ["boot", "ready", "playing", "level_complete"],
                 "required_flags": ["levelComplete", "currentLevel", "showHint"],
@@ -782,7 +1015,12 @@ class V2PipelineRunner:
         }
 
     def _profile_gameplay_overrides(self, runtime_profile: str) -> dict[str, Any]:
-        if runtime_profile == "grid_puzzle":
+        if runtime_profile.startswith("puzzle_grid"):
+            primary_goal = "grid_completion"
+            if runtime_profile == "puzzle_grid_merge":
+                primary_goal = "merge_progression"
+            elif runtime_profile == "puzzle_grid_route":
+                primary_goal = "route_completion"
             return {
                 "requires_player_entity": False,
                 "requires_scoring": False,
@@ -797,16 +1035,62 @@ class V2PipelineRunner:
                     "win",
                     "cleared",
                 ],
-                "primary_goal": "grid_completion",
+                "primary_goal": primary_goal,
             }
-        if runtime_profile == "lane_runner":
+        if runtime_profile.startswith("casual_lane"):
+            primary_goal = "lane_survival" if runtime_profile != "casual_lane_chase" else "lane_chase"
             return {
                 "requires_player_entity": True,
                 "requires_scoring": True,
                 "requires_terminal_state": True,
                 "requires_restart_entry": True,
                 "terminal_state_aliases": ["game_over", "over", "ended", "lost", "failed"],
-                "primary_goal": "lane_survival",
+                "primary_goal": primary_goal,
+            }
+        if runtime_profile == "casual_action_arena":
+            return {
+                "requires_player_entity": True,
+                "requires_scoring": True,
+                "requires_terminal_state": True,
+                "requires_restart_entry": True,
+                "terminal_state_aliases": ["game_over", "over", "ended", "lost", "failed"],
+                "primary_goal": "arena_clearance",
+            }
+        if runtime_profile == "casual_action_survival":
+            return {
+                "requires_player_entity": True,
+                "requires_scoring": True,
+                "requires_terminal_state": True,
+                "requires_restart_entry": True,
+                "terminal_state_aliases": ["game_over", "over", "ended", "lost", "failed"],
+                "primary_goal": "survival_holdout",
+            }
+        if runtime_profile == "casual_arcade_rescue":
+            return {
+                "requires_player_entity": True,
+                "requires_scoring": True,
+                "requires_terminal_state": True,
+                "requires_restart_entry": True,
+                "terminal_state_aliases": ["game_over", "over", "ended", "lost", "failed", "rescued", "success"],
+                "primary_goal": "rescue_route",
+            }
+        if runtime_profile == "casual_arcade_orbit":
+            return {
+                "requires_player_entity": True,
+                "requires_scoring": True,
+                "requires_terminal_state": True,
+                "requires_restart_entry": True,
+                "terminal_state_aliases": ["game_over", "over", "ended", "lost", "failed"],
+                "primary_goal": "orbit_control",
+            }
+        if runtime_profile == "tap_challenge_combo":
+            return {
+                "requires_player_entity": True,
+                "requires_scoring": True,
+                "requires_terminal_state": True,
+                "requires_restart_entry": True,
+                "terminal_state_aliases": ["game_over", "over", "ended", "lost", "failed"],
+                "primary_goal": "combo_target",
             }
         return {
             "requires_player_entity": True,
@@ -1072,7 +1356,6 @@ class V2PipelineRunner:
                 unavailable_reason = getattr(runtime_qa, "unavailable_reason", None)
                 unavailable_kind = getattr(runtime_qa, "unavailable_kind", None)
                 unavailable_phase = getattr(runtime_qa, "unavailable_phase", None)
-                runtime_qa_report = self._serialize_runtime_qa(runtime_qa, [])
                 if allow_runtime_qa_unavailable and unavailable_kind in {"timeout", "infra_unavailable", "exception"}:
                     qa_warning = self._build_runtime_qa_warning(runtime_qa)
                     qa_warnings = [qa_warning]
@@ -1091,41 +1374,46 @@ class V2PipelineRunner:
                         },
                     )
                     return current_code, runtime_qa, total_retries, qa_warnings
-                if settings.RUNTIME_QA_REQUIRED or settings.ENVIRONMENT == "production":
-                    raise PipelineExecutionError(
-                        "Runtime QA unavailable: {}".format(
-                            unavailable_reason or "Playwright is not installed or browser launch failed"
-                        ),
-                        stage="runtime_simulation_qa",
-                        retry_count=total_retries,
-                        failure_family="qa_infra_unavailable",
-                        artifacts=[
-                            self._build_text_artifact(
-                                artifact_type="failed_runtime_candidate",
-                                payload=current_code,
-                                metadata={
-                                    "stage": "runtime_simulation_qa",
-                                    "retryCount": total_retries,
-                                    "attempt": attempt,
-                                    "timeoutS": runtime_qa_timeout_s,
-                                    "unavailableReason": unavailable_reason,
-                                },
+                unavailable_errors = self._runtime_qa_unavailable_errors(runtime_qa, current_code)
+                if unavailable_errors:
+                    errors = unavailable_errors
+                else:
+                    runtime_qa_report = self._serialize_runtime_qa(runtime_qa, [])
+                    if settings.RUNTIME_QA_REQUIRED or settings.ENVIRONMENT == "production":
+                        raise PipelineExecutionError(
+                            "Runtime QA unavailable: {}".format(
+                                unavailable_reason or "Playwright is not installed or browser launch failed"
                             ),
-                            self._build_json_artifact(
-                                artifact_type="runtime_qa_report",
-                                payload={
-                                    **runtime_qa_report,
-                                    "retryCount": total_retries,
-                                    "attempt": attempt,
-                                    "timeoutS": runtime_qa_timeout_s,
-                                },
-                                metadata={"stage": "runtime_simulation_qa"},
-                            ),
-                        ],
-                    )
-                return current_code, runtime_qa, total_retries, qa_warnings
-
-            errors = self._runtime_qa_errors(runtime_qa, current_code)
+                            stage="runtime_simulation_qa",
+                            retry_count=total_retries,
+                            failure_family="qa_infra_unavailable",
+                            artifacts=[
+                                self._build_text_artifact(
+                                    artifact_type="failed_runtime_candidate",
+                                    payload=current_code,
+                                    metadata={
+                                        "stage": "runtime_simulation_qa",
+                                        "retryCount": total_retries,
+                                        "attempt": attempt,
+                                        "timeoutS": runtime_qa_timeout_s,
+                                        "unavailableReason": unavailable_reason,
+                                    },
+                                ),
+                                self._build_json_artifact(
+                                    artifact_type="runtime_qa_report",
+                                    payload={
+                                        **runtime_qa_report,
+                                        "retryCount": total_retries,
+                                        "attempt": attempt,
+                                        "timeoutS": runtime_qa_timeout_s,
+                                    },
+                                    metadata={"stage": "runtime_simulation_qa"},
+                                ),
+                            ],
+                        )
+                    return current_code, runtime_qa, total_retries, qa_warnings
+            else:
+                errors = self._runtime_qa_errors(runtime_qa, current_code)
             if not errors:
                 return current_code, runtime_qa, total_retries, qa_warnings
 
@@ -1416,6 +1704,74 @@ class V2PipelineRunner:
             ))
         return errors
 
+    def _runtime_qa_unavailable_errors(self, runtime_qa: Any, code: str) -> list[QACheckError]:
+        unavailable_kind = str(getattr(runtime_qa, "unavailable_kind", "") or "").strip().lower()
+        unavailable_phase = str(getattr(runtime_qa, "unavailable_phase", "") or "").strip().lower()
+        if unavailable_kind != "timeout":
+            return []
+
+        errors: list[QACheckError] = []
+        unavailable_reason = getattr(runtime_qa, "unavailable_reason", None) or "runtime QA timed out"
+        static_input_map = self.qa_pipeline._extract_input_handlers(code)
+        has_static_inputs = any(
+            static_input_map.get(family)
+            for family in ("touch", "pointer", "mouse", "keyboard", "sensor")
+        )
+        input_handlers = (
+            set(getattr(runtime_qa, "registered_input_handlers", []) or [])
+            | set(getattr(runtime_qa, "direct_input_handlers", []) or [])
+            | set(getattr(runtime_qa, "triggered_input_handlers", []) or [])
+        )
+        visible_change_detected = bool(
+            getattr(runtime_qa, "canvas_changed_after_input", False)
+            or getattr(runtime_qa, "dom_changed_after_input", False)
+        )
+        interaction_performed = bool(getattr(runtime_qa, "interaction_performed", False))
+
+        if unavailable_phase in {"interaction", "collect"}:
+            if not input_handlers and not has_static_inputs:
+                errors.append(QACheckError(
+                    type="runtime_qa",
+                    message="Runtime QA detected no registered user input handlers",
+                    severity="error",
+                ))
+            if input_handlers or interaction_performed:
+                message = (
+                    "Runtime QA dispatched synthetic input but the game did not finish the first interaction quickly; "
+                    "keep first-input handlers lightweight and make them produce an immediate visible state change"
+                )
+                if visible_change_detected:
+                    message = (
+                        "Runtime QA timed out while collecting post-interaction signals after input dispatch; "
+                        "keep the first interaction lightweight and avoid long synchronous work on input handlers"
+                    )
+            else:
+                message = (
+                    "Runtime QA timed out during synthetic interaction; register gameplay handlers during boot "
+                    "and make the first input cause an immediate visible state change"
+                )
+            errors.append(QACheckError(
+                type="runtime_qa",
+                message=message,
+                severity="error",
+            ))
+        else:
+            return []
+
+        for message in list(getattr(runtime_qa, "js_errors", []) or [])[:3]:
+            errors.insert(0, QACheckError(
+                type="runtime_qa",
+                message=f"Runtime JS error: {message}",
+                severity="error",
+            ))
+
+        logger.warning(
+            "Treating runtime QA timeout as repairable runtime failure: phase=%s reason=%s",
+            unavailable_phase,
+            unavailable_reason,
+        )
+        return errors
+
     @staticmethod
     def _build_text_artifact(
         *,
@@ -1525,6 +1881,11 @@ class V2PipelineRunner:
                 f"theme={source_spec.visual_style.theme}",
                 f"mechanic={mechanic}",
                 f"win={source_spec.rules.win_condition}",
+                f"progression={source_spec.progression_shape}" if source_spec.progression_shape else "",
+                f"reward_loop={source_spec.reward_loop}" if source_spec.reward_loop else "",
+                f"signature_moment={source_spec.signature_moment}" if source_spec.signature_moment else "",
+                f"tone={source_spec.tone}" if source_spec.tone else "",
+                f"complexity_budget={source_spec.complexity_budget}" if source_spec.complexity_budget else "",
                 f"ui_language={source_spec.ui_language}",
             ]
             if part

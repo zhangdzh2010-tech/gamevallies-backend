@@ -28,19 +28,19 @@ def _sample_code(label: str) -> str:
 def test_template_cache_uses_theme_and_goal_in_fingerprint():
     cache = CodeTemplateCache()
     space_survival = GameSpec(
-        game_type="dodge",
+        game_type="casual",
         visual_style=VisualStyle(theme="space"),
         rules=GameRules(win_condition="Survive for 60 seconds"),
         platform_constraints=PlatformConstraints(input_mode="drag"),
     )
     forest_rescue = GameSpec(
-        game_type="dodge",
+        game_type="casual",
         visual_style=VisualStyle(theme="forest"),
         rules=GameRules(win_condition="Rescue three travelers"),
         platform_constraints=PlatformConstraints(input_mode="drag"),
     )
 
-    cache.store(space_survival, "topdown_action", _sample_code("space"))
+    cache.store(space_survival, "casual_action", _sample_code("space"))
 
-    assert cache.get_skeleton(space_survival, "topdown_action") is not None
-    assert cache.get_skeleton(forest_rescue, "topdown_action") is None
+    assert cache.get_skeleton(space_survival, "casual_action") is not None
+    assert cache.get_skeleton(forest_rescue, "casual_action") is None

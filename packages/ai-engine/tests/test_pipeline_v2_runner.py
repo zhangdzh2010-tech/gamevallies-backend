@@ -87,7 +87,7 @@ def test_runtime_contract_accepts_completion_state_constant_alias():
     </html>
     """
 
-    errors = runner._validate_runtime_contract(code, GameRuntimeContract(runtime_profile="topdown_action"))
+    errors = runner._validate_runtime_contract(code, GameRuntimeContract(runtime_profile="casual_action"))
     assert not any("terminal or completion state" in error.message.lower() for error in errors)
 
 
@@ -123,7 +123,7 @@ def test_runtime_contract_treats_boot_and_ready_as_same_startup_phase():
     </html>
     """
 
-    errors = runner._validate_runtime_contract(code, GameRuntimeContract(runtime_profile="grid_puzzle"))
+    errors = runner._validate_runtime_contract(code, GameRuntimeContract(runtime_profile="puzzle_grid"))
     assert not any("requires state 'ready'" in error.message.lower() for error in errors)
 
 
@@ -154,7 +154,7 @@ def test_contract_qa_loop_passes_prompt_bundle_snapshot_to_repair_code():
         result = asyncio.run(
             runner._run_contract_qa_loop(
                 code="<!DOCTYPE html><html><body><script>eval('x')</script></body></html>",
-                spec=GameSpec(game_type="runner"),
+                spec=GameSpec(game_type="casual"),
                 runtime_contract=GameRuntimeContract(),
                 prompt_bundle_snapshot=prompt_bundle_snapshot,
                 progress_cb=None,
@@ -218,7 +218,7 @@ def test_runtime_qa_loop_allows_second_targeted_remediation_attempt():
         final_code, runtime_qa, retries, qa_warnings = asyncio.run(
             runner._run_runtime_qa_loop(
                 code="<!DOCTYPE html><html><body>initial</body></html>",
-                spec=GameSpec(game_type="runner"),
+                spec=GameSpec(game_type="casual"),
                 runtime_contract=GameRuntimeContract(),
                 prompt_bundle_snapshot={"layers": {}},
                 progress_cb=None,
@@ -292,7 +292,7 @@ def test_runtime_qa_loop_treats_static_input_handlers_as_valid_signal():
         final_code, runtime_qa, retries, qa_warnings = asyncio.run(
             runner._run_runtime_qa_loop(
                 code=code,
-                spec=GameSpec(game_type="runner"),
+                spec=GameSpec(game_type="casual"),
                 runtime_contract=GameRuntimeContract(),
                 prompt_bundle_snapshot={"layers": {}},
                 progress_cb=None,
@@ -347,7 +347,7 @@ def test_runtime_qa_loop_accepts_dom_visible_feedback_when_canvas_pixels_do_not_
         final_code, runtime_qa, retries, qa_warnings = asyncio.run(
             runner._run_runtime_qa_loop(
                 code=code,
-                spec=GameSpec(game_type="runner"),
+                spec=GameSpec(game_type="casual"),
                 runtime_contract=GameRuntimeContract(),
                 prompt_bundle_snapshot={"layers": {}},
                 progress_cb=None,
@@ -365,27 +365,27 @@ def test_runtime_qa_loop_accepts_dom_visible_feedback_when_canvas_pixels_do_not_
 def test_select_runtime_profile_normalizes_descriptive_game_type_labels():
     runner = V2PipelineRunner()
 
-    assert runner._select_runtime_profile(GameSpec(game_type="endless runner"), "portrait_arcade") == "lane_runner"
-    assert runner._select_runtime_profile(GameSpec(game_type="top-down shooter"), "portrait_arcade") == "topdown_shooter"
-    assert runner._select_runtime_profile(GameSpec(game_type="grid puzzle"), "portrait_arcade") == "grid_puzzle"
+    assert runner._select_runtime_profile(GameSpec(game_type="casual", source_description="race through traffic"), "casual_arcade") == "casual_lane_dash"
+    assert runner._select_runtime_profile(GameSpec(game_type="casual", source_description="shoot targets quickly"), "casual_arcade") == "casual_action_arena"
+    assert runner._select_runtime_profile(GameSpec(game_type="puzzle"), "casual_arcade") == "puzzle_grid_route"
 
 
-def test_select_runtime_profile_biases_educational_requests_to_grid_puzzle():
+def test_select_runtime_profile_biases_educational_requests_to_puzzle_grid():
     runner = V2PipelineRunner()
 
     spec = GameSpec(
-        game_type="runner",
+        game_type="casual",
         source_description="请围绕浮力知识点设计一个课堂小游戏，包含3道配套练习题和计分方式。",
         intent_summary="课堂小游戏 + 练习题",
     )
 
-    assert runner._select_runtime_profile(spec, "portrait_arcade") == "grid_puzzle"
+    assert runner._select_runtime_profile(spec, "casual_arcade") == "puzzle_grid"
 
 
 def test_select_runtime_profile_can_vary_for_sparse_diversity_seed():
     runner = V2PipelineRunner()
     spec = GameSpec(
-        game_type="dodge",
+        game_type="casual",
         source_description="avoid asteroids",
         intent_summary="avoid hazards and stay alive",
         special_rules=[
@@ -393,12 +393,12 @@ def test_select_runtime_profile_can_vary_for_sparse_diversity_seed():
         ],
     )
 
-    with patch("src.engine.pipeline_v2_runner._default_runtime_profile_id", return_value="portrait_arcade"):
-        first = runner._select_runtime_profile(spec, "portrait_arcade", variation_seed="game-a")
-        second = runner._select_runtime_profile(spec, "portrait_arcade", variation_seed="game-b")
+    with patch("src.engine.pipeline_v2_runner._default_runtime_profile_id", return_value="casual_arcade"):
+        first = runner._select_runtime_profile(spec, "casual_arcade", variation_seed="game-a")
+        second = runner._select_runtime_profile(spec, "casual_arcade", variation_seed="game-b")
 
-    assert first in {"topdown_action", "portrait_arcade", "topdown_dodge"}
-    assert second in {"topdown_action", "portrait_arcade", "topdown_dodge"}
+    assert first in {"casual_action", "casual_arcade", "casual_lane", "casual_arcade_orbit", "casual_arcade_burst"}
+    assert second in {"casual_action", "casual_arcade", "casual_lane", "casual_arcade_orbit", "casual_arcade_burst"}
     assert first != second
 
 
@@ -490,8 +490,8 @@ def test_compose_runtime_contract_preserves_landscape_orientation():
             canvas={"orientation": "landscape_first"},
             mobile_layout={"orientation": "landscape_first"},
         ),
-        spec=GameSpec(game_type="runner"),
-        runtime_profile="lane_runner",
+        spec=GameSpec(game_type="casual"),
+        runtime_profile="casual_lane",
         entrypoint="create",
     )
 
@@ -504,7 +504,7 @@ def test_build_gdd_uses_landscape_canvas_for_landscape_contracts():
     runner = V2PipelineRunner()
     gdd = asyncio.run(
         runner._build_gdd(
-            GameSpec(game_type="runner"),
+            GameSpec(game_type="casual"),
             GameRuntimeContract(
                 canvas={"orientation": "landscape_first"},
                 mobile_layout={"orientation": "landscape_first"},
@@ -684,7 +684,7 @@ def test_validate_runtime_contract_accepts_object_mode_terminal_state_transition
 def test_validate_runtime_contract_accepts_object_phase_completion_state_transition():
     runner = V2PipelineRunner()
     contract = GameRuntimeContract(
-        runtime_profile="grid_puzzle",
+        runtime_profile="puzzle_grid",
         gameplay={
             "requires_player_entity": False,
             "requires_scoring": False,
@@ -724,10 +724,10 @@ def test_validate_runtime_contract_accepts_object_phase_completion_state_transit
     )
 
 
-def test_validate_runtime_contract_accepts_grid_puzzle_completion_state_without_score_loop():
+def test_validate_runtime_contract_accepts_puzzle_grid_completion_state_without_score_loop():
     runner = V2PipelineRunner()
     contract = GameRuntimeContract(
-        runtime_profile="grid_puzzle",
+        runtime_profile="puzzle_grid",
         state={
             "required_states": ["boot", "ready", "playing", "level_complete"],
             "required_flags": ["levelComplete", "currentLevel", "showHint"],
@@ -810,21 +810,21 @@ def test_build_create_spec_passes_title_and_runtime_profile_hint_into_parser():
         user_id="user-1",
         raw_user_input="继续增加关卡，设置5个关卡",
         title="逮小猪",
-        runtime_contract=GameRuntimeContract(runtime_profile="portrait_arcade"),
+        runtime_contract=GameRuntimeContract(runtime_profile="casual_arcade"),
     )
 
     with patch.object(
         runner,
         "_parse_spec_with_retries",
-        new=AsyncMock(return_value=GameSpec(game_type="runner")),
+        new=AsyncMock(return_value=GameSpec(game_type="casual")),
     ) as mock_parse:
         spec = asyncio.run(runner._build_create_spec(request))
 
-    assert spec.game_type == "runner"
+    assert spec.game_type == "casual"
     kwargs = mock_parse.await_args.kwargs
     assert kwargs["description"] == "继续增加关卡，设置5个关卡"
     assert kwargs["title"] == "逮小猪"
-    assert kwargs["preferred_game_type"] == "runner"
+    assert kwargs["preferred_game_type"] == "casual"
 
 
 def test_build_iteration_spec_merges_with_source_spec_history():
@@ -838,21 +838,21 @@ def test_build_iteration_spec_merges_with_source_spec_history():
             "conversation": [{"role": "user", "content": "保留逮小猪主题"}],
         },
         source_spec=GameSpec(
-            game_type="runner",
+            game_type="casual",
             intent_summary="逮住小猪并躲开障碍",
             ui_language="zh-CN",
         ),
         source_bundle_context=SourceBundleContext(
             title="逮小猪",
             latest_bundle_version=2,
-            latest_game_type="runner",
+            latest_game_type="casual",
             latest_feedback="把障碍再清楚一些",
         ),
-        runtime_contract=GameRuntimeContract(runtime_profile="portrait_arcade"),
+        runtime_contract=GameRuntimeContract(runtime_profile="casual_arcade"),
     )
 
     parsed_spec = GameSpec(
-        game_type="runner",
+        game_type="casual",
         intent_summary="新增五个关卡并提升节奏",
         ui_language="zh-CN",
         special_rules=["包含5个关卡"],
@@ -874,7 +874,7 @@ def test_build_iteration_spec_merges_with_source_spec_history():
     ):
         spec = asyncio.run(runner._build_iteration_spec(request))
 
-    assert spec.game_type == "runner"
+    assert spec.game_type == "casual"
     assert spec.visual_style.theme == request.source_spec.visual_style.theme
     assert any("5个关卡" in rule for rule in spec.special_rules)
     assert "逮小猪" in spec.intent_summary
@@ -887,9 +887,9 @@ def test_build_iteration_spec_falls_back_to_source_spec_when_parse_fails():
         user_id="user-iter-fallback",
         current_code="<!DOCTYPE html><html><head><title>逮小猪</title></head><body></body></html>",
         iteration_intent={"feedback": "继续增加关卡，设置5个关卡", "conversation": []},
-        source_spec=GameSpec(game_type="runner", intent_summary="逮住小猪并躲开障碍", ui_language="zh-CN"),
+        source_spec=GameSpec(game_type="casual", intent_summary="逮住小猪并躲开障碍", ui_language="zh-CN"),
         source_bundle_context=SourceBundleContext(title="逮小猪"),
-        runtime_contract=GameRuntimeContract(runtime_profile="portrait_arcade"),
+        runtime_contract=GameRuntimeContract(runtime_profile="casual_arcade"),
     )
 
     with patch(
@@ -914,7 +914,7 @@ def test_build_iteration_spec_falls_back_to_source_spec_when_parse_fails():
     ):
         spec = asyncio.run(runner._build_iteration_spec(request))
 
-    assert spec.game_type == "runner"
+    assert spec.game_type == "casual"
     assert any("5个关卡" in rule for rule in spec.special_rules)
 
 
@@ -925,9 +925,9 @@ def test_build_iteration_spec_raises_on_generic_pipeline_failure():
         user_id="user-iter-error",
         current_code="<!DOCTYPE html><html><head><title>Pig Runner</title></head><body></body></html>",
         iteration_intent={"feedback": "add five levels", "conversation": []},
-        source_spec=GameSpec(game_type="runner", intent_summary="Keep the pig runner core", ui_language="en-US"),
+        source_spec=GameSpec(game_type="casual", intent_summary="Keep the pig runner core", ui_language="en-US"),
         source_bundle_context=SourceBundleContext(title="Pig Runner"),
-        runtime_contract=GameRuntimeContract(runtime_profile="portrait_arcade"),
+        runtime_contract=GameRuntimeContract(runtime_profile="casual_arcade"),
     )
 
     with patch(
@@ -972,7 +972,7 @@ def test_runtime_qa_unavailable_in_production_persists_candidate_artifacts():
             asyncio.run(
                 runner._run_runtime_qa_loop(
                     code="<!DOCTYPE html><html><body>candidate</body></html>",
-                    spec=GameSpec(game_type="runner"),
+                    spec=GameSpec(game_type="casual"),
                     runtime_contract=GameRuntimeContract(),
                     prompt_bundle_snapshot={"layers": {}},
                     progress_cb=None,
@@ -997,6 +997,115 @@ def test_runtime_qa_unavailable_in_production_persists_candidate_artifacts():
             assert runtime_report["unavailablePhase"] == "content_load"
 
 
+def test_runtime_qa_interaction_timeout_is_treated_as_repairable_runtime_failure():
+    runner = V2PipelineRunner()
+    timeout_result = SimpleNamespace(
+        ran=False,
+        unavailable_reason="runtime_qa_timeout:interaction:6.00s",
+        unavailable_kind="timeout",
+        unavailable_phase="interaction",
+        phase_metrics={"interaction_timeout_s": 6.0},
+        js_errors=[],
+    )
+    repaired_runtime = SimpleNamespace(
+        ran=True,
+        canvas_renders=True,
+        js_errors=[],
+        registered_input_handlers=["pointerdown"],
+        direct_input_handlers=["click"],
+        triggered_input_handlers=["pointerdown"],
+        interaction_performed=True,
+        canvas_changed_after_input=True,
+        dom_changed_after_input=True,
+        fps=60.0,
+        load_time_ms=1200,
+    )
+    repaired_candidate = """
+    <!DOCTYPE html>
+    <html><body><canvas id='gameCanvas'></canvas><script>
+    const canvas = document.getElementById('gameCanvas');
+    canvas.addEventListener('pointerdown', () => {});
+    </script></body></html>
+    """
+
+    with patch(
+        "src.engine.pipeline_v2_runner.run_runtime_qa",
+        new=AsyncMock(side_effect=[timeout_result, repaired_runtime]),
+    ), patch.object(
+        runner.qa_pipeline,
+        "repair_code",
+        new=AsyncMock(return_value=repaired_candidate),
+    ) as repair_mock, patch.object(
+        runner,
+        "_run_contract_qa_loop",
+        new=AsyncMock(return_value=SimpleNamespace(success=True, code=repaired_candidate, retries=0, last_errors=[])),
+    ), patch(
+        "src.engine.pipeline_v2_runner.settings.ENVIRONMENT",
+        "production",
+    ):
+        final_code, runtime_qa, retries, qa_warnings = asyncio.run(
+            runner._run_runtime_qa_loop(
+                code="<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas></body></html>",
+                spec=GameSpec(game_type="casual"),
+                runtime_contract=GameRuntimeContract(),
+                prompt_bundle_snapshot={"layers": {}},
+                progress_cb=None,
+                game_id="game-1",
+                user_id="user-1",
+                allow_runtime_qa_unavailable=False,
+            )
+        )
+
+    assert final_code == repaired_candidate
+    assert runtime_qa is repaired_runtime
+    assert retries == 1
+    assert qa_warnings == []
+    repair_errors = repair_mock.await_args.args[1]
+    assert any("synthetic interaction" in error.message.lower() for error in repair_errors)
+
+
+def test_runtime_qa_unavailable_errors_flag_missing_input_handlers_for_interaction_timeout():
+    runner = V2PipelineRunner()
+    errors = runner._runtime_qa_unavailable_errors(
+        SimpleNamespace(
+            ran=False,
+            unavailable_reason="runtime_qa_timeout:interaction:6.00s",
+            unavailable_kind="timeout",
+            unavailable_phase="interaction",
+            js_errors=[],
+        ),
+        "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas></body></html>",
+    )
+
+    messages = [error.message for error in errors]
+    assert any("no registered user input handlers" in message.lower() for message in messages)
+    assert any("synthetic interaction" in message.lower() for message in messages)
+
+
+def test_runtime_qa_unavailable_errors_describe_heavy_first_interaction_when_handlers_exist():
+    runner = V2PipelineRunner()
+    errors = runner._runtime_qa_unavailable_errors(
+        SimpleNamespace(
+            ran=False,
+            unavailable_reason="runtime_qa_timeout:interaction:6.00s",
+            unavailable_kind="timeout",
+            unavailable_phase="interaction",
+            js_errors=[],
+            registered_input_handlers=["pointerdown"],
+            direct_input_handlers=["click"],
+            triggered_input_handlers=["pointerdown"],
+            interaction_performed=True,
+            canvas_changed_after_input=False,
+            dom_changed_after_input=False,
+        ),
+        "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas><script>document.getElementById('gameCanvas').addEventListener('pointerdown',()=>{});</script></body></html>",
+    )
+
+    messages = [error.message for error in errors]
+    assert not any("no registered user input handlers" in message.lower() for message in messages)
+    assert any("keep first-input handlers lightweight" in message.lower() for message in messages)
+
+
 def test_runtime_qa_timeout_can_soft_fail_for_published_iteration():
     runner = V2PipelineRunner()
     runtime_unavailable = SimpleNamespace(
@@ -1017,7 +1126,7 @@ def test_runtime_qa_timeout_can_soft_fail_for_published_iteration():
         final_code, runtime_qa, retries, qa_warnings = asyncio.run(
             runner._run_runtime_qa_loop(
                 code="<!DOCTYPE html><html><body>candidate</body></html>",
-                spec=GameSpec(game_type="runner"),
+                spec=GameSpec(game_type="casual"),
                 runtime_contract=GameRuntimeContract(),
                 prompt_bundle_snapshot={"layers": {}},
                 progress_cb=None,
@@ -1038,3 +1147,75 @@ def test_runtime_qa_timeout_can_soft_fail_for_published_iteration():
         "phase": "overall",
         "softFailed": True,
     }]
+
+
+def test_build_create_spec_resolves_generation_tier_from_request_metadata():
+    runner = V2PipelineRunner()
+    request = RunPipelineV2Request(
+        game_id="game-tier",
+        user_id="user-tier",
+        raw_user_input="make a flashy arcade game",
+        generation_tier="showcase",
+        runtime_contract=GameRuntimeContract(metadata={"generation_tier": "safe"}),
+    )
+
+    with patch.object(
+        runner,
+        "_parse_spec_with_retries",
+        new=AsyncMock(return_value=GameSpec(game_type="casual")),
+    ):
+        spec = asyncio.run(runner._build_create_spec(request))
+
+    assert spec.game_type == "casual"
+    assert spec.generation_tier.value == "showcase"
+    assert spec.visual_style.visual_pack is not None
+    assert spec.visual_style.render_style_intensity == "high"
+
+
+def test_build_iteration_spec_inherits_generation_tier_from_source_bundle_context():
+    runner = V2PipelineRunner()
+    request = IterateV2Request(
+        game_id="game-iter-tier",
+        user_id="user-iter-tier",
+        current_code="<!DOCTYPE html><html><body></body></html>",
+        iteration_intent={"feedback": "add a dramatic finale", "conversation": []},
+        source_spec=GameSpec(game_type="casual", generation_tier="standard"),
+        source_bundle_context=SourceBundleContext(
+            title="Arcade Rescue",
+            latest_generation_tier="showcase",
+        ),
+        runtime_contract=GameRuntimeContract(runtime_profile="casual_arcade"),
+    )
+
+    with patch(
+        "src.engine.pipeline_v2_runner.require_prompt",
+        return_value=(
+            "Current game context: {current_summary}\n"
+            "Source spec summary: {source_spec_summary}\n"
+            "Historical bundle context: {source_bundle_context}\n"
+            "Requested iteration: {feedback}\n"
+            "Conversation context: {conversation_text}"
+        ),
+    ), patch.object(
+        runner,
+        "_parse_spec_with_retries",
+        new=AsyncMock(return_value=GameSpec(game_type="casual")),
+    ):
+        spec = asyncio.run(runner._build_iteration_spec(request))
+
+    assert spec.game_type == "casual"
+    assert spec.generation_tier.value == "showcase"
+
+
+def test_score_runtime_profile_candidate_rewards_showcase_variants():
+    runner = V2PipelineRunner()
+    showcase_spec = GameSpec(game_type="casual", generation_tier="showcase")
+    safe_spec = GameSpec(game_type="casual", generation_tier="safe")
+
+    showcase_variant = runner._score_runtime_profile_candidate(showcase_spec, "casual_arcade_rescue")
+    showcase_baseline = runner._score_runtime_profile_candidate(showcase_spec, "casual_arcade")
+    safe_variant = runner._score_runtime_profile_candidate(safe_spec, "casual_arcade_rescue")
+    safe_baseline = runner._score_runtime_profile_candidate(safe_spec, "casual_arcade")
+
+    assert showcase_variant > showcase_baseline
+    assert safe_baseline > safe_variant
