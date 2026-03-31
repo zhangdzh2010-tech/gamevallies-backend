@@ -16,13 +16,22 @@ import {
   Logger,
 } from '@nestjs/common';
 import { GameService } from './game.service';
+import { CreationSessionService } from './creation-session.service';
 import { CreatorReputationService } from './creator-reputation.service';
-import { CreateGameDto, PublishGameDto, IterateGameDto } from './dto';
+import {
+  CreateCreationSessionDto,
+  CreateCreationSessionMessageDto,
+  CreateGameDto,
+  GenerateCreationSessionDto,
+  PublishGameDto,
+  IterateGameDto,
+  SkipCreationSessionQuestionDto,
+} from './dto';
 import { JwtAuthGuard } from '../common/jwt-auth.guard';
 import { ok, toPage } from '../common/api-response';
 import { presentGame } from '../common/game-presenter';
 
-const SUPPORTED_GAME_TYPES = ['casual', 'puzzle', 'education'] as const;
+const SUPPORTED_GAME_TYPES = ['casual', 'puzzle', 'education', 'funny'] as const;
 const GAME_ID_ROUTE = ':id([0-9a-fA-F-]{36})';
 
 @Controller('games')
@@ -31,6 +40,7 @@ export class GameController {
 
   constructor(
     private gameService: GameService,
+    private creationSessionService: CreationSessionService,
     private reputationService: CreatorReputationService,
   ) {}
 
@@ -82,6 +92,7 @@ export class GameController {
         timeoutS: dto.timeoutS,
         regionHint: dto.regionHint,
         orientation: dto.orientation,
+        generationTier: dto.generationTier,
       });
 
       return ok(result);
@@ -89,6 +100,102 @@ export class GameController {
       this.logger.error(`Error generating game: ${error.message}`);
       throw error;
     }
+  }
+
+  @Post('/creation-sessions')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async createCreationSession(@Req() req: any, @Body() dto: CreateCreationSessionDto) {
+    const userId = req.user?.sub || req.user?.id;
+    if (!userId) {
+      throw new BadRequestException('Invalid token');
+    }
+
+    return ok(await this.creationSessionService.createSession(userId, dto));
+  }
+
+  @Get('/creation-sessions/active')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getActiveCreationSession(@Req() req: any) {
+    const userId = req.user?.sub || req.user?.id;
+    if (!userId) {
+      throw new BadRequestException('Invalid token');
+    }
+
+    return ok(await this.creationSessionService.getActiveSession(userId));
+  }
+
+  @Get('/creation-sessions/:sessionId')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getCreationSession(@Req() req: any, @Param('sessionId') sessionId: string) {
+    const userId = req.user?.sub || req.user?.id;
+    if (!userId) {
+      throw new BadRequestException('Invalid token');
+    }
+
+    return ok(await this.creationSessionService.getSession(userId, sessionId));
+  }
+
+  @Post('/creation-sessions/:sessionId/messages')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async appendCreationSessionMessage(
+    @Req() req: any,
+    @Param('sessionId') sessionId: string,
+    @Body() dto: CreateCreationSessionMessageDto,
+  ) {
+    const userId = req.user?.sub || req.user?.id;
+    if (!userId) {
+      throw new BadRequestException('Invalid token');
+    }
+
+    return ok(await this.creationSessionService.appendMessage(userId, sessionId, dto));
+  }
+
+  @Post('/creation-sessions/:sessionId/skip')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async skipCreationSessionQuestion(
+    @Req() req: any,
+    @Param('sessionId') sessionId: string,
+    @Body() dto: SkipCreationSessionQuestionDto,
+  ) {
+    const userId = req.user?.sub || req.user?.id;
+    if (!userId) {
+      throw new BadRequestException('Invalid token');
+    }
+
+    return ok(await this.creationSessionService.skipCurrentQuestion(userId, sessionId, dto));
+  }
+
+  @Post('/creation-sessions/:sessionId/generate')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async generateFromCreationSession(
+    @Req() req: any,
+    @Param('sessionId') sessionId: string,
+    @Body() dto: GenerateCreationSessionDto,
+  ) {
+    const userId = req.user?.sub || req.user?.id;
+    if (!userId) {
+      throw new BadRequestException('Invalid token');
+    }
+
+    return ok(await this.creationSessionService.generateFromSession(userId, sessionId, dto));
+  }
+
+  @Post('/creation-sessions/:sessionId/abandon')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async abandonCreationSession(@Req() req: any, @Param('sessionId') sessionId: string) {
+    const userId = req.user?.sub || req.user?.id;
+    if (!userId) {
+      throw new BadRequestException('Invalid token');
+    }
+
+    return ok(await this.creationSessionService.abandonSession(userId, sessionId));
   }
 
   @Get('/my/games')

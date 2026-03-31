@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import math
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from ..api.models import (
     CanvasConfig,
@@ -24,6 +24,7 @@ from ..api.models import (
     NumericsConfig,
 )
 from ..config.settings import settings
+from .visual_pack_catalog import get_visual_pack
 
 logger = logging.getLogger(__name__)
 
@@ -31,42 +32,15 @@ logger = logging.getLogger(__name__)
 # Numeric baseline per game type
 # ---------------------------------------------------------------------------
 
-GAME_TYPE_NUMERICS: Dict[str, Dict[str, Any]] = {
-    "dodge": {
-        "player_speed": 8.0,
-        "base_obstacle_speed": 3.0,
-        "speed_formula": "base + base * 0.02 * Math.pow(elapsed_s, 1.1)",
-        "spawn_interval_ms": 900,
+GAME_TYPE_NUMERICS = {
+    "casual": {
+        "player_speed": 6.0,
+        "base_obstacle_speed": 3.2,
+        "speed_formula": "base + base * 0.015 * elapsed_s",
+        "spawn_interval_ms": 1000,
         "score_per_second": 1,
         "score_per_collect": 10,
-        "expected_survival_s": 60,
-    },
-    "runner": {
-        "player_speed": 6.0,
-        "base_obstacle_speed": 5.0,
-        "speed_formula": "base + base * 0.015 * elapsed_s",
-        "spawn_interval_ms": 1200,
-        "score_per_second": 2,
-        "score_per_collect": 5,
         "expected_survival_s": 75,
-    },
-    "platformer": {
-        "player_speed": 5.0,
-        "base_obstacle_speed": 0.0,
-        "speed_formula": "base",
-        "spawn_interval_ms": 0,
-        "score_per_second": 0,
-        "score_per_collect": 10,
-        "expected_survival_s": 90,
-    },
-    "shooter": {
-        "player_speed": 4.0,
-        "base_obstacle_speed": 2.0,
-        "speed_formula": "base + 0.01 * elapsed_s",
-        "spawn_interval_ms": 1500,
-        "score_per_second": 0,
-        "score_per_collect": 20,
-        "expected_survival_s": 60,
     },
     "puzzle": {
         "player_speed": 0.0,
@@ -77,41 +51,23 @@ GAME_TYPE_NUMERICS: Dict[str, Dict[str, Any]] = {
         "score_per_collect": 50,
         "expected_survival_s": 120,
     },
-    "rhythm": {
-        "player_speed": 0.0,
-        "base_obstacle_speed": 4.0,
-        "speed_formula": "base",
-        "spawn_interval_ms": 600,
-        "score_per_second": 0,
-        "score_per_collect": 10,
-        "expected_survival_s": 90,
-    },
-    "tower_defense": {
-        "player_speed": 0.0,
-        "base_obstacle_speed": 1.5,
-        "speed_formula": "base + 0.1 * wave_number",
-        "spawn_interval_ms": 2000,
-        "score_per_second": 0,
-        "score_per_collect": 0,
-        "expected_survival_s": 180,
-    },
-    "idle": {
+    "educational": {
         "player_speed": 0.0,
         "base_obstacle_speed": 0.0,
         "speed_formula": "0",
         "spawn_interval_ms": 0,
-        "score_per_second": 5,
-        "score_per_collect": 0,
-        "expected_survival_s": 300,
-    },
-    "rpg": {
-        "player_speed": 3.0,
-        "base_obstacle_speed": 2.0,
-        "speed_formula": "base",
-        "spawn_interval_ms": 3000,
         "score_per_second": 0,
         "score_per_collect": 25,
-        "expected_survival_s": 120,
+        "expected_survival_s": 90,
+    },
+    "funny": {
+        "player_speed": 5.5,
+        "base_obstacle_speed": 2.8,
+        "speed_formula": "base + base * 0.012 * elapsed_s",
+        "spawn_interval_ms": 1100,
+        "score_per_second": 1,
+        "score_per_collect": 12,
+        "expected_survival_s": 70,
     },
 }
 
@@ -201,6 +157,13 @@ class GameDesigner:
         ui_layout = self._build_ui_layout(spec, canvas)
         input_map = self._build_input_map(spec)
         state_machine = self._build_state_machine(spec)
+        level_structure = self._build_level_structure(spec)
+        phase_plan = self._build_phase_plan(spec, level_structure)
+        reward_plan = self._build_reward_plan(spec)
+        tutorial_beats = self._build_tutorial_beats(spec)
+        signature_interactions = self._build_signature_interactions(spec)
+        feedback_moments = self._build_feedback_moments(spec)
+        failure_recovery_plan = self._build_failure_recovery_plan(spec)
 
         return GDD(
             canvas=canvas,
@@ -209,6 +172,13 @@ class GameDesigner:
             ui_layout=ui_layout,
             input_map=input_map,
             state_machine=state_machine,
+            level_structure=level_structure,
+            phase_plan=phase_plan,
+            reward_plan=reward_plan,
+            tutorial_beats=tutorial_beats,
+            signature_interactions=signature_interactions,
+            feedback_moments=feedback_moments,
+            failure_recovery_plan=failure_recovery_plan,
             raw_description=self._compose_raw_description(spec),
         )
 
@@ -286,8 +256,7 @@ class GameDesigner:
     # ------------------------------------------------------------------
 
     def _build_collision(self, spec: GameSpec) -> CollisionConfig:
-        # Puzzle and rhythm don't use lives-based collision
-        if spec.game_type in ("puzzle", "rhythm"):
+        if spec.game_type in ("puzzle", "educational"):
             return CollisionConfig(method="AABB", hitbox_ratio=1.0, on_hit="score_check")
         return CollisionConfig(
             method="AABB",
@@ -301,20 +270,39 @@ class GameDesigner:
 
     def _build_ui_layout(self, spec: GameSpec, canvas: CanvasConfig) -> Dict[str, Any]:
         labels = UI_LABELS_BY_LANGUAGE.get(spec.ui_language, UI_LABELS_BY_LANGUAGE["en-US"])
-        if spec.game_type == "puzzle":
+        visual_pack = get_visual_pack(spec.visual_style.visual_pack) or {}
+        hud_font_family = visual_pack.get("fontFamily", "Arial, sans-serif")
+        hud_style = visual_pack.get("hudStyle", "clean_cards")
+        button_style = visual_pack.get("buttonStyle", "rounded_button")
+        motion_style = visual_pack.get("motionStyle", "responsive")
+        particle_style = visual_pack.get("particleStyle", "minimal")
+        background_style = visual_pack.get("backgroundStyle", spec.visual_style.background)
+        accent_shapes = list(visual_pack.get("accentShapes", []))
+        if spec.game_type in ("puzzle", "educational"):
             return {
+                "style": {
+                    "visualPack": spec.visual_style.visual_pack,
+                    "renderStyleIntensity": spec.visual_style.render_style_intensity,
+                    "fontFamily": hud_font_family,
+                    "hudStyle": hud_style,
+                    "buttonStyle": button_style,
+                    "motionStyle": motion_style,
+                    "particleStyle": particle_style,
+                    "backgroundStyle": background_style,
+                    "accentShapes": accent_shapes,
+                },
                 "labels": labels,
                 "score": {
                     "x": 16,
                     "y": 32,
-                    "font": "bold 16px Arial",
+                    "font": f"bold 16px {hud_font_family}",
                     "align": "left",
                     "label": labels.get("objective", labels["score"]),
                 },
                 "lives": {
                     "x": canvas.width - 16,
                     "y": 32,
-                    "font": "bold 16px Arial",
+                    "font": f"bold 16px {hud_font_family}",
                     "align": "right",
                     "label": labels.get("level", labels["lives"]),
                 },
@@ -322,36 +310,47 @@ class GameDesigner:
                     "title": {
                         "x": canvas.width // 2,
                         "y": canvas.height // 2 - 36,
-                        "font": "bold 32px Arial",
+                        "font": f"bold 32px {hud_font_family}",
                         "label": labels.get("completed", labels["game_over"]),
                     },
                     "score": {
                         "x": canvas.width // 2,
                         "y": canvas.height // 2 + 14,
-                        "font": "18px Arial",
+                        "font": f"18px {hud_font_family}",
                         "label": labels.get("objective", labels["score"]),
                     },
                     "restart": {
                         "x": canvas.width // 2,
                         "y": canvas.height // 2 + 52,
-                        "font": "16px Arial",
+                        "font": f"16px {hud_font_family}",
                         "label": labels["restart"],
                     },
                 },
             }
         return {
+            "style": {
+                "visualPack": spec.visual_style.visual_pack,
+                "renderStyleIntensity": spec.visual_style.render_style_intensity,
+                "fontFamily": hud_font_family,
+                "hudStyle": hud_style,
+                "buttonStyle": button_style,
+                "motionStyle": motion_style,
+                "particleStyle": particle_style,
+                "backgroundStyle": background_style,
+                "accentShapes": accent_shapes,
+            },
             "labels": labels,
             "score": {
                 "x": 16,
                 "y": 32,
-                "font": "bold 16px Arial",
+                "font": f"bold 16px {hud_font_family}",
                 "align": "left",
                 "label": labels["score"],
             },
             "lives": {
                 "x": canvas.width - 16,
                 "y": 32,
-                "font": "bold 16px Arial",
+                "font": f"bold 16px {hud_font_family}",
                 "align": "right",
                 "label": labels["lives"],
             },
@@ -359,19 +358,19 @@ class GameDesigner:
                 "title": {
                     "x": canvas.width // 2,
                     "y": canvas.height // 2 - 36,
-                    "font": "bold 32px Arial",
+                    "font": f"bold 32px {hud_font_family}",
                     "label": labels["game_over"],
                 },
                 "score": {
                     "x": canvas.width // 2,
                     "y": canvas.height // 2 + 14,
-                    "font": "18px Arial",
+                    "font": f"18px {hud_font_family}",
                     "label": labels["score"],
                 },
                 "restart": {
                     "x": canvas.width // 2,
                     "y": canvas.height // 2 + 52,
-                    "font": "16px Arial",
+                    "font": f"16px {hud_font_family}",
                     "label": labels["restart"],
                 },
             },
@@ -385,15 +384,9 @@ class GameDesigner:
         input_method = spec.platform_constraints.input_mode
         base = DEFAULT_INPUT_MAP.copy()
 
-        if spec.game_type == "platformer":
-            base = {
-                "touchstart_left": "player_jump",
-                "touchstart_right": "player_jump",
-                "click_game_over": "restart",
-            }
-        elif spec.game_type == "puzzle":
+        if spec.game_type in ("puzzle", "educational"):
             base = DEFAULT_PUZZLE_INPUT_MAP.copy()
-        elif spec.game_type == "rhythm":
+        elif spec.game_type == "funny":
             base = {
                 "touchstart": "tap_action",
                 "click_game_over": "restart",
@@ -402,6 +395,110 @@ class GameDesigner:
 
     @staticmethod
     def _build_state_machine(spec: GameSpec) -> Dict[str, Any]:
-        if spec.game_type == "puzzle":
+        if spec.game_type in ("puzzle", "educational"):
             return DEFAULT_PUZZLE_STATE_MACHINE.copy()
         return DEFAULT_STATE_MACHINE.copy()
+
+    @staticmethod
+    def _build_level_structure(spec: GameSpec) -> List[Dict[str, Any]]:
+        progression = spec.progression_shape or "score_chase"
+        if spec.game_type == "puzzle":
+            return [
+                {"step": 1, "goal": "Introduce the core board rule", "twist": "single-variable solve"},
+                {"step": 2, "goal": "Combine two puzzle constraints", "twist": progression},
+                {"step": 3, "goal": "Deliver the final satisfying solve", "twist": spec.signature_moment or "board clear payoff"},
+            ]
+        if spec.game_type == "educational":
+            return [
+                {"step": 1, "goal": "Teach the base concept", "twist": spec.teaching_mode or "guided_exploration"},
+                {"step": 2, "goal": "Practice the concept under pressure", "twist": progression},
+                {"step": 3, "goal": "Apply the concept in a short mastery check", "twist": spec.reward_loop or "mastery milestone"},
+            ]
+        if spec.game_type == "funny":
+            return [
+                {"step": 1, "goal": "Set up the joke", "twist": spec.comedy_device or "surprise_punchline"},
+                {"step": 2, "goal": "Escalate the joke through repeated play", "twist": progression},
+                {"step": 3, "goal": "Pay off the round with a visible gag climax", "twist": spec.signature_moment or "absurd finale"},
+            ]
+        return [
+            {"step": 1, "goal": "Teach the main loop", "twist": "immediate readable feedback"},
+            {"step": 2, "goal": "Increase pressure and reward chaining", "twist": progression},
+            {"step": 3, "goal": "Close the round with a strong payoff", "twist": spec.signature_moment or "short victory beat"},
+        ]
+
+    @staticmethod
+    def _build_phase_plan(spec: GameSpec, level_structure: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        phases = ["opening", "midgame", "payoff"]
+        plan: List[Dict[str, Any]] = []
+        for phase_name, level in zip(phases, level_structure):
+            plan.append({
+                "phase": phase_name,
+                "focus": level.get("goal"),
+                "twist": level.get("twist"),
+                "intensity": "low" if phase_name == "opening" else "medium" if phase_name == "midgame" else "high",
+            })
+        return plan
+
+    @staticmethod
+    def _build_reward_plan(spec: GameSpec) -> Dict[str, Any]:
+        return {
+            "loop": spec.reward_loop or "Clear a short objective, see a visible reward, then immediately want one more round.",
+            "milestone": spec.signature_moment or "Reach the end-of-round payoff.",
+            "sessionLength": spec.session_length or "short_bursts",
+            "progressionShape": spec.progression_shape or "score_chase",
+        }
+
+    @staticmethod
+    def _build_tutorial_beats(spec: GameSpec) -> List[str]:
+        core = spec.intent_summary or "the main interaction"
+        return [
+            f"Show the player how to perform {core} within the first 5 seconds.",
+            "Give one safe success moment before pressure increases.",
+            "Introduce the round objective with a visible HUD reminder.",
+        ]
+
+    @staticmethod
+    def _build_signature_interactions(spec: GameSpec) -> List[str]:
+        interactions = [spec.signature_moment] if spec.signature_moment else []
+        if spec.comedy_device:
+            interactions.append(f"Comedic payoff pattern: {spec.comedy_device}")
+        if spec.teaching_mode:
+            interactions.append(f"Teaching pattern: {spec.teaching_mode}")
+        if spec.reward_loop:
+            interactions.append(f"Reward loop focus: {spec.reward_loop}")
+        return [item for item in interactions if item]
+
+    @staticmethod
+    def _build_feedback_moments(spec: GameSpec) -> List[str]:
+        if spec.game_type == "puzzle":
+            return [
+                "Immediate tile or node feedback on every valid move.",
+                "Board-state clarity when progress is made.",
+                "A stronger completion burst when the puzzle resolves.",
+            ]
+        if spec.game_type == "educational":
+            return [
+                "Immediate correct/incorrect feedback.",
+                "Short reinforcement copy for learning progress.",
+                "Clear milestone feedback when the concept is mastered.",
+            ]
+        if spec.game_type == "funny":
+            return [
+                "Exaggerated hit or reaction animation.",
+                "Escalating payoff when the joke lands repeatedly.",
+                "Round-end comedic reveal or reversal.",
+            ]
+        return [
+            "Responsive feedback on every successful interaction.",
+            "Visible score or progress acceleration during the midgame.",
+            "A high-energy end-of-round payoff effect.",
+        ]
+
+    @staticmethod
+    def _build_failure_recovery_plan(spec: GameSpec) -> Dict[str, Any]:
+        return {
+            "restartState": "init" if spec.game_type not in ("puzzle", "educational") else "ready",
+            "hintAfterFailure": spec.game_type in ("puzzle", "educational"),
+            "hintStyle": "contextual tip" if spec.game_type in ("puzzle", "educational") else "quick retry nudge",
+            "preserveHighMoment": bool(spec.signature_moment),
+        }

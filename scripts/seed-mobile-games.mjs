@@ -142,7 +142,7 @@ ctx.textAlign='center';ctx.fillStyle='#f5a623';ctx.font='bold 22px Arial';ctx.fi
   {
     title: '水果忍者',
     description: '手指滑动切开飞来的水果，小心别碰到炸弹！连切多个水果触发连击加分。60秒内追求最高分，体验畅快的切割快感！',
-    gameType: 'action',
+    gameType: 'casual',
     tags: ['动作', '滑动', '反应', '休闲'],
     qualityScore: 94,
     playCount: 8910,

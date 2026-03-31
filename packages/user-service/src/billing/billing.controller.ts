@@ -7,13 +7,32 @@ import {
   HttpStatus,
   Param,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
+import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { ok } from '../common/api-response';
 import { BillingService } from './billing.service';
 import { CreateSubscriptionOrderDto } from './dto/create-subscription-order.dto';
+
+class CreateSubscriptionOrderQueryDto {
+  @IsOptional()
+  @IsString()
+  @IsIn(['weapp', 'h5', 'wechat_h5'])
+  clientPlatform?: 'weapp' | 'h5' | 'wechat_h5';
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['jsapi', 'mweb', 'native'])
+  wechatPayFlow?: 'jsapi' | 'mweb' | 'native';
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1024)
+  returnUrl?: string;
+}
 
 @Controller()
 export class BillingController {
@@ -37,12 +56,26 @@ export class BillingController {
   @Post('subscription/order')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async createOrder(@Req() req: any, @Body() dto: CreateSubscriptionOrderDto) {
+  async createOrder(
+    @Req() req: any,
+    @Body() dto: CreateSubscriptionOrderDto,
+    @Query() query: CreateSubscriptionOrderQueryDto,
+  ) {
     return ok(
       await this.billingService.createOrder(
         req.user.userId,
         dto,
         this.resolveClientIp(req),
+        {
+          clientPlatform: query.clientPlatform,
+          wechatPayFlow: query.wechatPayFlow,
+          returnUrl: query.returnUrl,
+          authContext: {
+            wechatPlatform: req.user?.wechatPlatform,
+            wechatOpenId: req.user?.wechatOpenId,
+            wechatAppId: req.user?.wechatAppId,
+          },
+        },
       ),
     );
   }

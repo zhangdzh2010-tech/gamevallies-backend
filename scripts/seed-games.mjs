@@ -566,7 +566,7 @@ newGame();
   {
     title: '太空射击',
     description: '紧张刺激的太空射击游戏！驾驶飞船消灭来袭的外星舰队，躲避子弹，升级武器。你能守住地球吗？',
-    gameType: 'action',
+    gameType: 'casual',
     tags: ['动作', '射击', '太空'],
     qualityScore: 93,
     playCount: 6521,

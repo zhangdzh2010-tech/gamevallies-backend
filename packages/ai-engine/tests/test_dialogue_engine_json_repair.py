@@ -30,18 +30,18 @@ DIALOGUE_TEST_PROMPTS = {
 class TestDialogueEngineJsonRepair(unittest.TestCase):
     def test_safe_parse_json_accepts_json_like_object_literals(self):
         parsed = _safe_parse_json(
-            "{game_type: 'dodge', core_mechanic: 'avoid hazards', theme: 'space', special_rules: ['avoid black holes'],}"
+            "{game_type: 'casual', core_mechanic: 'avoid hazards', theme: 'space', special_rules: ['avoid black holes'],}"
         )
 
         self.assertIsNotNone(parsed)
-        self.assertEqual(parsed["game_type"], "dodge")
+        self.assertEqual(parsed["game_type"], "casual")
         self.assertEqual(parsed["core_mechanic"], "avoid hazards")
         self.assertEqual(parsed["special_rules"], ["avoid black holes"])
 
     def test_safe_parse_json_accepts_labeled_slot_text(self):
         parsed = _safe_parse_json(
             "\n".join([
-                "Game Type: runner",
+                "Game Type: casual",
                 "Core Mechanic: swipe left and right to dodge obstacles",
                 "Theme: zoo",
                 "Input Method: swipe",
@@ -52,7 +52,7 @@ class TestDialogueEngineJsonRepair(unittest.TestCase):
         )
 
         self.assertIsNotNone(parsed)
-        self.assertEqual(parsed["game_type"], "runner")
+        self.assertEqual(parsed["game_type"], "casual")
         self.assertEqual(parsed["theme"], "zoo")
         self.assertEqual(parsed["special_rules"], ["rescue animals", "avoid cages"])
 
@@ -79,7 +79,7 @@ class TestDialogueEngineJsonRepair(unittest.TestCase):
                         "to avoid meteors and survive for 60 seconds."
                     ),
                     (
-                        '{"game_type":"dodge","core_mechanic":"move left and right to avoid meteors",'
+                        '{"game_type":"casual","core_mechanic":"move left and right to avoid meteors",'
                         '"theme":"neon space","input_method":"swipe","win_condition":"survive for 60 seconds",'
                         '"difficulty":"progressive","visual_style":"neon","audio_style":"none",'
                         '"special_rules":["collect stars"],"reference_game":"space dodge"}'
@@ -89,7 +89,7 @@ class TestDialogueEngineJsonRepair(unittest.TestCase):
         ) as mock_complete:
             spec = asyncio.run(engine.parse_description_to_spec("make me a neon space dodge game"))
 
-        self.assertEqual(spec.game_type, "dodge")
+        self.assertEqual(spec.game_type, "casual")
         self.assertEqual(spec.visual_style.theme, "neon space")
         self.assertEqual(spec.platform_constraints.input_mode, "swipe")
         self.assertEqual(spec.special_rules, ["collect stars"])
@@ -126,12 +126,12 @@ class TestDialogueEngineJsonRepair(unittest.TestCase):
                 engine.parse_description_to_spec(
                     "继续增加关卡，设置5个关卡",
                     title="逮小猪",
-                    preferred_game_type="runner",
+                    preferred_game_type="casual",
                 )
             )
 
-        self.assertEqual(spec.game_type, "runner")
-        self.assertEqual(spec.platform_constraints.input_mode, "tap")
+        self.assertEqual(spec.game_type, "casual")
+        self.assertEqual(spec.platform_constraints.input_mode, "touch")
         self.assertEqual(spec.visual_style.theme, "zoo")
         self.assertTrue(any("5个关卡" in rule for rule in spec.special_rules))
         self.assertEqual(mock_complete.await_count, 2)

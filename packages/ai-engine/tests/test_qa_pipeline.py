@@ -436,14 +436,14 @@ def test_repair_code_supports_fix_round_prompt_variables():
             pipeline.repair_code(
                 "<!DOCTYPE html><html>",
                 errors,
-                GameSpec(game_type="dodge"),
+                GameSpec(game_type="casual"),
                 fix_round=2,
                 max_fix_rounds=3,
             )
         )
 
     prompt = mock_complete.await_args.kwargs["messages"][0]["content"]
-    assert "Round 2/3::dodge" in prompt
+    assert "Round 2/3::casual" in prompt
     assert "Missing </html>" in prompt
 
 
@@ -460,7 +460,7 @@ def test_repair_code_falls_back_when_db_prompt_template_is_invalid():
             pipeline.repair_code(
                 "<!DOCTYPE html><html>",
                 errors,
-                GameSpec(game_type="runner"),
+                GameSpec(game_type="casual"),
             )
         )
 
@@ -508,7 +508,7 @@ def test_repair_code_includes_runtime_contract_block_for_forbidden_api_repairs()
             pipeline.repair_code(
                 "<!DOCTYPE html><html><body><script>fetch('https://example.com')</script></body></html>",
                 errors,
-                GameSpec(game_type="runner"),
+                GameSpec(game_type="casual"),
                 runtime_contract=runtime_contract,
             )
         )
@@ -574,7 +574,7 @@ def test_repair_code_uses_family_specific_bundle_prompt_and_scopes_to_one_family
             pipeline.repair_code(
                 "<!DOCTYPE html><html><body><script>fetch('https://example.com')</script></body></html>",
                 errors,
-                GameSpec(game_type="runner"),
+                GameSpec(game_type="casual"),
                 runtime_contract=runtime_contract,
                 prompt_bundle_snapshot=prompt_bundle_snapshot,
             )
@@ -629,7 +629,7 @@ def test_l4_playability_accepts_named_game_over_state_transition_helpers():
 def test_l4_playability_accepts_puzzle_completion_state_without_score_loop_warning():
     pipeline = QAPipeline()
     runtime_contract = GameRuntimeContract(
-        runtime_profile="grid_puzzle",
+        runtime_profile="puzzle_grid",
         state=StateContract(required_states=["boot", "ready", "playing", "level_complete"]),
         input=InputContract(required_modes=["touch"], gestures=["tap", "drag"]),
         gameplay=GameplayContract(
@@ -700,7 +700,7 @@ def disabled_test_repair_code_uses_fast_prompt_and_fast_route_for_known_single_i
             pipeline.repair_code(
                 "<!DOCTYPE html><html><body></body></html>",
                 errors,
-                GameSpec(game_type="runner"),
+                GameSpec(game_type="casual"),
             )
         )
 
@@ -744,7 +744,7 @@ def disabled_test_repair_code_treats_runtime_qa_missing_registered_handlers_as_f
             pipeline.repair_code(
                 "<!DOCTYPE html><html><body></body></html>",
                 errors,
-                GameSpec(game_type="runner"),
+                GameSpec(game_type="casual"),
             )
         )
 
@@ -797,7 +797,7 @@ def test_repair_code_uses_fast_prompt_for_runtime_qa_missing_state_change():
             pipeline.repair_code(
                 "<!DOCTYPE html><html><body></body></html>",
                 errors,
-                GameSpec(game_type="runner"),
+                GameSpec(game_type="casual"),
             )
         )
 
@@ -829,12 +829,16 @@ def test_repair_code_short_circuits_with_deterministic_input_bridge_for_missing_
             pipeline.repair_code(
                 "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas></body></html>",
                 errors,
-                GameSpec(game_type="runner"),
+                GameSpec(game_type="casual"),
             )
         )
 
     assert "__playforgeInputBridgeInstalled" in repaired
     assert "addEventListener('pointerdown'" in repaired
+    assert "window.__playforgeBridgeHandling = true;" in repaired
+    assert "BRIDGE_EVENT_FLAG" in repaired
+    assert "node.onclick = bridgeHandler" not in repaired
+    assert "node.onpointerdown = bridgeHandler" not in repaired
     assert mock_complete.await_count == 0
 
 
@@ -861,7 +865,7 @@ def test_repair_code_short_circuits_with_deterministic_visible_feedback_bridge()
             pipeline.repair_code(
                 "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas></body></html>",
                 errors,
-                GameSpec(game_type="runner"),
+                GameSpec(game_type="casual"),
             )
         )
 
@@ -869,6 +873,7 @@ def test_repair_code_short_circuits_with_deterministic_visible_feedback_bridge()
     assert "bindInputHandlers" in repaired
     assert "__playforgeInteractionFeedbackVersion" in repaired
     assert "Tap ' + stamp" in repaired
+    assert "markEvent(event, BRIDGE_HANDLED_FLAG);" in repaired
     assert mock_complete.await_count == 0
 
 
@@ -905,7 +910,7 @@ def test_repair_code_short_circuits_with_deterministic_score_bridge():
             pipeline.repair_code(
                 "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas></body></html>",
                 errors,
-                GameSpec(game_type="runner"),
+                GameSpec(game_type="casual"),
             )
     )
 
@@ -957,7 +962,7 @@ def test_repair_code_short_circuits_with_deterministic_mobile_layout_bridge():
             pipeline.repair_code(
                 code,
                 errors,
-                GameSpec(game_type="runner"),
+                GameSpec(game_type="casual"),
             )
         )
 
@@ -1011,7 +1016,7 @@ def test_repair_code_short_circuits_with_deterministic_landscape_mobile_layout_b
             pipeline.repair_code(
                 code,
                 errors,
-                GameSpec(game_type="runner"),
+                GameSpec(game_type="casual"),
                 runtime_contract=GameRuntimeContract(
                     canvas={"orientation": "landscape_first"},
                     mobile_layout={"orientation": "landscape_first"},
@@ -1049,7 +1054,7 @@ def test_repair_code_short_circuits_with_deterministic_forbidden_api_cleanup():
             pipeline.repair_code(
                 "<!DOCTYPE html><html><body><script>const fn = new Function('return 1');</script></body></html>",
                 errors,
-                GameSpec(game_type="runner"),
+                GameSpec(game_type="casual"),
             )
         )
 
@@ -1085,7 +1090,7 @@ def test_repair_code_short_circuits_with_touch_coordinate_guard_for_runtime_clie
             pipeline.repair_code(
                 code,
                 errors,
-                GameSpec(game_type="runner"),
+                GameSpec(game_type="casual"),
             )
         )
 
@@ -1129,7 +1134,7 @@ def test_repair_code_uses_bundle_prompt_for_syntax_structural_family():
             pipeline.repair_code(
                 "<!DOCTYPE html><html><body><script>function update(){ static lastSpawnTime = 0; }</script></body></html>",
                 errors,
-                GameSpec(game_type="runner"),
+                GameSpec(game_type="casual"),
                 prompt_bundle_snapshot=prompt_bundle_snapshot,
             )
         )
@@ -1164,7 +1169,7 @@ def test_repair_code_rejects_structurally_regressed_llm_candidate():
             pipeline.repair_code(
                 code,
                 errors,
-                GameSpec(game_type="runner"),
+                GameSpec(game_type="casual"),
             )
         )
 
@@ -1202,7 +1207,7 @@ def test_run_with_auto_fix_breaks_after_repeated_single_issue():
             "<!DOCTYPE html><html><body>fix-2</body></html>",
         ]),
     ) as mock_repair:
-        result = asyncio.run(pipeline.run_with_auto_fix("<!DOCTYPE html><html></html>", GameSpec(game_type="runner"), max_retries=3))
+        result = asyncio.run(pipeline.run_with_auto_fix("<!DOCTYPE html><html></html>", GameSpec(game_type="casual"), max_retries=3))
 
     assert result.success is False
     assert result.retries == 2
@@ -1247,7 +1252,7 @@ def test_repair_code_uses_simplified_rewrite_when_syntax_fix_stays_broken():
             pipeline.repair_code(
                 broken_code,
                 errors,
-                GameSpec(game_type="runner"),
+                GameSpec(game_type="casual"),
             )
         )
 
@@ -1298,7 +1303,7 @@ def test_repair_code_rebuilds_from_spec_when_syntax_repair_keeps_truncating():
             pipeline.repair_code(
                 broken_code,
                 errors,
-                GameSpec(game_type="runner", source_description="课堂浮力小游戏"),
+                GameSpec(game_type="casual", source_description="课堂浮力小游戏"),
                 runtime_contract=GameRuntimeContract(),
             )
         )
@@ -1350,7 +1355,7 @@ def test_repair_code_uses_larger_budget_for_truncation_prone_syntax_errors():
             pipeline.repair_code(
                 broken_code,
                 errors,
-                GameSpec(game_type="runner"),
+                GameSpec(game_type="casual"),
             )
         )
 
@@ -1387,7 +1392,7 @@ def test_fix_with_llm_retries_truncated_syntax_repair_with_larger_budget():
             pipeline._fix_with_llm(
                 "<!DOCTYPE html><html><body><script>function draw(){</script></body></html>",
                 errors,
-                GameSpec(game_type="runner"),
+                GameSpec(game_type="casual"),
                 runtime_contract=None,
                 max_tokens=4096,
                 repair_family="syntax_structural",
@@ -1399,3 +1404,81 @@ def test_fix_with_llm_retries_truncated_syntax_repair_with_larger_budget():
     first_max_tokens = mock_complete.await_args_list[0].kwargs["max_tokens"]
     second_max_tokens = mock_complete.await_args_list[1].kwargs["max_tokens"]
     assert second_max_tokens > first_max_tokens
+
+
+def test_fix_with_llm_retries_truncated_generic_repair_with_larger_budget():
+    pipeline = QAPipeline()
+    errors = [
+        QACheckError(
+            type="contract_gameplay",
+            message="Runtime contract requires a restart entry point",
+            severity="error",
+        ),
+    ]
+
+    with patch(
+        "src.engine.qa_pipeline.require_prompt",
+        return_value="FIX::{code}",
+    ), patch.object(
+        pipeline._client,
+        "complete",
+        new=AsyncMock(side_effect=[
+            LLMResponseTruncatedError(
+                "OpenAI-compatible response hit the output length limit and may be truncated",
+                response_excerpt="<!DOCTYPE html><html><body><script>function fix(){",
+                stop_reason="length",
+                output_tokens=5207,
+            ),
+            "<!DOCTYPE html><html><body>fixed</body></html>",
+        ]),
+    ) as mock_complete:
+        repaired = asyncio.run(
+            pipeline._fix_with_llm(
+                "<!DOCTYPE html><html><body><script>" + ("const tile = 1;\n" * 400) + "</script></body></html>",
+                errors,
+                GameSpec(game_type="puzzle"),
+                runtime_contract=None,
+                max_tokens=5207,
+                repair_family="generic",
+            )
+        )
+
+    assert repaired == "<!DOCTYPE html><html><body>fixed</body></html>"
+    assert mock_complete.await_count == 2
+    first_max_tokens = mock_complete.await_args_list[0].kwargs["max_tokens"]
+    second_max_tokens = mock_complete.await_args_list[1].kwargs["max_tokens"]
+    assert second_max_tokens > first_max_tokens
+
+
+def test_rebuild_from_spec_for_syntax_recovery_uses_large_initial_budget_and_timeout():
+    pipeline = QAPipeline()
+    code = "<!DOCTYPE html><html><body><script>" + ("const tile = 1;\n" * 1500) + "</script></body></html>"
+    errors = [
+        QACheckError(
+            type="L1_syntax",
+            message="JavaScript syntax error in <script>: Line 98: Unexpected token .",
+            severity="error",
+        ),
+    ]
+    spec = GameSpec(game_type="puzzle")
+
+    with patch.object(
+        pipeline,
+        "_complete_repair_prompt_with_retry",
+        new=AsyncMock(return_value="<!DOCTYPE html><html><body>fixed</body></html>"),
+    ) as mock_repair:
+        repaired = asyncio.run(
+            pipeline._rebuild_from_spec_for_syntax_recovery(
+                code=code,
+                errors=errors,
+                game_spec=spec,
+                runtime_contract=None,
+            )
+        )
+
+    assert repaired == "<!DOCTYPE html><html><body>fixed</body></html>"
+    assert mock_repair.await_count == 1
+    kwargs = mock_repair.await_args.kwargs
+    assert kwargs["step_key"] == "qa_fix.syntax_rebuild"
+    assert kwargs["max_tokens"] > 8192
+    assert kwargs["request_timeout_s"] >= 240

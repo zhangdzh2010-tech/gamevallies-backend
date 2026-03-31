@@ -1,12 +1,20 @@
 """Tests for runtime QA timeout and fallback behavior."""
 import asyncio
+import base64
 import os
 import sys
 import types
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.engine.runtime_qa import _inject_probe_script, _resolve_chromium_executable, capture_cover_artifact, run_runtime_qa
+from src.engine.runtime_qa import (
+    _inject_probe_script,
+    _phase_timeout_s,
+    _resolve_chromium_executable,
+    _resolve_fallback_cover_variant,
+    capture_cover_artifact,
+    run_runtime_qa,
+)
 
 
 class _SlowPage:
@@ -143,6 +151,63 @@ class _InteractiveContext:
 
     async def new_page(self):
         self.page = _InteractivePage()
+        return self.page
+
+
+class _DeferredInteractionPage:
+    def __init__(self):
+        self.html = None
+        self._fingerprint_calls = 0
+
+    def on(self, *_args, **_kwargs):
+        return None
+
+    async def add_init_script(self, *_args, **_kwargs):
+        return None
+
+    async def set_content(self, html, *_args, **_kwargs):
+        self.html = html
+        return None
+
+    async def wait_for_load_state(self, *_args, **_kwargs):
+        return None
+
+    async def evaluate(self, script):
+        if "createTreeWalker" in script:
+            return {"hash": 100, "bodyText": "", "title": "Deferred", "count": 1}
+        if "getImageData" in script and "return false" in script:
+            return True
+        if "hash = (hash * 33" in script:
+            self._fingerprint_calls += 1
+            return 100 if self._fingerprint_calls == 1 else 200
+        if "window.__qaInteractionScheduled = true" in script:
+            return True
+        if "registeredInputHandlers" in script:
+            return {
+                "fps": 52,
+                "errors": [],
+                "gameOverReceived": False,
+                "registeredInputHandlers": ["pointerdown"],
+                "directInputHandlers": ["click"],
+                "triggeredInputHandlers": ["pointerdown"],
+                "interactionPerformed": True,
+                "interactionScheduled": True,
+                "interactionPending": False,
+            }
+        return {
+            "source": "canvas",
+            "primary": "#1d4ed8",
+            "secondary": "#7c3aed",
+            "background": "#0f172a",
+        }
+
+
+class _DeferredInteractionContext:
+    def __init__(self):
+        self.page = None
+
+    async def new_page(self):
+        self.page = _DeferredInteractionPage()
         return self.page
 
 
@@ -308,6 +373,16 @@ def test_runtime_qa_phase_timeout_records_phase_details(monkeypatch):
     assert result.phase_metrics["content_load_timeout_s"] == 0.05
 
 
+def test_phase_timeout_scales_with_effective_timeout():
+    scaled = _phase_timeout_s(
+        "timeout.ai_engine.runtime_qa.phase_interaction_s",
+        6.0,
+        effective_timeout_s=30.0,
+        ratio_default=0.28,
+    )
+    assert scaled == 8.4
+
+
 def test_runtime_qa_collects_input_handler_signals(monkeypatch):
     browser = _ClosableBrowser()
     browser.context_factory = _InteractiveContext
@@ -328,6 +403,21 @@ def test_runtime_qa_collects_input_handler_signals(monkeypatch):
     assert result.dom_changed_after_input is True
 
 
+def test_runtime_qa_interaction_phase_returns_quickly_when_dispatch_is_deferred(monkeypatch):
+    browser = _ClosableBrowser()
+    browser.context_factory = _DeferredInteractionContext
+    fake_module = types.SimpleNamespace(
+        async_playwright=lambda: _PlaywrightCtx(browser),
+    )
+    monkeypatch.setitem(sys.modules, "playwright.async_api", fake_module)
+
+    result = asyncio.run(run_runtime_qa("<html></html>", timeout_s=1.0))
+
+    assert result.ran is True
+    assert result.interaction_performed is True
+    assert result.registered_input_handlers == ["pointerdown"]
+
+
 def test_capture_cover_artifact_prefers_settled_frame_after_interaction(monkeypatch):
     browser = _ClosableBrowser()
     browser.context_factory = _InteractiveContext
@@ -341,19 +431,21 @@ def test_capture_cover_artifact_prefers_settled_frame_after_interaction(monkeypa
         orientation="landscape_first",
         timeout_s=1.5,
         title="Nebula Rush",
-        game_type="runner",
+        game_type="casual",
         theme="space",
-        runtime_profile="lane_runner",
+        runtime_profile="casual_lane",
     ))
 
     assert result is not None
     assert result["content_type"] == "image/jpeg"
     assert result["metadata"]["selectedFrame"] == "settled_frame"
     assert result["metadata"]["orientation"] == "landscape"
-    assert result["metadata"]["coverStyle"] == "posterized_overlay"
-    assert result["metadata"]["overlayApplied"] is True
+    assert result["metadata"]["coverStyle"] == "runtime_frame_capture"
+    assert result["metadata"]["coverVariant"] == "direct_runtime_frame_v2"
+    assert result["metadata"]["overlayApplied"] is False
     assert result["metadata"]["title"] == "Nebula Rush"
-    assert result["metadata"]["badge"] == "SPACE RUNNER"
+    assert result["metadata"]["titleVisible"] is False
+    assert result["metadata"]["badge"] == "SPACE LANE RUSH"
     assert result["metadata"]["theme"] == "space"
     assert result["metadata"]["paletteSource"] == "canvas"
     assert result["metadata"]["palette"]["primary"] == "#38bdf8"
@@ -374,9 +466,9 @@ def test_capture_cover_artifact_avoids_menu_and_game_over_frames(monkeypatch):
         orientation="portrait_first",
         timeout_s=1.5,
         title="Combo Runner",
-        game_type="runner",
+        game_type="casual",
         theme="arcade",
-        runtime_profile="lane_runner",
+        runtime_profile="casual_lane",
     ))
 
     assert result is not None
@@ -389,6 +481,160 @@ def test_capture_cover_artifact_avoids_menu_and_game_over_frames(monkeypatch):
     assert candidate_map["settled_frame"]["qualityScore"] < candidate_map["action_frame"]["qualityScore"]
     assert "menu_text" in candidate_map["ready_frame"]["qualityReasons"]
     assert "game_over_text" in candidate_map["settled_frame"]["qualityReasons"]
+
+
+def test_capture_cover_artifact_falls_back_to_svg_when_playwright_missing(monkeypatch):
+    monkeypatch.delitem(sys.modules, "playwright.async_api", raising=False)
+
+    result = asyncio.run(capture_cover_artifact(
+        "<html></html>",
+        orientation="portrait_first",
+        timeout_s=1.0,
+        title="上班摸鱼",
+        game_type="funny",
+        theme="office",
+        runtime_profile="casual_arcade",
+    ))
+
+    assert result is not None
+    assert result["content_type"] == "image/svg+xml"
+    assert result["metadata"]["selectedFrame"] == "fallback_poster"
+    assert result["metadata"]["fallbackGenerated"] is True
+    assert result["metadata"]["fallbackReason"] == "playwright_unavailable"
+    assert result["metadata"]["coverStyle"] == "fallback_art_poster"
+    assert result["metadata"]["coverVariant"].startswith("fallback_")
+
+
+def test_capture_cover_artifact_falls_back_to_svg_when_runtime_capture_errors(monkeypatch):
+    class _BrokenPage:
+        def on(self, *_args, **_kwargs):
+            return None
+
+        async def add_init_script(self, *_args, **_kwargs):
+            return None
+
+        async def set_content(self, *_args, **_kwargs):
+            return None
+
+        async def wait_for_load_state(self, *_args, **_kwargs):
+            return None
+
+        async def evaluate(self, _script):
+            return {}
+
+        async def screenshot(self, **_kwargs):
+            raise RuntimeError("screenshot failed")
+
+    class _BrokenContext:
+        async def new_page(self):
+            return _BrokenPage()
+
+    browser = _ClosableBrowser()
+
+    async def _broken_context(**_kwargs):
+        return _BrokenContext()
+
+    browser.new_context = _broken_context
+    fake_module = types.SimpleNamespace(
+        async_playwright=lambda: _PlaywrightCtx(browser),
+    )
+    monkeypatch.setitem(sys.modules, "playwright.async_api", fake_module)
+
+    result = asyncio.run(capture_cover_artifact(
+        "<html></html>",
+        orientation="landscape_first",
+        timeout_s=1.0,
+        title="Toy Rescue",
+        game_type="casual",
+        theme="toy",
+        runtime_profile="casual_action",
+    ))
+
+    assert result is not None
+    assert result["content_type"] == "image/svg+xml"
+    assert result["metadata"]["fallbackGenerated"] is True
+    assert result["metadata"]["fallbackReason"] == "runtimeerror"
+    assert result["metadata"]["orientation"] == "landscape"
+    assert result["metadata"]["coverStyle"] == "fallback_art_poster"
+
+
+def test_resolve_fallback_cover_variant_is_stable_and_varied():
+    first = _resolve_fallback_cover_variant(
+        title="Orbital Office",
+        theme="neon_city",
+        runtime_profile="casual_arcade",
+        game_type="funny",
+        orientation="portrait_first",
+    )
+    second = _resolve_fallback_cover_variant(
+        title="Orbital Office",
+        theme="neon_city",
+        runtime_profile="casual_arcade",
+        game_type="funny",
+        orientation="portrait_first",
+    )
+    different = _resolve_fallback_cover_variant(
+        title="Circuit School",
+        theme="forest",
+        runtime_profile="puzzle_grid",
+        game_type="educational",
+        orientation="landscape_first",
+    )
+
+    assert first == second
+    assert first["name"] in {"orbital", "spotlight", "stacked", "diagonal"}
+    assert different["name"] in {"orbital", "spotlight", "stacked", "diagonal"}
+    assert first["seed"] != different["seed"]
+
+
+def test_capture_cover_artifact_marks_runtime_frames_as_titleless(monkeypatch):
+    browser = _ClosableBrowser()
+    browser.context_factory = _InteractiveContext
+    fake_module = types.SimpleNamespace(
+        async_playwright=lambda: _PlaywrightCtx(browser),
+    )
+    monkeypatch.setitem(sys.modules, "playwright.async_api", fake_module)
+
+    result = asyncio.run(capture_cover_artifact(
+        "<html></html>",
+        orientation="landscape_first",
+        timeout_s=1.5,
+        title="Nebula Rush",
+        game_type="casual",
+        theme="space",
+        runtime_profile="casual_lane",
+        visual_pack="neon_glass",
+        render_style_intensity="high",
+    ))
+
+    assert result is not None
+    assert result["metadata"]["titleVisible"] is False
+    assert result["metadata"]["visualPack"] == "neon_glass"
+    assert result["metadata"]["renderStyleIntensity"] == "high"
+
+
+def test_fallback_cover_artifact_does_not_render_requested_title(monkeypatch):
+    monkeypatch.delitem(sys.modules, "playwright.async_api", raising=False)
+
+    result = asyncio.run(capture_cover_artifact(
+        "<html></html>",
+        orientation="portrait_first",
+        timeout_s=1.0,
+        title="Office Poster",
+        game_type="funny",
+        theme="office",
+        runtime_profile="casual_arcade",
+        visual_pack="comic_bounce",
+        render_style_intensity="high",
+    ))
+
+    assert result is not None
+    assert result["content_type"] == "image/svg+xml"
+    assert result["metadata"]["titleVisible"] is False
+    assert result["metadata"]["visualPack"] == "comic_bounce"
+    assert result["metadata"]["coverVariant"].startswith("fallback_comic_bounce_")
+    svg = base64.b64decode(result["payload"]).decode("utf-8")
+    assert "Office Poster" not in svg
 
 
 def test_runtime_qa_launch_exception_is_reported_as_infra_unavailable(monkeypatch):
@@ -490,6 +736,6 @@ def test_runtime_qa_caps_outer_timeout_to_phase_budget_plus_headroom(monkeypatch
     result = asyncio.run(run_runtime_qa("<html></html>", timeout_s=600.0))
 
     assert result.ran is True
-    assert seen_timeouts[0] == 15.0
-    assert result.phase_metrics["overall_timeout_s"] == 15.0
+    assert seen_timeouts[0] == 600.0
+    assert result.phase_metrics["overall_timeout_s"] == 600.0
     assert result.phase_metrics["requested_timeout_s"] == 600.0

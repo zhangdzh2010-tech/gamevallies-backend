@@ -9,6 +9,15 @@ describe('GameController', () => {
   let reputationService: {
     getReputation: jest.Mock;
   };
+  let creationSessionService: {
+    createSession: jest.Mock;
+    getActiveSession: jest.Mock;
+    getSession: jest.Mock;
+    appendMessage: jest.Mock;
+    skipCurrentQuestion: jest.Mock;
+    generateFromSession: jest.Mock;
+    abandonSession: jest.Mock;
+  };
 
   beforeEach(() => {
     gameService = {
@@ -18,8 +27,21 @@ describe('GameController', () => {
     reputationService = {
       getReputation: jest.fn(),
     };
+    creationSessionService = {
+      createSession: jest.fn(),
+      getActiveSession: jest.fn(),
+      getSession: jest.fn(),
+      appendMessage: jest.fn(),
+      skipCurrentQuestion: jest.fn(),
+      generateFromSession: jest.fn(),
+      abandonSession: jest.fn(),
+    };
 
-    controller = new GameController(gameService as any, reputationService as any);
+    controller = new GameController(
+      gameService as any,
+      creationSessionService as any,
+      reputationService as any,
+    );
   });
 
   it('forwards timeoutS to game creation and returns the task payload', async () => {
@@ -101,7 +123,70 @@ describe('GameController', () => {
 
     expect(result).toEqual(
       expect.objectContaining({
-        data: ['casual', 'puzzle', 'education'],
+        data: ['casual', 'puzzle', 'education', 'funny'],
+      }),
+    );
+  });
+
+  it('creates a creation session for the current user', async () => {
+    creationSessionService.createSession.mockResolvedValue({
+      id: 'session-1',
+      status: 'collecting',
+    });
+
+    const result = await controller.createCreationSession(
+      { user: { sub: 'user-1' } },
+      {
+        prompt: '做一个办公室摸鱼游戏',
+        orientation: 'portrait',
+        generationTier: 'showcase',
+      } as any,
+    );
+
+    expect(creationSessionService.createSession).toHaveBeenCalledWith('user-1', {
+      prompt: '做一个办公室摸鱼游戏',
+      orientation: 'portrait',
+      generationTier: 'showcase',
+    });
+    expect(result).toEqual(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          id: 'session-1',
+          status: 'collecting',
+        }),
+      }),
+    );
+  });
+
+  it('forwards generate-from-session to the creation session service', async () => {
+    creationSessionService.generateFromSession.mockResolvedValue({
+      gameId: 'game-9',
+      generationTask: {
+        taskId: 'task-9',
+      },
+    });
+
+    const result = await controller.generateFromCreationSession(
+      { user: { sub: 'user-2' } },
+      'session-2',
+      {
+        revision: 3,
+        timeoutS: 900,
+      } as any,
+    );
+
+    expect(creationSessionService.generateFromSession).toHaveBeenCalledWith('user-2', 'session-2', {
+      revision: 3,
+      timeoutS: 900,
+    });
+    expect(result).toEqual(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          gameId: 'game-9',
+          generationTask: expect.objectContaining({
+            taskId: 'task-9',
+          }),
+        }),
       }),
     );
   });

@@ -31,6 +31,8 @@ from fastapi import APIRouter, Header, HTTPException, Query, status as http_stat
 from typing import Optional, Any
 
 from ..models import (
+    AnalyzeDialogueTurnRequest,
+    AnalyzeDialogueTurnResponse,
     AsyncTaskHandleResponse,
     AsyncTaskResponse,
     AsyncTaskStatus,
@@ -39,6 +41,8 @@ from ..models import (
     ChatResponse,
     CoverCaptureRequest,
     CoverCaptureResponse,
+    DraftPlanFromInputRequest,
+    DraftPlanFromInputResponse,
     GenerateCodeRequest,
     GenerateCodeResponse,
     IterateRequest,
@@ -56,6 +60,8 @@ from ..models import (
     RunPipelineRequest,
     RunPipelineResponse,
     RunPipelineV2Request,
+    SpecFromSlotsRequest,
+    SpecFromSlotsResponse,
 )
 from ...engine.dialogue_engine import DialogueEngine, _sessions
 from ...engine.pipeline_orchestrator import PipelineExecutionError, PipelineOrchestrator
@@ -1001,6 +1007,7 @@ async def _run_pipeline_v2_internal(
         normalized_request=resolved_request.normalized_request,
         runtime_contract=resolved_request.runtime_contract.model_dump(),
         prompt_bundle_snapshot=resolved_request.prompt_bundle_snapshot.model_dump(),
+        source_spec=resolved_request.source_spec.model_dump(mode="json") if resolved_request.source_spec else None,
     )
     await _relay_stage_summary_to_game_service(
         task_id=effective_task_id,
@@ -1438,6 +1445,33 @@ async def get_dialogue_session(session_id: str):
         "missing_required": session.slots.missing_required(),
         "history_length": len(session.history),
     }
+
+
+@router.post("/dialogue/analyze-turn", response_model=AnalyzeDialogueTurnResponse)
+async def analyze_dialogue_turn(request: AnalyzeDialogueTurnRequest) -> AnalyzeDialogueTurnResponse:
+    try:
+        return await _dialogue_engine.analyze_turn(request)
+    except Exception as e:
+        logger.exception("Dialogue analyze-turn error")
+        raise HTTPException(status_code=500, detail=f"Dialogue analyze-turn error: {str(e)}")
+
+
+@router.post("/dialogue/draft-plan-from-input", response_model=DraftPlanFromInputResponse)
+async def draft_plan_from_input(request: DraftPlanFromInputRequest) -> DraftPlanFromInputResponse:
+    try:
+        return await _dialogue_engine.draft_plan_from_input(request)
+    except Exception as e:
+        logger.exception("Dialogue draft-plan-from-input error")
+        raise HTTPException(status_code=400, detail=f"Dialogue draft-plan-from-input error: {str(e)}")
+
+
+@router.post("/dialogue/spec-from-slots", response_model=SpecFromSlotsResponse)
+async def build_spec_from_slots(request: SpecFromSlotsRequest) -> SpecFromSlotsResponse:
+    try:
+        return await _dialogue_engine.spec_from_slots(request)
+    except Exception as e:
+        logger.exception("Dialogue spec-from-slots error")
+        raise HTTPException(status_code=400, detail=f"Dialogue spec-from-slots error: {str(e)}")
 
 
 # ===========================================================================

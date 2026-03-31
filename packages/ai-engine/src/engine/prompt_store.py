@@ -12,6 +12,10 @@ import pymysql
 
 from ..config.settings import settings
 from ..config.timeout_store import get_int as get_timeout_int
+from .runtime_profile_ids import (
+    DEFAULT_RUNTIME_PROFILE_ID,
+    runtime_profile_lookup_candidates,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,11 +75,11 @@ PROMPT_KEYS = [
     "bundle.repair.forbidden_api",
     "bundle.repair.runtime_startup",
     "bundle.repair.generic",
-    "bundle.runtime.profile.portrait_arcade",
-    "bundle.runtime.profile.lane_runner",
-    "bundle.runtime.profile.grid_puzzle",
-    "bundle.runtime.profile.topdown_action",
-    "bundle.runtime.profile.tap_timing",
+    "bundle.runtime.profile.casual_arcade",
+    "bundle.runtime.profile.casual_lane",
+    "bundle.runtime.profile.puzzle_grid",
+    "bundle.runtime.profile.casual_action",
+    "bundle.runtime.profile.tap_challenge",
 ]
 
 
@@ -297,7 +301,13 @@ def get_runtime_profile(profile_id: str) -> Optional[Dict[str, Any]]:
     global _loaded
     if not _loaded:
         refresh()
-    return _runtime_profiles.get(str(profile_id))
+    for candidate in runtime_profile_lookup_candidates(profile_id):
+        profile = _runtime_profiles.get(candidate)
+        if profile:
+            if str(profile.get("id") or "") == candidate:
+                return {**profile, "id": runtime_profile_lookup_candidates(profile_id)[0]}
+            return profile
+    return None
 
 
 def get_default_runtime_profile() -> Optional[Dict[str, Any]]:
@@ -319,7 +329,9 @@ def get_default_runtime_profile() -> Optional[Dict[str, Any]]:
     ]
     candidates = marked_default or enabled
     candidates.sort(key=lambda item: str(item.get("id") or ""))
-    return candidates[0]
+    profile = candidates[0]
+    canonical_id = runtime_profile_lookup_candidates(profile.get("id"))[0] if profile.get("id") else DEFAULT_RUNTIME_PROFILE_ID
+    return {**profile, "id": canonical_id}
 
 
 def cached_prompt_count() -> int:

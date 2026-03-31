@@ -28,7 +28,9 @@ except ImportError:  # pragma: no cover - optional dependency during local editi
 from ..api.models import GameRuntimeContract, GameSpec, QACheckError, QACheckResponse, QAResult
 from ..config.settings import settings
 from ..config.timeout_store import get_int as get_timeout_int
-from ..services.llm_client import LLMClient, LLMResponseTruncatedError
+from ..services.llm_client import LLMClient
+from ..services.llm_gateway import get_request_context
+from ..services.task_memory import task_memory
 from .mobile_layout import MOBILE_LAYOUT_BRIDGE_MARKER, has_short_edge_scaling
 from .prompt_store import require_prompt
 from .restart_entry import has_restart_entry
@@ -127,6 +129,10 @@ class QAPipeline:
 
     def __init__(self) -> None:
         self._client = LLMClient()
+
+    @staticmethod
+    def _current_task_id() -> Optional[str]:
+        return get_request_context().get("task_id")
 
     # ------------------------------------------------------------------
     # Public: single check
@@ -288,19 +294,47 @@ class QAPipeline:
 
     @staticmethod
     def _estimate_fix_max_tokens(code: str, *, prefer_fast: bool) -> int:
-        approx_tokens = max(1024, len((code or "").encode("utf-8")) // 4)
-        buffer = 1024 if prefer_fast else 2048
-        ceiling = 6144 if prefer_fast else 8192
-        floor = 2048 if prefer_fast else 3072
+        approx_tokens = max(1024, len((code or "").encode("utf-8")) // (4 if prefer_fast else 3))
+        buffer = 1024 if prefer_fast else 3072
+        ceiling = 6144 if prefer_fast else 10240
+        floor = 2048 if prefer_fast else 4096
         return min(ceiling, max(floor, approx_tokens + buffer))
 
     @staticmethod
     def _estimate_syntax_repair_max_tokens(code: str, *, truncation_risk: bool) -> int:
         approx_tokens = max(2048, len((code or "").encode("utf-8")) // 3)
-        buffer = 4096 if truncation_risk else 3072
-        ceiling = 12288 if truncation_risk else 10240
-        floor = 6144 if truncation_risk else 5120
+        buffer = 5120 if truncation_risk else 3584
+        ceiling = max(
+            settings.LLM_LONG_GENERATION_MAX_TOKENS,
+            settings.LLM_GENERATION_TOKEN_BUDGET_COMPLEX if truncation_risk else settings.LLM_GENERATION_TOKEN_BUDGET_STANDARD,
+        )
+        floor = 7168 if truncation_risk else 6144
         return min(ceiling, max(floor, approx_tokens + buffer))
+
+    @staticmethod
+    def _estimate_repair_timeout_s(
+        *,
+        max_tokens: int,
+        prefer_fast: bool,
+        repair_family: str,
+    ) -> int:
+        timeout_key = "timeout.ai_engine.qa_fast_repair_s" if prefer_fast else "timeout.ai_engine.qa_repair_s"
+        default_timeout = 120 if prefer_fast else 180
+        timeout_s = get_timeout_int(timeout_key, default_timeout, min_value=30)
+        if prefer_fast:
+            if max_tokens >= 4096:
+                timeout_s = max(timeout_s, 150)
+            if max_tokens >= 6144:
+                timeout_s = max(timeout_s, 180)
+            return timeout_s
+
+        if repair_family == "syntax_structural":
+            timeout_s = max(timeout_s, 240)
+        if max_tokens >= 8192:
+            timeout_s = max(timeout_s, 240)
+        if max_tokens >= 12288:
+            timeout_s = max(timeout_s, settings.LLM_LONG_GENERATION_TIMEOUT_S)
+        return timeout_s
 
     def _extract_input_handlers(self, code: str) -> Dict[str, List[str]]:
         detected: Dict[str, set[str]] = {
@@ -1267,16 +1301,7 @@ class QAPipeline:
             ))
 
         # ── restart / reset logic ──
-        has_restart = bool(re.search(
-            r"function\s+(restart|reset|init|newGame|startGame)\s*\(",
-            code, re.IGNORECASE,
-        ))
-        # Accept arrow fn / method form too
-        has_restart = has_restart or bool(re.search(
-            r"(restart|reset|newGame)\s*[=:]\s*(function|\(|\(\))",
-            code, re.IGNORECASE,
-        ))
-        has_restart = has_restart or has_restart_entry(code)
+        has_restart = has_restart_entry(code)
         if (runtime_contract.gameplay.requires_restart_entry if runtime_contract else True) and not has_restart:
             warnings.append(QACheckError(
                 type="L4_playability",
@@ -1507,20 +1532,17 @@ class QAPipeline:
         ]
         prompt = "\n\n".join(part for part in prompt_parts if part)
         try:
-            request_timeout_s = get_timeout_int(
-                "timeout.ai_engine.qa_repair_s",
-                180,
-                min_value=30,
-            )
             max_tokens = max(
-                4096,
-                min(
-                    8192,
-                    self._estimate_syntax_repair_max_tokens(
-                        code,
-                        truncation_risk=self._errors_look_like_truncation(errors),
-                    ),
+                6144,
+                self._estimate_syntax_repair_max_tokens(
+                    code,
+                    truncation_risk=True,
                 ),
+            )
+            request_timeout_s = self._estimate_repair_timeout_s(
+                max_tokens=max_tokens,
+                prefer_fast=False,
+                repair_family="syntax_structural",
             )
             return await self._complete_repair_prompt_with_retry(
                 prompt=prompt,
@@ -1564,17 +1586,17 @@ class QAPipeline:
         ]
         prompt = "\n\n".join(part for part in prompt_parts if part)
         try:
-            request_timeout_s = get_timeout_int(
-                "timeout.ai_engine.qa_repair_s",
-                180,
-                min_value=30,
-            )
             max_tokens = max(
                 6144,
                 self._estimate_syntax_repair_max_tokens(
                     code,
                     truncation_risk=self._errors_look_like_truncation(errors),
                 ),
+            )
+            request_timeout_s = self._estimate_repair_timeout_s(
+                max_tokens=max_tokens,
+                prefer_fast=False,
+                repair_family="syntax_structural",
             )
             return await self._complete_repair_prompt_with_retry(
                 prompt=prompt,
@@ -1603,46 +1625,46 @@ class QAPipeline:
         from .code_generator import _extract_html
 
         allow_provider_fallback = bool(settings.LLM_PROVIDER_FAILOVER_ENABLED)
-        try:
-            text = await self._client.complete(
-                max_tokens=max_tokens,
-                messages=[{"role": "user", "content": prompt}],
-                step_key=step_key,
-                stage="qa_checking",
-                prefer_fast=prefer_fast,
-                request_timeout_s=request_timeout_s,
-                overall_timeout_s=request_timeout_s,
-                allow_provider_fallback=allow_provider_fallback,
-            )
-            return _extract_html(text)
-        except LLMResponseTruncatedError as exc:
-            if repair_family != "syntax_structural":
-                raise
-            retry_max_tokens = max(
-                max_tokens + 2048,
+        retry_ceiling = 8192 if prefer_fast else max(
+            settings.LLM_LONG_GENERATION_MAX_TOKENS,
+            settings.LLM_GENERATION_TOKEN_BUDGET_COMPLEX,
+        )
+        retry_floor = max_tokens + (1024 if prefer_fast else 3072)
+        if repair_family == "syntax_structural":
+            retry_floor = max(
+                retry_floor,
                 self._estimate_syntax_repair_max_tokens(code, truncation_risk=True),
             )
-            retry_max_tokens = min(12288, retry_max_tokens)
-            if retry_max_tokens <= max_tokens:
-                raise
-            logger.warning(
-                "LLM %s response was truncated; retrying syntax repair with larger budget (%s -> %s): %s",
-                step_key,
-                max_tokens,
-                retry_max_tokens,
-                exc,
+        else:
+            retry_floor = max(
+                retry_floor,
+                self._estimate_fix_max_tokens(code, prefer_fast=prefer_fast) + (1024 if prefer_fast else 2048),
             )
-            text = await self._client.complete(
-                max_tokens=retry_max_tokens,
-                messages=[{"role": "user", "content": prompt}],
-                step_key=step_key,
-                stage="qa_checking",
-                prefer_fast=prefer_fast,
-                request_timeout_s=request_timeout_s,
-                overall_timeout_s=request_timeout_s,
-                allow_provider_fallback=allow_provider_fallback,
-            )
-            return _extract_html(text)
+        timeout_retry_attempts = 1 if not prefer_fast else 0
+        timeout_retry_increment_s = 30 if prefer_fast else 60
+        timeout_retry_max_s = request_timeout_s + (60 if prefer_fast else 120)
+
+        text = await self._client.complete_with_truncation_retry(
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+            step_key=step_key,
+            stage="qa_checking",
+            prefer_fast=prefer_fast,
+            request_timeout_s=request_timeout_s,
+            overall_timeout_s=request_timeout_s,
+            allow_provider_fallback=allow_provider_fallback,
+            response_size_hint="medium" if prefer_fast else "xlarge",
+            context_scope="task",
+            compression_policy="qa_fix",
+            truncation_retry_attempts=1,
+            truncation_retry_increment=1024 if prefer_fast else 3072,
+            truncation_retry_max_tokens=retry_ceiling,
+            truncation_retry_min_tokens=retry_floor,
+            timeout_retry_attempts=timeout_retry_attempts,
+            timeout_retry_increment_s=timeout_retry_increment_s,
+            timeout_retry_max_s=timeout_retry_max_s,
+        )
+        return _extract_html(text)
 
     async def _fix_with_llm(
         self,
@@ -1657,6 +1679,12 @@ class QAPipeline:
         prompt_bundle_snapshot: Optional[Dict[str, Any]] = None,
         repair_family: str = "generic",
     ) -> str:
+        await task_memory.remember_qa_findings(
+            self._current_task_id(),
+            errors,
+            repair_family=repair_family,
+            fix_round=fix_round,
+        )
         error_list = "\n".join(f"  - [{e.type}] {e.message}" for e in errors)
         game_type = game_spec.game_type if game_spec else "unknown"
         targeted_instructions = self._build_targeted_fix_instructions(errors, runtime_contract)
@@ -1687,12 +1715,12 @@ class QAPipeline:
         if ui_language_instruction:
             prompt = "\n\n".join([ui_language_instruction, prompt])
         try:
-            request_timeout_s = get_timeout_int(
-                "timeout.ai_engine.qa_fast_repair_s" if prefer_fast else "timeout.ai_engine.qa_repair_s",
-                120 if prefer_fast else 180,
-                min_value=30,
+            request_timeout_s = self._estimate_repair_timeout_s(
+                max_tokens=max_tokens,
+                prefer_fast=prefer_fast,
+                repair_family=repair_family,
             )
-            return await self._complete_repair_prompt_with_retry(
+            repaired = await self._complete_repair_prompt_with_retry(
                 prompt=prompt,
                 code=code,
                 step_key=f"qa_fix.{repair_family}" if repair_family and repair_family != "generic" else "qa_fix",
@@ -1701,6 +1729,16 @@ class QAPipeline:
                 prefer_fast=prefer_fast,
                 repair_family=repair_family,
             )
+            await task_memory.remember_code(
+                self._current_task_id(),
+                repaired,
+                label=f"qa_fix_{repair_family}",
+            )
+            await task_memory.append_decision(
+                self._current_task_id(),
+                f"Applied QA fix family={repair_family} round={fix_round}/{max_fix_rounds}",
+            )
+            return repaired
         except Exception as e:
             logger.error(f"LLM auto-fix failed: {e}")
             return code
@@ -1886,6 +1924,9 @@ class QAPipeline:
   window.__playforgeInputBridgeInstalled = true;
   window.__playforgeInteractionFeedbackVersion = 0;
   window.__playforgeLastInputKind = '';
+  window.__playforgeBridgeHandling = false;
+  const BRIDGE_EVENT_FLAG = '__playforgeBridgeSynthetic';
+  const BRIDGE_HANDLED_FLAG = '__playforgeBridgeHandled';
   const target = document.getElementById('gameCanvas') || document.querySelector('canvas') || document.body || document.documentElement;
   if (!target) return;
   const canvas = document.getElementById('gameCanvas') || document.querySelector('canvas');
@@ -1895,6 +1936,42 @@ class QAPipeline:
     'start', 'restart', 'reset', 'begin', 'play'
   ];
   const startHints = /(start|begin|play|launch|ready|go|点击开始|开始游戏|开始|play again|restart|再来一局|重新开始)/i;
+
+  const markEvent = (event, key) => {
+    if (!event) return;
+    try {
+      Object.defineProperty(event, key, {
+        value: true,
+        configurable: true,
+      });
+      return;
+    } catch (err) {
+      /* ignore non-configurable event marker errors */
+    }
+    try {
+      event[key] = true;
+    } catch (err) {
+      /* ignore direct event marker errors */
+    }
+  };
+
+  const hasEventFlag = (event, key) => {
+    try {
+      return !!(event && event[key]);
+    } catch (err) {
+      return false;
+    }
+  };
+
+  const dispatchSyntheticEvent = (node, event) => {
+    if (!node || !event) return false;
+    markEvent(event, BRIDGE_EVENT_FLAG);
+    try {
+      return !!node.dispatchEvent(event);
+    } catch (err) {
+      return false;
+    }
+  };
 
   const setKnownStateFlags = () => {
     const candidates = ['gameState', 'state', 'currentState', 'status', 'mode'];
@@ -1976,17 +2053,26 @@ class QAPipeline:
 
       for (const node of candidates) {
         try {
-          node.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'touch' }));
+          dispatchSyntheticEvent(
+            node,
+            new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'touch' })
+          );
         } catch (err) {
           /* ignore pointerdown synthesis errors */
         }
         try {
-          node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, buttons: 1 }));
+          dispatchSyntheticEvent(
+            node,
+            new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, buttons: 1 })
+          );
         } catch (err) {
           /* ignore mousedown synthesis errors */
         }
         try {
-          node.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+          dispatchSyntheticEvent(
+            node,
+            new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })
+          );
         } catch (err) {
           /* ignore click synthesis errors */
         }
@@ -2071,37 +2157,39 @@ class QAPipeline:
 
   const bridgeHandler = (event) => {
     const type = event && event.type ? String(event.type) : 'interaction';
+    if (hasEventFlag(event, BRIDGE_EVENT_FLAG) || hasEventFlag(event, BRIDGE_HANDLED_FLAG)) {
+      return;
+    }
+    markEvent(event, BRIDGE_HANDLED_FLAG);
+    if (window.__playforgeBridgeHandling) {
+      return;
+    }
+    window.__playforgeBridgeHandling = true;
     window.__playforgeLastInputAt = Date.now();
-    paintVisibleFeedback(type);
-    setKnownStateFlags();
-    invokeKnownEntryPoint();
-    invokeVisibleDomStartControls();
-    dispatchBridgeEvents();
+    try {
+      paintVisibleFeedback(type);
+      setKnownStateFlags();
+      invokeKnownEntryPoint();
+      invokeVisibleDomStartControls();
+      dispatchBridgeEvents();
+    } finally {
+      window.__playforgeBridgeHandling = false;
+    }
   };
 
   const attach = (node) => {
     if (!node) return;
     const options = { passive: true, capture: true };
     node.addEventListener('pointerdown', bridgeHandler, options);
-    node.addEventListener('pointerup', bridgeHandler, options);
     node.addEventListener('touchstart', bridgeHandler, options);
-    node.addEventListener('touchend', bridgeHandler, options);
     node.addEventListener('click', bridgeHandler, options);
     node.addEventListener('keydown', bridgeHandler, options);
-    node.onpointerdown = bridgeHandler;
-    node.onpointerup = bridgeHandler;
-    node.ontouchstart = bridgeHandler;
-    node.ontouchend = bridgeHandler;
-    node.onclick = bridgeHandler;
-    node.onkeydown = bridgeHandler;
   };
 
   const bindInputHandlers = () => {
     attach(target);
     attach(document);
     attach(window);
-    document.documentElement && attach(document.documentElement);
-    document.body && attach(document.body);
   };
 
   bindInputHandlers();

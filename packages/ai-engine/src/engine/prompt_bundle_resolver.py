@@ -13,7 +13,11 @@ from .prompt_store import (
     get_prompt,
     get_prompt_bundle,
     get_runtime_profile,
-    require_prompt,
+)
+from .runtime_profile_ids import (
+    DEFAULT_RUNTIME_PROFILE_ID,
+    normalize_runtime_profile_id,
+    prompt_key_candidates_for_profile,
 )
 
 BUNDLE_SLOT_CANDIDATES: dict[str, tuple[str, ...]] = {
@@ -41,14 +45,19 @@ def _first_required_text(keys: Iterable[str]) -> tuple[str, str]:
 
 
 def _profile_prompt(runtime_profile: str) -> tuple[str, str]:
-    bundle_key = f"bundle.runtime.profile.{runtime_profile}"
-    return bundle_key, require_prompt(bundle_key)
+    for bundle_key in prompt_key_candidates_for_profile(runtime_profile):
+        value = get_prompt(bundle_key)
+        if value:
+            return bundle_key, value
+    raise PromptConfigError(
+        f"Missing required prompt config(s): {', '.join(prompt_key_candidates_for_profile(runtime_profile))}"
+    )
 
 
 def _default_runtime_profile_id() -> str:
     profile = get_default_runtime_profile()
     if isinstance(profile, dict) and profile.get("id"):
-        return str(profile["id"])
+        return normalize_runtime_profile_id(str(profile["id"]))
     raise PromptConfigError("No enabled runtime profile is configured")
 
 
@@ -104,11 +113,11 @@ def resolve_prompt_bundle_snapshot(
     runtime_profile: Optional[str] = None,
 ) -> PromptBundleSnapshot:
     base_layers = dict(snapshot.layers or {})
-    selected_profile = str(
+    selected_profile = normalize_runtime_profile_id(str(
         runtime_profile
         or base_layers.get("profile_few_shot")
         or _default_runtime_profile_id()
-    ).strip() or _default_runtime_profile_id()
+    ).strip() or DEFAULT_RUNTIME_PROFILE_ID)
 
     bundle_record = get_prompt_bundle(snapshot.bundle_id, snapshot.bundle_version)
     runtime_profile_record = get_runtime_profile(selected_profile)

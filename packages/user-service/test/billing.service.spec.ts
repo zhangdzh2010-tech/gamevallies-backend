@@ -60,7 +60,9 @@ describe('BillingService', () => {
         const values: Record<string, string> = {
           BILLING_DEFAULT_FREE_QUOTA: '5',
           WECHAT_MINIAPP_APP_ID: 'wx-miniapp',
+          WECHAT_H5_APP_ID: 'wx-h5-app',
           WECHAT_PAY_NOTIFY_URL: 'https://example.com/api/v1/subscription/wechat/notify',
+          PUBLIC_WEB_BASE_URL: 'https://gamevallies.com',
         };
         return values[key];
       }),
@@ -276,6 +278,121 @@ describe('BillingService', () => {
         paySign: 'existing-sign',
       },
     });
+  });
+
+  it('creates an h5 mweb order without requiring miniapp openid', async () => {
+    prisma.subscriptionPlan.upsert.mockResolvedValue(undefined);
+    prisma.subscriptionOrder.updateMany.mockResolvedValue({ count: 0 });
+    prisma.subscriptionOrder.findFirst.mockResolvedValue(null);
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'user-1',
+      wxOpenId: null,
+    });
+    prisma.subscriptionPlan.findFirst.mockResolvedValue({
+      id: 'plan_monthly_basic',
+      name: '基础月卡',
+      price: 990,
+      currency: 'CNY',
+      period: SubscriptionPeriod.monthly,
+      quota: 10,
+    });
+    wechatPayService.createPayment.mockResolvedValue({
+      prepayId: null,
+      rawResponse: { h5_url: 'https://wx.tenpay.com/mock-h5-pay' },
+      payment: {
+        mwebUrl: 'https://wx.tenpay.com/mock-h5-pay',
+      },
+    });
+    prisma.subscriptionOrder.create.mockResolvedValue(undefined);
+
+    const result = await service.createOrder(
+      'user-1',
+      { planId: 'plan_monthly_basic' },
+      '127.0.0.1',
+      {
+        clientPlatform: 'h5',
+        wechatPayFlow: 'mweb',
+        returnUrl: 'https://gamevallies.com/#/pages/subscription/index',
+      },
+    );
+
+    expect(wechatPayService.createPayment).toHaveBeenCalledWith(expect.objectContaining({
+      appId: 'wx-h5-app',
+      tradeType: 'h5',
+      openId: undefined,
+      h5Info: expect.objectContaining({
+        appUrl: 'https://gamevallies.com',
+      }),
+    }));
+    expect(result).toEqual({
+      orderId: expect.stringMatching(/^order_/),
+      payment: {
+        mwebUrl: 'https://wx.tenpay.com/mock-h5-pay',
+      },
+    });
+  });
+
+  it('requires h5 oauth identity for wechat h5 jsapi payment', async () => {
+    prisma.subscriptionPlan.upsert.mockResolvedValue(undefined);
+    prisma.subscriptionOrder.updateMany.mockResolvedValue({ count: 0 });
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'user-1',
+      wxOpenId: null,
+    });
+    prisma.subscriptionPlan.findFirst.mockResolvedValue({
+      id: 'plan_monthly_basic',
+      name: '基础月卡',
+      price: 990,
+      currency: 'CNY',
+      period: SubscriptionPeriod.monthly,
+      quota: 10,
+    });
+
+    await expect(
+      service.createOrder(
+        'user-1',
+        { planId: 'plan_monthly_basic' },
+        '127.0.0.1',
+        {
+          clientPlatform: 'wechat_h5',
+          wechatPayFlow: 'jsapi',
+          authContext: {},
+        },
+      ),
+    ).rejects.toThrow('当前微信内 H5 支付需要先完成微信授权登录');
+  });
+
+  it('rejects non-jsapi payment flow for wechat in-app h5 orders', async () => {
+    prisma.subscriptionPlan.upsert.mockResolvedValue(undefined);
+    prisma.subscriptionOrder.updateMany.mockResolvedValue({ count: 0 });
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'user-1',
+      wxOpenId: null,
+    });
+    prisma.subscriptionPlan.findFirst.mockResolvedValue({
+      id: 'plan_monthly_basic',
+      name: '基础月卡',
+      price: 990,
+      currency: 'CNY',
+      period: SubscriptionPeriod.monthly,
+      quota: 10,
+    });
+
+    await expect(
+      service.createOrder(
+        'user-1',
+        { planId: 'plan_monthly_basic' },
+        '127.0.0.1',
+        {
+          clientPlatform: 'wechat_h5',
+          wechatPayFlow: 'native',
+          authContext: {
+            wechatPlatform: 'h5',
+            wechatOpenId: 'openid-h5',
+          },
+        },
+      ),
+    ).rejects.toThrow('微信内 H5 支付必须使用 JSAPI');
   });
 
   it('mock payment activates subscription and unlocks the linked game', async () => {

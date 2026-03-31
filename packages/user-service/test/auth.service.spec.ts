@@ -75,6 +75,9 @@ describe('AuthService', () => {
         JWT_EXPIRES_IN: '24h',
         'wechat.miniappAppId': 'wx-app-id',
         'wechat.miniappAppSecret': 'wx-app-secret',
+        'wechat.h5AppId': 'wx-h5-app-id',
+        'wechat.h5AppSecret': 'wx-h5-app-secret',
+        'wechat.h5OauthScope': 'snsapi_userinfo',
       };
       return config[key] ?? defaultValue;
     }),
@@ -105,6 +108,9 @@ describe('AuthService', () => {
         JWT_EXPIRES_IN: '24h',
         'wechat.miniappAppId': 'wx-app-id',
         'wechat.miniappAppSecret': 'wx-app-secret',
+        'wechat.h5AppId': 'wx-h5-app-id',
+        'wechat.h5AppSecret': 'wx-h5-app-secret',
+        'wechat.h5OauthScope': 'snsapi_userinfo',
       };
       return config[key] ?? defaultValue;
     });
@@ -298,6 +304,68 @@ describe('AuthService', () => {
       expect(mockFetch).toHaveBeenCalledTimes(1);
       expect(mockPrismaService.user.create).toHaveBeenCalled();
       expect(result.user.id).toBe('user-wx-1');
+    });
+  });
+
+  describe('loginByWechatH5', () => {
+    it('creates a new wechat h5 user and persists refresh context', async () => {
+      const mockFetch = jest.fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            access_token: 'oauth-token',
+            openid: 'wx-h5-open-id',
+            scope: 'snsapi_userinfo',
+            unionid: 'union-h5-1',
+          }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            openid: 'wx-h5-open-id',
+            nickname: 'H5 User',
+            headimgurl: 'https://img.example/h5-user.png',
+            unionid: 'union-h5-1',
+          }),
+        });
+      (global as any).fetch = mockFetch;
+
+      mockPrismaService.user.findFirst.mockResolvedValueOnce(null);
+      mockPrismaService.user.create.mockResolvedValueOnce({
+        ...mockUser,
+        id: 'user-h5-1',
+        username: 'wx_h5_1',
+        displayName: 'H5 User',
+      });
+      mockPrismaService.refreshToken.create.mockResolvedValueOnce({});
+
+      const result = await service.loginByWechatH5('wechat-oauth-code');
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(mockPrismaService.user.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({
+          wxOpenId: 'wx-h5-open-id',
+          wxUnionId: 'union-h5-1',
+          displayName: 'H5 User',
+        }),
+      }));
+      expect(mockRedisSetex).toHaveBeenCalledWith(
+        expect.stringMatching(/^auth:refresh-context:/),
+        expect.any(Number),
+        JSON.stringify({
+          platform: 'h5',
+          openId: 'wx-h5-open-id',
+          appId: 'wx-h5-app-id',
+        }),
+      );
+      expect(result.user.id).toBe('user-h5-1');
+    });
+
+    it('rejects oauth authorize urls outside the public web origin', () => {
+      expect(() => service.buildWechatH5AuthorizeUrl(
+        'https://evil.example.com/#/pages/login/index',
+        'oauth-state',
+      )).toThrow(BadRequestException);
     });
   });
 

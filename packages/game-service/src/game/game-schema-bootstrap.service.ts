@@ -3,6 +3,9 @@ import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import promptBundleCatalog from './catalogs/prompt-bundle-catalog.json';
 import runtimeProfileCatalog from './catalogs/runtime-profile-catalog.json';
+import {
+  LEGACY_TO_CANONICAL_RUNTIME_PROFILE_IDS,
+} from './runtime-profile-ids';
 
 type ColumnPatch = {
   table: string;
@@ -371,6 +374,32 @@ const GAME_SCHEMA_STATEMENTS = [
     CONSTRAINT generation_artifacts_task_id_fkey FOREIGN KEY (task_id) REFERENCES generation_tasks(id) ON DELETE SET NULL ON UPDATE CASCADE,
     CONSTRAINT generation_artifacts_game_id_fkey FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT generation_artifacts_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE
+  ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+  `CREATE TABLE IF NOT EXISTS game_creation_sessions (
+    id VARCHAR(36) NOT NULL,
+    user_id VARCHAR(36) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'collecting',
+    entry_mode VARCHAR(32) NOT NULL DEFAULT 'create',
+    initial_prompt LONGTEXT NOT NULL,
+    title_draft VARCHAR(64) NULL,
+    revision INT NOT NULL DEFAULT 1,
+    slot_state JSON NOT NULL,
+    missing_required JSON NOT NULL,
+    skipped_slots JSON NOT NULL,
+    current_question JSON NULL,
+    conversation JSON NOT NULL,
+    generated_game_id VARCHAR(36) NULL,
+    generation_task_id VARCHAR(36) NULL,
+    source_game_id VARCHAR(36) NULL,
+    question_budget INT NOT NULL DEFAULT 4,
+    metadata JSON NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    INDEX game_creation_sessions_user_id_status_updated_at_idx (user_id, status, updated_at),
+    INDEX game_creation_sessions_generated_game_id_idx (generated_game_id),
+    INDEX game_creation_sessions_generation_task_id_idx (generation_task_id),
+    CONSTRAINT game_creation_sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE
   ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
   `CREATE TABLE IF NOT EXISTS prompt_bundles (
     id VARCHAR(64) NOT NULL,
@@ -924,6 +953,24 @@ export class GameSchemaBootstrapService implements OnModuleInit {
           JSON.stringify(profile.contractSchema),
           profile.fewShotPrompt,
           JSON.stringify(profile.metadata),
+        );
+      }
+
+      for (const [legacyId, canonicalId] of Object.entries(LEGACY_TO_CANONICAL_RUNTIME_PROFILE_IDS)) {
+        if (legacyId === canonicalId) {
+          continue;
+        }
+        await this.prisma.$executeRawUnsafe(
+          `UPDATE generation_tasks
+           SET runtime_profile = ?
+           WHERE runtime_profile = ?`,
+          canonicalId,
+          legacyId,
+        );
+        await this.prisma.$executeRawUnsafe(
+          `DELETE FROM runtime_profile_catalog
+           WHERE id = ?`,
+          legacyId,
         );
       }
 

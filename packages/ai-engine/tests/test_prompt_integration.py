@@ -25,6 +25,7 @@ from src.api.models import (
     VisualStyle,
 )
 from src.engine.code_generator import CodeGenerator
+from src.engine.game_designer import GameDesigner
 from src.main import app
 
 COMMON_CODEGEN_PROMPTS = {
@@ -86,7 +87,7 @@ class TestPromptIntegration(unittest.TestCase):
             side_effect=fake_get_prompt,
         ), patch.object(
             generator._client,
-            "complete",
+            "complete_with_truncation_retry",
             new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
         ) as mock_complete:
             result = asyncio.run(
@@ -100,7 +101,7 @@ class TestPromptIntegration(unittest.TestCase):
 
         self.assertEqual(result, "<!DOCTYPE html><html></html>")
         kwargs = mock_complete.await_args.kwargs
-        self.assertEqual(kwargs["system"], "CODE_GEN_SYSTEM_FROM_DB")
+        self.assertIn("CODE_GEN_SYSTEM_FROM_DB", kwargs["system"])
         self.assertIn(
             "PARAM_PROMPT::make it faster::<!DOCTYPE html><html><body>old</body></html>",
             kwargs["messages"][0]["content"],
@@ -151,7 +152,7 @@ class TestPromptIntegration(unittest.TestCase):
             return COMMON_CODEGEN_PROMPTS.get(key, default)
 
         spec = GameSpec(
-            game_type="dodge",
+            game_type="casual",
             source_description="做一个太空躲避游戏",
             intent_summary="控制飞船躲避陨石并穿过黑洞得分",
             core_mechanics=[CoreMechanic(type="dodge", input="touch")],
@@ -192,7 +193,7 @@ class TestPromptIntegration(unittest.TestCase):
             side_effect=fake_get_prompt,
         ), patch.object(
             generator._client,
-            "complete",
+            "complete_with_truncation_retry",
             new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
         ) as mock_complete:
             result = asyncio.run(generator._llm_generate(spec, gdd, description="做一个太空躲避游戏"))
@@ -200,7 +201,7 @@ class TestPromptIntegration(unittest.TestCase):
         self.assertEqual(result, "<!DOCTYPE html><html></html>")
         kwargs = mock_complete.await_args.kwargs
         message = kwargs["messages"][0]["content"]
-        self.assertEqual(kwargs["system"], "CODE_GEN_SYSTEM_FROM_DB")
+        self.assertIn("CODE_GEN_SYSTEM_FROM_DB", kwargs["system"])
         self.assertIn("核心玩法：控制飞船躲避陨石并穿过黑洞得分", message)
         self.assertIn("背景色：#0a0a2e", message)
         self.assertIn("障碍物：", message)
@@ -220,7 +221,7 @@ class TestPromptIntegration(unittest.TestCase):
             return COMMON_CODEGEN_PROMPTS.get(key, default)
 
         spec = GameSpec(
-            game_type="runner",
+            game_type="casual",
             source_description="做一个动物园逃脱跑酷游戏",
             intent_summary="在动物园里奔跑，躲开管理员并救出小动物",
             core_mechanics=[CoreMechanic(type="runner", input="swipe")],
@@ -243,7 +244,7 @@ class TestPromptIntegration(unittest.TestCase):
             side_effect=fake_get_prompt,
         ), patch.object(
             generator._client,
-            "complete",
+            "complete_with_truncation_retry",
             new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
         ) as mock_complete:
             asyncio.run(generator._llm_generate(spec, gdd, description=""))
@@ -266,7 +267,7 @@ class TestPromptIntegration(unittest.TestCase):
             return COMMON_CODEGEN_PROMPTS.get(key, default)
 
         spec = GameSpec(
-            game_type="runner",
+            game_type="casual",
             source_description="做一个竖屏跑酷小游戏",
             rules=GameRules(win_condition="reach the finish line", lose_condition="hit obstacles", lives=3),
             visual_style=VisualStyle(theme="forest", art_style="cartoon"),
@@ -285,7 +286,7 @@ class TestPromptIntegration(unittest.TestCase):
             side_effect=fake_get_prompt,
         ), patch.object(
             generator._client,
-            "complete",
+            "complete_with_truncation_retry",
             new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
         ) as mock_complete:
             asyncio.run(generator._llm_generate(spec, gdd, description="做一个竖屏跑酷小游戏"))
@@ -329,7 +330,7 @@ class TestPromptIntegration(unittest.TestCase):
         ):
             profile_prompt = CodeGenerator._resolve_profile_few_shot(
                 None,
-                "portrait_arcade",
+                "casual_arcade",
                 runtime_contract=GameRuntimeContract(
                     mobile_layout={"orientation": "landscape_first"},
                 ),
@@ -341,7 +342,7 @@ class TestPromptIntegration(unittest.TestCase):
     def test_generate_rewrites_profile_few_shot_for_landscape_contracts(self):
         generator = CodeGenerator(llm_mode="real")
         spec = GameSpec(
-            game_type="runner",
+            game_type="casual",
             core_mechanics=[CoreMechanic(type="runner", input="swipe")],
             entities=[GameEntity(name="runner", role="player")],
             rules=GameRules(),
@@ -381,7 +382,7 @@ class TestPromptIntegration(unittest.TestCase):
             },
         ), patch.object(
             generator._client,
-            "complete",
+            "complete_with_truncation_retry",
             new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
         ) as mock_complete:
             asyncio.run(
@@ -393,7 +394,7 @@ class TestPromptIntegration(unittest.TestCase):
                         mobile_layout={"orientation": "landscape_first"},
                         canvas={"orientation": "landscape_first"},
                     ),
-                    runtime_profile="portrait_arcade",
+                    runtime_profile="casual_arcade",
                 )
             )
 
@@ -440,7 +441,7 @@ class TestPromptIntegration(unittest.TestCase):
             return COMMON_CODEGEN_PROMPTS.get(key, default)
 
         spec = GameSpec(
-            game_type="runner",
+            game_type="casual",
             source_description="make a portrait runner",
             rules=GameRules(win_condition="finish", lose_condition="hit obstacle", lives=3),
             visual_style=VisualStyle(theme="forest", art_style="cartoon"),
@@ -469,7 +470,7 @@ class TestPromptIntegration(unittest.TestCase):
             side_effect=fake_get_prompt,
         ), patch.object(
             generator._client,
-            "complete",
+            "complete_with_truncation_retry",
             new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
         ) as mock_complete:
             asyncio.run(
@@ -478,7 +479,7 @@ class TestPromptIntegration(unittest.TestCase):
                     gdd,
                     description="make a portrait runner",
                     runtime_contract=GameRuntimeContract(),
-                    runtime_profile="lane_runner",
+                    runtime_profile="casual_lane",
                     prompt_bundle_snapshot=prompt_bundle_snapshot,
                 )
             )
@@ -518,7 +519,7 @@ class TestPromptIntegration(unittest.TestCase):
             side_effect=fake_get_prompt,
         ), patch.object(
             generator._client,
-            "complete",
+            "complete_with_truncation_retry",
             new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
         ) as mock_complete:
             asyncio.run(
@@ -528,7 +529,7 @@ class TestPromptIntegration(unittest.TestCase):
                     conversation=[],
                     iter_type=IterationType.element_change,
                     runtime_contract=GameRuntimeContract(),
-                    runtime_profile="lane_runner",
+                    runtime_profile="casual_lane",
                     prompt_bundle_snapshot=prompt_bundle_snapshot,
                 )
             )
@@ -541,6 +542,181 @@ class TestPromptIntegration(unittest.TestCase):
         self.assertIn("LOGIC_GENERATE_FROM_BUNDLE", message)
         self.assertIn("PROFILE_FEW_SHOT_FROM_BUNDLE", message)
         self.assertIn("ITERATE_PROMPT::add coins::<!DOCTYPE html><html><body>old</body></html>", message)
+
+    def test_select_token_budget_uses_generation_tier(self):
+        safe_spec = GameSpec(game_type="casual", generation_tier="safe")
+        standard_spec = GameSpec(game_type="casual", generation_tier="standard")
+        showcase_spec = GameSpec(game_type="casual", generation_tier="showcase")
+
+        safe_budget = CodeGenerator._select_token_budget(safe_spec)
+        standard_budget = CodeGenerator._select_token_budget(standard_spec)
+        showcase_budget = CodeGenerator._select_token_budget(showcase_spec)
+
+        self.assertLess(safe_budget, standard_budget)
+        self.assertGreater(showcase_budget, standard_budget)
+
+    def test_showcase_budget_block_allows_richer_structure(self):
+        showcase_spec = GameSpec(
+            game_type="casual",
+            generation_tier="showcase",
+            source_description="build a flashy arcade rescue game",
+        )
+
+        block = CodeGenerator._build_implementation_budget_block(showcase_spec, "flashy rescue gameplay")
+
+        self.assertIn("2-3 linked subsystems", block)
+        self.assertIn("signature mechanic", block)
+        self.assertNotIn("smallest complete mechanic", block)
+
+    def test_showcase_system_prompt_rewrites_minimalism_bias(self):
+        generator = CodeGenerator(llm_mode="real")
+        showcase_spec = GameSpec(game_type="casual", generation_tier="showcase")
+
+        with patch(
+            "src.engine.code_generator.require_prompt",
+            side_effect=lambda key, default=None: (
+                "Choose the smallest implementation that fully satisfies the brief.\n"
+                "Prefer one clear gameplay loop.\n"
+                "Avoid optional polish before core loop stability."
+                if key == "prompt.code_gen_system"
+                else COMMON_CODEGEN_PROMPTS.get(key, default)
+            ),
+        ):
+            system_prompt = generator._build_system_prompt(
+                prompt_bundle_snapshot=None,
+                spec=showcase_spec,
+            )
+
+        self.assertNotIn("Choose the smallest implementation that fully satisfies the brief.", system_prompt)
+        self.assertIn("SHOWCASE OVERRIDE", system_prompt)
+        self.assertIn("premium-feeling result", system_prompt)
+
+    def test_generate_prompt_includes_visual_pack_direction(self):
+        generator = CodeGenerator(llm_mode="real")
+        spec = GameSpec(
+            game_type="casual",
+            generation_tier="showcase",
+            source_description="make a premium neon arcade game",
+            rules=GameRules(),
+            visual_style=VisualStyle(
+                theme="space",
+                art_style="neon",
+                visual_pack="neon_glass",
+                render_style_intensity="high",
+            ),
+            platform_constraints=PlatformConstraints(),
+        )
+        gdd = GDD(
+            canvas=CanvasConfig(width=360, height=640, dpr_adaptive=True, target_fps=60),
+            numerics=NumericsConfig(),
+            collision=CollisionConfig(),
+            input_map={},
+            ui_layout={},
+        )
+
+        def fake_get_prompt(key: str, default=None):
+            if key == "prompt.game_design_template":
+                return "Game Type: {game_type}\nTheme: {theme}"
+            if key == "prompt.code_gen_system":
+                return "SYSTEM"
+            if key == "prompt.platform_standard":
+                return "PLATFORM"
+            return COMMON_CODEGEN_PROMPTS.get(key, default)
+
+        with patch(
+            "src.engine.code_generator.require_prompt",
+            side_effect=fake_get_prompt,
+        ), patch.object(
+            generator._client,
+            "complete_with_truncation_retry",
+            new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
+        ) as mock_complete:
+            asyncio.run(generator._llm_generate(spec, gdd, description="make a premium neon arcade game"))
+
+        message = mock_complete.await_args.kwargs["messages"][0]["content"]
+        self.assertIn("VISUAL PACK DIRECTION:", message)
+        self.assertIn("Pack id: neon_glass", message)
+        self.assertIn("HUD style: glass_panel", message)
+        self.assertIn("Button style: pill_glow", message)
+
+    def test_game_designer_embeds_visual_pack_style_metadata(self):
+        designer = GameDesigner()
+        spec = GameSpec(
+            game_type="puzzle",
+            generation_tier="showcase",
+            visual_style=VisualStyle(
+                theme="ocean",
+                art_style="clean",
+                visual_pack="clean_edu",
+                render_style_intensity="high",
+            ),
+        )
+
+        gdd = asyncio.run(designer.design(spec))
+
+        self.assertEqual(gdd.ui_layout["style"]["visualPack"], "clean_edu")
+        self.assertEqual(gdd.ui_layout["style"]["renderStyleIntensity"], "high")
+        self.assertEqual(gdd.ui_layout["style"]["hudStyle"], "clean_cards")
+        self.assertIn("Helvetica Neue", gdd.ui_layout["style"]["fontFamily"])
+
+    def test_showcase_design_program_flows_into_prompt(self):
+        designer = GameDesigner()
+        generator = CodeGenerator(llm_mode="real")
+        spec = GameSpec(
+            game_type="funny",
+            generation_tier="showcase",
+            source_description="做一个办公室摸鱼游戏，老板会突然巡查。",
+            intent_summary="tap to hide from the boss",
+            rules=GameRules(win_condition="stay undiscovered", lose_condition="caught_by_boss"),
+            visual_style=VisualStyle(
+                theme="office",
+                art_style="comic",
+                visual_pack="comic_bounce",
+                render_style_intensity="high",
+            ),
+            platform_constraints=PlatformConstraints(input_mode="tap"),
+            session_length="rapid_sketch_rounds",
+            progression_shape="escalating_gags",
+            reward_loop="Land bigger workplace jokes and survive the inspection streak.",
+            signature_moment="A fake spreadsheet flips back into a meme wall just before the boss catches you.",
+            target_audience="office meme players",
+            tone="absurd and punchy",
+            reference_style="comic",
+            complexity_budget="showcase",
+            comedy_device="near_miss_reversal",
+            design_goals=["Teach the joke loop fast.", "Escalate the inspection pressure.", "End with a strong gag payoff."],
+        )
+
+        gdd = asyncio.run(designer.design(spec))
+
+        def fake_get_prompt(key: str, default=None):
+            if key == "prompt.game_design_template":
+                return "Game Type: {game_type}\nTheme: {theme}"
+            if key == "prompt.code_gen_system":
+                return "SYSTEM"
+            if key == "prompt.platform_standard":
+                return "PLATFORM"
+            return COMMON_CODEGEN_PROMPTS.get(key, default)
+
+        with patch(
+            "src.engine.code_generator.require_prompt",
+            side_effect=fake_get_prompt,
+        ), patch.object(
+            generator._client,
+            "complete_with_truncation_retry",
+            new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
+        ) as mock_complete:
+            asyncio.run(generator._llm_generate(spec, gdd, description=spec.source_description))
+
+        message = mock_complete.await_args.kwargs["messages"][0]["content"]
+        self.assertIn("DESIGN PROGRAM (HIGH PRIORITY):", message)
+        self.assertIn("Complexity budget: showcase", message)
+        self.assertIn("Signature moment: A fake spreadsheet flips back into a meme wall just before the boss catches you.", message)
+        self.assertIn("Level structure:", message)
+        self.assertIn("Failure recovery plan:", message)
+        self.assertTrue(gdd.level_structure)
+        self.assertTrue(gdd.phase_plan)
+        self.assertTrue(gdd.feedback_moments)
 
 
 if __name__ == "__main__":

@@ -50,6 +50,25 @@ const PLAN_BOOTSTRAP_MARKER_KEY = 'billing.subscription_plans_bootstrapped_at';
 
 type BillingDbClient = PrismaService | Prisma.TransactionClient;
 
+type CreateOrderOptions = {
+  clientPlatform?: 'weapp' | 'h5' | 'wechat_h5';
+  wechatPayFlow?: 'jsapi' | 'mweb' | 'native';
+  returnUrl?: string;
+  authContext?: {
+    wechatPlatform?: 'miniapp' | 'h5';
+    wechatOpenId?: string;
+    wechatAppId?: string;
+  };
+};
+
+type PaymentRoutingDecision = {
+  tradeType: 'jsapi' | 'h5';
+  appId: string;
+  openId?: string;
+  clientPlatform: 'weapp' | 'h5' | 'wechat_h5';
+  wechatPayFlow: 'jsapi' | 'mweb' | 'native';
+};
+
 @Injectable()
 export class BillingService {
   constructor(
@@ -105,6 +124,7 @@ export class BillingService {
     userId: string,
     dto: CreateSubscriptionOrderDto,
     clientIp: string,
+    options: CreateOrderOptions = {},
   ) {
     await this.ensurePlansSeeded();
 
@@ -132,16 +152,12 @@ export class BillingService {
       throw new NotFoundException('Subscription plan not found');
     }
 
-    if (!this.wechatPayService.isMockMode() && !user.wxOpenId) {
-      throw new BadRequestException('当前账号未绑定微信小程序 OpenID，无法调起微信支付');
-    }
-
     if (dto.gameId) {
       await this.assertGameOwnership(userId, dto.gameId);
     }
 
     const now = new Date();
-    const appId = this.configService.get<string>('WECHAT_MINIAPP_APP_ID') || '';
+    const paymentDecision = this.resolvePaymentRouting(user, options);
     const orderId = `order_${this.formatTimestamp(now)}_${randomBytes(4).toString('hex')}`;
     const outTradeNo = `gv${this.formatTimestamp(now)}${randomBytes(5).toString('hex')}`.slice(0, 32);
     const notifyUrl = this.resolveNotifyUrl();
@@ -153,24 +169,42 @@ export class BillingService {
       dto.gameId || null,
       now,
     );
-    if (reusableOrder?.prepayId) {
+    if (paymentDecision.tradeType === 'jsapi' && reusableOrder?.prepayId) {
       return {
         orderId: reusableOrder.id,
         payment: this.wechatPayService.buildPaymentFromPrepayId(
-          appId,
+          paymentDecision.appId,
           reusableOrder.prepayId,
         ),
       };
     }
 
+    const reusableH5Url = this.extractReusableH5Url(reusableOrder?.paymentResponse);
+    if (paymentDecision.tradeType === 'h5' && reusableH5Url && reusableOrder) {
+      return {
+        orderId: reusableOrder.id,
+        payment: {
+          mwebUrl: reusableH5Url,
+        },
+      };
+    }
+
     const paymentResult = await this.wechatPayService.createPayment({
-      appId,
-      openId: user.wxOpenId || '',
+      appId: paymentDecision.appId,
+      openId: paymentDecision.openId,
       description: `GameVallies ${plan.name}`,
       outTradeNo,
       amount: plan.price,
       notifyUrl,
       clientIp,
+      tradeType: paymentDecision.tradeType,
+      h5Info: paymentDecision.tradeType === 'h5'
+        ? {
+            type: 'Wap',
+            appName: 'GameVallies',
+            appUrl: this.resolveWebBaseUrl(),
+          }
+        : undefined,
     });
 
     await this.prisma.subscriptionOrder.create({
@@ -186,9 +220,13 @@ export class BillingService {
         gameIdToUnlock: dto.gameId || null,
         description: `GameVallies ${plan.name}`,
         paymentPayload: {
-          appId,
+          appId: paymentDecision.appId,
           notifyUrl,
           clientIp,
+          clientPlatform: paymentDecision.clientPlatform,
+          wechatPayFlow: paymentDecision.wechatPayFlow,
+          tradeType: paymentDecision.tradeType,
+          returnUrl: options.returnUrl || null,
         } as unknown as Prisma.InputJsonValue,
         paymentResponse: paymentResult.rawResponse as unknown as Prisma.InputJsonValue,
         expiresAt: new Date(now.getTime() + 2 * 60 * 60 * 1000),
@@ -586,6 +624,7 @@ export class BillingService {
       select: {
         id: true,
         prepayId: true,
+        paymentResponse: true,
       },
       orderBy: {
         createdAt: 'desc',
@@ -789,6 +828,81 @@ export class BillingService {
 
     expiresAt.setUTCMonth(expiresAt.getUTCMonth() + 1);
     return expiresAt;
+  }
+
+  private resolvePaymentRouting(
+    user: { wxOpenId: string | null },
+    options: CreateOrderOptions,
+  ): PaymentRoutingDecision {
+    const clientPlatform = options.clientPlatform || 'weapp';
+    const wechatPayFlow = options.wechatPayFlow || (clientPlatform === 'h5' ? 'mweb' : 'jsapi');
+
+    if (clientPlatform === 'h5') {
+      return {
+        tradeType: 'h5',
+        appId: this.configService.get<string>('WECHAT_H5_APP_ID') || '',
+        clientPlatform,
+        wechatPayFlow,
+      };
+    }
+
+    if (clientPlatform === 'wechat_h5') {
+      if (wechatPayFlow !== 'jsapi') {
+        throw new BadRequestException('微信内 H5 支付必须使用 JSAPI，请先完成微信授权登录后再发起支付');
+      }
+
+      const h5OpenId = options.authContext?.wechatPlatform === 'h5'
+        ? options.authContext?.wechatOpenId
+        : undefined;
+      const h5AppId = this.configService.get<string>('WECHAT_H5_APP_ID') || '';
+
+      if (!h5AppId || !h5OpenId) {
+        throw new BadRequestException('当前微信内 H5 支付需要先完成微信授权登录');
+      }
+
+      return {
+        tradeType: 'jsapi',
+        appId: h5AppId,
+        openId: h5OpenId,
+        clientPlatform,
+        wechatPayFlow,
+      };
+    }
+
+    const miniappAppId = this.configService.get<string>('WECHAT_MINIAPP_APP_ID') || '';
+    const miniappOpenId = options.authContext?.wechatPlatform === 'miniapp'
+      ? options.authContext?.wechatOpenId
+      : user.wxOpenId || undefined;
+
+    if (!this.wechatPayService.isMockMode() && !miniappOpenId) {
+      throw new BadRequestException('当前账号未绑定微信小程序 OpenID，无法调起微信支付');
+    }
+
+    return {
+      tradeType: 'jsapi',
+      appId: miniappAppId,
+      openId: miniappOpenId,
+      clientPlatform: 'weapp',
+      wechatPayFlow,
+    };
+  }
+
+  private extractReusableH5Url(rawResponse: Prisma.JsonValue | null | undefined): string | null {
+    if (!rawResponse || typeof rawResponse !== 'object' || Array.isArray(rawResponse)) {
+      return null;
+    }
+
+    const response = rawResponse as Record<string, unknown>;
+    const h5Url = response.h5_url;
+    return typeof h5Url === 'string' && h5Url.trim() ? h5Url.trim() : null;
+  }
+
+  private resolveWebBaseUrl() {
+    return (
+      this.configService.get<string>('PUBLIC_WEB_BASE_URL')
+      || process.env.PUBLIC_WEB_BASE_URL
+      || 'https://gamevallies.com'
+    ).replace(/\/$/, '');
   }
 
   private resolveNotifyUrl() {

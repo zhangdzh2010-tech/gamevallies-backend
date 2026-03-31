@@ -134,7 +134,7 @@ describe('GenerationTaskService', () => {
       progressStage: 'spec_build',
       progressPct: 15,
       progressMessage: 'Building spec',
-      runtimeProfile: 'portrait_arcade',
+      runtimeProfile: 'casual_arcade',
       metadata: {
         description: 'build a circuit puzzle',
       },
@@ -145,10 +145,10 @@ describe('GenerationTaskService', () => {
       progressStage: 'contract_compose',
       progressPct: 40,
       progressMessage: 'Composing runtime contract',
-      runtimeProfile: 'grid_puzzle',
+      runtimeProfile: 'puzzle_grid',
       metadata: {
         description: 'build a circuit puzzle',
-        selectedRuntimeProfile: 'grid_puzzle',
+        selectedRuntimeProfile: 'puzzle_grid',
         selectedGameType: 'puzzle',
       },
     });
@@ -162,7 +162,7 @@ describe('GenerationTaskService', () => {
       percentage: 40,
       message: 'Composing runtime contract',
       details: {
-        runtimeProfile: 'grid_puzzle',
+        runtimeProfile: 'puzzle_grid',
         gameType: 'puzzle',
       },
     });
@@ -170,10 +170,10 @@ describe('GenerationTaskService', () => {
     expect(prisma.generationTask.update).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: 'task-1' },
       data: expect.objectContaining({
-        runtimeProfile: 'grid_puzzle',
+        runtimeProfile: 'puzzle_grid',
         metadata: expect.objectContaining({
           description: 'build a circuit puzzle',
-          selectedRuntimeProfile: 'grid_puzzle',
+          selectedRuntimeProfile: 'puzzle_grid',
         }),
       }),
     }));

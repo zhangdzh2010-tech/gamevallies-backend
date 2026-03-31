@@ -111,7 +111,8 @@ class LLMGameDesigner:
 
         try:
             system = self._get_system_prompt()
-            raw = await self._client.complete(
+            token_budget = settings.LLM_DESIGN_PASS_MAX_TOKENS
+            raw = await self._client.complete_with_truncation_retry(
                 max_tokens=settings.LLM_DESIGN_PASS_MAX_TOKENS,
                 system=system,
                 messages=[{"role": "user", "content": prompt}],
@@ -120,6 +121,15 @@ class LLMGameDesigner:
                 prefer_fast=True,
                 request_timeout_s=settings.LLM_DESIGN_PASS_TIMEOUT_S,
                 overall_timeout_s=settings.LLM_DESIGN_PASS_TIMEOUT_S,
+                response_size_hint="large",
+                context_scope="task",
+                compression_policy="design_enrich",
+                truncation_retry_attempts=1,
+                truncation_retry_increment=1024,
+                truncation_retry_max_tokens=max(token_budget, 6144),
+                timeout_retry_attempts=1,
+                timeout_retry_increment_s=30,
+                timeout_retry_max_s=max(settings.LLM_DESIGN_PASS_TIMEOUT_S, 90),
             )
             return self._parse_response(raw, gdd)
         except Exception as exc:

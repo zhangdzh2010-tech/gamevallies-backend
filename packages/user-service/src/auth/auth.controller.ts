@@ -75,6 +75,37 @@ class WechatMiniappLoginDto {
   avatarUrl?: string;
 }
 
+class WechatH5LoginDto {
+  @IsString()
+  @MinLength(1)
+  code: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1024)
+  state?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1024)
+  redirectUri?: string;
+}
+
+class WechatH5AuthorizeQueryDto {
+  @IsString()
+  @MaxLength(1024)
+  redirectUri: string;
+
+  @IsString()
+  @MaxLength(128)
+  state: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  scope?: string;
+}
+
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -132,6 +163,22 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async loginByWechatMiniapp(@Body() dto: WechatMiniappLoginDto) {
     const result = await this.authService.loginByWechatMiniapp(dto.code, dto.nickname, dto.avatarUrl);
+    return ok({
+      token: result.accessToken,
+      refreshToken: result.refreshToken,
+      user: presentUser(result.user),
+    });
+  }
+
+  @Get('wechat/h5-authorize-url')
+  async getWechatH5AuthorizeUrl(@Query() query: WechatH5AuthorizeQueryDto) {
+    return ok(this.authService.buildWechatH5AuthorizeUrl(query.redirectUri, query.state, query.scope));
+  }
+
+  @Post('wechat/h5-login')
+  @HttpCode(HttpStatus.OK)
+  async loginByWechatH5(@Body() dto: WechatH5LoginDto) {
+    const result = await this.authService.loginByWechatH5(dto.code);
     return ok({
       token: result.accessToken,
       refreshToken: result.refreshToken,

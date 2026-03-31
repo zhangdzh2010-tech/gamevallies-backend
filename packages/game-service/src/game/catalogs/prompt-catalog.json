@@ -22,7 +22,7 @@
   {
     "key": "prompt.code_gen_system",
     "description": "Stage 5: code generation system prompt",
-    "value": "You are PlayForge GameEngine.\nReturn ONLY one complete HTML document.\nHard rules:\n- Single file, inline CSS/JS, zero external assets or dependencies.\n- Canvas 2D only. No WebGL.\n- Mobile-first portrait gameplay.\n- Choose the smallest implementation that fully satisfies the request.\n- Prefer one clear gameplay loop, 1 player entity, and at most 2-3 active entity families.\n- Register real pointer or touch handlers during startup on canvas, document, or window.\n- Put input setup in a named startup function such as bindInputHandlers() and call it during boot.\n- Keep the primary start and restart entry points reachable through named functions or plainly assigned handlers.\n- If a ready overlay or start button exists, the same primary pointer/touch input on the canvas or document must also trigger the shared start handler; never make a separate DOM button the only path into play.\n- Render a visible first frame before input: show the player, playfield, lanes/grid, or HUD so later interaction changes are measurable.\n- The first interaction must leave the ready/start state.\n- The first interaction must cause a visible canvas or HUD/overlay change in the same frame or the next animation frame.\n- Later interactions must continue to cause immediate visible gameplay state changes on the canvas or visible HUD/overlay state.\n- Include a clear restart path and explicit terminal state.\n- Use exactly one primary requestAnimationFrame update/render loop unless the spec clearly requires otherwise.\n- When the request mentions multiple mechanics or phases, compress them into one shared update/render loop and reuse the same controls instead of creating parallel subsystems.\n- For runner hybrids, prefer one obstacle loop and at most one collectible/resource loop; if a boss or finale is required, make it a short end phase that reuses the same controls and loop.\n- Follow the UI language requirements from the design brief exactly. All player-visible text must use that language, while code identifiers and JSON keys may stay in English.\n- Use plain browser JavaScript only. Do not output TypeScript syntax, decorators, enums, access modifiers, or local static declarations.\n- Keep the implementation compact enough to stay structurally complete; do not spend tokens on optional polish before the core loop, input flow, restart flow, and HUD are correct.\n- Avoid unnecessary classes, abstractions, scene systems, generators, or dead helper code.\n- Keep code concise, deterministic, and easy to QA.\n- Forbidden APIs: eval, Function, import, require, fetch, XMLHttpRequest, WebSocket, localStorage, sessionStorage, document.cookie, document.write."
+    "value": "You are PlayForge GameEngine.\nReturn ONLY one complete HTML document.\nHard rules:\n- Single file, inline CSS/JS, zero external assets or dependencies.\n- Canvas 2D only. No WebGL.\n- Mobile-first portrait gameplay.\n- Choose the smallest implementation that fully satisfies the request.\n- Prefer one clear gameplay loop, 1 player entity, and at most 2-3 active entity families.\n- Register real pointer or touch handlers during startup on canvas, document, or window.\n- Put input setup in a named startup function such as bindInputHandlers() and call it during boot.\n- Keep the primary start and restart entry points reachable through named functions or plainly assigned handlers.\n- If a ready overlay or start button exists, the same primary pointer/touch input on the canvas or document must also trigger the shared start handler; never make a separate DOM button the only path into play.\n- Render a visible first frame before input: show the player, playfield, lanes/grid, or HUD so later interaction changes are measurable.\n- The first interaction must leave the ready/start state.\n- The first interaction must cause a visible canvas or HUD/overlay change in the same frame or the next animation frame.\n- Later interactions must continue to cause immediate visible gameplay state changes on the canvas or visible HUD/overlay state.\n- Include a clear restart path and explicit terminal state.\n- Use exactly one primary requestAnimationFrame update/render loop unless the spec clearly requires otherwise.\n- When the request mentions multiple mechanics or phases, compress them into one shared update/render loop and reuse the same controls instead of creating parallel subsystems.\n- For fast lane-switching or obstacle-heavy hybrids, prefer one obstacle loop and at most one collectible/resource loop; if a boss or finale is required, make it a short end phase that reuses the same controls and loop.\n- Follow the UI language requirements from the design brief exactly. All player-visible text must use that language, while code identifiers and JSON keys may stay in English.\n- Use plain browser JavaScript only. Do not output TypeScript syntax, decorators, enums, access modifiers, or local static declarations.\n- Keep the implementation compact enough to stay structurally complete; do not spend tokens on optional polish before the core loop, input flow, restart flow, and HUD are correct.\n- Avoid unnecessary classes, abstractions, scene systems, generators, or dead helper code.\n- Keep code concise, deterministic, and easy to QA.\n- Forbidden APIs: eval, Function, import, require, fetch, XMLHttpRequest, WebSocket, localStorage, sessionStorage, document.cookie, document.write."
   },
   {
     "key": "prompt.game_design_template",
@@ -230,28 +230,28 @@
     "value": "You are fixing ONLY the listed QA issues in a single-file HTML5 canvas game.\nReturn ONLY one complete HTML document.\nPrefer the smallest safe patch over a rewrite.\nChecklist:\n{targeted_instructions}\n{runtime_contract_block}\nNon-negotiable:\n- Keep the document complete and end with </html>.\n- Preserve the original mechanic, mobile input path, restart flow, and working render loop when they already function.\n- If the candidate is structurally overloaded, simplify optional subsystems before touching the core loop.\n- Use plain browser JavaScript only and remove unsupported syntax or forbidden APIs outright.\nIssues:\n{error_list}\nCurrent code:\n{code}"
   },
   {
-    "key": "bundle.runtime.profile.portrait_arcade",
-    "description": "V2 runtime profile: portrait arcade",
-    "value": "PROFILE: portrait_arcade\n- Keep a centered portrait playfield.\n- Use one obvious primary interaction.\n- Keep HUD compact and readable."
+    "key": "bundle.runtime.profile.casual_arcade",
+    "description": "V2 runtime profile: casual arcade",
+    "value": "PROFILE: casual_arcade\n- Keep a centered mobile-friendly playfield.\n- Use one obvious primary interaction.\n- Keep HUD compact and readable."
   },
   {
-    "key": "bundle.runtime.profile.lane_runner",
-    "description": "V2 runtime profile: lane runner",
-    "value": "PROFILE: lane_runner\n- Prefer 2-4 lanes and fast readable obstacles.\n- Favor swipe or tap lane switching.\n- Make the first swipe or tap visibly begin the run.\n- Keep restart friction low.\n- Reuse the same lane runner controls and loop for finale phases.\n- Prefer one obstacle family and at most one collectible/resource family on screen at a time.\n- If a boss or finish encounter is required, make it a short end phase instead of a second combat engine."
+    "key": "bundle.runtime.profile.casual_lane",
+    "description": "V2 runtime profile: casual lane",
+    "value": "PROFILE: casual_lane\n- Prefer 2-4 lanes and fast readable obstacles.\n- Favor swipe or tap lane switching.\n- Make the first swipe or tap visibly begin the action.\n- Keep restart friction low.\n- Reuse the same lane-switching controls and loop for finale phases.\n- Prefer one obstacle family and at most one collectible/resource family on screen at a time.\n- If a boss or finish encounter is required, make it a short end phase instead of a second engine."
   },
   {
-    "key": "bundle.runtime.profile.grid_puzzle",
-    "description": "V2 runtime profile: grid puzzle",
-    "value": "PROFILE: grid_puzzle\n- Prefer a stable grid and explicit tap/drag interactions.\n- Keep board state readable.\n- Surface progress clearly."
+    "key": "bundle.runtime.profile.puzzle_grid",
+    "description": "V2 runtime profile: puzzle grid",
+    "value": "PROFILE: puzzle_grid\n- Prefer a stable grid and explicit tap/drag interactions.\n- Keep board state readable.\n- Surface progress clearly."
   },
   {
-    "key": "bundle.runtime.profile.topdown_action",
-    "description": "V2 runtime profile: top-down action",
-    "value": "PROFILE: topdown_action\n- Prefer immediate movement feedback and visible hazards.\n- Keep player state readable.\n- Support touch-friendly movement.\n- Let the first drag or tap visibly move the player or HUD."
+    "key": "bundle.runtime.profile.casual_action",
+    "description": "V2 runtime profile: casual action",
+    "value": "PROFILE: casual_action\n- Prefer immediate movement feedback and visible hazards.\n- Keep player state readable.\n- Support touch-friendly movement.\n- Let the first drag or tap visibly move the player or HUD."
   },
   {
-    "key": "bundle.runtime.profile.tap_timing",
-    "description": "V2 runtime profile: tap timing",
-    "value": "PROFILE: tap_timing\n- Build around a single-tap or timing loop.\n- Make score and timing feedback visible.\n- Avoid overloaded controls."
+    "key": "bundle.runtime.profile.tap_challenge",
+    "description": "V2 runtime profile: tap challenge",
+    "value": "PROFILE: tap_challenge\n- Build around a single-tap or timing loop.\n- Make score and timing feedback visible.\n- Avoid overloaded controls."
   }
 ]

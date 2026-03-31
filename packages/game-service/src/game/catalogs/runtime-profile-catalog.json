@@ -1,10 +1,10 @@
 [
   {
-    "id": "portrait_arcade",
-    "displayName": "Portrait Arcade",
+    "id": "casual_arcade",
+    "displayName": "Casual Arcade",
     "skeletonVersion": "v1",
     "contractSchema": {
-      "runtimeProfile": "portrait_arcade",
+      "runtimeProfile": "casual_arcade",
       "inputContract": {
         "requiredModes": ["pointer", "touch"],
         "allowMouseFallback": true,
@@ -32,18 +32,18 @@
         "forbiddenApis": ["localStorage", "sessionStorage", "fetch", "XMLHttpRequest", "WebSocket", "eval", "Function"]
       }
     },
-    "fewShotPrompt": "Use a centered portrait canvas, compact HUD, one obvious primary interaction, and a visible restart path. Render one obvious player, target, or playfield element before input. If a ready overlay exists, the same tap on the playfield should dismiss it and start play immediately.",
+    "fewShotPrompt": "Use a centered mobile canvas, compact HUD, one obvious primary interaction, and a visible restart path. Render one obvious player, target, or playfield element before input. If a ready overlay exists, the same tap on the playfield should dismiss it and start play immediately.",
     "metadata": {
-      "category": "arcade",
+      "category": "casual",
       "default": true
     }
   },
   {
-    "id": "lane_runner",
-    "displayName": "Lane Runner",
+    "id": "casual_lane",
+    "displayName": "Casual Lane",
     "skeletonVersion": "v1",
     "contractSchema": {
-      "runtimeProfile": "lane_runner",
+      "runtimeProfile": "casual_lane",
       "inputContract": {
         "requiredModes": ["pointer", "touch"],
         "gestures": ["tap", "swipe"]
@@ -61,17 +61,17 @@
         "uiScaleMode": "short_edge"
       }
     },
-    "fewShotPrompt": "Favor 2-4 lanes, instant lane-switch feedback, and readable forward motion on mobile. Render the runner, lanes, and HUD before input. The first swipe or tap should clear ready state and either shift lane or visibly kick off forward motion on the same frame or next animation frame. Reuse the same lane runner controls and update loop across the whole experience. If the request asks for collectibles, progress, or a boss finale, compress them into one obstacle loop plus at most one collectible/resource loop, and make any boss/finale a short end phase instead of a second combat system.",
+    "fewShotPrompt": "Favor 2-4 readable lanes, instant lane-switch feedback, and clear forward motion on mobile. Render the player, lane structure, and HUD before input. The first swipe or tap should clear ready state and visibly start the loop on the same frame or next animation frame.",
     "metadata": {
-      "category": "runner"
+      "category": "casual"
     }
   },
   {
-    "id": "grid_puzzle",
-    "displayName": "Grid Puzzle",
+    "id": "puzzle_grid",
+    "displayName": "Puzzle Grid",
     "skeletonVersion": "v1",
     "contractSchema": {
-      "runtimeProfile": "grid_puzzle",
+      "runtimeProfile": "puzzle_grid",
       "inputContract": {
         "requiredModes": ["pointer", "touch"],
         "gestures": ["tap", "drag"]
@@ -95,11 +95,11 @@
     }
   },
   {
-    "id": "topdown_action",
-    "displayName": "Topdown Action",
+    "id": "casual_action",
+    "displayName": "Casual Action",
     "skeletonVersion": "v1",
     "contractSchema": {
-      "runtimeProfile": "topdown_action",
+      "runtimeProfile": "casual_action",
       "inputContract": {
         "requiredModes": ["pointer", "touch"],
         "gestures": ["drag", "tap"]
@@ -117,77 +117,17 @@
         "uiScaleMode": "short_edge"
       }
     },
-    "fewShotPrompt": "Keep the playfield centered, support drag movement, and prioritize clarity over dense effects. Render the player and arena before input. The first drag or tap should dismiss ready state and immediately move the player, fire, or trigger an obvious HUD change.",
+    "fewShotPrompt": "Keep the playfield centered, support drag movement, and prioritize clarity over dense effects. Render the player and arena before input. The first drag or tap should dismiss ready state and immediately move the player or trigger an obvious feedback change.",
     "metadata": {
-      "category": "action"
+      "category": "casual"
     }
   },
   {
-    "id": "topdown_dodge",
-    "displayName": "Topdown Dodge",
-    "skeletonVersion": "v1",
-    "parentProfile": "topdown_action",
-    "contractSchema": {
-      "runtimeProfile": "topdown_dodge",
-      "inputContract": {
-        "requiredModes": ["pointer", "touch"],
-        "gestures": ["drag"]
-      },
-      "stateContract": {
-        "requiredStates": ["boot", "ready", "playing", "game_over"],
-        "restartable": true
-      },
-      "renderContract": {
-        "requiresCanvas2D": true,
-        "mustRenderWithinMs": 1500
-      },
-      "mobileLayoutContract": {
-        "orientation": "portrait_first",
-        "uiScaleMode": "short_edge"
-      }
-    },
-    "fewShotPrompt": "Focus on evasion mechanics. The player moves by dragging to avoid incoming hazards from all directions. No shooting or attacking — survival is the only objective. Render the player and a clear danger zone before input. The first drag should immediately move the player and start spawning hazards.",
-    "metadata": {
-      "category": "action",
-      "subtype": "dodge"
-    }
-  },
-  {
-    "id": "topdown_shooter",
-    "displayName": "Topdown Shooter",
-    "skeletonVersion": "v1",
-    "parentProfile": "topdown_action",
-    "contractSchema": {
-      "runtimeProfile": "topdown_shooter",
-      "inputContract": {
-        "requiredModes": ["pointer", "touch"],
-        "gestures": ["drag", "tap"]
-      },
-      "stateContract": {
-        "requiredStates": ["boot", "ready", "playing", "game_over"],
-        "restartable": true
-      },
-      "renderContract": {
-        "requiresCanvas2D": true,
-        "mustRenderWithinMs": 1500
-      },
-      "mobileLayoutContract": {
-        "orientation": "portrait_first",
-        "uiScaleMode": "short_edge"
-      }
-    },
-    "fewShotPrompt": "Focus on aiming and firing. The player has a weapon that fires projectiles on tap while drag controls movement. Show crosshair or aim indicator. Render the player with a visible weapon and the arena before input. The first tap should fire a projectile and the first drag should move the player.",
-    "metadata": {
-      "category": "action",
-      "subtype": "shooter"
-    }
-  },
-  {
-    "id": "tap_timing",
-    "displayName": "Tap Timing",
+    "id": "tap_challenge",
+    "displayName": "Tap Challenge",
     "skeletonVersion": "v1",
     "contractSchema": {
-      "runtimeProfile": "tap_timing",
+      "runtimeProfile": "tap_challenge",
       "inputContract": {
         "requiredModes": ["pointer", "touch"],
         "gestures": ["tap"]
@@ -205,9 +145,349 @@
         "uiScaleMode": "short_edge"
       }
     },
-    "fewShotPrompt": "Build around a single rhythmic tap interaction, immediate score feedback, and a clear countdown or beat state. Render the timing lane or target before input. The first tap should visibly start the loop instead of only changing hidden state.",
+    "fewShotPrompt": "Build around a single tap-led challenge loop, immediate score or progress feedback, and a clear countdown, prompt, or beat state. Render the main target or interaction lane before input. The first tap should visibly start the loop instead of only changing hidden state.",
     "metadata": {
-      "category": "timing"
+      "category": "funny"
+    }
+  },
+  {
+    "id": "casual_arcade_burst",
+    "displayName": "Casual Arcade Burst",
+    "skeletonVersion": "v1",
+    "contractSchema": {
+      "runtimeProfile": "casual_arcade_burst",
+      "inputContract": {
+        "requiredModes": ["pointer", "touch"],
+        "gestures": ["tap", "drag"],
+        "allowMouseFallback": true,
+        "target": "canvas_or_document"
+      },
+      "stateContract": {
+        "requiredStates": ["boot", "ready", "playing", "game_over"],
+        "restartable": true
+      },
+      "renderContract": {
+        "requiresCanvas2D": true,
+        "mustRenderWithinMs": 1500
+      },
+      "mobileLayoutContract": {
+        "orientation": "portrait_first",
+        "uiScaleMode": "short_edge"
+      }
+    },
+    "fewShotPrompt": "Favor short burst rounds, visible pickup bursts, and quick risk-reward decisions. Show the player, key targets, and one obvious point of pressure before input. The first tap or drag should immediately trigger motion, collection, or an obvious burst of feedback.",
+    "metadata": {
+      "category": "casual"
+    }
+  },
+  {
+    "id": "casual_arcade_orbit",
+    "displayName": "Casual Arcade Orbit",
+    "skeletonVersion": "v1",
+    "contractSchema": {
+      "runtimeProfile": "casual_arcade_orbit",
+      "inputContract": {
+        "requiredModes": ["pointer", "touch"],
+        "gestures": ["drag", "tap"],
+        "allowMouseFallback": true
+      },
+      "stateContract": {
+        "requiredStates": ["boot", "ready", "playing", "game_over"],
+        "restartable": true
+      },
+      "renderContract": {
+        "requiresCanvas2D": true,
+        "mustRenderWithinMs": 1500
+      },
+      "mobileLayoutContract": {
+        "orientation": "portrait_first",
+        "uiScaleMode": "short_edge"
+      }
+    },
+    "fewShotPrompt": "Build around orbit control, circular lanes, or anchor-based movement with readable momentum. Show the orbit path, anchor, or planet-like focus point before input. The first drag or tap should visibly start orbit motion, sling movement, or route adjustment immediately.",
+    "metadata": {
+      "category": "casual"
+    }
+  },
+  {
+    "id": "casual_arcade_rescue",
+    "displayName": "Casual Arcade Rescue",
+    "skeletonVersion": "v1",
+    "contractSchema": {
+      "runtimeProfile": "casual_arcade_rescue",
+      "inputContract": {
+        "requiredModes": ["pointer", "touch"],
+        "gestures": ["drag", "tap"],
+        "allowMouseFallback": true
+      },
+      "stateContract": {
+        "requiredStates": ["boot", "ready", "playing", "game_over"],
+        "restartable": true
+      },
+      "renderContract": {
+        "requiresCanvas2D": true,
+        "mustRenderWithinMs": 1500
+      },
+      "mobileLayoutContract": {
+        "orientation": "portrait_first",
+        "uiScaleMode": "short_edge"
+      }
+    },
+    "fewShotPrompt": "Prioritize escort, rescue, or pickup-and-deliver objectives instead of pure survival. Render the rescuer, at least one target to save, and the safe zone or destination before input. The first action should visibly begin a rescue route, escort, or delivery loop.",
+    "metadata": {
+      "category": "casual"
+    }
+  },
+  {
+    "id": "casual_lane_dash",
+    "displayName": "Casual Lane Dash",
+    "skeletonVersion": "v1",
+    "contractSchema": {
+      "runtimeProfile": "casual_lane_dash",
+      "inputContract": {
+        "requiredModes": ["pointer", "touch"],
+        "gestures": ["tap", "swipe"]
+      },
+      "stateContract": {
+        "requiredStates": ["boot", "ready", "playing", "game_over"],
+        "restartable": true
+      },
+      "renderContract": {
+        "requiresCanvas2D": true,
+        "mustRenderWithinMs": 1500
+      },
+      "mobileLayoutContract": {
+        "orientation": "portrait_first",
+        "uiScaleMode": "short_edge"
+      }
+    },
+    "fewShotPrompt": "Use 2-4 clean lanes with stronger acceleration, dash timing, or gap threading. Show the player and lane pattern before input. The first swipe or tap should instantly start the forward lane loop and create visible movement on the same beat.",
+    "metadata": {
+      "category": "casual"
+    }
+  },
+  {
+    "id": "casual_lane_chase",
+    "displayName": "Casual Lane Chase",
+    "skeletonVersion": "v1",
+    "contractSchema": {
+      "runtimeProfile": "casual_lane_chase",
+      "inputContract": {
+        "requiredModes": ["pointer", "touch"],
+        "gestures": ["tap", "swipe"]
+      },
+      "stateContract": {
+        "requiredStates": ["boot", "ready", "playing", "game_over"],
+        "restartable": true
+      },
+      "renderContract": {
+        "requiresCanvas2D": true,
+        "mustRenderWithinMs": 1500
+      },
+      "mobileLayoutContract": {
+        "orientation": "portrait_first",
+        "uiScaleMode": "short_edge"
+      }
+    },
+    "fewShotPrompt": "Make the lane loop feel like a chase, pursuit, or getaway with visible tension. Render the player, the chaser or target, and lane hazards before input. The first swipe or tap should visibly begin the pursuit rather than only toggling hidden state.",
+    "metadata": {
+      "category": "casual"
+    }
+  },
+  {
+    "id": "casual_action_arena",
+    "displayName": "Casual Action Arena",
+    "skeletonVersion": "v1",
+    "contractSchema": {
+      "runtimeProfile": "casual_action_arena",
+      "inputContract": {
+        "requiredModes": ["pointer", "touch"],
+        "gestures": ["drag", "tap"]
+      },
+      "stateContract": {
+        "requiredStates": ["boot", "ready", "playing", "game_over"],
+        "restartable": true
+      },
+      "renderContract": {
+        "requiresCanvas2D": true,
+        "mustRenderWithinMs": 1500
+      },
+      "mobileLayoutContract": {
+        "orientation": "portrait_first",
+        "uiScaleMode": "short_edge"
+      }
+    },
+    "fewShotPrompt": "Use a compact arena with readable enemies, hazards, or territory goals. Render the player and arena boundaries before input. The first drag or tap should visibly reposition the player, trigger an attack, or start area control feedback immediately.",
+    "metadata": {
+      "category": "casual"
+    }
+  },
+  {
+    "id": "casual_action_survival",
+    "displayName": "Casual Action Survival",
+    "skeletonVersion": "v1",
+    "contractSchema": {
+      "runtimeProfile": "casual_action_survival",
+      "inputContract": {
+        "requiredModes": ["pointer", "touch"],
+        "gestures": ["drag", "tap"]
+      },
+      "stateContract": {
+        "requiredStates": ["boot", "ready", "playing", "game_over"],
+        "restartable": true
+      },
+      "renderContract": {
+        "requiresCanvas2D": true,
+        "mustRenderWithinMs": 1500
+      },
+      "mobileLayoutContract": {
+        "orientation": "portrait_first",
+        "uiScaleMode": "short_edge"
+      }
+    },
+    "fewShotPrompt": "Center the loop on survival pressure, crowd control, or wave endurance with readable feedback. Render the player and at least one immediate threat before input. The first drag or tap should begin survival pressure and obvious reactive feedback instantly.",
+    "metadata": {
+      "category": "casual"
+    }
+  },
+  {
+    "id": "puzzle_grid_match",
+    "displayName": "Puzzle Grid Match",
+    "skeletonVersion": "v1",
+    "contractSchema": {
+      "runtimeProfile": "puzzle_grid_match",
+      "inputContract": {
+        "requiredModes": ["pointer", "touch"],
+        "gestures": ["tap", "drag"]
+      },
+      "stateContract": {
+        "requiredStates": ["boot", "ready", "playing", "game_over"],
+        "restartable": true
+      },
+      "renderContract": {
+        "requiresCanvas2D": true,
+        "mustRenderWithinMs": 1500
+      },
+      "mobileLayoutContract": {
+        "orientation": "portrait_first",
+        "uiScaleMode": "short_edge"
+      }
+    },
+    "fewShotPrompt": "Favor pattern matching, cluster clearing, or adjacency logic with generous hit targets. Render the full board and target state before input. The first tap or drag should visibly change selection, highlights, or matched groups immediately.",
+    "metadata": {
+      "category": "puzzle"
+    }
+  },
+  {
+    "id": "puzzle_grid_merge",
+    "displayName": "Puzzle Grid Merge",
+    "skeletonVersion": "v1",
+    "contractSchema": {
+      "runtimeProfile": "puzzle_grid_merge",
+      "inputContract": {
+        "requiredModes": ["pointer", "touch"],
+        "gestures": ["tap", "drag"]
+      },
+      "stateContract": {
+        "requiredStates": ["boot", "ready", "playing", "game_over"],
+        "restartable": true
+      },
+      "renderContract": {
+        "requiresCanvas2D": true,
+        "mustRenderWithinMs": 1500
+      },
+      "mobileLayoutContract": {
+        "orientation": "portrait_first",
+        "uiScaleMode": "short_edge"
+      }
+    },
+    "fewShotPrompt": "Build around merging, upgrading, or combining tiles into stronger states. Render the board, at least one merge opportunity, and the target progression before input. The first drag or tap should create a visible merge, move, or upgrade response.",
+    "metadata": {
+      "category": "puzzle"
+    }
+  },
+  {
+    "id": "puzzle_grid_route",
+    "displayName": "Puzzle Grid Route",
+    "skeletonVersion": "v1",
+    "contractSchema": {
+      "runtimeProfile": "puzzle_grid_route",
+      "inputContract": {
+        "requiredModes": ["pointer", "touch"],
+        "gestures": ["tap", "drag"]
+      },
+      "stateContract": {
+        "requiredStates": ["boot", "ready", "playing", "game_over"],
+        "restartable": true
+      },
+      "renderContract": {
+        "requiresCanvas2D": true,
+        "mustRenderWithinMs": 1500
+      },
+      "mobileLayoutContract": {
+        "orientation": "portrait_first",
+        "uiScaleMode": "short_edge"
+      }
+    },
+    "fewShotPrompt": "Use the grid for routing, wiring, sequencing, or guided problem solving instead of only matching. Render the route board and the start/goal relation before input. The first tap or drag should visibly extend, rotate, or connect the route right away.",
+    "metadata": {
+      "category": "educational"
+    }
+  },
+  {
+    "id": "tap_challenge_timing",
+    "displayName": "Tap Challenge Timing",
+    "skeletonVersion": "v1",
+    "contractSchema": {
+      "runtimeProfile": "tap_challenge_timing",
+      "inputContract": {
+        "requiredModes": ["pointer", "touch"],
+        "gestures": ["tap"]
+      },
+      "stateContract": {
+        "requiredStates": ["boot", "ready", "playing", "game_over"],
+        "restartable": true
+      },
+      "renderContract": {
+        "requiresCanvas2D": true,
+        "mustRenderWithinMs": 1500
+      },
+      "mobileLayoutContract": {
+        "orientation": "portrait_first",
+        "uiScaleMode": "short_edge"
+      }
+    },
+    "fewShotPrompt": "Build around timing windows, beats, or single-input precision. Render the main target, timing zone, or countdown before input. The first tap should visibly start the challenge and create an immediate hit/miss response.",
+    "metadata": {
+      "category": "funny"
+    }
+  },
+  {
+    "id": "tap_challenge_combo",
+    "displayName": "Tap Challenge Combo",
+    "skeletonVersion": "v1",
+    "contractSchema": {
+      "runtimeProfile": "tap_challenge_combo",
+      "inputContract": {
+        "requiredModes": ["pointer", "touch"],
+        "gestures": ["tap"]
+      },
+      "stateContract": {
+        "requiredStates": ["boot", "ready", "playing", "game_over"],
+        "restartable": true
+      },
+      "renderContract": {
+        "requiresCanvas2D": true,
+        "mustRenderWithinMs": 1500
+      },
+      "mobileLayoutContract": {
+        "orientation": "portrait_first",
+        "uiScaleMode": "short_edge"
+      }
+    },
+    "fewShotPrompt": "Center the loop on chaining taps, combo building, or escalating score bursts. Render the main target or combo lane before input. The first tap should visibly start the combo loop and update score, streak, or feedback immediately.",
+    "metadata": {
+      "category": "funny"
     }
   }
 ]

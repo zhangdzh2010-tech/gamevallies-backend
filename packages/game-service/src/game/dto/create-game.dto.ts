@@ -14,6 +14,8 @@ import {
 
 export const CREATE_GAME_ORIENTATIONS = ['portrait', 'landscape'] as const;
 export type CreateGameOrientation = (typeof CREATE_GAME_ORIENTATIONS)[number];
+export const CREATE_GAME_GENERATION_TIERS = ['safe', 'standard', 'showcase'] as const;
+export type CreateGameGenerationTier = (typeof CREATE_GAME_GENERATION_TIERS)[number];
 
 export class CreateGameDto {
   @ValidateIf((dto) => !dto.prompt)
@@ -42,6 +44,11 @@ export class CreateGameDto {
   @IsString()
   @IsIn(CREATE_GAME_ORIENTATIONS)
   orientation?: CreateGameOrientation;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(CREATE_GAME_GENERATION_TIERS)
+  generationTier?: CreateGameGenerationTier;
 
   @IsOptional()
   @Type(() => Number)
