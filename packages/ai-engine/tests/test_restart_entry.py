@@ -122,6 +122,50 @@ BOUND_HANDLER_TERMINAL_RESET_CODE = """
 </html>
 """
 
+BOUND_HANDLER_HOLE_RESET_CODE = """
+<!DOCTYPE html>
+<html>
+  <body>
+    <canvas id="gameCanvas"></canvas>
+    <script>
+      const BOOT = 0, READY = 1, PLAYING = 2, LEVEL_COMPLETE = 3;
+      let state = BOOT;
+      let currentHole = 0;
+      let totalStrokes = 0;
+      let holeStrokes = 0;
+      const holes = [{}, {}, {}];
+
+      function loadHole(nextHole) {
+        holeStrokes = 0;
+        currentHole = nextHole;
+      }
+
+      function handleStart() {
+        if (state === BOOT || state === READY) {
+          state = PLAYING;
+          return;
+        }
+        if (state === LEVEL_COMPLETE) {
+          if (currentHole >= holes.length - 1) {
+            currentHole = 0;
+            totalStrokes = 0;
+            loadHole(0);
+            state = PLAYING;
+          } else {
+            currentHole += 1;
+            loadHole(currentHole);
+            state = PLAYING;
+          }
+        }
+      }
+
+      const canvas = document.getElementById('gameCanvas');
+      canvas.addEventListener('touchstart', handleStart);
+    </script>
+  </body>
+</html>
+"""
+
 
 def test_restart_entry_helper_accepts_boot_init_terminal_branch():
     assert has_restart_entry(BOOT_INIT_RESTART_CODE) is True
@@ -137,6 +181,10 @@ def test_restart_entry_helper_accepts_terminal_branch_that_resets_state_and_recr
 
 def test_restart_entry_helper_accepts_bound_handler_that_resets_terminal_progress_inline():
     assert has_restart_entry(BOUND_HANDLER_TERMINAL_RESET_CODE) is True
+
+
+def test_restart_entry_helper_accepts_bound_handler_that_loads_next_hole_after_completion():
+    assert has_restart_entry(BOUND_HANDLER_HOLE_RESET_CODE) is True
 
 
 def test_contract_runtime_validation_accepts_boot_init_terminal_branch():
@@ -178,6 +226,17 @@ def test_l4_playability_warning_accepts_terminal_branch_that_recreates_board():
 def test_contract_runtime_validation_accepts_bound_handler_terminal_reset_path():
     runner = V2PipelineRunner()
     errors = runner._validate_runtime_contract(BOUND_HANDLER_TERMINAL_RESET_CODE, GameRuntimeContract())
+
+    assert not any(
+        error.type == "contract_gameplay"
+        and "restart entry point" in error.message
+        for error in errors
+    )
+
+
+def test_contract_runtime_validation_accepts_bound_handler_hole_reload_path():
+    runner = V2PipelineRunner()
+    errors = runner._validate_runtime_contract(BOUND_HANDLER_HOLE_RESET_CODE, GameRuntimeContract())
 
     assert not any(
         error.type == "contract_gameplay"

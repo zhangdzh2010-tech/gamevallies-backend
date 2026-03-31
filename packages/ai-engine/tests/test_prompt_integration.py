@@ -26,6 +26,7 @@ from src.api.models import (
 )
 from src.engine.code_generator import CodeGenerator
 from src.engine.game_designer import GameDesigner
+from src.engine.section_patch import ensure_structured_section_markers
 from src.main import app
 
 COMMON_CODEGEN_PROMPTS = {
@@ -99,13 +100,15 @@ class TestPromptIntegration(unittest.TestCase):
                 )
             )
 
-        self.assertEqual(result, "<!DOCTYPE html><html></html>")
+        self.assertEqual(result, "<!DOCTYPE html><html><body>old</body></html>")
         kwargs = mock_complete.await_args.kwargs
         self.assertIn("CODE_GEN_SYSTEM_FROM_DB", kwargs["system"])
         self.assertIn(
-            "PARAM_PROMPT::make it faster::<!DOCTYPE html><html><body>old</body></html>",
+            "PARAM_PROMPT::make it faster::CURRENT PATCHABLE SECTIONS:",
             kwargs["messages"][0]["content"],
         )
+        self.assertIn("PATCH-FIRST ITERATION OUTPUT CONTRACT", kwargs["messages"][0]["content"])
+        self.assertIn("=== SECTION:SCRIPT START ===", kwargs["messages"][0]["content"])
 
     def test_prompt_refresh_endpoint_requires_admin_token(self):
         with patch("src.api.endpoints.generate.settings.ADMIN_TOKEN", "unit-test-token"):
@@ -254,6 +257,56 @@ class TestPromptIntegration(unittest.TestCase):
         self.assertIn("Core mechanic: 在动物园里奔跑，躲开管理员并救出小动物", message)
         self.assertIn("Reference game: Temple Run", message)
         self.assertIn("animals follow the player after rescue", message)
+        self.assertIn("Original brief anchor:", message)
+
+
+    def test_generate_omits_empty_design_program_and_request_scaffold_for_compact_prompt(self):
+        generator = CodeGenerator(llm_mode="real")
+
+        def fake_get_prompt(key: str, default=None):
+            if key == "prompt.game_design_template":
+                return "Game Type: {game_type}\nTheme: {theme}"
+            if key == "prompt.generate_request_context_template":
+                return "Original user request:\n{request_text}"
+            if key == "prompt.generate_alignment_reminder":
+                return "ALIGN"
+            if key == "prompt.code_gen_system":
+                return "SYSTEM"
+            if key == "prompt.platform_standard":
+                return "PLATFORM"
+            return COMMON_CODEGEN_PROMPTS.get(key, default)
+
+        spec = GameSpec(
+            game_type="casual",
+            source_description="make a tap dodger",
+            core_mechanics=[CoreMechanic(type="dodge", input="tap")],
+            rules=GameRules(win_condition="survive", lose_condition="hit", lives=3),
+            visual_style=VisualStyle(theme="arcade", art_style="minimal"),
+            platform_constraints=PlatformConstraints(platform="wechat_webview", input_mode="touch"),
+        )
+        gdd = GDD(
+            canvas=CanvasConfig(width=360, height=640, dpr_adaptive=True, target_fps=60),
+            numerics=NumericsConfig(),
+            collision=CollisionConfig(),
+            input_map={"touchstart": "start"},
+            ui_layout={},
+        )
+
+        with patch(
+            "src.engine.code_generator.require_prompt",
+            side_effect=fake_get_prompt,
+        ), patch.object(
+            generator._client,
+            "complete_with_truncation_retry",
+            new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
+        ) as mock_complete:
+            asyncio.run(generator._llm_generate(spec, gdd, description=spec.source_description))
+
+        message = mock_complete.await_args.kwargs["messages"][0]["content"]
+        self.assertNotIn("DESIGN PROGRAM (HIGH PRIORITY):", message)
+        self.assertNotIn("Original user request:", message)
+        self.assertNotIn("ALIGN", message)
+        self.assertIn("Original brief anchor:", message)
 
 
     def test_game_design_prompt_always_appends_mobile_layout_guardrails(self):
@@ -293,9 +346,47 @@ class TestPromptIntegration(unittest.TestCase):
 
         message = mock_complete.await_args.kwargs["messages"][0]["content"]
         self.assertIn("NON-NEGOTIABLE MOBILE LAYOUT RULES:", message)
+        self.assertIn("MOBILE LAYOUT CHECKLIST", message)
         self.assertIn("portrait reference playfield", message)
         self.assertIn("Math.min(scaleX, scaleY)", message)
         self.assertIn("14-20px", message)
+
+    def test_runtime_contract_block_uses_compact_default_summary(self):
+        generator = CodeGenerator(llm_mode="real")
+
+        block = generator._build_runtime_contract_block(
+            runtime_contract=None,
+            runtime_profile="casual_arcade",
+            prompt_bundle_snapshot={"bundle_id": "arcade_v3", "layers": {"resolved_prompts": {}}},
+        )
+
+        self.assertIn("Runtime profile: casual_arcade (contract v1.0)", block)
+        self.assertIn("Core state flow must support boot, ready, playing, game_over", block)
+        self.assertIn("Input must work through pointer, touch; expected gestures: tap.", block)
+        self.assertIn("Forbidden APIs: eval, Function, import, require.", block)
+        self.assertIn("Mobile layout: portrait_first, short_edge scaling, HUD 14-20px, title 28-36px.", block)
+        self.assertIn("Prompt bundle: arcade_v3.", block)
+        self.assertNotIn("Prompt layers:", block)
+
+    def test_runtime_contract_block_compacts_long_lists_and_conditional_aliases(self):
+        generator = CodeGenerator(llm_mode="real")
+        contract = GameRuntimeContract(
+            runtime_profile="casual_rescue",
+            input={"required_modes": ["touch", "pointer", "keyboard", "gamepad", "voice"], "gestures": ["tap", "drag", "swipe", "hold", "double_tap"]},
+            safety={"forbidden_apis": ["eval", "Function", "fetch", "XMLHttpRequest", "WebSocket", "localStorage", "sessionStorage", "document.write"]},
+            gameplay={"terminal_state_aliases": ["game_over", "victory", "complete", "failed", "won", "lost", "clear", "solved", "finished"]},
+        )
+
+        block = generator._build_runtime_contract_block(
+            runtime_contract=contract,
+            runtime_profile=None,
+            prompt_bundle_snapshot=None,
+        )
+
+        self.assertIn("touch, pointer, keyboard, gamepad, +1 more", block)
+        self.assertIn("tap, drag, swipe, hold, +1 more", block)
+        self.assertIn("eval, Function, fetch, XMLHttpRequest, WebSocket, localStorage, +2 more", block)
+        self.assertIn("Accepted terminal/completion state aliases: game_over, victory, complete, failed, won, lost, clear, solved, +1 more.", block)
 
     def test_mobile_layout_guardrails_switch_to_landscape_when_contract_requests_it(self):
         generator = CodeGenerator(llm_mode="real")
@@ -338,6 +429,219 @@ class TestPromptIntegration(unittest.TestCase):
 
         self.assertIn("centered landscape canvas", profile_prompt)
         self.assertNotIn("portrait canvas", profile_prompt)
+
+    def test_profile_few_shot_compacts_long_multiline_reference(self):
+        long_prompt = "\n".join(
+            [
+                "Use a centered portrait canvas with a compact HUD.",
+                "Keep one obvious primary interaction and readable feedback.",
+                "Prefer short rounds with restart clarity and visible scoring.",
+                "Use side-safe buttons and avoid modal UI sprawl.",
+                "Extra line that should be trimmed in compact mode.",
+            ]
+        )
+
+        with patch(
+            "src.engine.code_generator.get_runtime_profile",
+            return_value={"few_shot_prompt": long_prompt},
+        ):
+            profile_prompt = CodeGenerator._resolve_profile_few_shot(
+                None,
+                "casual_arcade",
+                runtime_contract=None,
+            )
+
+        self.assertIn("Use a centered portrait canvas with a compact HUD.", profile_prompt)
+        self.assertIn("Keep one obvious primary interaction and readable feedback.", profile_prompt)
+        self.assertIn("Prefer short rounds with restart clarity and visible scoring.", profile_prompt)
+        self.assertIn("Extra line that should be trimmed in compact mode.", profile_prompt)
+        self.assertNotIn("Use side-safe buttons and avoid modal UI sprawl.", profile_prompt)
+        self.assertLessEqual(len(profile_prompt), 300)
+
+    def test_build_game_design_prompt_values_compact_extended_fields(self):
+        generator = CodeGenerator(llm_mode="real")
+        spec = GameSpec(
+            game_type="casual",
+            source_description="build a crowded arcade rescue game",
+            core_mechanics=[CoreMechanic(type="rescue", input="drag")],
+            entities=[
+                GameEntity(name="pilot", role="player", shape="triangle", color="#6366f1"),
+                GameEntity(name="meteor", role="obstacle", shape="square", color="#f43f5e"),
+                GameEntity(name="drone", role="enemy", shape="hex", color="#f97316"),
+                GameEntity(name="laser_gate", role="obstacle", shape="rectangle", color="#ef4444"),
+                GameEntity(name="mine", role="obstacle", shape="circle", color="#dc2626"),
+                GameEntity(name="satellite", role="collectible", shape="diamond", color="#22c55e"),
+                GameEntity(name="battery", role="collectible", shape="diamond", color="#84cc16"),
+                GameEntity(name="beacon", role="collectible", shape="diamond", color="#14b8a6"),
+            ],
+            rules=GameRules(win_condition="rescue the crew", lose_condition="lose all shields", lives=3),
+            visual_style=VisualStyle(
+                theme="space",
+                art_style="neon",
+                effects=["glow trails", "screen shake", "parallax stars"],
+            ),
+            design_goals=[
+                "Keep rounds under 45 seconds.",
+                "Show the next rescue target clearly.",
+                "Reward near-miss recoveries.",
+                "Make combo pickups visually obvious.",
+                "Add a memorable extraction finish.",
+            ],
+            special_rules=[
+                "Rescued crew members trail behind the ship.",
+                "Black holes bend nearby movement paths.",
+                "Charge gates temporarily disable lasers.",
+                "Shield pickups stack into a short grace window.",
+                "Extraction beacon appears after the final rescue.",
+            ],
+            reference_game="Rescue Raiders",
+            platform_constraints=PlatformConstraints(platform="wechat_webview", input_mode="drag"),
+        )
+        gdd = GDD(
+            canvas=CanvasConfig(width=420, height=720, dpr_adaptive=True, target_fps=60),
+            numerics=NumericsConfig(
+                player_speed=8.0,
+                base_obstacle_speed=3.5,
+                spawn_interval_ms=850,
+                score_per_second=1,
+                score_per_collect=10,
+            ),
+            collision=CollisionConfig(),
+            input_map={
+                "touchstart": "engage_thrusters",
+                "touchmove": "drag_ship",
+                "touchend": "stabilize",
+                "pointerdown": "engage_thrusters",
+                "pointermove": "drag_ship",
+                "pointerup": "stabilize",
+            },
+            level_structure=[
+                {"id": "sector_1", "goal": "rescue two crew members", "hazards": ["meteor", "mine"]},
+                {"id": "sector_2", "goal": "cross the laser corridor", "hazards": ["laser_gate"]},
+                {"id": "sector_3", "goal": "draft around a black hole", "hazards": ["black_hole"]},
+                {"id": "sector_4", "goal": "escort the convoy", "hazards": ["drone", "mine"]},
+                {"id": "sector_5", "goal": "reach the extraction beacon", "hazards": ["laser_gate", "meteor"]},
+            ],
+            reward_plan={
+                "combo": {"window_ms": 2500, "multiplier_cap": 5, "bonus_fx": "aurora streak"},
+                "rescue_chain": {"milestones": [2, 4, 6, 8, 10], "reward": "shield refill"},
+                "finish": {"beacon_bonus": 500, "flawless_bonus": 800},
+                "secret": {"rare_pickup": "distress cache", "value": 999},
+                "overflow_rule": "grant one extra life if all rescues are flawless",
+            },
+            tutorial_beats=[
+                "Drag anywhere to steer the ship.",
+                "Pass over crew members to attach them.",
+                "Avoid hazards until the extraction beacon appears.",
+                "Use charge gates to disable laser walls.",
+                "Bank near misses to build combo energy.",
+            ],
+        )
+
+        values = generator._build_game_design_prompt_values(
+            spec=spec,
+            gdd=gdd,
+            description=spec.source_description,
+        )
+
+        self.assertIn("+2 more entities", values["entities_desc"])
+        self.assertIn("note: +1 more obstacle entities", values["entities_yaml"])
+        self.assertIn("note: +2 more inputs", values["input_map_yaml"])
+        self.assertIn("+1 more", values["design_goals"])
+        self.assertIn("_omitted_keys", values["reward_plan_json"])
+        self.assertLessEqual(len(values["level_structure_json"]), 320)
+        self.assertNotIn("sector_5", values["level_structure_json"])
+
+    def test_generate_uses_compact_structured_design_values(self):
+        generator = CodeGenerator(llm_mode="real")
+
+        def fake_get_prompt(key: str, default=None):
+            if key == "prompt.game_design_template":
+                return (
+                    "Game Type: {game_type}\n"
+                    "Entities:\n{entities_desc}\n"
+                    "Obstacles:\n{entities_yaml}\n"
+                    "Input:\n{input_map_yaml}\n"
+                    "Goals: {design_goals}\n"
+                    "Levels: {level_structure_json}\n"
+                    "Special Rules:\n{special_rules_list}"
+                )
+            if key == "prompt.code_gen_system":
+                return "SYSTEM"
+            if key == "prompt.platform_standard":
+                return "PLATFORM"
+            return COMMON_CODEGEN_PROMPTS.get(key, default)
+
+        spec = GameSpec(
+            game_type="casual",
+            source_description="build a crowded arcade rescue game",
+            core_mechanics=[CoreMechanic(type="rescue", input="drag")],
+            entities=[
+                GameEntity(name="pilot", role="player"),
+                GameEntity(name="meteor", role="obstacle"),
+                GameEntity(name="drone", role="enemy"),
+                GameEntity(name="laser_gate", role="obstacle"),
+                GameEntity(name="mine", role="obstacle"),
+                GameEntity(name="satellite", role="collectible"),
+                GameEntity(name="battery", role="collectible"),
+            ],
+            rules=GameRules(win_condition="rescue the crew", lose_condition="lose all shields", lives=3),
+            visual_style=VisualStyle(theme="space", art_style="neon", effects=["glow trails", "screen shake"]),
+            design_goals=[
+                "Keep rounds under 45 seconds.",
+                "Show the next rescue target clearly.",
+                "Reward near-miss recoveries.",
+                "Make combo pickups visually obvious.",
+                "Add a memorable extraction finish.",
+            ],
+            special_rules=[
+                "Rescued crew members trail behind the ship.",
+                "Black holes bend nearby movement paths.",
+                "Charge gates temporarily disable lasers.",
+                "Shield pickups stack into a short grace window.",
+                "Extraction beacon appears after the final rescue.",
+            ],
+            reference_game="Rescue Raiders",
+            platform_constraints=PlatformConstraints(platform="wechat_webview", input_mode="drag"),
+        )
+        gdd = GDD(
+            canvas=CanvasConfig(width=420, height=720, dpr_adaptive=True, target_fps=60),
+            numerics=NumericsConfig(base_obstacle_speed=3.5, spawn_interval_ms=850),
+            collision=CollisionConfig(),
+            input_map={
+                "touchstart": "engage_thrusters",
+                "touchmove": "drag_ship",
+                "touchend": "stabilize",
+                "pointerdown": "engage_thrusters",
+                "pointermove": "drag_ship",
+                "pointerup": "stabilize",
+            },
+            level_structure=[
+                {"id": "sector_1", "goal": "rescue two crew members"},
+                {"id": "sector_2", "goal": "cross the laser corridor"},
+                {"id": "sector_3", "goal": "draft around a black hole"},
+                {"id": "sector_4", "goal": "escort the convoy"},
+                {"id": "sector_5", "goal": "reach the extraction beacon"},
+            ],
+        )
+
+        with patch(
+            "src.engine.code_generator.require_prompt",
+            side_effect=fake_get_prompt,
+        ), patch.object(
+            generator._client,
+            "complete_with_truncation_retry",
+            new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
+        ) as mock_complete:
+            asyncio.run(generator._llm_generate(spec, gdd, description=spec.source_description))
+
+        message = mock_complete.await_args.kwargs["messages"][0]["content"]
+        self.assertIn("+1 more entities", message)
+        self.assertIn("note: +1 more obstacle entities", message)
+        self.assertIn("note: +2 more inputs", message)
+        self.assertIn("+1 more", message)
+        self.assertNotIn("sector_5", message)
+        self.assertNotIn("pointerup: stabilize", message)
 
     def test_generate_rewrites_profile_few_shot_for_landscape_contracts(self):
         generator = CodeGenerator(llm_mode="real")
@@ -402,6 +706,90 @@ class TestPromptIntegration(unittest.TestCase):
         self.assertIn("centered landscape canvas", message)
         self.assertNotIn("centered portrait canvas", message)
 
+    def test_generate_omits_large_reference_skeleton_for_rich_prompt(self):
+        generator = CodeGenerator(llm_mode="real")
+        spec = GameSpec(
+            game_type="casual",
+            generation_tier="showcase",
+            source_description="build a flashy arcade rescue loop with combo scoring and layered progression",
+            core_mechanics=[CoreMechanic(type="rescue", input="drag")],
+            rules=GameRules(win_condition="rescue everyone", lose_condition="timer", lives=3),
+            visual_style=VisualStyle(theme="city", art_style="comic"),
+            design_goals=["Keep a strong rescue loop."],
+            platform_constraints=PlatformConstraints(platform="wechat_webview", input_mode="drag"),
+        )
+        gdd = GDD(
+            canvas=CanvasConfig(width=420, height=600, dpr_adaptive=True, target_fps=60),
+            numerics=NumericsConfig(),
+            collision=CollisionConfig(),
+            input_map={"touchmove": "drag"},
+            level_structure=[{"id": 1, "goal": "rescue"}],
+            feedback_moments=["big combo flash"],
+        )
+
+        with patch(
+            "src.engine.code_generator.require_prompt",
+            side_effect=lambda key, default=None: (
+                "Game Type: {game_type}\nTheme: {theme}" if key == "prompt.game_design_template"
+                else "SYSTEM" if key == "prompt.code_gen_system"
+                else "PLATFORM" if key == "prompt.platform_standard"
+                else COMMON_CODEGEN_PROMPTS.get(key, default)
+            ),
+        ), patch.object(
+            generator.template_cache,
+            "get_skeleton",
+            return_value="<html>" + ("x" * 1800) + "</html>",
+        ), patch.object(
+            generator._client,
+            "complete_with_truncation_retry",
+            new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
+        ) as mock_complete:
+            asyncio.run(generator._llm_generate(spec, gdd, description=spec.source_description))
+
+        message = mock_complete.await_args.kwargs["messages"][0]["content"]
+        self.assertNotIn("REFERENCE SKELETON", message)
+
+    def test_generate_keeps_small_reference_skeleton_for_safe_sparse_brief(self):
+        generator = CodeGenerator(llm_mode="real")
+        spec = GameSpec(
+            game_type="casual",
+            generation_tier="safe",
+            source_description="tap game",
+            core_mechanics=[CoreMechanic(type="tap", input="tap")],
+            rules=GameRules(win_condition="score", lose_condition="miss", lives=3),
+            visual_style=VisualStyle(theme="arcade", art_style="minimal"),
+            platform_constraints=PlatformConstraints(platform="wechat_webview", input_mode="touch"),
+        )
+        gdd = GDD(
+            canvas=CanvasConfig(width=360, height=640, dpr_adaptive=True, target_fps=60),
+            numerics=NumericsConfig(),
+            collision=CollisionConfig(),
+            input_map={"touchstart": "tap"},
+            ui_layout={},
+        )
+
+        with patch(
+            "src.engine.code_generator.require_prompt",
+            side_effect=lambda key, default=None: (
+                "Game Type: {game_type}\nTheme: {theme}" if key == "prompt.game_design_template"
+                else "SYSTEM" if key == "prompt.code_gen_system"
+                else "PLATFORM" if key == "prompt.platform_standard"
+                else COMMON_CODEGEN_PROMPTS.get(key, default)
+            ),
+        ), patch.object(
+            generator.template_cache,
+            "get_skeleton",
+            return_value="<!DOCTYPE html><html><body><canvas></canvas><script>function loop(){}</script></body></html>",
+        ), patch.object(
+            generator._client,
+            "complete_with_truncation_retry",
+            new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
+        ) as mock_complete:
+            asyncio.run(generator._llm_generate(spec, gdd, description=spec.source_description))
+
+        message = mock_complete.await_args.kwargs["messages"][0]["content"]
+        self.assertIn("REFERENCE SKELETON", message)
+
     def test_iterate_passes_current_code_using_code_parameter(self):
         generator = CodeGenerator(llm_mode="real")
 
@@ -423,10 +811,42 @@ class TestPromptIntegration(unittest.TestCase):
             )
 
         self.assertEqual(iter_type, IterationType.element_change)
-        self.assertEqual(html, "<!DOCTYPE html><html></html>")
+        self.assertEqual(html, ensure_structured_section_markers("<!DOCTYPE html><html></html>"))
         kwargs = mock_iterate.await_args.kwargs
-        self.assertEqual(kwargs["code"], "<!DOCTYPE html><html><body>old</body></html>")
+        self.assertEqual(
+            kwargs["code"],
+            ensure_structured_section_markers("<!DOCTYPE html><html><body>old</body></html>"),
+        )
         self.assertNotIn("current_code", kwargs)
+
+    def test_generate_public_api_injects_structured_section_markers(self):
+        generator = CodeGenerator(llm_mode="real")
+        spec = GameSpec(
+            game_type="casual",
+            source_description="make a quick dodge game",
+            intent_summary="dodge falling objects",
+            core_mechanics=[CoreMechanic(type="dodge", input="touchmove")],
+            rules=GameRules(win_condition="survive", lose_condition="hit obstacle", lives=3),
+            visual_style=VisualStyle(theme="arcade", art_style="minimal"),
+            platform_constraints=PlatformConstraints(platform="wechat_webview", input_mode="touch"),
+        )
+        gdd = GDD()
+
+        with patch.object(
+            generator._client,
+            "is_enabled",
+            return_value=True,
+        ), patch.object(
+            generator,
+            "_llm_generate",
+            new=AsyncMock(return_value="<!DOCTYPE html><html><head><style>body{margin:0;}</style></head><body><canvas id='gameCanvas'></canvas><script>const ready = true;</script></body></html>"),
+        ):
+            result = asyncio.run(generator.generate(spec, gdd))
+
+        assert "<!-- SECTION:HTML_SHELL START -->" in result.html_code
+        assert "<!-- SECTION:STYLE START -->" in result.html_code
+        assert "<!-- SECTION:HUD START -->" in result.html_code
+        assert "/* SECTION:CONFIG START */" in result.html_code
 
     def test_generate_uses_resolved_prompt_bundle_layers(self):
         generator = CodeGenerator(llm_mode="real")
@@ -539,9 +959,111 @@ class TestPromptIntegration(unittest.TestCase):
         self.assertIn("PRODUCT_POLICY_FROM_BUNDLE", kwargs["system"])
         self.assertIn("LEGACY_SYSTEM_FROM_DB", kwargs["system"])
         message = kwargs["messages"][0]["content"]
-        self.assertIn("LOGIC_GENERATE_FROM_BUNDLE", message)
-        self.assertIn("PROFILE_FEW_SHOT_FROM_BUNDLE", message)
-        self.assertIn("ITERATE_PROMPT::add coins::<!DOCTYPE html><html><body>old</body></html>", message)
+        self.assertNotIn("LOGIC_GENERATE_FROM_BUNDLE", message)
+        self.assertNotIn("PROFILE_FEW_SHOT_FROM_BUNDLE", message)
+        self.assertIn("ITERATE_PROMPT::add coins::CURRENT PATCHABLE SECTIONS:", message)
+        self.assertIn("PATCH-FIRST ITERATION OUTPUT CONTRACT", message)
+        self.assertIn("=== SECTION:SCRIPT START ===", message)
+
+    def test_iterate_applies_json_script_patch_response(self):
+        generator = CodeGenerator(llm_mode="real")
+        code = (
+            "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas>"
+            "<script>const coins = 1; function loop(){ return coins; }</script></body></html>"
+        )
+
+        with patch(
+            "src.engine.code_generator.require_prompt",
+            side_effect=lambda key, default=None: (
+                "ITERATE_PROMPT::{feedback}::{code}" if key == "prompt.element_change"
+                else "MECHANIC_PROMPT::{feedback}::{history}::{code}" if key == "prompt.mechanic_change"
+                else "LEGACY_SYSTEM_FROM_DB" if key == "prompt.code_gen_system"
+                else COMMON_CODEGEN_PROMPTS.get(key, default)
+            ),
+        ), patch.object(
+            generator._client,
+            "complete_with_truncation_retry",
+            new=AsyncMock(
+                return_value='{"patches":[{"section":"SCRIPT","content":"const coins = 2; function loop(){ return coins; }"}]}'
+            ),
+        ):
+            result = asyncio.run(
+                generator._llm_iterate(
+                    code=code,
+                    feedback="add coins",
+                    conversation=[],
+                    iter_type=IterationType.element_change,
+                )
+            )
+
+        self.assertIn("const coins = 2", result)
+        self.assertIn("<canvas id='gameCanvas'></canvas>", result)
+
+    def test_iterate_applies_anchor_targeted_patch_response(self):
+        generator = CodeGenerator(llm_mode="real")
+        code = ensure_structured_section_markers(
+            "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas>"
+            "<script>const coins = 1; function loop(){ return coins; }</script></body></html>"
+        )
+
+        with patch(
+            "src.engine.code_generator.require_prompt",
+            side_effect=lambda key, default=None: (
+                "ITERATE_PROMPT::{feedback}::{code}" if key == "prompt.element_change"
+                else "LEGACY_SYSTEM_FROM_DB" if key == "prompt.code_gen_system"
+                else COMMON_CODEGEN_PROMPTS.get(key, default)
+            ),
+        ), patch.object(
+            generator._client,
+            "complete_with_truncation_retry",
+            new=AsyncMock(
+                return_value='{"patches":[{"section":"INPUT","operation":"replace_block","content":"canvas.addEventListener(\'pointerdown\', () => { coins += 1; });"}]}'
+            ),
+        ):
+            result = asyncio.run(
+                generator._llm_iterate(
+                    code=code,
+                    feedback="add a tap control",
+                    conversation=[],
+                    iter_type=IterationType.element_change,
+                )
+            )
+
+        self.assertIn("canvas.addEventListener('pointerdown'", result)
+        self.assertIn("/* SECTION:INPUT START */", result)
+
+    def test_iterate_rolls_back_invalid_patch_candidate(self):
+        generator = CodeGenerator(llm_mode="real")
+        code = (
+            "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas>"
+            "<script>const coins = 1; function loop(){ return coins; }</script></body></html>"
+        )
+
+        with patch(
+            "src.engine.code_generator.require_prompt",
+            side_effect=lambda key, default=None: (
+                "ITERATE_PROMPT::{feedback}::{code}" if key == "prompt.element_change"
+                else "MECHANIC_PROMPT::{feedback}::{history}::{code}" if key == "prompt.mechanic_change"
+                else "LEGACY_SYSTEM_FROM_DB" if key == "prompt.code_gen_system"
+                else COMMON_CODEGEN_PROMPTS.get(key, default)
+            ),
+        ), patch.object(
+            generator._client,
+            "complete_with_truncation_retry",
+            new=AsyncMock(
+                return_value='{"patches":[{"section":"BODY","content":"<div>coins only</div><script>const coins = 2;</script>"}]}'
+            ),
+        ):
+            result = asyncio.run(
+                generator._llm_iterate(
+                    code=code,
+                    feedback="change the layout",
+                    conversation=[],
+                    iter_type=IterationType.mechanic_change,
+                )
+            )
+
+        self.assertEqual(result, code)
 
     def test_select_token_budget_uses_generation_tier(self):
         safe_spec = GameSpec(game_type="casual", generation_tier="safe")

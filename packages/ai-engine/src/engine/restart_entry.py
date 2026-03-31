@@ -140,8 +140,31 @@ TERMINAL_STATE_RESET_RE = re.compile(
 TERMINAL_PROGRESS_RESET_RE = re.compile(
     r"""
     (?:
-        (?:score|points|lives|life|level|round|stage|combo|inventory|tiles|board)\s*=
+        (?:
+            score
+          | points
+          | strokes?
+          | totalStrokes
+          | holeStrokes
+          | moves
+          | lives
+          | life
+          | level
+          | currentLevel
+          | round
+          | stage
+          | hole
+          | currentHole
+          | combo
+          | inventory
+          | tiles
+          | board
+        )\s*=
       | generateLevel\s*\(
+      | loadLevel\s*\(
+      | loadStage\s*\(
+      | loadRound\s*\(
+      | loadHole\s*\(
       | createLevel\s*\(
       | buildBoard\s*\(
       | seedBoard\s*\(
