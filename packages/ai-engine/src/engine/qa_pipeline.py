@@ -18,7 +18,7 @@ import logging
 import re
 import time
 import hashlib
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 try:
     import esprima
@@ -35,6 +35,25 @@ from .mobile_layout import MOBILE_LAYOUT_BRIDGE_MARKER, has_short_edge_scaling
 from .prompt_store import require_prompt
 from .restart_entry import has_restart_entry
 from .scoring_loop import has_visible_scoring_loop
+from .section_patch import (
+    PATCH_SECTION_BODY,
+    PATCH_SECTION_HUD,
+    PATCH_SECTION_SCRIPT,
+    PATCH_SECTION_STYLE,
+    PATCH_SCRIPT_ANCHOR_CONFIG,
+    PATCH_SCRIPT_ANCHOR_GAME_LOOP,
+    PATCH_SCRIPT_ANCHOR_INPUT,
+    PATCH_SCRIPT_ANCHOR_LEVEL_DATA,
+    SectionPatch,
+    apply_section_patches,
+    build_patch_protocol,
+    build_section_context,
+    ensure_structured_section_markers,
+    find_incomplete_structured_markers,
+    has_structured_section_markers,
+    parse_patch_response,
+    validate_patch_candidate,
+)
 from .terminal_state import has_terminal_state_transition
 
 logger = logging.getLogger(__name__)
@@ -150,6 +169,11 @@ class QAPipeline:
         l1_errors = self._check_l1_syntax(html_code)
         summary["L1_syntax"] = len(l1_errors) == 0
         errors.extend(l1_errors)
+
+        marker_errors, marker_warnings = self._check_l1_structure_markers(html_code)
+        summary["L1_structure_markers"] = len(marker_errors) == 0
+        errors.extend(marker_errors)
+        warnings.extend(marker_warnings)
 
         l2_errors = self._check_l2_security(html_code)
         summary["L2_security"] = len(l2_errors) == 0
@@ -861,6 +885,10 @@ class QAPipeline:
         if not self._client.is_enabled() or not errors:
             return repaired
 
+        preserve_structured_markers = has_structured_section_markers(code)
+        if preserve_structured_markers:
+            repaired = ensure_structured_section_markers(repaired)
+
         force_full = force_full or self._should_force_full_repair(errors)
         repair_family, scoped_errors = self._select_repair_scope(errors, force_full=force_full)
         repaired = self._apply_family_deterministic_repairs(
@@ -903,6 +931,8 @@ class QAPipeline:
             repair_family=repair_family,
         )
         llm_repaired = self._apply_deterministic_repairs(llm_fixed)
+        if preserve_structured_markers:
+            llm_repaired = ensure_structured_section_markers(llm_repaired)
         if self._introduces_structural_regression(repaired, llm_repaired):
             logger.warning(
                 "QA repair candidate rejected because it introduced structural regression; keeping previous stable candidate"
@@ -1101,6 +1131,22 @@ class QAPipeline:
 
         return repaired.strip()
 
+    def _check_l1_structure_markers(self, code: str) -> Tuple[List[QACheckError], List[QACheckError]]:
+        errors: List[QACheckError] = []
+        warnings: List[QACheckError] = []
+        if not has_structured_section_markers(code):
+            return errors, warnings
+
+        incomplete_markers = find_incomplete_structured_markers(code)
+        if incomplete_markers:
+            errors.append(QACheckError(
+                type="L1_structure_markers",
+                message="Structured section marker set is incomplete: missing matching boundary for "
+                + ", ".join(sorted(dict.fromkeys(incomplete_markers))),
+                severity="error",
+            ))
+        return errors, warnings
+
     def _introduces_structural_regression(self, previous_code: str, candidate_code: str) -> bool:
         previous = (previous_code or "").strip()
         candidate = (candidate_code or "").strip()
@@ -1127,8 +1173,18 @@ class QAPipeline:
         if candidate_has_new_truncation:
             return True
 
-        if previous and len(candidate) < max(512, int(len(previous) * 0.55)):
+        previous_has_canvas = bool(re.search(r"<canvas\b", previous, re.IGNORECASE))
+        candidate_has_canvas = bool(re.search(r"<canvas\b", candidate, re.IGNORECASE))
+        if previous_has_canvas and not candidate_has_canvas:
             return True
+
+        if previous:
+            if len(previous) >= 512:
+                minimum_candidate_length = max(512, int(len(previous) * 0.55))
+            else:
+                minimum_candidate_length = max(96, int(len(previous) * 0.55))
+            if len(candidate) < minimum_candidate_length:
+                return True
 
         return len(candidate_l1) > len(previous_l1)
 
@@ -1438,6 +1494,72 @@ class QAPipeline:
         )
 
     @staticmethod
+    def _repair_family_supports_section_patch(repair_family: str) -> bool:
+        return repair_family != "syntax_structural"
+
+    @staticmethod
+    def _repair_errors_touch_style(errors: List[QACheckError]) -> bool:
+        tokens = ("style", "css", "font", "color", "colour", "ui text", "hud")
+        for error in errors:
+            message = (error.message or "").lower()
+            if any(token in message for token in tokens):
+                return True
+        return False
+
+    @classmethod
+    def _select_patch_sections_for_repair(
+        cls,
+        repair_family: str,
+        errors: List[QACheckError],
+    ) -> tuple[str, ...]:
+        sections: List[str] = [PATCH_SECTION_SCRIPT]
+        if repair_family in {"mobile_layout", "runtime_startup", "generic"}:
+            sections.insert(0, PATCH_SECTION_BODY)
+        if repair_family == "mobile_layout" or cls._repair_errors_touch_style(errors):
+            sections.insert(0, PATCH_SECTION_STYLE)
+        deduped: List[str] = []
+        for section in sections:
+            if section not in deduped:
+                deduped.append(section)
+        return tuple(deduped)
+
+    @staticmethod
+    def _select_preferred_patch_targets_for_repair(
+        repair_family: str,
+        patch_sections: Sequence[str],
+    ) -> tuple[str, ...]:
+        candidates: List[str] = []
+        if repair_family == "forbidden_api":
+            candidates.extend([PATCH_SCRIPT_ANCHOR_CONFIG, PATCH_SCRIPT_ANCHOR_GAME_LOOP])
+        elif repair_family == "input_contract":
+            candidates.extend([PATCH_SCRIPT_ANCHOR_INPUT, PATCH_SCRIPT_ANCHOR_GAME_LOOP])
+        elif repair_family == "score_feedback":
+            candidates.extend([PATCH_SECTION_HUD, PATCH_SCRIPT_ANCHOR_GAME_LOOP, PATCH_SCRIPT_ANCHOR_LEVEL_DATA])
+        elif repair_family == "terminal_state":
+            candidates.extend([PATCH_SCRIPT_ANCHOR_GAME_LOOP, PATCH_SCRIPT_ANCHOR_INPUT])
+        elif repair_family == "mobile_layout":
+            candidates.extend([PATCH_SECTION_STYLE, PATCH_SECTION_HUD])
+        elif repair_family == "runtime_startup":
+            candidates.extend([PATCH_SCRIPT_ANCHOR_CONFIG, PATCH_SCRIPT_ANCHOR_GAME_LOOP, PATCH_SECTION_HUD])
+        else:
+            candidates.extend([PATCH_SCRIPT_ANCHOR_GAME_LOOP, PATCH_SCRIPT_ANCHOR_CONFIG, PATCH_SECTION_HUD])
+
+        allowed_targets: List[str] = []
+        allows_script = PATCH_SECTION_SCRIPT in patch_sections
+        allows_body = PATCH_SECTION_BODY in patch_sections
+        allows_style = PATCH_SECTION_STYLE in patch_sections
+        for target in candidates:
+            if target in {PATCH_SCRIPT_ANCHOR_CONFIG, PATCH_SCRIPT_ANCHOR_GAME_LOOP, PATCH_SCRIPT_ANCHOR_INPUT, PATCH_SCRIPT_ANCHOR_LEVEL_DATA} and not allows_script:
+                continue
+            if target == PATCH_SECTION_HUD and not allows_body:
+                continue
+            if target == PATCH_SECTION_STYLE and not allows_style:
+                continue
+            if target not in allowed_targets:
+                allowed_targets.append(target)
+        return tuple(allowed_targets)
+
+    @staticmethod
     def _has_syntax_structural_errors(errors: List[QACheckError]) -> bool:
         return any((error.type or "").lower().startswith("l1_") for error in errors)
 
@@ -1560,7 +1682,7 @@ class QAPipeline:
             logger.error("Simplified syntax rewrite failed: %s", exc)
             return code
 
-    async def _complete_repair_prompt_with_retry(
+    async def _complete_repair_prompt_raw_with_retry(
         self,
         *,
         prompt: str,
@@ -1571,8 +1693,6 @@ class QAPipeline:
         prefer_fast: bool,
         repair_family: str,
     ) -> str:
-        from .code_generator import _extract_html
-
         allow_provider_fallback = bool(settings.LLM_PROVIDER_FAILOVER_ENABLED)
         retry_ceiling = 8192 if prefer_fast else max(
             settings.LLM_LONG_GENERATION_MAX_TOKENS,
@@ -1610,8 +1730,32 @@ class QAPipeline:
             truncation_retry_max_tokens=retry_ceiling,
             truncation_retry_min_tokens=retry_floor,
             timeout_retry_attempts=timeout_retry_attempts,
-            timeout_retry_increment_s=timeout_retry_increment_s,
-            timeout_retry_max_s=timeout_retry_max_s,
+                timeout_retry_increment_s=timeout_retry_increment_s,
+                timeout_retry_max_s=timeout_retry_max_s,
+        )
+        return text
+
+    async def _complete_repair_prompt_with_retry(
+        self,
+        *,
+        prompt: str,
+        code: str,
+        step_key: str,
+        request_timeout_s: int,
+        max_tokens: int,
+        prefer_fast: bool,
+        repair_family: str,
+    ) -> str:
+        from .code_generator import _extract_html
+
+        text = await self._complete_repair_prompt_raw_with_retry(
+            prompt=prompt,
+            code=code,
+            step_key=step_key,
+            request_timeout_s=request_timeout_s,
+            max_tokens=max_tokens,
+            prefer_fast=prefer_fast,
+            repair_family=repair_family,
         )
         return _extract_html(text)
 
@@ -1638,6 +1782,21 @@ class QAPipeline:
         game_type = game_spec.game_type if game_spec else "unknown"
         targeted_instructions = self._build_targeted_fix_instructions(errors, runtime_contract)
         runtime_contract_block = self._build_runtime_contract_block(runtime_contract)
+        patch_sections = (
+            self._select_patch_sections_for_repair(repair_family, errors)
+            if self._repair_family_supports_section_patch(repair_family)
+            else ()
+        )
+        preferred_targets = (
+            self._select_preferred_patch_targets_for_repair(repair_family, patch_sections)
+            if patch_sections
+            else ()
+        )
+        code_context = (
+            build_section_context(code, patch_sections, preferred_targets=preferred_targets)
+            if patch_sections
+            else code
+        )
 
         prompt_key, prompt_template = self._resolve_repair_prompt(
             repair_family=repair_family,
@@ -1647,7 +1806,7 @@ class QAPipeline:
         prompt_values = {
             "error_list": error_list,
             "game_type": game_type,
-            "code": code,
+            "code": code_context,
             "runtime_contract_block": runtime_contract_block,
             "fix_round": fix_round,
             "max_fix_rounds": max_fix_rounds,
@@ -1663,21 +1822,60 @@ class QAPipeline:
         ui_language_instruction = self._build_ui_language_instruction(game_spec)
         if ui_language_instruction:
             prompt = "\n\n".join([ui_language_instruction, prompt])
+        if patch_sections:
+            prompt = "\n\n".join([
+                build_patch_protocol(
+                    patch_sections,
+                    task_label=f"qa repair ({repair_family})",
+                    preferred_targets=preferred_targets,
+                ),
+                prompt,
+            ])
         try:
             request_timeout_s = self._estimate_repair_timeout_s(
                 max_tokens=max_tokens,
                 prefer_fast=prefer_fast,
                 repair_family=repair_family,
             )
-            repaired = await self._complete_repair_prompt_with_retry(
-                prompt=prompt,
-                code=code,
-                step_key=f"qa_fix.{repair_family}" if repair_family and repair_family != "generic" else "qa_fix",
-                request_timeout_s=request_timeout_s,
-                max_tokens=max_tokens,
-                prefer_fast=prefer_fast,
-                repair_family=repair_family,
-            )
+            step_key = f"qa_fix.{repair_family}" if repair_family and repair_family != "generic" else "qa_fix"
+            if patch_sections:
+                raw_response = await self._complete_repair_prompt_raw_with_retry(
+                    prompt=prompt,
+                    code=code,
+                    step_key=step_key,
+                    request_timeout_s=request_timeout_s,
+                    max_tokens=max_tokens,
+                    prefer_fast=prefer_fast,
+                    repair_family=repair_family,
+                )
+                patches, full_html = parse_patch_response(raw_response, allowed_sections=patch_sections)
+                if patches:
+                    repaired = apply_section_patches(code, patches)
+                elif full_html:
+                    repaired = full_html
+                else:
+                    repaired = code
+                validation_errors = validate_patch_candidate(
+                    code,
+                    repaired,
+                    allowed_sections=patch_sections,
+                )
+                if validation_errors:
+                    logger.warning(
+                        "QA patch candidate rejected; keeping previous stable code: %s",
+                        ", ".join(validation_errors),
+                    )
+                    repaired = code
+            else:
+                repaired = await self._complete_repair_prompt_with_retry(
+                    prompt=prompt,
+                    code=code,
+                    step_key=step_key,
+                    request_timeout_s=request_timeout_s,
+                    max_tokens=max_tokens,
+                    prefer_fast=prefer_fast,
+                    repair_family=repair_family,
+                )
             await task_memory.remember_code(
                 self._current_task_id(),
                 repaired,

@@ -6,6 +6,7 @@ import asyncio
 import pytest
 from unittest.mock import AsyncMock, patch
 from src.engine.qa_pipeline import QAPipeline
+from src.engine.section_patch import ensure_structured_section_markers
 from src.api.models import GameRuntimeContract, GameSpec, GameplayContract, InputContract, QACheckError, StateContract
 from src.services.llm_client import LLMResponseTruncatedError
 
@@ -586,6 +587,230 @@ def test_repair_code_uses_family_specific_bundle_prompt_and_scopes_to_one_family
     assert "Runtime contract forbids API usage: fetch" in prompt
     assert "primary touch or pointer gameplay handlers" not in prompt
     assert "FORBIDDEN_ONLY::" in prompt
+
+
+def test_repair_code_uses_patch_first_section_context_for_forbidden_api_family():
+    pipeline = QAPipeline()
+    errors = [
+        QACheckError(
+            type="contract_safety",
+            message="Runtime contract forbids API usage: fetch",
+            severity="error",
+        )
+    ]
+    code = "<!DOCTYPE html><html><body><script>fetch('https://example.com')</script></body></html>"
+
+    def fake_require_prompt(key: str):
+        if key == "prompt.qa_fix":
+            return "QA_FIX::{code}::{targeted_instructions}"
+        if key == "prompt.qa_runtime_contract_block":
+            return "Runtime contract (must still hold after the repair):\n- Forbidden APIs: {forbidden_apis}"
+        if key == "prompt.qa_instruction_forbidden_api":
+            return "- Remove forbidden API usage."
+        if key == "prompt.qa_instruction_generic":
+            return "- Generic fix."
+        raise AssertionError(f"Unexpected prompt lookup: {key}")
+
+    with patch(
+        "src.engine.qa_pipeline.require_prompt",
+        side_effect=fake_require_prompt,
+    ), patch(
+        "src.engine.qa_pipeline.settings.LLM_MODE",
+        "real",
+    ), patch.object(
+        pipeline._client,
+        "is_enabled",
+        return_value=True,
+    ), patch.object(
+        pipeline,
+        "_complete_repair_prompt_raw_with_retry",
+        new=AsyncMock(return_value='{"patches":[{"section":"SCRIPT","content":"const safe = 1;"}]}'),
+    ) as mock_raw:
+        asyncio.run(
+            pipeline.repair_code(
+                code,
+                errors,
+                GameSpec(game_type="casual"),
+            )
+        )
+
+    prompt = mock_raw.await_args.kwargs["prompt"]
+    assert "PATCH-FIRST QA REPAIR (FORBIDDEN_API) OUTPUT CONTRACT" in prompt
+    assert "Preferred patch targets: CONFIG, GAME_LOOP." in prompt
+    assert "CURRENT PATCHABLE SECTIONS:" in prompt
+    assert "PREFERRED PATCH TARGETS: CONFIG, GAME_LOOP" in prompt
+    assert "=== SECTION:SCRIPT START ===" in prompt
+    assert "fetch('https://example.com')" in prompt
+    assert "QA_FIX::CURRENT PATCHABLE SECTIONS:" in prompt
+
+
+def test_repair_code_applies_script_patch_response_for_patch_first_family():
+    pipeline = QAPipeline()
+    errors = [
+        QACheckError(
+            type="contract_safety",
+            message="Runtime contract forbids API usage: fetch",
+            severity="error",
+        )
+    ]
+    code = (
+        "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas>"
+        "<script>fetch('https://example.com'); const safe = 0;</script></body></html>"
+    )
+
+    def fake_require_prompt(key: str):
+        if key == "prompt.qa_fix":
+            return "QA_FIX::{code}"
+        if key == "prompt.qa_runtime_contract_block":
+            return "Runtime contract (must still hold after the repair):\n- Forbidden APIs: {forbidden_apis}"
+        if key == "prompt.qa_instruction_forbidden_api":
+            return "- Remove forbidden API usage."
+        if key == "prompt.qa_instruction_generic":
+            return "- Generic fix."
+        raise AssertionError(f"Unexpected prompt lookup: {key}")
+
+    with patch(
+        "src.engine.qa_pipeline.require_prompt",
+        side_effect=fake_require_prompt,
+    ), patch(
+        "src.engine.qa_pipeline.settings.LLM_MODE",
+        "real",
+    ), patch.object(
+        pipeline._client,
+        "is_enabled",
+        return_value=True,
+    ), patch.object(
+        pipeline,
+        "_complete_repair_prompt_raw_with_retry",
+        new=AsyncMock(return_value='{"patches":[{"section":"SCRIPT","content":"const safe = 1;"}]}'),
+    ):
+        repaired = asyncio.run(
+            pipeline.repair_code(
+                code,
+                errors,
+                GameSpec(game_type="casual"),
+            )
+        )
+
+    assert "const safe = 1;" in repaired
+    assert "<canvas id='gameCanvas'></canvas>" in repaired
+    assert "fetch(" not in repaired
+
+
+def test_repair_code_rejects_patch_first_full_document_that_changes_unallowed_sections():
+    pipeline = QAPipeline()
+    code = (
+        "<!DOCTYPE html><html><head><style>body{background:#000;}</style></head>"
+        "<body><canvas id='gameCanvas'></canvas><script>let over = false;</script></body></html>"
+    )
+    expected_stable_candidate = pipeline._apply_deterministic_repairs(code)
+    errors = [
+        QACheckError(
+            type="contract_state",
+            message="Runtime contract requires state 'game_over'",
+            severity="error",
+        )
+    ]
+
+    def fake_require_prompt(key: str):
+        if key == "prompt.qa_fix":
+            return "QA_FIX::{code}"
+        if key == "prompt.qa_runtime_contract_block":
+            return "Runtime contract block"
+        if key == "prompt.qa_instruction_terminal_state":
+            return "- Add a proper terminal state."
+        if key == "prompt.qa_instruction_generic":
+            return "- Generic fix."
+        raise AssertionError(f"Unexpected prompt lookup: {key}")
+
+    with patch(
+        "src.engine.qa_pipeline.require_prompt",
+        side_effect=fake_require_prompt,
+    ), patch(
+        "src.engine.qa_pipeline.settings.LLM_MODE",
+        "real",
+    ), patch.object(
+        pipeline._client,
+        "is_enabled",
+        return_value=True,
+    ), patch.object(
+        pipeline,
+        "_complete_repair_prompt_raw_with_retry",
+        new=AsyncMock(
+            return_value="<!DOCTYPE html><html><head><style>body{background:#f00;}</style></head><body><div>new overlay</div><canvas id='gameCanvas'></canvas><script>let over = true;</script></body></html>"
+        ),
+    ):
+        repaired = asyncio.run(
+            pipeline.repair_code(
+                code,
+                errors,
+                GameSpec(game_type='casual'),
+            )
+        )
+
+    assert repaired == expected_stable_candidate
+
+
+def test_structural_regression_guard_allows_short_document_script_only_repairs():
+    pipeline = QAPipeline()
+    previous = (
+        "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas>"
+        "<script>fetch('https://example.com'); const safe = 0;</script></body></html>"
+    )
+    candidate = (
+        "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas>"
+        "<script>const safe = 1;</script></body></html>"
+    )
+
+    assert pipeline._introduces_structural_regression(previous, candidate) is False
+
+
+def test_l1_structure_marker_check_rejects_incomplete_marker_pairs():
+    code = ensure_structured_section_markers(VALID_GAME).replace(
+        "/* SECTION:INPUT END */",
+        "",
+        1,
+    )
+
+    errors, warnings = qa._check_l1_structure_markers(code)
+
+    assert warnings == []
+    assert any("Structured section marker set is incomplete" in error.message for error in errors)
+
+
+def test_repair_code_preserves_structured_markers_when_input_already_has_them():
+    pipeline = QAPipeline()
+    code = ensure_structured_section_markers(
+        "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas><script>const safe = 0;</script></body></html>"
+    )
+    errors = [
+        QACheckError(
+            type="runtime_qa",
+            message="Runtime issue",
+            severity="error",
+        )
+    ]
+
+    with patch.object(
+        pipeline._client,
+        "is_enabled",
+        return_value=True,
+    ), patch.object(
+        pipeline,
+        "_fix_with_llm",
+        new=AsyncMock(return_value="<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas><script>const safe = 1;</script></body></html>"),
+    ):
+        repaired = asyncio.run(
+            pipeline.repair_code(
+                code,
+                errors,
+                GameSpec(game_type="casual"),
+            )
+        )
+
+    assert "<!-- SECTION:HUD START -->" in repaired
+    assert "/* SECTION:CONFIG START */" in repaired
+    assert "const safe = 1;" in repaired
 
 
 def test_input_bridge_injects_dom_start_control_scan_and_dom_feedback_badge():
@@ -1214,7 +1439,7 @@ def test_run_with_auto_fix_breaks_after_repeated_single_issue():
     assert mock_repair.await_count == 2
 
 
-def test_repair_code_uses_simplified_rewrite_when_syntax_fix_stays_broken():
+def test_repair_code_does_not_fallback_to_simplified_rewrite_when_syntax_fix_stays_broken():
     pipeline = QAPipeline()
     broken_code = VALID_GAME.replace("game.score += 1;", "if (true) {")
     errors = [
@@ -1256,12 +1481,12 @@ def test_repair_code_uses_simplified_rewrite_when_syntax_fix_stays_broken():
             )
         )
 
-    assert repaired == VALID_GAME
+    assert repaired == broken_code
     assert mock_fix.await_count == 1
-    assert mock_rewrite.await_count == 1
+    assert mock_rewrite.await_count == 0
 
 
-def test_repair_code_rebuilds_from_spec_when_syntax_repair_keeps_truncating():
+def test_repair_code_does_not_rebuild_from_spec_when_syntax_repair_keeps_truncating():
     pipeline = QAPipeline()
     broken_code = VALID_GAME.replace("game.score += 1;", "if (true) {")
     errors = [
@@ -1308,10 +1533,10 @@ def test_repair_code_rebuilds_from_spec_when_syntax_repair_keeps_truncating():
             )
         )
 
-    assert repaired == VALID_GAME
+    assert repaired == broken_code
     assert mock_fix.await_count == 1
-    assert mock_rewrite.await_count == 1
-    assert mock_rebuild.await_count == 1
+    assert mock_rewrite.await_count == 0
+    assert mock_rebuild.await_count == 0
 
 
 def test_mixed_syntax_failures_do_not_force_generic_repair():
@@ -1415,6 +1640,7 @@ def test_fix_with_llm_retries_truncated_generic_repair_with_larger_budget():
             severity="error",
         ),
     ]
+    repaired_script = ("const tile = 1;\n" * 400) + "function fix(){ return true; }\n"
 
     with patch(
         "src.engine.qa_pipeline.require_prompt",
@@ -1429,7 +1655,7 @@ def test_fix_with_llm_retries_truncated_generic_repair_with_larger_budget():
                 stop_reason="length",
                 output_tokens=5207,
             ),
-            "<!DOCTYPE html><html><body>fixed</body></html>",
+            '{"patches":[{"section":"SCRIPT","content":"' + repaired_script.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"}]}',
         ]),
     ) as mock_complete:
         repaired = asyncio.run(
@@ -1443,7 +1669,7 @@ def test_fix_with_llm_retries_truncated_generic_repair_with_larger_budget():
             )
         )
 
-    assert repaired == "<!DOCTYPE html><html><body>fixed</body></html>"
+    assert "function fix(){ return true; }" in repaired
     assert mock_complete.await_count == 2
     first_max_tokens = mock_complete.await_args_list[0].kwargs["max_tokens"]
     second_max_tokens = mock_complete.await_args_list[1].kwargs["max_tokens"]

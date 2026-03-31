@@ -21,8 +21,24 @@ from ..config.settings import settings
 from ..config.timeout_store import get_int as get_timeout_int
 from ..services.llm_client import LLMClient
 from .code_template_cache import CodeTemplateCache
-from .prompt_store import get_active_prompt_bundle, get_prompt, get_runtime_profile, require_prompt
+from .prompt_store import get_prompt, get_runtime_profile, require_prompt
 from .runtime_profile_ids import normalize_runtime_profile_id
+from .section_patch import (
+    PATCH_SECTION_BODY,
+    PATCH_SECTION_SCRIPT,
+    PATCH_SECTION_STYLE,
+    SectionPatch,
+    apply_section_patches,
+    build_patch_protocol,
+    build_section_context,
+    ensure_structured_section_markers,
+    extract_script_content as extract_patch_script_content,
+    extract_style_content as extract_patch_style_content,
+    parse_patch_response,
+    replace_script_content as patch_replace_script_content,
+    replace_style_content as patch_replace_style_content,
+    validate_patch_candidate,
+)
 from .visual_pack_catalog import get_visual_pack, visual_pack_direction_lines
 
 logger = logging.getLogger(__name__)
@@ -189,6 +205,7 @@ class CodeGenerator:
             prompt_bundle_snapshot=prompt_bundle_snapshot,
             budget_override=budget_override,
         )
+        html = ensure_structured_section_markers(html)
         elapsed = int((time.time() - start) * 1000)
         return GenerateCodeResult(
             html_code=html,
@@ -209,29 +226,13 @@ class CodeGenerator:
         budget_override: Optional[str] = None,
     ) -> str:
         request_text = self._resolve_request_context(spec, gdd, description)
-        entities_desc = "\n".join(
-            f"  - {e.name} ({e.role}): shape={e.shape or 'auto'}, color={e.color or 'auto'}"
-            for e in spec.entities
-        )
-        input_map_str = "\n".join(
-            f"  {k} -> {v}" for k, v in gdd.input_map.items()
-        )
         prompt_values = self._build_game_design_prompt_values(
             spec=spec,
             gdd=gdd,
             description=request_text,
-            entities_desc=entities_desc,
-            input_map_str=input_map_str,
         )
         prompt_template = require_prompt("prompt.game_design_template")
         structured_design = prompt_template.format_map(_SafePromptFormatDict(prompt_values))
-        request_context = (
-            require_prompt("prompt.generate_request_context_template").format(
-                request_text=request_text,
-            )
-            if request_text
-            else ""
-        )
         logic_generate_policy = self._resolved_bundle_prompt(prompt_bundle_snapshot, "logic_generate")
         profile_few_shot = self._resolve_profile_few_shot(
             prompt_bundle_snapshot,
@@ -241,19 +242,23 @@ class CodeGenerator:
         generation_tier_block = self._build_generation_tier_block(spec)
         visual_pack_block = self._build_visual_pack_block(spec)
         implementation_budget = self._build_implementation_budget_block(spec, request_text)
-        mechanic_diversity = self._build_mechanic_diversity_block(spec, request_text, runtime_profile)
+        design_program_block = self._build_design_program_block(spec, gdd)
+        critical_intent_block = self._build_critical_intent_block(
+            spec,
+            request_text,
+            runtime_profile=runtime_profile,
+        )
+        enriched_block = self._build_enriched_design_block(gdd)
         full_prompt = "\n\n".join(
             part
             for part in [
-                request_context.strip(),
                 logic_generate_policy,
                 generation_tier_block,
                 visual_pack_block,
                 profile_few_shot,
                 structured_design,
-                self._build_design_program_block(spec, gdd),
-                self._build_critical_intent_block(spec, request_text),
-                mechanic_diversity,
+                design_program_block,
+                critical_intent_block,
                 self._build_ui_language_block(spec.ui_language),
                 self._build_runtime_contract_block(runtime_contract, runtime_profile, prompt_bundle_snapshot),
                 implementation_budget,
@@ -262,15 +267,17 @@ class CodeGenerator:
             ]
             if part
         )
-        if request_text:
-            full_prompt += "\n\n" + require_prompt("prompt.generate_alignment_reminder")
-
-        enriched_block = self._build_enriched_design_block(gdd)
         if enriched_block:
             full_prompt += "\n\n" + enriched_block
 
         skeleton = self.template_cache.get_skeleton(spec, runtime_profile or "")
-        if skeleton:
+        if self._should_include_reference_skeleton(
+            spec,
+            request_text=request_text,
+            skeleton=skeleton,
+            design_program_block=design_program_block,
+            enriched_block=enriched_block,
+        ):
             full_prompt = (
                 "REFERENCE SKELETON (follow this HTML structure, replace game-specific content):\n"
                 f"```html\n{skeleton}\n```\n\n"
@@ -315,8 +322,6 @@ class CodeGenerator:
         spec: GameSpec,
         gdd: GDD,
         description: str,
-        entities_desc: str,
-        input_map_str: str,
     ) -> Dict[str, Any]:
         palette = spec.visual_style.palette or ["#0a0a2e", "#6366f1", "#22c55e", "#f43f5e", "#ffffff"]
         visual_pack = get_visual_pack(spec.visual_style.visual_pack) or {}
@@ -371,7 +376,7 @@ class CodeGenerator:
             "expected_s": gdd.numerics.expected_survival_s,
             "win_condition": spec.rules.win_condition,
             "lose_condition": spec.rules.lose_condition,
-            "entities_desc": entities_desc,
+            "entities_desc": self._build_entities_desc(spec.entities),
             "entities_yaml": self._format_entities_yaml(
                 [entity for entity in spec.entities if entity.role in ("obstacle", "enemy")],
                 fallback_speed=gdd.numerics.base_obstacle_speed,
@@ -382,7 +387,7 @@ class CodeGenerator:
                 fallback_speed=0,
                 fallback_spawn_interval=max(spawn_interval + 400, 1200) if spawn_interval > 0 else 1500,
             ),
-            "input_map": input_map_str,
+            "input_map": self._format_input_map_lines(gdd.input_map),
             "input_map_yaml": self._format_input_map_yaml(gdd.input_map),
             "input_type": input_type,
             "color_bg": self._palette_value(palette, 0, "#0a0a2e"),
@@ -406,14 +411,14 @@ class CodeGenerator:
             "complexity_budget": spec.complexity_budget or self._resolve_generation_tier(spec),
             "teaching_mode": spec.teaching_mode or "none",
             "comedy_device": spec.comedy_device or "none",
-            "design_goals": "; ".join(spec.design_goals or []) or "none",
-            "level_structure_json": self._json_block(gdd.level_structure),
-            "phase_plan_json": self._json_block(gdd.phase_plan),
-            "reward_plan_json": self._json_block(gdd.reward_plan),
-            "tutorial_beats_json": self._json_block(gdd.tutorial_beats),
-            "signature_interactions_json": self._json_block(gdd.signature_interactions),
-            "feedback_moments_json": self._json_block(gdd.feedback_moments),
-            "failure_recovery_json": self._json_block(gdd.failure_recovery_plan),
+            "design_goals": self._format_compact_list(spec.design_goals, max_items=4, max_chars=64),
+            "level_structure_json": self._compact_json_block(gdd.level_structure),
+            "phase_plan_json": self._compact_json_block(gdd.phase_plan),
+            "reward_plan_json": self._compact_json_block(gdd.reward_plan),
+            "tutorial_beats_json": self._compact_json_block(gdd.tutorial_beats),
+            "signature_interactions_json": self._compact_json_block(gdd.signature_interactions),
+            "feedback_moments_json": self._compact_json_block(gdd.feedback_moments),
+            "failure_recovery_json": self._compact_json_block(gdd.failure_recovery_plan),
             "max_speed": max_speed,
             "spawn_decay_formula": (
                 f"max({min_spawn_interval}, {spawn_interval} - elapsed_s * 8)"
@@ -439,6 +444,144 @@ class CodeGenerator:
         if value == []:
             return "[]"
         return json.dumps(value, ensure_ascii=False, indent=2)
+
+    @classmethod
+    def _compact_text_items(
+        cls,
+        items: List[str],
+        *,
+        max_items: int,
+        max_chars: int,
+    ) -> tuple[List[str], int]:
+        normalized = [
+            cls._truncate_prompt_snippet(str(item), max_chars=max_chars)
+            for item in items
+            if str(item or "").strip()
+        ]
+        visible = normalized[:max_items]
+        overflow = max(0, len(normalized) - len(visible))
+        return visible, overflow
+
+    @classmethod
+    def _format_compact_list(
+        cls,
+        items: List[str],
+        *,
+        max_items: int = 4,
+        max_chars: int = 72,
+    ) -> str:
+        visible, overflow = cls._compact_text_items(items, max_items=max_items, max_chars=max_chars)
+        if not visible:
+            return "none"
+        if overflow:
+            visible.append(f"+{overflow} more")
+        return "; ".join(visible)
+
+    @classmethod
+    def _compact_json_value(
+        cls,
+        value: Any,
+        *,
+        max_items: int = 4,
+        max_chars: int = 64,
+        depth: int = 0,
+        max_depth: int = 2,
+    ) -> Any:
+        if isinstance(value, dict):
+            if depth >= max_depth:
+                keys = [str(key) for key in value.keys()]
+                return cls._format_compact_list(keys, max_items=max_items, max_chars=max_chars)
+            items = list(value.items())
+            compacted = {
+                str(key): cls._compact_json_value(
+                    child,
+                    max_items=max_items,
+                    max_chars=max_chars,
+                    depth=depth + 1,
+                    max_depth=max_depth,
+                )
+                for key, child in items[:max_items]
+            }
+            overflow = len(items) - min(len(items), max_items)
+            if overflow:
+                compacted["_omitted_keys"] = f"+{overflow} more"
+            return compacted
+        if isinstance(value, list):
+            visible = [
+                cls._compact_json_value(
+                    item,
+                    max_items=max_items,
+                    max_chars=max_chars,
+                    depth=depth + 1,
+                    max_depth=max_depth,
+                )
+                for item in value[:max_items]
+            ]
+            overflow = len(value) - len(visible)
+            if overflow:
+                visible.append(f"+{overflow} more")
+            return visible
+        if isinstance(value, str):
+            return cls._truncate_prompt_snippet(value, max_chars=max_chars)
+        return value
+
+    @classmethod
+    def _compact_json_block(
+        cls,
+        value: Any,
+        *,
+        max_items: int = 4,
+        max_chars: int = 320,
+    ) -> str:
+        if value is None or value == "":
+            return "[]"
+        if value == {}:
+            return "{}"
+        if value == []:
+            return "[]"
+        compacted = cls._compact_json_value(value, max_items=max_items)
+        compact_text = json.dumps(compacted, ensure_ascii=False, indent=2)
+        if len(compact_text) <= max_chars:
+            return compact_text
+        return cls._truncate_prompt_snippet(
+            json.dumps(compacted, ensure_ascii=False, separators=(",", ": ")),
+            max_chars=max_chars,
+        )
+
+    def _build_entities_desc(
+        self,
+        entities: List[Any],
+        *,
+        max_items: int = 6,
+    ) -> str:
+        if not entities:
+            return "  - none"
+        visible: List[str] = []
+        for entity in entities[:max_items]:
+            extras: List[str] = [f"shape={entity.shape or 'auto'}", f"color={entity.color or 'auto'}"]
+            if entity.spawn_rate:
+                extras.append(f"spawn={entity.spawn_rate}ms")
+            visible.append(f"  - {entity.name} ({entity.role}): {', '.join(extras)}")
+        overflow = len(entities) - len(visible)
+        if overflow:
+            visible.append(f"  - +{overflow} more entities")
+        return "\n".join(visible)
+
+    @classmethod
+    def _format_input_map_lines(
+        cls,
+        input_map: Dict[str, str],
+        *,
+        max_items: int = 4,
+    ) -> str:
+        if not input_map:
+            return "  touchstart -> start or primary interaction"
+        pairs = [f"{event} -> {action}" for event, action in input_map.items()]
+        visible, overflow = cls._compact_text_items(pairs, max_items=max_items, max_chars=72)
+        lines = [f"  {item}" for item in visible]
+        if overflow:
+            lines.append(f"  +{overflow} more inputs")
+        return "\n".join(lines)
 
     def _derive_core_mechanic_text(self, spec: GameSpec, description: str) -> str:
         if spec.intent_summary.strip():
@@ -471,7 +614,56 @@ class CodeGenerator:
                 return re.sub(r"\s+", " ", candidate)
         return ""
 
-    def _build_critical_intent_block(self, spec: GameSpec, request_text: str) -> str:
+    @staticmethod
+    def _truncate_prompt_snippet(text: str, *, max_chars: int = 180) -> str:
+        normalized = re.sub(r"\s+", " ", (text or "").strip())
+        if len(normalized) <= max_chars:
+            return normalized
+        return normalized[: max_chars - 3].rstrip() + "..."
+
+    @classmethod
+    def _build_distinctive_loop_hint(
+        cls,
+        spec: GameSpec,
+        request_text: str,
+        runtime_profile: Optional[str],
+    ) -> str:
+        runtime_profile = normalize_runtime_profile_id(runtime_profile)
+        generation_tier = cls._resolve_generation_tier(spec)
+        diversity_rules = [
+            rule for rule in (spec.special_rules or [])
+            if "distinctive gameplay loop" in rule.lower() or "avoid the stock" in rule.lower()
+        ]
+        wants_distinctive_loop = generation_tier == "showcase" or bool(diversity_rules)
+        if runtime_profile in {
+            "casual_arcade",
+            "casual_action",
+            "casual_arcade_burst",
+            "casual_arcade_orbit",
+            "casual_arcade_rescue",
+            "casual_action_arena",
+            "casual_action_survival",
+        }:
+            wants_distinctive_loop = True
+
+        lines: List[str] = []
+        if request_text.strip():
+            lines.append(f"- Original brief anchor: {cls._truncate_prompt_snippet(request_text, max_chars=160)}")
+        if wants_distinctive_loop:
+            lines.append("- Prefer a distinctive loop framing instead of the stock default when it still matches the brief.")
+        if generation_tier == "showcase":
+            lines.append("- Showcase tier: spend extra budget on one signature mechanic framing, not generic polish alone.")
+        for rule in diversity_rules[:2]:
+            lines.append(f"- {rule}")
+        return "\n".join(lines)
+
+    def _build_critical_intent_block(
+        self,
+        spec: GameSpec,
+        request_text: str,
+        *,
+        runtime_profile: Optional[str] = None,
+    ) -> str:
         reference_line = (
             f"- Reference game: {spec.reference_game}"
             if spec.reference_game
@@ -483,7 +675,7 @@ class CodeGenerator:
             if spec.special_rules
             else "- Special rules: none"
         )
-        return require_prompt("prompt.intent_detail_template").format(
+        base_block = require_prompt("prompt.intent_detail_template").format(
             core_mechanic=self._derive_core_mechanic_text(spec, request_text),
             theme=spec.visual_style.theme,
             win_condition=spec.rules.win_condition,
@@ -491,40 +683,64 @@ class CodeGenerator:
             special_rules_block=special_rules_block,
             ui_language=self._describe_ui_language(spec.ui_language),
         )
+        distinctive_hint = self._build_distinctive_loop_hint(spec, request_text, runtime_profile)
+        if distinctive_hint:
+            return "\n".join([base_block, distinctive_hint])
+        return base_block
 
     def _build_design_program_block(self, spec: GameSpec, gdd: GDD) -> str:
-        design_goal_lines = [f"  - {goal}" for goal in (spec.design_goals or [])]
-        if not design_goal_lines:
-            design_goal_lines = ["  - none"]
+        lines: List[str] = []
+        defaultish_fields = (
+            ("Session length", spec.session_length, "short_bursts"),
+            ("Progression shape", spec.progression_shape, "score_chase"),
+            ("Reward loop", spec.reward_loop, "none"),
+            ("Signature moment", spec.signature_moment, "none"),
+            ("Target audience", spec.target_audience, "general mobile players"),
+            ("Tone", spec.tone, "readable and playful"),
+            ("Reference style", spec.reference_style, "none"),
+            ("Teaching mode", spec.teaching_mode, "none"),
+            ("Comedy device", spec.comedy_device, "none"),
+        )
+        for label, value, default_value in defaultish_fields:
+            normalized = (value or "").strip()
+            if not normalized or normalized == default_value:
+                continue
+            lines.append(f"- {label}: {normalized}")
+
+        complexity_budget = (spec.complexity_budget or "").strip() or self._resolve_generation_tier(spec)
+        if complexity_budget == "showcase" or (spec.complexity_budget or "").strip():
+            lines.append(f"- Complexity budget: {complexity_budget}")
+
+        design_goals, goal_overflow = self._compact_text_items(
+            spec.design_goals or [],
+            max_items=4,
+            max_chars=84,
+        )
+        if design_goals:
+            lines.extend(["- Design goals:", *(f"  - {goal}" for goal in design_goals)])
+            if goal_overflow:
+                lines.append(f"  - +{goal_overflow} more goals")
+
+        structured_sections = [
+            ("Level structure", gdd.level_structure),
+            ("Phase plan", gdd.phase_plan),
+            ("Reward plan", gdd.reward_plan),
+            ("Tutorial beats", gdd.tutorial_beats),
+            ("Signature interactions", gdd.signature_interactions),
+            ("Feedback moments", gdd.feedback_moments),
+            ("Failure recovery plan", gdd.failure_recovery_plan),
+        ]
+        for label, value in structured_sections:
+            if not value:
+                continue
+            lines.extend([f"- {label}:", self._compact_json_block(value, max_chars=360)])
+
+        if not lines:
+            return ""
         return "\n".join(
             [
                 "DESIGN PROGRAM (HIGH PRIORITY):",
-                f"- Session length: {spec.session_length or 'short_bursts'}",
-                f"- Progression shape: {spec.progression_shape or 'score_chase'}",
-                f"- Reward loop: {spec.reward_loop or 'none'}",
-                f"- Signature moment: {spec.signature_moment or 'none'}",
-                f"- Target audience: {spec.target_audience or 'general mobile players'}",
-                f"- Tone: {spec.tone or 'readable and playful'}",
-                f"- Reference style: {spec.reference_style or 'none'}",
-                f"- Complexity budget: {spec.complexity_budget or self._resolve_generation_tier(spec)}",
-                f"- Teaching mode: {spec.teaching_mode or 'none'}",
-                f"- Comedy device: {spec.comedy_device or 'none'}",
-                "- Design goals:",
-                *design_goal_lines,
-                "- Level structure:",
-                self._json_block(gdd.level_structure),
-                "- Phase plan:",
-                self._json_block(gdd.phase_plan),
-                "- Reward plan:",
-                self._json_block(gdd.reward_plan),
-                "- Tutorial beats:",
-                self._json_block(gdd.tutorial_beats),
-                "- Signature interactions:",
-                self._json_block(gdd.signature_interactions),
-                "- Feedback moments:",
-                self._json_block(gdd.feedback_moments),
-                "- Failure recovery plan:",
-                self._json_block(gdd.failure_recovery_plan),
+                *lines,
                 "- Preserve this design program unless a requirement directly conflicts with it.",
             ]
         )
@@ -689,6 +905,29 @@ class CodeGenerator:
             ])
         return "\n".join(lines)
 
+    @classmethod
+    def _should_include_reference_skeleton(
+        cls,
+        spec: GameSpec,
+        *,
+        request_text: str,
+        skeleton: Optional[str],
+        design_program_block: str,
+        enriched_block: str,
+    ) -> bool:
+        normalized_skeleton = (skeleton or "").strip()
+        if not normalized_skeleton:
+            return False
+        generation_tier = cls._resolve_generation_tier(spec)
+        skeleton_char_budget = 2400 if generation_tier == "safe" else 1400
+        if len(normalized_skeleton) > skeleton_char_budget:
+            return False
+        if enriched_block.strip():
+            return False
+        if design_program_block.strip() and generation_tier != "safe":
+            return False
+        return len((request_text or "").strip()) <= 80 or generation_tier == "safe"
+
     @staticmethod
     def _build_source_bundle_context_block(source_bundle_context: Optional[SourceBundleContext]) -> str:
         if not source_bundle_context:
@@ -763,11 +1002,9 @@ class CodeGenerator:
         )
         prompt = self._rewrite_layout_prompt_for_orientation(prompt, orientation)
         supplement = (
-            "MOBILE LAYOUT CONTRACT SUPPLEMENT\n"
-            f"- Keep the reference playfield {reference_label} at {gdd.canvas.width}x{gdd.canvas.height}.\n"
-            "- Add a resize or orientation-change handler that reads both viewport width and viewport height.\n"
-            "- Compute scaleX and scaleY from the viewport against the reference size.\n"
-            "- Derive uiScale from Math.min(scaleX, scaleY) or an equivalent short-edge fit, then center the canvas."
+            "MOBILE LAYOUT CHECKLIST\n"
+            f"- Use a {reference_label} reference size of {gdd.canvas.width}x{gdd.canvas.height} and read both viewport dimensions during resize.\n"
+            "- Compute scaleX/scaleY once, derive uiScale from Math.min(scaleX, scaleY) or an equivalent short-edge fit, then center the canvas and HUD."
         )
         return "\n".join([prompt, supplement])
 
@@ -814,10 +1051,9 @@ class CodeGenerator:
         )
         prompt = self._rewrite_layout_prompt_for_orientation(prompt, orientation)
         supplement = (
-            "MOBILE LAYOUT CONTRACT SUPPLEMENT\n"
-            f"- Preserve {reference_label} sizing during iteration.\n"
-            "- Read both viewport width and viewport height inside resize logic.\n"
-            "- Compute scaleX and scaleY, then derive uiScale from Math.min(scaleX, scaleY) or an equivalent short-edge fit."
+            "MOBILE LAYOUT CHECKLIST\n"
+            f"- Preserve {reference_label} sizing during iteration and keep resize logic based on both viewport dimensions.\n"
+            "- Recompute scaleX/scaleY, then derive uiScale from Math.min(scaleX, scaleY) or an equivalent short-edge fit."
         )
         return "\n".join([prompt, supplement])
 
@@ -834,54 +1070,114 @@ class CodeGenerator:
         runtime_profile: Optional[str],
         prompt_bundle_snapshot: Optional[Dict[str, Any]],
     ) -> str:
-        if not runtime_contract:
-            return require_prompt("prompt.runtime_contract_summary").format(
-                runtime_profile=runtime_profile or "standard_mobile_canvas",
-                contract_version="1.0",
-                bundle_id=(prompt_bundle_snapshot or {}).get("bundle_id") or "unknown",
-                layer_keys=", ".join(sorted((prompt_bundle_snapshot or {}).get("layers", {}).keys())) or "default",
-                required_states="boot, ready, playing, game_over",
-                input_modes="touch, pointer",
-                gestures="tap",
-                forbidden_apis="eval, Function, import, require",
-                terminal_state_aliases="game_over",
-                orientation="portrait_first",
-                ui_scale_mode="short_edge",
-                hud_min=14,
-                hud_max=20,
-                title_min=28,
-                title_max=36,
+        profile_value = runtime_profile or (
+            runtime_contract.runtime_profile
+            if runtime_contract
+            else "standard_mobile_canvas"
+        )
+        contract_version = runtime_contract.version if runtime_contract else "1.0"
+        required_states = (
+            runtime_contract.state.required_states
+            if runtime_contract and runtime_contract.state and runtime_contract.state.required_states
+            else ["boot", "ready", "playing", "game_over"]
+        )
+        input_modes = (
+            runtime_contract.input.required_modes
+            if runtime_contract and runtime_contract.input and runtime_contract.input.required_modes
+            else ["pointer", "touch"]
+        )
+        gestures = (
+            runtime_contract.input.gestures
+            if runtime_contract and runtime_contract.input and runtime_contract.input.gestures
+            else ["tap"]
+        )
+        forbidden_apis = (
+            runtime_contract.safety.forbidden_apis
+            if runtime_contract and runtime_contract.safety and runtime_contract.safety.forbidden_apis
+            else ["eval", "Function", "import", "require"]
+        )
+        terminal_state_aliases = (
+            runtime_contract.gameplay.terminal_state_aliases
+            if runtime_contract and runtime_contract.gameplay and runtime_contract.gameplay.terminal_state_aliases
+            else ["game_over"]
+        )
+        orientation = (
+            runtime_contract.mobile_layout.orientation
+            if runtime_contract and runtime_contract.mobile_layout
+            else "portrait_first"
+        )
+        ui_scale_mode = (
+            runtime_contract.mobile_layout.ui_scale_mode
+            if runtime_contract and runtime_contract.mobile_layout
+            else "short_edge"
+        )
+        hud_min = (
+            runtime_contract.mobile_layout.font_clamp.hud_min
+            if runtime_contract and runtime_contract.mobile_layout and runtime_contract.mobile_layout.font_clamp
+            else 14
+        )
+        hud_max = (
+            runtime_contract.mobile_layout.font_clamp.hud_max
+            if runtime_contract and runtime_contract.mobile_layout and runtime_contract.mobile_layout.font_clamp
+            else 20
+        )
+        title_min = (
+            runtime_contract.mobile_layout.font_clamp.title_min
+            if runtime_contract and runtime_contract.mobile_layout and runtime_contract.mobile_layout.font_clamp
+            else 28
+        )
+        title_max = (
+            runtime_contract.mobile_layout.font_clamp.title_max
+            if runtime_contract and runtime_contract.mobile_layout and runtime_contract.mobile_layout.font_clamp
+            else 36
+        )
+
+        lines = [
+            "RUNTIME CONTRACT (NON-NEGOTIABLE):",
+            f"- Runtime profile: {profile_value} (contract v{contract_version})",
+            (
+                "- Core state flow must support "
+                f"{self._format_compact_contract_items(required_states, max_items=5)}"
+                " with a restart path back into active play."
+            ),
+            (
+                "- Input must work through "
+                f"{self._format_compact_contract_items(input_modes, max_items=4)}"
+                f"; expected gestures: {self._format_compact_contract_items(gestures, max_items=4)}."
+            ),
+            (
+                "- Forbidden APIs: "
+                f"{self._format_compact_contract_items(forbidden_apis, max_items=6)}."
+            ),
+            (
+                f"- Mobile layout: {orientation}, {ui_scale_mode} scaling, "
+                f"HUD {hud_min}-{hud_max}px, title {title_min}-{title_max}px."
+            ),
+        ]
+
+        normalized_aliases = [alias for alias in terminal_state_aliases if (alias or "").strip()]
+        if normalized_aliases and normalized_aliases != ["game_over"]:
+            lines.append(
+                "- Accepted terminal/completion state aliases: "
+                + self._format_compact_contract_items(normalized_aliases, max_items=8)
+                + "."
             )
 
-        bundle_id = (prompt_bundle_snapshot or {}).get("bundle_id")
-        if not bundle_id:
-            active_bundle = get_active_prompt_bundle()
-            bundle_id = str(active_bundle.get("id")) if isinstance(active_bundle, dict) and active_bundle.get("id") else "unresolved_bundle"
-        layer_keys = sorted((prompt_bundle_snapshot or {}).get("layers", {}).keys())
-        gestures = ", ".join(runtime_contract.input.gestures) if runtime_contract.input.gestures else "tap"
-        forbidden = ", ".join(runtime_contract.safety.forbidden_apis)
-        required_states = ", ".join(runtime_contract.state.required_states)
-        terminal_state_aliases = ", ".join(runtime_contract.gameplay.terminal_state_aliases or []) or "game_over"
-        summary = require_prompt("prompt.runtime_contract_summary").format(
-            runtime_profile=runtime_profile or runtime_contract.runtime_profile,
-            contract_version=runtime_contract.version,
-            bundle_id=bundle_id,
-            layer_keys=", ".join(layer_keys) if layer_keys else "default",
-            required_states=required_states,
-            input_modes=", ".join(runtime_contract.input.required_modes),
-            gestures=gestures,
-            forbidden_apis=forbidden,
-            terminal_state_aliases=terminal_state_aliases,
-            orientation=runtime_contract.mobile_layout.orientation,
-            ui_scale_mode=runtime_contract.mobile_layout.ui_scale_mode,
-            hud_min=runtime_contract.mobile_layout.font_clamp.hud_min,
-            hud_max=runtime_contract.mobile_layout.font_clamp.hud_max,
-            title_min=runtime_contract.mobile_layout.font_clamp.title_min,
-            title_max=runtime_contract.mobile_layout.font_clamp.title_max,
-        )
-        if "terminal/completion state aliases" not in summary.lower():
-            summary += f"\n- Accepted terminal/completion state aliases: {terminal_state_aliases}"
-        return summary
+        if prompt_bundle_snapshot:
+            bundle_id = (prompt_bundle_snapshot or {}).get("bundle_id")
+            if bundle_id:
+                lines.append(f"- Prompt bundle: {bundle_id}.")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_compact_contract_items(items: List[str], *, max_items: int) -> str:
+        normalized = [str(item).strip() for item in (items or []) if str(item).strip()]
+        if not normalized:
+            return "none"
+        if len(normalized) <= max_items:
+            return ", ".join(normalized)
+        remaining = len(normalized) - max_items
+        return ", ".join(normalized[:max_items]) + f", +{remaining} more"
 
     @staticmethod
     def _resolved_bundle_prompt(
@@ -916,7 +1212,8 @@ class CodeGenerator:
         if not prompt:
             prompt = cls._resolved_bundle_prompt(prompt_bundle_snapshot, "profile_few_shot")
         orientation = cls._resolve_layout_orientation(runtime_contract)
-        return cls._rewrite_profile_few_shot_for_orientation(prompt, orientation)
+        rewritten = cls._rewrite_profile_few_shot_for_orientation(prompt, orientation)
+        return cls._compact_profile_few_shot(rewritten)
 
     @classmethod
     def _rewrite_profile_few_shot_for_orientation(cls, prompt: str, orientation: str) -> str:
@@ -944,6 +1241,28 @@ class CodeGenerator:
                 "wider camera framing, and side-friendly HUD placement."
             )
         return updated
+
+    @classmethod
+    def _compact_profile_few_shot(cls, prompt: str) -> str:
+        normalized = (prompt or "").strip()
+        if not normalized:
+            return ""
+
+        lines = [line.strip() for line in normalized.splitlines() if line.strip()]
+        if len(lines) <= 4 and len(normalized) <= 280:
+            return normalized
+
+        if len(lines) >= 3:
+            kept_lines = lines[:3]
+            if lines[-1] not in kept_lines:
+                kept_lines.append(lines[-1])
+            compact = "\n".join(kept_lines)
+        else:
+            compact = cls._truncate_prompt_snippet(normalized, max_chars=260)
+
+        if len(compact) > 300:
+            compact = cls._truncate_prompt_snippet(compact, max_chars=300)
+        return compact
 
     @classmethod
     def _rewrite_system_prompt_for_generation_tier(
@@ -1060,12 +1379,13 @@ class CodeGenerator:
         *,
         fallback_speed: float,
         fallback_spawn_interval: int,
+        max_entities: int = 3,
     ) -> str:
         if not entities:
             return "  - none"
 
         lines: List[str] = []
-        for entity in entities:
+        for entity in entities[:max_entities]:
             shape = entity.shape or "auto"
             color = entity.color or "#ffffff"
             spawn_interval = entity.spawn_rate or fallback_spawn_interval
@@ -1073,22 +1393,27 @@ class CodeGenerator:
                 f"  - name: {entity.name}",
                 f"    visual: {shape} shape, color {color}",
                 "    size: 32-56px",
-                f"    speed: {fallback_speed} px/s",
-                f"    spawn_interval: {spawn_interval} ms",
-                "    spawn_position: random edge or lane depending on game flow",
-                "    movement: straight with mild variance unless game rules require otherwise",
-                f"    collision_effect: {'damage player' if entity.role in ('obstacle', 'enemy') else 'award score'}",
+                f"    behavior: {fallback_speed} px/s, every {spawn_interval} ms",
+                f"    effect: {'damage player' if entity.role in ('obstacle', 'enemy') else 'award score'}",
             ])
+        overflow = len(entities) - min(len(entities), max_entities)
+        if overflow:
+            lines.append(f"  - note: +{overflow} more {entities[0].role} entities")
         return "\n".join(lines)
 
-    @staticmethod
-    def _format_input_map_yaml(input_map: Dict[str, str]) -> str:
+    @classmethod
+    def _format_input_map_yaml(cls, input_map: Dict[str, str], *, max_items: int = 4) -> str:
         if not input_map:
             return "  touchstart: start or primary interaction"
-        return "\n".join(f"  {event}: {action}" for event, action in input_map.items())
+        pairs = [f"{event}: {action}" for event, action in input_map.items()]
+        visible, overflow = cls._compact_text_items(pairs, max_items=max_items, max_chars=72)
+        lines = [f"  {item}" for item in visible]
+        if overflow:
+            lines.append(f"  note: +{overflow} more inputs")
+        return "\n".join(lines)
 
-    @staticmethod
-    def _format_special_rules(spec: GameSpec) -> str:
+    @classmethod
+    def _format_special_rules(cls, spec: GameSpec, *, max_items: int = 5) -> str:
         rules: List[str] = []
         if spec.special_rules:
             rules.extend(f"- {rule}" for rule in spec.special_rules)
@@ -1098,7 +1423,10 @@ class CodeGenerator:
             rules.extend(f"- Visual effect: {effect}" for effect in spec.visual_style.effects)
         if spec.platform_constraints.platform:
             rules.append(f"- Target platform: {spec.platform_constraints.platform}")
-        return "\n".join(rules) if rules else "- none"
+        visible, overflow = cls._compact_text_items(rules, max_items=max_items, max_chars=84)
+        if overflow:
+            visible.append(f"- +{overflow} more rules")
+        return "\n".join(visible) if visible else "- none"
 
     async def iterate(
         self,
@@ -1114,14 +1442,15 @@ class CodeGenerator:
         if self.llm_mode != "real" or not self._client.is_enabled():
             raise RuntimeError("Real LLM mode is required for game iteration")
 
+        normalized_code = ensure_structured_section_markers(current_code)
         iter_type = await self._classify_iteration(feedback)
         if iter_type == IterationType.param_adjust:
-            updated = self._param_adjust(current_code, feedback)
-            if updated != current_code:
-                return updated, iter_type
+            updated = self._param_adjust(normalized_code, feedback)
+            if updated != normalized_code:
+                return ensure_structured_section_markers(updated), iter_type
 
         updated = await self._llm_iterate(
-            code=current_code,
+            code=normalized_code,
             feedback=feedback,
             conversation=conversation,
             iter_type=iter_type,
@@ -1131,7 +1460,7 @@ class CodeGenerator:
             game_spec=game_spec,
             source_bundle_context=source_bundle_context,
         )
-        return updated, iter_type
+        return ensure_structured_section_markers(updated), iter_type
 
     async def _classify_iteration(self, feedback: str) -> IterationType:
         try:
@@ -1219,6 +1548,24 @@ class CodeGenerator:
             "Derive uiScale from Math.min(scaleX, scaleY) using both viewport width and height."
         )
 
+    @staticmethod
+    def _select_iteration_patch_sections(
+        iter_type: IterationType,
+        feedback: str,
+    ) -> tuple[str, ...]:
+        sections: List[str] = [PATCH_SECTION_SCRIPT]
+        if iter_type == IterationType.mechanic_change:
+            sections.insert(0, PATCH_SECTION_BODY)
+        elif iter_type == IterationType.element_change and _feedback_involves_markup(feedback):
+            sections.insert(0, PATCH_SECTION_BODY)
+        if _feedback_involves_style(feedback):
+            sections.insert(0, PATCH_SECTION_STYLE)
+        deduped: List[str] = []
+        for section in sections:
+            if section not in deduped:
+                deduped.append(section)
+        return tuple(deduped)
+
     async def _llm_iterate(
         self,
         code: str,
@@ -1235,51 +1582,27 @@ class CodeGenerator:
             f"{item.get('role', 'user')}: {item.get('content', '')}"
             for item in conversation[-4:]
         )
-
-        # Determine whether element_change can use partial extraction
-        use_partial_element_change = False
-        if iter_type == IterationType.element_change:
-            script_content = _extract_script_content(code)
-            if script_content is not None:
-                use_partial_element_change = True
+        allowed_sections = self._select_iteration_patch_sections(iter_type, feedback)
+        section_context = build_section_context(code, allowed_sections)
+        patch_protocol = build_patch_protocol(allowed_sections, task_label="iteration")
 
         if iter_type == IterationType.param_adjust:
             prompt = require_prompt("prompt.param_adjust").format(
                 feedback=feedback,
-                code=code,
+                code=section_context,
             )
             step_key = "iterate.param_adjust"
-        elif iter_type == IterationType.element_change and use_partial_element_change:
-            # Partial mode: send only the <script> block (+ optional <style>)
-            includes_style = _feedback_involves_style(feedback)
-            style_content = _extract_style_content(code) if includes_style else None
-            partial_code_parts = []
-            if style_content is not None:
-                partial_code_parts.append(f"/* === CURRENT <style> === */\n{style_content}")
-            partial_code_parts.append(f"/* === CURRENT <script> === */\n{script_content}")
-            partial_code = "\n\n".join(partial_code_parts)
-            return_instruction = (
-                "Return ONLY the updated <script> block content"
-                + (" and <style> block content (separated by the same === markers)" if style_content is not None else "")
-                + ". Do NOT return a full HTML document."
-            )
-            prompt = require_prompt("prompt.element_change").format(
-                feedback=feedback + "\n\n" + return_instruction,
-                code=partial_code,
-            )
-            step_key = "iterate.element_change"
         elif iter_type == IterationType.element_change:
-            # Fallback: no script block found, use full code
             prompt = require_prompt("prompt.element_change").format(
                 feedback=feedback,
-                code=code,
+                code=section_context,
             )
             step_key = "iterate.element_change"
         else:
             prompt = require_prompt("prompt.mechanic_change").format(
                 feedback=feedback,
                 history=history_text,
-                code=code,
+                code=section_context,
             )
             step_key = "iterate.mechanic_change"
 
@@ -1290,13 +1613,11 @@ class CodeGenerator:
         )
         ui_language_block = self._build_ui_language_block(game_spec.ui_language if game_spec else "en-US")
 
-        # Minimal context per iteration type:
-        # - param_adjust / element_change: contract + ui_language + prompt (code + feedback)
-        # - mechanic_change: adds a 2-line mobile layout reminder
         if iter_type == IterationType.mechanic_change:
             prompt = "\n\n".join(
                 part
                 for part in [
+                    patch_protocol,
                     contract_block,
                     ui_language_block,
                     self._build_iteration_mobile_reminder(runtime_contract),
@@ -1308,6 +1629,7 @@ class CodeGenerator:
             prompt = "\n\n".join(
                 part
                 for part in [
+                    patch_protocol,
                     contract_block,
                     ui_language_block,
                     prompt,
@@ -1342,29 +1664,81 @@ class CodeGenerator:
                 timeout_retry_increment_s=60,
                 timeout_retry_max_s=long_generation_timeout_s + 60,
             )
-            # Partial element_change: reassemble from extracted blocks
-            if use_partial_element_change:
-                raw = _extract_code_block(text)
-                # If the LLM returned a full HTML document anyway, use it directly
-                if re.search(r"<!DOCTYPE\s+html|<html", raw, re.IGNORECASE):
-                    return _extract_html(text)
-                # Split style and script if both were requested
-                result_html = code
-                if style_content is not None:
-                    style_marker = re.search(r"/\*\s*===\s*CURRENT\s*<style>\s*===\s*\*/", raw)
-                    script_marker = re.search(r"/\*\s*===\s*CURRENT\s*<script>\s*===\s*\*/", raw)
-                    if style_marker and script_marker:
-                        new_style = raw[style_marker.end():script_marker.start()].strip()
-                        new_script_raw = raw[script_marker.end():].strip()
-                        result_html = _replace_style_content(result_html, new_style)
-                        result_html = _replace_script_content(result_html, new_script_raw)
-                    else:
-                        # No markers found, treat entire response as script update
-                        result_html = _replace_script_content(result_html, raw)
-                else:
-                    result_html = _replace_script_content(result_html, raw)
-                return result_html
-            return _extract_html(text)
+            patches, full_html = parse_patch_response(text, allowed_sections=allowed_sections)
+            if full_html:
+                candidate = ensure_structured_section_markers(_extract_html(full_html))
+                validation_errors = validate_patch_candidate(
+                    code,
+                    candidate,
+                    allowed_sections=allowed_sections,
+                )
+                if validation_errors:
+                    logger.warning(
+                        "Iteration full-document fallback rejected; keeping previous stable code: %s",
+                        ", ".join(validation_errors),
+                    )
+                    return code
+                return candidate
+            if patches:
+                candidate = apply_section_patches(code, patches)
+                validation_errors = validate_patch_candidate(
+                    code,
+                    candidate,
+                    allowed_sections=allowed_sections,
+                )
+                if validation_errors:
+                    logger.warning(
+                        "Iteration patch candidate rejected; keeping previous stable code: %s",
+                        ", ".join(validation_errors),
+                    )
+                    return code
+                return candidate
+
+            raw = _extract_code_block(text)
+            if re.search(r"<!DOCTYPE\s+html|<html", raw, re.IGNORECASE):
+                candidate = ensure_structured_section_markers(_extract_html(text))
+                validation_errors = validate_patch_candidate(
+                    code,
+                    candidate,
+                    allowed_sections=allowed_sections,
+                )
+                if validation_errors:
+                    logger.warning(
+                        "Iteration raw HTML fallback rejected; keeping previous stable code: %s",
+                        ", ".join(validation_errors),
+                    )
+                    return code
+                return candidate
+            if PATCH_SECTION_SCRIPT in allowed_sections:
+                candidate = apply_section_patches(
+                    code,
+                    [SectionPatch(section=PATCH_SECTION_SCRIPT, content=raw)],
+                )
+                validation_errors = validate_patch_candidate(
+                    code,
+                    candidate,
+                    allowed_sections=allowed_sections,
+                )
+                if validation_errors:
+                    logger.warning(
+                        "Iteration raw script patch rejected; keeping previous stable code: %s",
+                        ", ".join(validation_errors),
+                    )
+                    return code
+                return candidate
+            candidate = ensure_structured_section_markers(_extract_html(text))
+            validation_errors = validate_patch_candidate(
+                code,
+                candidate,
+                allowed_sections=allowed_sections,
+            )
+            if validation_errors:
+                logger.warning(
+                    "Iteration candidate rejected after parse fallback; keeping previous stable code: %s",
+                    ", ".join(validation_errors),
+                )
+                return code
+            return candidate
         except Exception as exc:
             logger.error("LLM iterate failed: %s", exc)
             raise RuntimeError(f"LLM iterate failed: {exc}") from exc
@@ -1435,54 +1809,22 @@ def _extract_html(text: str) -> str:
 
 def _extract_script_content(html: str) -> Optional[str]:
     """Extract the content of the last (main) inline <script> block."""
-    matches = list(re.finditer(
-        r"<script\b[^>]*>([\s\S]*?)</script>",
-        html,
-        re.IGNORECASE,
-    ))
-    if not matches:
-        return None
-    # The last <script> block is typically the game logic
-    content = matches[-1].group(1)
-    return content if content.strip() else None
+    return extract_patch_script_content(html)
 
 
 def _extract_style_content(html: str) -> Optional[str]:
     """Extract the content of the first inline <style> block."""
-    match = re.search(
-        r"<style\b[^>]*>([\s\S]*?)</style>",
-        html,
-        re.IGNORECASE,
-    )
-    if not match:
-        return None
-    content = match.group(1)
-    return content if content.strip() else None
+    return extract_patch_style_content(html)
 
 
 def _replace_script_content(html: str, new_script: str) -> str:
     """Replace the content of the last inline <script> block."""
-    matches = list(re.finditer(
-        r"(<script\b[^>]*>)([\s\S]*?)(</script>)",
-        html,
-        re.IGNORECASE,
-    ))
-    if not matches:
-        return html
-    last = matches[-1]
-    return html[:last.start(2)] + new_script + html[last.end(2):]
+    return patch_replace_script_content(html, new_script)
 
 
 def _replace_style_content(html: str, new_style: str) -> str:
     """Replace the content of the first inline <style> block."""
-    match = re.search(
-        r"(<style\b[^>]*>)([\s\S]*?)(</style>)",
-        html,
-        re.IGNORECASE,
-    )
-    if not match:
-        return html
-    return html[:match.start(2)] + new_style + html[match.end(2):]
+    return patch_replace_style_content(html, new_style)
 
 
 _STYLE_FEEDBACK_KEYWORDS = (
@@ -1496,6 +1838,19 @@ def _feedback_involves_style(feedback: str) -> bool:
     """Check if feedback mentions visual/CSS concerns."""
     lower = feedback.lower()
     return any(keyword in lower for keyword in _STYLE_FEEDBACK_KEYWORDS)
+
+
+_MARKUP_FEEDBACK_KEYWORDS = (
+    "hud", "button", "overlay", "menu", "title", "label", "scoreboard",
+    "score hud", "ui", "layout", "panel", "text", "tutorial",
+    "buttons", "title screen", "restart button",
+    "按钮", "标题", "文本", "布局", "面板", "教程", "菜单", "分数",
+)
+
+
+def _feedback_involves_markup(feedback: str) -> bool:
+    lower = feedback.lower()
+    return any(keyword in lower for keyword in _MARKUP_FEEDBACK_KEYWORDS)
 
 
 def _extract_code_block(text: str) -> str:
