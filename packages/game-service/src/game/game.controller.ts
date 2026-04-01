@@ -21,10 +21,8 @@ import { CreatorReputationService } from './creator-reputation.service';
 import {
   CreateCreationSessionDto,
   CreateCreationSessionMessageDto,
-  CreateGameDto,
   GenerateCreationSessionDto,
   PublishGameDto,
-  IterateGameDto,
   SkipCreationSessionQuestionDto,
 } from './dto';
 import { JwtAuthGuard } from '../common/jwt-auth.guard';
@@ -72,32 +70,6 @@ export class GameController {
       if (typeof status === 'number') {
         throw new HttpException(detail, status);
       }
-      throw error;
-    }
-  }
-
-  @Post('/generate')
-  @UseGuards(JwtAuthGuard)
-  @HttpCode(HttpStatus.CREATED)
-  async generateGame(@Req() req: any, @Body() dto: CreateGameDto) {
-    try {
-      const userId = req.user?.sub || req.user?.id;
-      if (!userId) {
-        throw new BadRequestException('Invalid token');
-      }
-
-      const result = await this.gameService.create(userId, {
-        title: dto.title,
-        description: dto.description || dto.prompt || '',
-        timeoutS: dto.timeoutS,
-        regionHint: dto.regionHint,
-        orientation: dto.orientation,
-        generationTier: dto.generationTier,
-      });
-
-      return ok(result);
-    } catch (error) {
-      this.logger.error(`Error generating game: ${error.message}`);
       throw error;
     }
   }
@@ -405,31 +377,6 @@ export class GameController {
       return ok(presentGame(game));
     } catch (error) {
       this.logger.error(`Error publishing game: ${error.message}`);
-      throw error;
-    }
-  }
-
-  @Post(':id/iterate')
-  @UseGuards(JwtAuthGuard)
-  @HttpCode(HttpStatus.OK)
-  async iterateGame(
-    @Param('id') id: string,
-    @Req() req: any,
-    @Body() dto: IterateGameDto,
-  ) {
-    try {
-      const userId = req.user?.sub || req.user?.id;
-      if (!userId) {
-        throw new BadRequestException('Invalid token');
-      }
-
-      const result = await this.gameService.iterate(id, userId, dto);
-      return ok({
-        iterationId: `${result.gameId}:v${result.version}`,
-        ...result,
-      });
-    } catch (error) {
-      this.logger.error(`Error iterating game: ${error.message}`);
       throw error;
     }
   }
