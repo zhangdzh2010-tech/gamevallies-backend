@@ -83,6 +83,22 @@ type AnalyzeTurnResponsePayload = {
   } | null;
 };
 
+type AnalyzeTurnRequestPayload = {
+  session_id?: string;
+  user_id: string;
+  conversation: CreationSessionConversationMessage[];
+  current_slots: Record<string, unknown>;
+  skipped_slots: string[];
+  entry_mode: string;
+  generation_tier: string;
+  title?: string;
+  initial_prompt?: string;
+  answered_slot_key?: string;
+  answered_slot_prompt?: string;
+  latest_user_answer?: string;
+  advance_only?: boolean;
+};
+
 type SpecFromSlotsResponsePayload = {
   spec: Record<string, unknown>;
   missing_required: string[];
@@ -188,16 +204,17 @@ export class CreationSessionService {
         })();
 
     // ── Phase 2: Async analysis (fire-and-forget) ───────────────────
-    const analyzePayload = {
+    const analyzePayload = this.buildAnalyzeTurnPayload({
+      sessionId: created.id,
       userId,
       conversation,
-      current_slots: {},
-      skipped_slots: [] as string[],
-      entry_mode: dto.entryMode || 'create',
+      currentSlots: {},
+      skippedSlots: [],
+      entryMode: dto.entryMode || 'create',
       title: dto.title,
-      generation_tier: dto.generationTier || 'standard',
-      initial_prompt: prompt,
-    };
+      generationTier: dto.generationTier || 'standard',
+      initialPrompt: prompt,
+    });
 
     this._finalizeSessionInit(created.id, userId, analyzePayload, dto, dto.regionHint)
       .catch((err) => this.logger.error(
@@ -222,7 +239,7 @@ export class CreationSessionService {
   private async _finalizeSessionInit(
     sessionId: string,
     userId: string,
-    analyzePayload: Record<string, unknown>,
+    analyzePayload: AnalyzeTurnRequestPayload,
     dto: CreateCreationSessionDto,
     regionHint?: string,
   ): Promise<void> {
@@ -380,17 +397,23 @@ export class CreationSessionService {
     ];
     const metadata = this.normalizeMetadata(session.metadata);
     const skippedSlots = this.normalizeStringList(session.skippedSlots);
-    const analysis = await this.analyzeTurn({
-      session_id: session.id,
-      user_id: userId,
-      conversation,
-      current_slots: this.normalizeSlotState(session.slotState),
-      skipped_slots: skippedSlots,
-      entry_mode: String(session.entryMode || 'create'),
-      title: session.titleDraft || undefined,
-      generation_tier: String(metadata.generationTier || 'standard'),
-      initial_prompt: session.initialPrompt,
-    }, this.asOptionalString(metadata.regionHint));
+    const currentQuestion = this.normalizeQuestion(session.currentQuestion);
+    const analysis = await this.analyzeTurn(
+      this.buildAnalyzeTurnPayload({
+        sessionId: session.id,
+        userId,
+        conversation,
+        currentSlots: this.normalizeSlotState(session.slotState),
+        skippedSlots,
+        entryMode: String(session.entryMode || 'create'),
+        title: session.titleDraft || undefined,
+        generationTier: String(metadata.generationTier || 'standard'),
+        initialPrompt: session.initialPrompt,
+        answeredSlot: currentQuestion,
+        latestUserAnswer: dto.content,
+      }),
+      this.asOptionalString(metadata.regionHint),
+    );
 
     const nextQuestion = this.normalizeQuestion(analysis.current_question);
     const normalizedPlanDraft = this.normalizePlanDraft(analysis.plan_draft);
@@ -462,18 +485,21 @@ export class CreationSessionService {
       ...(currentQuestion?.slotKey ? [currentQuestion.slotKey] : []),
     ]);
     const conversation = this.normalizeConversation(session.conversation);
-    const analysis = await this.analyzeTurn({
-      session_id: session.id,
-      user_id: userId,
-      conversation,
-      current_slots: this.normalizeSlotState(session.slotState),
-      skipped_slots: skippedSlots,
-      entry_mode: String(session.entryMode || 'create'),
-      title: session.titleDraft || undefined,
-      generation_tier: String(metadata.generationTier || 'standard'),
-      initial_prompt: session.initialPrompt,
-      advance_only: true,
-    }, this.asOptionalString(metadata.regionHint));
+    const analysis = await this.analyzeTurn(
+      this.buildAnalyzeTurnPayload({
+        sessionId: session.id,
+        userId,
+        conversation,
+        currentSlots: this.normalizeSlotState(session.slotState),
+        skippedSlots,
+        entryMode: String(session.entryMode || 'create'),
+        title: session.titleDraft || undefined,
+        generationTier: String(metadata.generationTier || 'standard'),
+        initialPrompt: session.initialPrompt,
+        advanceOnly: true,
+      }),
+      this.asOptionalString(metadata.regionHint),
+    );
     const normalizedPlanDraft = this.normalizePlanDraft(analysis.plan_draft);
     const normalizedQuestionStrategy = this.normalizeQuestionStrategy(analysis.question_strategy);
     const confidenceSummary = this.buildConfidenceSummary(
@@ -657,7 +683,7 @@ export class CreationSessionService {
   }
 
   private async analyzeTurn(
-    payload: Record<string, unknown>,
+    payload: AnalyzeTurnRequestPayload,
     regionHint?: string,
   ): Promise<AnalyzeTurnResponsePayload> {
     const aiEngineUrl = await this.gameService.getAiEngineBaseUrl(regionHint);
@@ -688,7 +714,7 @@ export class CreationSessionService {
    * analyzeTurn with a single retry for transient (non-4xx) failures.
    */
   private async analyzeTurnWithRetry(
-    payload: Record<string, unknown>,
+    payload: AnalyzeTurnRequestPayload,
     regionHint?: string,
   ): Promise<AnalyzeTurnResponsePayload> {
     try {
@@ -1053,6 +1079,44 @@ export class CreationSessionService {
       return String(value || '').trim().length > 0;
     }).length;
     return filled / REQUIRED_SLOT_KEYS.length;
+  }
+
+  private buildAnalyzeTurnPayload(params: {
+    sessionId?: string | null;
+    userId: string;
+    conversation: CreationSessionConversationMessage[];
+    currentSlots?: Record<string, unknown>;
+    skippedSlots?: string[];
+    entryMode?: string | null;
+    title?: string | null;
+    generationTier?: string | null;
+    initialPrompt?: string | null;
+    answeredSlot?: CreationSessionQuestion | null;
+    latestUserAnswer?: string | null;
+    advanceOnly?: boolean;
+  }): AnalyzeTurnRequestPayload {
+    const sessionId = this.asOptionalString(params.sessionId);
+    const title = this.asOptionalString(params.title);
+    const initialPrompt = this.asOptionalString(params.initialPrompt);
+    const answeredSlotKey = this.asOptionalString(params.answeredSlot?.slotKey);
+    const answeredSlotPrompt = this.asOptionalString(params.answeredSlot?.prompt);
+    const latestUserAnswer = this.asOptionalString(params.latestUserAnswer);
+
+    return {
+      ...(sessionId ? { session_id: sessionId } : {}),
+      user_id: params.userId,
+      conversation: params.conversation,
+      current_slots: params.currentSlots || {},
+      skipped_slots: params.skippedSlots || [],
+      entry_mode: this.asOptionalString(params.entryMode) || 'create',
+      generation_tier: this.asOptionalString(params.generationTier) || 'standard',
+      ...(title ? { title } : {}),
+      ...(initialPrompt ? { initial_prompt: initialPrompt } : {}),
+      ...(answeredSlotKey ? { answered_slot_key: answeredSlotKey } : {}),
+      ...(answeredSlotPrompt ? { answered_slot_prompt: answeredSlotPrompt } : {}),
+      ...(latestUserAnswer ? { latest_user_answer: latestUserAnswer } : {}),
+      ...(params.advanceOnly ? { advance_only: true } : {}),
+    };
   }
 
   private userMessage(content: string, kind: CreationSessionConversationMessage['kind']): CreationSessionConversationMessage {

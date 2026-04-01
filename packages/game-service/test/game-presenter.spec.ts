@@ -40,6 +40,20 @@ describe('presentGame', () => {
     );
   });
 
+  it('falls back to the local cover endpoint when thumbnailUrl is missing', () => {
+    const presented = presentGame({
+      id: 'game-cover-fallback',
+      title: 'Fallback Cover',
+      status: 'draft',
+      previewUrl: 'https://gamevallies.com/games/game-cover-fallback/preview?previewToken=token-456',
+      thumbnailUrl: null,
+    });
+
+    expect(presented.coverUrl).toBe(
+      'https://gamevallies.com/api/v1/games/game-cover-fallback/cover?previewToken=token-456',
+    );
+  });
+
   it('normalizes raw game types into the curated 4-category catalog', () => {
     const presented = presentGame({
       id: 'game-runner',

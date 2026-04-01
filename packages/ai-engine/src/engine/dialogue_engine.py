@@ -1401,6 +1401,145 @@ def _source_description_from_history(history: List[ConversationMessage]) -> str:
     return "\n".join(user_messages[-3:])
 
 
+def _latest_user_answer_from_history(history: List[ConversationMessage]) -> str:
+    for item in reversed(history):
+        if item.role != "user":
+            continue
+        content = _normalize_free_text(item.content)
+        if content:
+            return content
+    return ""
+
+
+def _build_dialogue_source_text(initial_prompt: Optional[str], history: List[ConversationMessage]) -> str:
+    combined: List[str] = []
+    for part in [initial_prompt or "", *(item.content for item in history if item.role == "user")]:
+        normalized = _normalize_free_text(part)
+        if normalized and normalized not in combined:
+            combined.append(normalized)
+    return "\n".join(combined[-4:])
+
+
+def _normalize_slot_key(slot_key: Optional[str]) -> str:
+    normalized = str(slot_key or "").strip()
+    return normalized if normalized in SlotState.model_fields else ""
+
+
+def _build_heuristic_slot_payload(
+    *,
+    raw_text: str,
+    source_text: str,
+    title: Optional[str] = None,
+    preferred_game_type: Optional[str] = None,
+    variation_seed: Optional[str] = None,
+    allow_sparse_fallback: bool,
+) -> Dict[str, Any]:
+    normalized_source_text = _normalize_free_text(source_text)
+    normalized_title = _normalize_free_text(title or "")
+    normalized_preferred_game_type = (
+        _normalize_game_type_label(
+            preferred_game_type,
+            normalized_source_text,
+            normalized_title,
+            raw_text,
+        )
+        if preferred_game_type
+        else None
+    )
+    heuristic_slot_data = _normalize_slot_payload({
+        **_infer_slots_from_text(raw_text),
+        **_infer_slots_from_text(normalized_source_text),
+        **_infer_slots_from_text(normalized_title),
+    })
+    if normalized_preferred_game_type:
+        heuristic_slot_data["game_type"] = normalized_preferred_game_type
+    if allow_sparse_fallback and _looks_like_sparse_request(normalized_source_text):
+        heuristic_slot_data = _merge_slot_payloads(
+            _build_sparse_slot_fallback(
+                source_text=normalized_source_text,
+                title=normalized_title or None,
+                raw_text=raw_text,
+                repaired_text="",
+                preferred_game_type=heuristic_slot_data.get("game_type") or normalized_preferred_game_type,
+                variation_seed=variation_seed,
+            ),
+            heuristic_slot_data,
+        )
+    return heuristic_slot_data
+
+
+def _merge_structured_slot_payload(
+    *,
+    heuristic_slot_data: Dict[str, Any],
+    raw_slot_data: Dict[str, Any],
+    source_text: str,
+    title: Optional[str] = None,
+    raw_text: str,
+    repaired_text: str = "",
+    preferred_game_type: Optional[str] = None,
+) -> Dict[str, Any]:
+    slot_data = _merge_slot_payloads(heuristic_slot_data, raw_slot_data)
+    explicit_game_type = (
+        _normalize_game_type_label(
+            str(raw_slot_data.get("game_type") or ""),
+            source_text,
+            title or "",
+            raw_text,
+            repaired_text,
+        )
+        if raw_slot_data.get("game_type")
+        else ""
+    )
+    preferred = (
+        _normalize_game_type_label(
+            preferred_game_type,
+            source_text,
+            title or "",
+            raw_text,
+            repaired_text,
+        )
+        if preferred_game_type
+        else ""
+    )
+    if explicit_game_type:
+        slot_data["game_type"] = explicit_game_type
+    elif preferred:
+        slot_data["game_type"] = preferred
+    return slot_data
+
+
+def _coerce_authoritative_slot_value(
+    field: str,
+    *,
+    answer_text: str,
+    inferred_slot_data: Dict[str, Any],
+    source_text: str,
+    title: Optional[str] = None,
+) -> Optional[Any]:
+    normalized_answer = _normalize_free_text(answer_text)
+    if not normalized_answer:
+        return None
+
+    if field == "game_type":
+        candidate = str(inferred_slot_data.get(field) or normalized_answer).strip()
+        normalized = _normalize_game_type_label(
+            candidate,
+            normalized_answer,
+            source_text,
+            title or "",
+        )
+        return normalized or None
+    if field in {"input_method", "difficulty"}:
+        return inferred_slot_data.get(field) or _normalize_slot_text_value(field, normalized_answer)
+    if field == "special_rules":
+        return [normalized_answer]
+    if field == "theme" and inferred_slot_data.get(field):
+        return inferred_slot_data.get(field)
+    if field in SlotState.model_fields:
+        return _normalize_slot_text_value(field, normalized_answer)
+    return None
+
+
 class DialogueEngine:
     """Dialogue engine for slot-filling and single-shot parsing."""
 
@@ -1509,7 +1648,11 @@ class DialogueEngine:
             raise RuntimeError("Real LLM mode is required for dialogue analysis")
 
         history = [
-            ConversationMessage(role=item.role, content=item.content)
+            ConversationMessage(
+                role=item.role,
+                content=item.content,
+                kind=getattr(item, "kind", None),
+            )
             for item in (req.conversation or [])
         ]
         session = DialogueSession(
@@ -1519,33 +1662,56 @@ class DialogueEngine:
             slots=req.current_slots.model_copy(deep=True),
             history=history,
         )
+        source_text = _build_dialogue_source_text(req.initial_prompt, history)
+        answered_slot_key = _normalize_slot_key(req.answered_slot_key)
+        latest_user_answer = _normalize_free_text(
+            req.latest_user_answer or _latest_user_answer_from_history(history)
+        )
 
         skipped_slots = {
             str(slot).strip()
             for slot in (req.skipped_slots or [])
             if str(slot).strip()
         }
+        authoritative_slots: set[str] = set()
+        blocked_slots: set[str] = set()
 
         if req.advance_only:
             updated_slots: list[str] = []
+        elif answered_slot_key and latest_user_answer:
+            updated_slots = self._apply_answer_turn_slot_update(
+                session=session,
+                answered_slot_key=answered_slot_key,
+                latest_user_answer=latest_user_answer,
+                source_text=source_text,
+                title=req.title,
+            )
+            if (
+                answered_slot_key in updated_slots
+                and str(getattr(session.slots, answered_slot_key, "") or "").strip()
+            ):
+                authoritative_slots.add(answered_slot_key)
+                blocked_slots.add(answered_slot_key)
         else:
             updated_slots = await self._extract_slots_from_conversation(
                 session,
-                source_text=req.initial_prompt or _source_description_from_history(history),
+                source_text=source_text,
                 title=req.title,
             )
 
         confidence_by_slot, evidence_by_slot, ambiguity_flags = _build_slot_confidence_report(
             session.slots,
-            source_text=req.initial_prompt or _source_description_from_history(history),
+            source_text=source_text,
             title=req.title,
             history=history,
             updated_slots=updated_slots,
+            authoritative_slots=sorted(authoritative_slots),
         )
         current_question, question_strategy = _build_dialogue_question(
             session.slots,
             skipped_slots=sorted(skipped_slots),
-            source_text=req.initial_prompt or _source_description_from_history(history),
+            blocked_slots=sorted(blocked_slots),
+            source_text=source_text,
             entry_mode=req.entry_mode,
             confidence_by_slot=confidence_by_slot,
             ambiguity_flags=ambiguity_flags,
@@ -1554,7 +1720,7 @@ class DialogueEngine:
         ready_to_generate = bool(fill_pct >= 0.67 or current_question is None)
         plan_draft = _build_plan_draft(
             session.slots,
-            source_text=req.initial_prompt or _source_description_from_history(history),
+            source_text=source_text,
             title=req.title,
             generation_tier=req.generation_tier,
             entry_mode=req.entry_mode,
@@ -1568,7 +1734,7 @@ class DialogueEngine:
             slots=session.slots,
             current_question=current_question,
             ready_to_generate=ready_to_generate,
-            source_text=req.initial_prompt or _source_description_from_history(history),
+            source_text=source_text,
             title=req.title,
         )
 
@@ -1797,11 +1963,19 @@ class DialogueEngine:
                 session.session_id,
                 exc,
             )
-        slot_data = self._extract_dialogue_slot_payload_fast(
+        heuristic_slot_data = _build_heuristic_slot_payload(
             raw_text=slot_text,
             source_text=source_text,
             title=title,
             variation_seed=session.session_id,
+            allow_sparse_fallback=True,
+        )
+        slot_data = _merge_structured_slot_payload(
+            heuristic_slot_data=heuristic_slot_data,
+            raw_slot_data=_normalize_slot_payload(_safe_parse_json(slot_text) or {}),
+            source_text=source_text,
+            title=title,
+            raw_text=slot_text,
         )
 
         for key, value in slot_data.items():
@@ -1813,51 +1987,52 @@ class DialogueEngine:
             if getattr(session.slots, key) != getattr(old_slots, key)
         ]
 
-    def _extract_dialogue_slot_payload_fast(
+    def _apply_answer_turn_slot_update(
         self,
         *,
-        raw_text: str,
+        session: DialogueSession,
+        answered_slot_key: str,
+        latest_user_answer: str,
         source_text: str,
         title: Optional[str] = None,
-        variation_seed: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        normalized_source_text = (source_text or "").strip()
-        normalized_title = (title or "").strip()
-        heuristic_slot_data = _normalize_slot_payload({
-            **_infer_slots_from_text(raw_text),
-            **_infer_slots_from_text(normalized_source_text),
-            **_infer_slots_from_text(normalized_title),
-        })
-        raw_slot_data = _normalize_slot_payload(_safe_parse_json(raw_text) or {})
-        slot_data = _merge_slot_payloads(
-            heuristic_slot_data,
-            raw_slot_data,
+    ) -> List[str]:
+        normalized_slot_key = _normalize_slot_key(answered_slot_key)
+        normalized_answer = _normalize_free_text(latest_user_answer)
+        if (
+            not normalized_slot_key
+            or normalized_slot_key not in SlotState.model_fields
+            or not normalized_answer
+        ):
+            return []
+
+        old_slots = session.slots.model_copy()
+        heuristic_slot_data = _build_heuristic_slot_payload(
+            raw_text="",
+            source_text=normalized_answer,
+            title=title,
+            preferred_game_type=str(session.slots.game_type or "") or None,
+            variation_seed=session.session_id,
+            allow_sparse_fallback=False,
         )
-        raw_explicit_game_type = (
-            _normalize_game_type_label(
-                str(raw_slot_data.get("game_type") or ""),
-                normalized_source_text,
-                normalized_title,
-                raw_text,
-            )
-            if raw_slot_data.get("game_type")
-            else None
+        slot_data = dict(heuristic_slot_data)
+        authoritative_value = _coerce_authoritative_slot_value(
+            normalized_slot_key,
+            answer_text=normalized_answer,
+            inferred_slot_data=heuristic_slot_data,
+            source_text=source_text,
+            title=title,
         )
-        if raw_explicit_game_type:
-            slot_data["game_type"] = raw_explicit_game_type
-        if _looks_like_sparse_request(normalized_source_text):
-            slot_data = _merge_slot_payloads(
-                _build_sparse_slot_fallback(
-                    source_text=normalized_source_text,
-                    title=normalized_title or None,
-                    raw_text=raw_text,
-                    repaired_text="",
-                    preferred_game_type=slot_data.get("game_type"),
-                    variation_seed=variation_seed,
-                ),
-                slot_data,
-            )
-        return slot_data
+        if authoritative_value is not None:
+            slot_data[normalized_slot_key] = authoritative_value
+
+        for key, value in slot_data.items():
+            if value is not None and hasattr(session.slots, key):
+                setattr(session.slots, key, value)
+
+        return [
+            key for key in SlotState.model_fields
+            if getattr(session.slots, key) != getattr(old_slots, key)
+        ]
 
     async def _extract_slot_payload_with_repair(
         self,
@@ -1871,42 +2046,26 @@ class DialogueEngine:
         preferred_game_type: Optional[str] = None,
         variation_seed: Optional[str] = None,
     ) -> Dict[str, Any]:
-        normalized_preferred_game_type = (
-            _normalize_game_type_label(
-                preferred_game_type,
-                source_text,
-                title or "",
-                raw_text,
-            )
-            if preferred_game_type
-            else None
+        heuristic_slot_data = _build_heuristic_slot_payload(
+            raw_text=raw_text,
+            source_text=source_text,
+            title=title,
+            preferred_game_type=preferred_game_type,
+            variation_seed=variation_seed,
+            allow_sparse_fallback=False,
         )
-        heuristic_slot_data = _normalize_slot_payload({
-            **_infer_slots_from_text(raw_text),
-            **_infer_slots_from_text(source_text),
-            **_infer_slots_from_text(title or ""),
-        })
-        if normalized_preferred_game_type:
-            heuristic_slot_data["game_type"] = normalized_preferred_game_type
+        normalized_preferred_game_type = str(
+            heuristic_slot_data.get("game_type") or preferred_game_type or ""
+        ).strip() or None
         raw_slot_data = _normalize_slot_payload(_safe_parse_json(raw_text) or {})
-        slot_data = _merge_slot_payloads(
-            heuristic_slot_data,
-            raw_slot_data,
+        slot_data = _merge_structured_slot_payload(
+            heuristic_slot_data=heuristic_slot_data,
+            raw_slot_data=raw_slot_data,
+            source_text=source_text,
+            title=title,
+            raw_text=raw_text,
+            preferred_game_type=preferred_game_type,
         )
-        raw_explicit_game_type = (
-            _normalize_game_type_label(
-                str(raw_slot_data.get("game_type") or ""),
-                source_text,
-                title or "",
-                raw_text,
-            )
-            if raw_slot_data.get("game_type")
-            else None
-        )
-        if raw_explicit_game_type:
-            slot_data["game_type"] = raw_explicit_game_type
-        elif normalized_preferred_game_type:
-            slot_data["game_type"] = normalized_preferred_game_type
         if raw_slot_data and _has_minimum_viable_slot_payload(raw_slot_data):
             return slot_data
 
@@ -1923,25 +2082,15 @@ class DialogueEngine:
             step_key=step_key,
             stage=stage,
         )
-        repaired_slot_data = _merge_slot_payloads(
-            heuristic_slot_data,
-            _normalize_slot_payload(_safe_parse_json(repaired_text) or {}),
+        repaired_slot_data = _merge_structured_slot_payload(
+            heuristic_slot_data=heuristic_slot_data,
+            raw_slot_data=_normalize_slot_payload(_safe_parse_json(repaired_text) or {}),
+            source_text=source_text,
+            title=title,
+            raw_text=raw_text,
+            repaired_text=repaired_text,
+            preferred_game_type=preferred_game_type,
         )
-        repaired_explicit_game_type = (
-            _normalize_game_type_label(
-                str(repaired_slot_data.get("game_type") or ""),
-                source_text,
-                title or "",
-                raw_text,
-                repaired_text,
-            )
-            if repaired_slot_data.get("game_type")
-            else None
-        )
-        if repaired_explicit_game_type:
-            repaired_slot_data["game_type"] = repaired_explicit_game_type
-        elif normalized_preferred_game_type:
-            repaired_slot_data["game_type"] = normalized_preferred_game_type
         if allow_fallback and _looks_like_sparse_request(source_text):
             repaired_slot_data = _merge_slot_payloads(
                 _build_sparse_slot_fallback(
@@ -2264,9 +2413,12 @@ def _build_slot_confidence_report(
     title: Optional[str] = None,
     history: Optional[List[ConversationMessage]] = None,
     updated_slots: Optional[List[str]] = None,
+    authoritative_slots: Optional[List[str]] = None,
 ) -> Tuple[Dict[str, float], Dict[str, str], List[str]]:
     history = history or []
     updated_slots = updated_slots or []
+    authoritative_slots = authoritative_slots or []
+    authoritative = {slot for slot in authoritative_slots if slot}
     combined_text = " ".join(
         part
         for part in [title or "", source_text, *(item.content for item in history[-6:])]
@@ -2285,6 +2437,7 @@ def _build_slot_confidence_report(
             value,
             combined_text,
             updated=field in updated_slots,
+            authoritative=field in authoritative,
             zh=zh,
         )
         confidence[field] = score
@@ -2306,6 +2459,7 @@ def _score_slot_confidence(
     text: str,
     *,
     updated: bool,
+    authoritative: bool,
     zh: bool,
 ) -> Tuple[float, str, bool]:
     value_text = ""
@@ -2315,6 +2469,13 @@ def _score_slot_confidence(
         value_text = str(value or "").strip()
     if not value_text:
         return 0.0, ("尚未明确" if zh else "Missing from the current brief."), False
+    if authoritative:
+        evidence = (
+            "这是用户刚刚对当前问题给出的直接回答。"
+            if zh else
+            "This value comes directly from the user's latest answer to the current question."
+        )
+        return 0.97, evidence, False
 
     lowered_text = text.lower()
     explicit_terms = _slot_evidence_terms(field, value_text)
@@ -2620,6 +2781,7 @@ def _build_dialogue_question(
     slots: SlotState,
     *,
     skipped_slots: Optional[List[str]] = None,
+    blocked_slots: Optional[List[str]] = None,
     source_text: str = "",
     entry_mode: str = "create",
     confidence_by_slot: Optional[Dict[str, float]] = None,
@@ -2628,6 +2790,11 @@ def _build_dialogue_question(
     skipped = {
         str(item).strip()
         for item in (skipped_slots or [])
+        if str(item).strip()
+    }
+    blocked = {
+        str(item).strip()
+        for item in (blocked_slots or [])
         if str(item).strip()
     }
     confidence_by_slot = confidence_by_slot or {}
@@ -2643,7 +2810,7 @@ def _build_dialogue_question(
     ))
     zh = language.startswith("zh")
     for slot_key in ["core_mechanic", "win_condition", "input_method", "theme", "game_type", "difficulty"]:
-        if slot_key in skipped:
+        if slot_key in skipped or slot_key in blocked:
             continue
         value = getattr(slots, slot_key, None)
         missing = value is None or str(value).strip() == ""
