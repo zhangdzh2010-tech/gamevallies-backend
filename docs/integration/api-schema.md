@@ -2,7 +2,7 @@
 
 当前文档描述 `gamevallies-backend` 已实现的前端契约，以及从整体业务逻辑出发建议继续补齐的 API。
 
-更新时间：`2026-03-07`
+更新时间：`2026-04-01`
 
 ---
 
@@ -156,6 +156,82 @@ Content-Type: application/json
   "createdAt": "ISO8601"
 }
 ```
+
+### CreationSessionSnapshot
+
+```json
+{
+  "id": "string",
+  "status": "initializing | collecting | ready | generating | completed | failed | abandoned",
+  "entryMode": "create | fork | iterate",
+  "initialPrompt": "string",
+  "titleDraft": "string | null",
+  "revision": 1,
+  "slotState": {
+    "game_type": "funny",
+    "core_mechanic": "tap to hide",
+    "theme": "office",
+    "input_method": "tap",
+    "win_condition": "string | null",
+    "difficulty": "string | null"
+  },
+  "missingRequired": ["win_condition", "difficulty"],
+  "skippedSlots": [],
+  "currentQuestion": {
+    "slotKey": "win_condition",
+    "label": "Win Condition",
+    "prompt": "玩家怎么才算赢？",
+    "skippable": true
+  },
+  "conversation": [
+    { "role": "user", "content": "string", "kind": "prompt | answer", "createdAt": "ISO8601" },
+    { "role": "assistant", "content": "string", "kind": "question | system", "createdAt": "ISO8601" }
+  ],
+  "slotFillPct": 0.67,
+  "readyToGenerate": false,
+  "generatedGameId": "string | null",
+  "generationTaskId": "string | null",
+  "sourceGameId": "string | null",
+  "orientation": "portrait | landscape | null",
+  "generationTier": "safe | standard | showcase",
+  "questionBudget": 4,
+  "planDraft": {
+    "title": "string",
+    "summary": "string",
+    "concept": "string",
+    "interaction": "string",
+    "objective": "string",
+    "pacing": "string",
+    "visualDirection": "string",
+    "signatureMoment": "string"
+  },
+  "confidenceSummary": {
+    "overallConfidence": 0.72,
+    "strongestSlots": ["game_type", "core_mechanic"],
+    "weakestSlots": ["difficulty", "win_condition"],
+    "ambiguityFlags": ["win_condition:missing"],
+    "missingCriticalSlots": ["win_condition"]
+  },
+  "questionStrategy": {
+    "mode": "missing_required | low_confidence | ambiguity_resolution",
+    "slotKey": "win_condition",
+    "reason": "string",
+    "impact": 0.95,
+    "confidence": 0,
+    "ambiguityWeight": 0.25
+  },
+  "metadata": {}
+}
+```
+
+说明：
+
+- `status` 生命周期：`initializing` → `collecting` → `ready` → `generating` → `completed`。任何阶段都可转为 `abandoned`。
+- `initializing`：POST 创建后立即返回此状态（<200ms），AI 分析在后台异步运行（2–5s）。前端应显示加载骨架屏。
+- `collecting`：AI 分析完成，正在向用户收集信息。`currentQuestion` 非空。
+- `ready`：已收集足够信息，可触发生成。一旦进入 `ready` 不会回退到 `collecting`。
+- `revision`：乐观并发控制（CAS），每次更新递增。前端发送请求时应携带当前 `revision`，不匹配返回 `409`。
+- `currentQuestion`：仅在 `collecting` 状态下有值，`initializing`/`ready`/`generating`/`completed` 下为 `null`。
 
 ---
 
@@ -404,38 +480,84 @@ Query: `q=string&page=1&limit=20`
 
 ## 游戏服务 (`3002`)
 
-### POST `/api/v1/games/generate`
+### POST `/api/v1/games/expand-prompt`
+
+扩写用户的简短描述为更完善的游戏描述。无需认证。
+
+请求体：
 
 ```json
 {
-  "prompt": "string"
+  "description": "string (必填，或使用 prompt 别名)",
+  "regionHint": "string (可选，AI 引擎区域)"
 }
 ```
 
-或：
-
-```json
-{
-  "description": "string"
-}
-```
+响应：
 
 ```json
 {
   "code": 0,
   "data": {
-    "gameId": "string"
+    "expandedPrompt": "string"
   }
+}
+```
+
+说明：实际响应结构取决于 AI 引擎返回内容，透传 `response.data`。
+
+### POST `/api/v1/games/generate`
+
+直接从 prompt 生成游戏（跳过 creation session 会话流程）。
+
+请求体：
+
+```json
+{
+  "description": "string (min 10，与 prompt 二选一)",
+  "prompt": "string (min 10，与 description 二选一)",
+  "title": "string (可选，max 50)",
+  "orientation": "portrait | landscape (可选)",
+  "generationTier": "safe | standard | showcase (可选)",
+  "timeoutS": "number (可选，30–3600)",
+  "regionHint": "string (可选)"
+}
+```
+
+响应（HTTP `201`）：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "gameId": "string",
+    "taskId": "string"
+  }
+}
+```
+
+### GET `/api/v1/games/game-types`
+
+返回平台支持的游戏类型列表。无需认证。
+
+响应：
+
+```json
+{
+  "code": 0,
+  "data": ["casual", "puzzle", "education", "funny"]
 }
 ```
 
 ### GET `/api/v1/games/:gameId`
 
-格式 A，返回 `Game`。
+格式 A，返回 `Game`。无需认证。
 
 ### GET `/api/v1/games/my`
 
 格式 A，返回分页游戏列表。
+
+Query: `page=1&limit=10`
 
 ### GET `/api/v1/games/my/games`
 
@@ -443,26 +565,116 @@ Query: `q=string&page=1&limit=20`
 
 ### GET `/api/v1/games/explore/published`
 
-格式 A，返回分页已发布游戏列表。
+格式 A，返回分页已发布游戏列表。无需认证。
 
-### POST `/api/v1/games/:gameId/iterate`
+Query: `page=1&limit=10&search=string`
 
-```json
-{
-  "feedback": "string"
-}
-```
+### GET `/api/v1/games/:gameId/generation-status`
+
+轮询游戏生成进度。作为 WebSocket `gen:progress` / `gen:complete` 的 HTTP 兜底。
+
+响应：
 
 ```json
 {
   "code": 0,
   "data": {
-    "iterationId": "string",
-    "gameId": "string",
-    "version": 2
+    "status": "queued | generating | ready | failed",
+    "progress": 60,
+    "stage": "string",
+    "message": "string",
+    "gameUrl": "string | null",
+    "previewUrl": "string | null"
   }
 }
 ```
+
+### GET `/api/v1/games/:gameId/play`
+
+获取游戏可运行 HTML 源码。会自增 playCount。
+
+响应：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "htmlCode": "string",
+    "gameId": "string"
+  }
+}
+```
+
+### POST `/api/v1/games/:gameId/unlock`
+
+解锁游戏源码访问。
+
+响应：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "unlocked": true,
+    "htmlCode": "string"
+  }
+}
+```
+
+### POST `/api/v1/games/:gameId/iterate`
+
+对已有游戏提交迭代反馈，触发新一轮生成。
+
+请求体：
+
+```json
+{
+  "feedback": "string (必填，min 5)",
+  "regionHint": "string (可选)",
+  "generationTier": "safe | standard | showcase (可选)",
+  "timeoutS": "number (可选，30–3600)"
+}
+```
+
+响应：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "iterationId": "string (格式 gameId:vN)",
+    "gameId": "string",
+    "version": 2,
+    "taskId": "string"
+  }
+}
+```
+
+### POST `/api/v1/games/:gameId/publish`
+
+```json
+{
+  "title": "string (可选，min 3)",
+  "description": "string (可选，min 10)",
+  "tags": ["string"],
+  "gameType": "string (可选)",
+  "visibility": "public | private (可选)"
+}
+```
+
+格式 A，返回 `Game`。
+
+### PATCH `/api/v1/games/:gameId/settings`
+
+更新游戏设置（标题、描述等）。
+
+请求体：自由 JSON 对象，字段直接更新到游戏记录。
+
+响应：格式 A，返回更新后的游戏信息。
+
+### DELETE `/api/v1/games/:gameId`
+
+HTTP `204`。
 
 ### POST `/api/v1/games/:gameId/fork`
 
@@ -474,23 +686,6 @@ Query: `q=string&page=1&limit=20`
   }
 }
 ```
-
-### POST `/api/v1/games/:gameId/publish`
-
-```json
-{
-  "title": "string (optional)",
-  "description": "string (optional)",
-  "tags": ["string"],
-  "gameType": "string (optional)"
-}
-```
-
-格式 A，返回 `Game`。
-
-### DELETE `/api/v1/games/:gameId`
-
-HTTP `204`。
 
 ### GET `/api/v1/games/:gameId/forks`
 
@@ -515,7 +710,266 @@ HTTP `204`。
 
 ### GET `/api/v1/games/:gameId/share-data`
 
-返回分享卡片所需元数据。
+返回分享卡片所需元数据。无需认证。
+
+### GET `/api/v1/games/creator/:creatorId/reputation`
+
+获取创作者信誉分。无需认证。
+
+响应：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "creatorId": "string",
+    "score": 85,
+    "level": "string",
+    "gamesPublished": 10,
+    "totalPlays": 5000,
+    "avgRating": 4.2
+  }
+}
+```
+
+---
+
+## 任务管理 (`3002`)
+
+通用的异步任务查询接口，用于追踪生成、迭代等长时任务。
+
+### GET `/api/v1/games/tasks/:taskId`
+
+获取任务概要信息。
+
+响应：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "id": "string",
+    "type": "generate | iterate",
+    "status": "pending | running | completed | failed | cancelled",
+    "gameId": "string | null",
+    "progress": 0,
+    "createdAt": "ISO8601",
+    "updatedAt": "ISO8601"
+  }
+}
+```
+
+### GET `/api/v1/games/tasks/:taskId/events`
+
+获取任务事件流（进度日志）。
+
+Query: `limit=number (可选)`
+
+响应：
+
+```json
+{
+  "code": 0,
+  "data": [
+    {
+      "type": "progress | stage | error | complete",
+      "message": "string",
+      "data": {},
+      "timestamp": "ISO8601"
+    }
+  ]
+}
+```
+
+### GET `/api/v1/games/tasks/:taskId/artifacts`
+
+获取任务产出物（生成的代码、截图等）。
+
+Query: `limit=number (可选)`
+
+响应：
+
+```json
+{
+  "code": 0,
+  "data": [
+    {
+      "type": "html | screenshot | metadata",
+      "url": "string",
+      "createdAt": "ISO8601"
+    }
+  ]
+}
+```
+
+### POST `/api/v1/games/tasks/:taskId/cancel`
+
+取消进行中的任务。
+
+响应：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "cancelled": true
+  }
+}
+```
+
+---
+
+## 创作会话 (`3002`)
+
+Creation Session 是渐进式游戏创作流程，AI 逐步收集信息后再生成。
+
+### POST `/api/v1/games/creation-sessions`
+
+创建新的创作会话。采用乐观创建模式：立即返回 `initializing` 状态（<200ms），AI 分析在后台异步完成（2–5s）。
+
+请求体：
+
+```json
+{
+  "prompt": "string (必填，min 5)",
+  "title": "string (可选，max 50)",
+  "orientation": "portrait | landscape (可选)",
+  "generationTier": "safe | standard | showcase (可选)",
+  "entryMode": "create | fork | iterate (可选，默认 create)",
+  "sourceGameId": "string (可选，fork/iterate 时必填，max 36)",
+  "regionHint": "string (可选)"
+}
+```
+
+响应（HTTP `201`）：
+
+```json
+{
+  "code": 0,
+  "data": "CreationSessionSnapshot (status=initializing)"
+}
+```
+
+说明：
+
+- 创建时自动 abandon 同一用户的旧 active session。
+- 返回的 snapshot 中 `currentQuestion=null`，需等待状态变为 `collecting` 后才会有问题。
+- 前端应在 `initializing` 期间展示加载动画，通过 WebSocket `session:updated` 或轮询 `GET /creation-sessions/:id` 等待状态变化。
+
+### GET `/api/v1/games/creation-sessions/active`
+
+获取当前用户的活跃创作会话（`initializing` / `collecting` / `ready`）。
+
+响应：
+
+```json
+{
+  "code": 0,
+  "data": "CreationSessionSnapshot | null"
+}
+```
+
+### GET `/api/v1/games/creation-sessions/:sessionId`
+
+按 ID 获取指定创作会话。
+
+响应：
+
+```json
+{
+  "code": 0,
+  "data": "CreationSessionSnapshot"
+}
+```
+
+错误：`404` 会话不存在或不属于当前用户。
+
+### POST `/api/v1/games/creation-sessions/:sessionId/messages`
+
+向会话追加用户回答，触发下一轮 AI 分析。
+
+请求体：
+
+```json
+{
+  "content": "string (必填，min 1)",
+  "revision": "number (可选，乐观锁)"
+}
+```
+
+响应：
+
+```json
+{
+  "code": 0,
+  "data": "CreationSessionSnapshot"
+}
+```
+
+错误：
+
+- `409` revision 不匹配（并发冲突）
+- `409` session 处于 `initializing` 状态（尚未完成初始化，不可修改）
+
+### POST `/api/v1/games/creation-sessions/:sessionId/skip`
+
+跳过当前问题。
+
+请求体：
+
+```json
+{
+  "revision": "number (可选，乐观锁)"
+}
+```
+
+响应：
+
+```json
+{
+  "code": 0,
+  "data": "CreationSessionSnapshot"
+}
+```
+
+错误：同 `/messages`。
+
+### POST `/api/v1/games/creation-sessions/:sessionId/generate`
+
+从当前会话触发游戏生成。仅在 `status=ready` 时可用。
+
+请求体：
+
+```json
+{
+  "revision": "number (可选，乐观锁)",
+  "timeoutS": "number (可选，30–3600)"
+}
+```
+
+响应（HTTP `201`）：
+
+```json
+{
+  "code": 0,
+  "data": "CreationSessionSnapshot (status=generating)"
+}
+```
+
+错误：`409` 状态不为 `ready`。
+
+### POST `/api/v1/games/creation-sessions/:sessionId/abandon`
+
+放弃会话。可从任何 active 状态（包括 `initializing`）调用。
+
+响应：
+
+```json
+{
+  "code": 0,
+  "data": "CreationSessionSnapshot (status=abandoned)"
+}
+```
 
 ---
 
@@ -842,6 +1296,44 @@ io('http://localhost:3002/ws', {
 }
 ```
 
+#### `session:updated`
+
+创作会话状态变更推送。当后台 AI 分析完成、session 从 `initializing` 转为 `collecting`/`ready` 时推送。
+
+```json
+{
+  "type": "session:updated",
+  "sessionId": "string",
+  "session": "CreationSessionSnapshot",
+  "timestamp": 0
+}
+```
+
+说明：前端收到后应直接替换本地 session 缓存。如果前端未接入 WebSocket，可通过轮询 `GET /creation-sessions/:id` 兜底。
+
+#### `session:error`
+
+创作会话初始化失败推送。当 AI 分析异常或初始化超时（30s）时推送。
+
+```json
+{
+  "type": "session:error",
+  "sessionId": "string",
+  "error": "string",
+  "details": {
+    "reason": "init_failed | init_timeout",
+    "stage": "string"
+  },
+  "timestamp": 0
+}
+```
+
+说明：收到此事件后 session 已变为 `abandoned`，前端应提示用户重新创建。
+
+#### `game:update`
+
+游戏状态变更通用事件。
+
 #### `notification`
 
 通知事件，`data` 结构见 `Notification`。生成失败时仍会发 `type="error"` 的通知作为兼容补充，但终态失败事件以 `gen:error` 为准。
@@ -922,24 +1414,7 @@ GET /games/:gameId/preview
 
 返回 CDN URL。
 
-### 2. 游戏生成状态查询
-
-当前生成完全依赖 WebSocket。建议新增轮询兜底：
-
-#### GET `/api/v1/games/:gameId/generation-status`
-
-```json
-{
-  "code": 0,
-  "data": {
-    "status": "queued | generating | ready | failed",
-    "progress": 60,
-    "message": "string"
-  }
-}
-```
-
-### 3. 游玩结果与行为埋点
+### 2. 游玩结果与行为埋点
 
 目前 HTML 被加载时只会自增一次 `playCount`，无法统计游玩时长、得分和完成率。建议新增：
 
@@ -955,7 +1430,7 @@ GET /games/:gameId/preview
 }
 ```
 
-### 4. 举报与审核
+### 3. 举报与审核
 
 业务上已经有 `report` 行为枚举，但没有对外 API。建议新增：
 
@@ -970,7 +1445,7 @@ GET /games/:gameId/preview
 }
 ```
 
-### 5. 创作者收益中心
+### 4. 创作者收益中心
 
 数据库已有 `creator_earnings`，但没有对外接口。建议新增：
 
@@ -980,7 +1455,7 @@ GET /games/:gameId/preview
 
 #### POST `/api/v1/creator/earnings/withdraw`
 
-### 6. 通知偏好设置
+### 5. 通知偏好设置
 
 建议新增：
 
@@ -997,7 +1472,7 @@ GET /games/:gameId/preview
 }
 ```
 
-### 7. 游戏分析面板
+### 6. 游戏分析面板
 
 创作者查看作品效果需要独立分析接口，建议新增：
 
