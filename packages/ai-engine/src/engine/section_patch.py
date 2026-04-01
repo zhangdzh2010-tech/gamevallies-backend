@@ -29,6 +29,13 @@ PATCHABLE_SCRIPT_ANCHORS: tuple[str, ...] = (
     PATCH_SCRIPT_ANCHOR_GAME_LOOP,
     PATCH_SCRIPT_ANCHOR_LEVEL_DATA,
 )
+SCRIPT_HELPER_MARKERS: tuple[str, ...] = (
+    "__playforgeInputBridgeInstalled",
+    "__playforgeScoreBridgeInstalled",
+    "__playforgeMobileLayoutBridgeInstalled",
+    "__playforgeResolveTouchPointInstalled",
+    "__playforgeTerminalFallback",
+)
 
 _STYLE_BLOCK_RE = re.compile(
     r"(<style\b[^>]*>)([\s\S]*?)(</style>)",
@@ -40,6 +47,10 @@ _BODY_BLOCK_RE = re.compile(
 )
 _SCRIPT_BLOCK_RE = re.compile(
     r"(<script\b[^>]*>)([\s\S]*?)(</script>)",
+    re.IGNORECASE,
+)
+_GAME_SCRIPT_SIGNAL_RE = re.compile(
+    r"requestAnimationFrame|getContext\s*\(|document\.getElementById\s*\(\s*['\"]gameCanvas['\"]|querySelector\s*\(\s*['\"]canvas['\"]|const\s+canvas\s*=|let\s+gameState\b|function\s+boot\b|function\s+startGame\b",
     re.IGNORECASE,
 )
 
@@ -84,11 +95,42 @@ def extract_body_content(html: str) -> Optional[str]:
     return content if content.strip() else ""
 
 
-def extract_script_content(html: str) -> Optional[str]:
+def _script_contains_helper_marker(content: str) -> bool:
+    normalized = (content or "").casefold()
+    return any(marker.casefold() in normalized for marker in SCRIPT_HELPER_MARKERS)
+
+
+def _select_primary_script_match(html: str):
     matches = list(_SCRIPT_BLOCK_RE.finditer(html or ""))
     if not matches:
         return None
-    content = matches[-1].group(2)
+
+    def score(match: re.Match[str]) -> tuple[int, int, int, int, int]:
+        content = match.group(2) or ""
+        normalized = content.casefold()
+        has_helper_marker = _script_contains_helper_marker(content)
+        has_anchor_markers = any(
+            _script_marker_start(anchor).casefold() in normalized
+            or _script_marker_end(anchor).casefold() in normalized
+            for anchor in PATCHABLE_SCRIPT_ANCHORS
+        )
+        has_game_signal = bool(_GAME_SCRIPT_SIGNAL_RE.search(content))
+        return (
+            0 if has_helper_marker else 1,
+            1 if has_anchor_markers else 0,
+            1 if has_game_signal else 0,
+            len(content),
+            match.start(),
+        )
+
+    return max(matches, key=score)
+
+
+def extract_script_content(html: str) -> Optional[str]:
+    match = _select_primary_script_match(html)
+    if not match:
+        return None
+    content = match.group(2)
     return content if content.strip() else None
 
 
@@ -107,11 +149,10 @@ def replace_body_content(html: str, new_body: str) -> str:
 
 
 def replace_script_content(html: str, new_script: str) -> str:
-    matches = list(_SCRIPT_BLOCK_RE.finditer(html or ""))
-    if not matches:
+    match = _select_primary_script_match(html)
+    if not match:
         return html
-    last = matches[-1]
-    return html[:last.start(2)] + new_script + html[last.end(2):]
+    return html[:match.start(2)] + new_script + html[match.end(2):]
 
 
 def _ensure_html_shell_markers(html: str) -> str:
@@ -304,6 +345,13 @@ def validate_patch_candidate(
             errors.append(f"missing_tag:{required_tag}")
     if "<head" in previous_lower and "<head" not in candidate_lower:
         errors.append("missing_tag:<head")
+
+    if (
+        len(re.findall(r"<!DOCTYPE\s+html", candidate, re.IGNORECASE)) > 1
+        or len(re.findall(r"<html\b", candidate, re.IGNORECASE)) > 1
+        or len(re.findall(r"<body\b", candidate, re.IGNORECASE)) > 1
+    ):
+        errors.append("multiple_html_documents")
 
     previous_has_script = extract_script_content(previous) is not None
     candidate_has_script = extract_script_content(candidate) is not None

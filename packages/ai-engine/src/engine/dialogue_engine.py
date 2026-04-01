@@ -32,6 +32,7 @@ from ..api.models import (
     SlotState,
     VisualStyle,
 )
+from ..config.settings import settings
 from ..services.llm_client import LLMClient, LLMResponseTruncatedError
 from .prompt_store import require_prompt
 
@@ -40,6 +41,14 @@ logger = logging.getLogger(__name__)
 _sessions: Dict[str, DialogueSession] = {}
 
 CURATED_GAME_TYPES = ("casual", "puzzle", "educational", "funny")
+FAST_DIALOGUE_SLOT_REQUEST_TIMEOUT_S = max(
+    1,
+    int(getattr(settings, "DIALOGUE_SLOT_REQUEST_TIMEOUT_S", 4) or 4),
+)
+FAST_DIALOGUE_SLOT_OVERALL_TIMEOUT_S = max(
+    FAST_DIALOGUE_SLOT_REQUEST_TIMEOUT_S,
+    int(getattr(settings, "DIALOGUE_SLOT_OVERALL_TIMEOUT_S", 5) or 5),
+)
 
 LOCALIZED_GAME_TYPE_DEFAULTS: Dict[str, Dict[str, Dict[str, str]]] = {
     "casual": {
@@ -1407,6 +1416,17 @@ class DialogueEngine:
         stage: str,
         max_tokens: int,
     ) -> str:
+        is_fast_dialogue_slot_extract = step_key == "dialogue.slot_extract"
+        request_timeout_s = (
+            FAST_DIALOGUE_SLOT_REQUEST_TIMEOUT_S
+            if is_fast_dialogue_slot_extract
+            else None
+        )
+        overall_timeout_s = (
+            FAST_DIALOGUE_SLOT_OVERALL_TIMEOUT_S
+            if is_fast_dialogue_slot_extract
+            else None
+        )
         try:
             return await self._client.complete(
                 max_tokens=max_tokens,
@@ -1419,6 +1439,8 @@ class DialogueEngine:
                 response_size_hint="small",
                 context_scope="task",
                 compression_policy="intent_parse" if step_key == "intent_parse" else "dialogue",
+                request_timeout_s=request_timeout_s,
+                overall_timeout_s=overall_timeout_s,
             )
         except LLMResponseTruncatedError as exc:
             excerpt = _clean_llm_output(exc.response_excerpt or "")
@@ -1430,6 +1452,8 @@ class DialogueEngine:
                     exc.output_tokens,
                 )
                 return excerpt
+            if is_fast_dialogue_slot_extract:
+                raise
             return await self._client.complete_with_truncation_retry(
                 max_tokens=max_tokens,
                 system=system,
@@ -1441,10 +1465,12 @@ class DialogueEngine:
                 response_size_hint="small",
                 context_scope="task",
                 compression_policy="intent_parse" if step_key == "intent_parse" else "dialogue",
+                request_timeout_s=request_timeout_s,
+                overall_timeout_s=overall_timeout_s,
                 truncation_retry_attempts=1,
                 truncation_retry_increment=512,
                 truncation_retry_max_tokens=max(max_tokens, 2048),
-                timeout_retry_attempts=1,
+                timeout_retry_attempts=0 if is_fast_dialogue_slot_extract else 1,
                 timeout_retry_increment_s=30,
                 timeout_retry_max_s=120,
             )
@@ -1754,20 +1780,26 @@ class DialogueEngine:
         if not messages and source_text.strip():
             messages = [{"role": "user", "content": source_text.strip()}]
 
-        slot_text = await self._complete_slot_request(
-            max_tokens=640,
-            system=_with_slot_json_contract(
-                require_prompt("prompt.slot_extraction_system")
-            ),
-            messages=messages,
-            step_key="dialogue.slot_extract",
-            stage="dialogue",
-        )
-        slot_data = await self._extract_slot_payload_with_repair(
+        slot_text = ""
+        try:
+            slot_text = await self._complete_slot_request(
+                max_tokens=640,
+                system=_with_slot_json_contract(
+                    require_prompt("prompt.slot_extraction_system")
+                ),
+                messages=messages,
+                step_key="dialogue.slot_extract",
+                stage="dialogue",
+            )
+        except Exception as exc:
+            logger.warning(
+                "Dialogue slot extraction request failed; using heuristic fallback for session=%s: %s",
+                session.session_id,
+                exc,
+            )
+        slot_data = self._extract_dialogue_slot_payload_fast(
             raw_text=slot_text,
             source_text=source_text,
-            step_key="dialogue.slot_extract",
-            stage="dialogue",
             title=title,
             variation_seed=session.session_id,
         )
@@ -1780,6 +1812,52 @@ class DialogueEngine:
             key for key in SlotState.model_fields
             if getattr(session.slots, key) != getattr(old_slots, key)
         ]
+
+    def _extract_dialogue_slot_payload_fast(
+        self,
+        *,
+        raw_text: str,
+        source_text: str,
+        title: Optional[str] = None,
+        variation_seed: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        normalized_source_text = (source_text or "").strip()
+        normalized_title = (title or "").strip()
+        heuristic_slot_data = _normalize_slot_payload({
+            **_infer_slots_from_text(raw_text),
+            **_infer_slots_from_text(normalized_source_text),
+            **_infer_slots_from_text(normalized_title),
+        })
+        raw_slot_data = _normalize_slot_payload(_safe_parse_json(raw_text) or {})
+        slot_data = _merge_slot_payloads(
+            heuristic_slot_data,
+            raw_slot_data,
+        )
+        raw_explicit_game_type = (
+            _normalize_game_type_label(
+                str(raw_slot_data.get("game_type") or ""),
+                normalized_source_text,
+                normalized_title,
+                raw_text,
+            )
+            if raw_slot_data.get("game_type")
+            else None
+        )
+        if raw_explicit_game_type:
+            slot_data["game_type"] = raw_explicit_game_type
+        if _looks_like_sparse_request(normalized_source_text):
+            slot_data = _merge_slot_payloads(
+                _build_sparse_slot_fallback(
+                    source_text=normalized_source_text,
+                    title=normalized_title or None,
+                    raw_text=raw_text,
+                    repaired_text="",
+                    preferred_game_type=slot_data.get("game_type"),
+                    variation_seed=variation_seed,
+                ),
+                slot_data,
+            )
+        return slot_data
 
     async def _extract_slot_payload_with_repair(
         self,

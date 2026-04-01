@@ -64,6 +64,8 @@ class Settings(BaseSettings):
 
     # Slot Filling
     SLOT_MIN_FILL_PCT: float = 0.6   # >=60% required slots → move to clarifying
+    DIALOGUE_SLOT_REQUEST_TIMEOUT_S: int = 4
+    DIALOGUE_SLOT_OVERALL_TIMEOUT_S: int = 5
 
     # API Settings
     API_TITLE: str = "PlayForge AI Engine"

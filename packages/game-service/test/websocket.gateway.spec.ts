@@ -1,3 +1,5 @@
+import 'reflect-metadata';
+import { GATEWAY_OPTIONS } from '@nestjs/websockets/constants';
 import { GameWebSocketGateway } from '../src/websocket/websocket.gateway';
 
 describe('GameWebSocketGateway', () => {
@@ -13,6 +15,15 @@ describe('GameWebSocketGateway', () => {
       to: toMock,
       emit: jest.fn(),
     } as any;
+  });
+
+  it('uses the public websocket route prefix for Socket.IO handshakes', () => {
+    const options = Reflect.getMetadata(GATEWAY_OPTIONS, GameWebSocketGateway);
+
+    expect(options).toEqual(expect.objectContaining({
+      namespace: '/ws',
+      path: '/ws/socket.io',
+    }));
   });
 
   it('joins the user room when token payload contains sub', () => {
