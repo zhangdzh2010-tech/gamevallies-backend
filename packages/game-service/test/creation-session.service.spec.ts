@@ -173,7 +173,8 @@ describe('CreationSessionService', () => {
     expect(axios.post).toHaveBeenCalledWith(
       'https://ai-engine.example/api/v1/ai/dialogue/analyze-turn',
       expect.objectContaining({
-        userId: 'user-1',
+        session_id: 'session-1',
+        user_id: 'user-1',
         title: '上班摸鱼',
         generation_tier: 'showcase',
         initial_prompt: '做一个办公室摸鱼游戏',
@@ -293,6 +294,9 @@ describe('CreationSessionService', () => {
         session_id: 'session-2',
         user_id: 'user-2',
         generation_tier: 'standard',
+        answered_slot_key: 'theme',
+        answered_slot_prompt: '它发生在什么场景里？',
+        latest_user_answer: '现代办公室，老板会突然巡查',
       }),
       { timeout: 5000 },
     );

@@ -125,6 +125,7 @@ class SlotState(BaseModel):
 class ConversationMessage(BaseModel):
     role: str   # "user" | "assistant"
     content: str
+    kind: Optional[str] = None
 
 
 class ChatRequest(BaseModel):
@@ -179,6 +180,9 @@ class AnalyzeDialogueTurnRequest(BaseModel):
     generation_tier: GenerationTier = GenerationTier.standard
     title: Optional[str] = None
     initial_prompt: Optional[str] = None
+    answered_slot_key: Optional[str] = None
+    answered_slot_prompt: Optional[str] = None
+    latest_user_answer: Optional[str] = None
     advance_only: bool = False
 
 

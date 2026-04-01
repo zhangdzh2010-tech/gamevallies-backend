@@ -138,6 +138,47 @@ class TestDialogueEngine(unittest.TestCase):
         self.assertEqual(response.current_question.slot_key, "win_condition")
         self.assertEqual(response.question_strategy.mode, "ambiguity_resolution")
 
+    def test_analyze_turn_uses_explicit_answer_context_to_advance_state(self):
+        engine = DialogueEngine()
+
+        with patch.object(engine._client, "is_enabled", return_value=True), patch.object(
+            engine,
+            "_extract_slots_from_conversation",
+            new=AsyncMock(),
+        ) as mock_extract:
+            response = asyncio.run(
+                engine.analyze_turn(
+                    AnalyzeDialogueTurnRequest(
+                        session_id="creation-2b",
+                        user_id="user-2",
+                        current_slots={
+                            "game_type": "funny",
+                            "core_mechanic": "tap to hide from the boss",
+                            "input_method": "tap",
+                            "difficulty": "medium",
+                        },
+                        conversation=[
+                            ConversationMessage(role="user", content="做一个办公室摸鱼游戏", kind="prompt"),
+                            ConversationMessage(role="assistant", content="它发生在什么场景里？", kind="question"),
+                            ConversationMessage(role="user", content="现代办公室，老板会突然巡查。", kind="answer"),
+                        ],
+                        initial_prompt="做一个办公室摸鱼游戏",
+                        answered_slot_key="theme",
+                        answered_slot_prompt="它发生在什么场景里？",
+                        latest_user_answer="现代办公室，老板会突然巡查。",
+                    )
+                )
+            )
+
+        mock_extract.assert_not_called()
+        self.assertIn("theme", response.slots_updated)
+        self.assertIn("办公室", response.slots.theme)
+        self.assertGreaterEqual(response.confidence_by_slot["theme"], 0.95)
+        self.assertNotIn("theme:ambiguous", response.ambiguity_flags)
+        self.assertIsNotNone(response.current_question)
+        self.assertEqual(response.current_question.slot_key, "win_condition")
+        self.assertTrue(response.ready_to_generate)
+
     def test_spec_from_slots_preserves_tier_and_uses_preferred_game_type_fallback(self):
         engine = DialogueEngine()
 

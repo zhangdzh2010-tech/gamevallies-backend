@@ -91,11 +91,7 @@ function normalizeAssetUrl(gameId: string, assetUrl: string | undefined, fallbac
   }
 }
 
-function buildCoverUrl(gameId: string, thumbnailUrl: string | undefined, previewUrl: string, gameUrl: string) {
-  if (!thumbnailUrl) {
-    return gameUrl;
-  }
-
+function buildCoverUrl(gameId: string, thumbnailUrl: string | undefined, previewUrl: string) {
   const normalizedCoverUrl = normalizeAssetUrl(gameId, thumbnailUrl, `/games/${gameId}/cover`);
 
   try {
@@ -142,7 +138,7 @@ function presentAuthor(author?: {
 export function presentGame(game: any) {
   const previewUrl = normalizePreviewUrl(game.id, game.previewUrl);
   const gameUrl = buildIndexUrl(game.id, previewUrl);
-  const coverUrl = buildCoverUrl(game.id, game.thumbnailUrl, previewUrl, gameUrl);
+  const coverUrl = buildCoverUrl(game.id, game.thumbnailUrl, previewUrl);
 
   return {
     id: game.id,
