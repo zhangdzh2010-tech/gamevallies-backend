@@ -237,6 +237,52 @@ export class GameWebSocketGateway implements OnGatewayConnection, OnGatewayDisco
     }
   }
 
+  emitSessionUpdate(
+    userId: string,
+    sessionId: string,
+    snapshot: { status?: string; [key: string]: any },
+  ): void {
+    try {
+      const event = 'session:updated';
+      const data = {
+        type: event,
+        sessionId,
+        session: snapshot,
+        timestamp: Date.now(),
+      };
+
+      this.emitToUser(userId, event, data);
+      this.logger.debug(
+        `Session update: ${sessionId} → ${snapshot.status ?? 'unknown'}`,
+      );
+    } catch (error) {
+      this.logger.error(`Failed to emit session update: ${error.message}`);
+    }
+  }
+
+  emitSessionError(
+    userId: string,
+    sessionId: string,
+    error: string,
+    details?: Record<string, unknown>,
+  ): void {
+    try {
+      const event = 'session:error';
+      const data = {
+        type: event,
+        sessionId,
+        error,
+        details: details || {},
+        timestamp: Date.now(),
+      };
+
+      this.emitToUser(userId, event, data);
+      this.logger.error(`Session error: ${sessionId} — ${error}`);
+    } catch (emitError) {
+      this.logger.error(`Failed to emit session error: ${emitError.message}`);
+    }
+  }
+
   emitError(userId: string, error: string, context?: string): void {
     try {
       const event = 'error';

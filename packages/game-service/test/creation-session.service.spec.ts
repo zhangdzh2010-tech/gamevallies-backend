@@ -8,6 +8,7 @@ describe('CreationSessionService', () => {
   let prisma: any;
   let repo: any;
   let gameService: any;
+  let wsGateway: any;
 
   beforeEach(() => {
     repo = {
@@ -25,11 +26,17 @@ describe('CreationSessionService', () => {
       getExpandPromptRequestTimeoutMs: jest.fn().mockResolvedValue(5000),
       create: jest.fn(),
     };
-    service = new CreationSessionService(prisma as any, gameService as any);
+    wsGateway = {
+      emitSessionUpdate: jest.fn(),
+      emitSessionError: jest.fn(),
+      emitToUser: jest.fn(),
+    };
+    service = new CreationSessionService(prisma as any, gameService as any, wsGateway as any);
     (axios.post as jest.Mock).mockReset();
   });
 
-  it('creates a session from the first prompt and stores the analyzed snapshot', async () => {
+  it('creates a session optimistically as initializing, then finalizes via async analysis', async () => {
+    // Phase 1: optimistic creation returns 'initializing' immediately
     repo.updateMany.mockResolvedValue({ count: 1 });
     repo.create.mockImplementation(async ({ data }: any) => ({
       id: 'session-1',
@@ -52,6 +59,7 @@ describe('CreationSessionService', () => {
       createdAt: new Date('2026-03-30T10:00:00.000Z'),
       updatedAt: new Date('2026-03-30T10:00:00.000Z'),
     }));
+    // Phase 2: async _finalizeSessionInit will call analyzeTurn
     (axios.post as jest.Mock).mockResolvedValueOnce({
       data: {
         reply: '我先补一个最关键的信息：玩家怎么才能赢？',
@@ -77,7 +85,7 @@ describe('CreationSessionService', () => {
         question_strategy: {
           mode: 'missing_required',
           slot_key: 'win_condition',
-          reason: '因为“Win Condition”会直接决定玩法能否成型，而当前还没有明确答案。',
+          reason: '因为"Win Condition"会直接决定玩法能否成型，而当前还没有明确答案。',
           impact: 0.95,
           confidence: 0,
           ambiguity_weight: 0.25,
@@ -100,6 +108,34 @@ describe('CreationSessionService', () => {
         },
       },
     });
+    // For the WS push findUnique after CAS update
+    repo.findUnique.mockResolvedValue({
+      id: 'session-1',
+      userId: 'user-1',
+      status: 'ready',
+      entryMode: 'create',
+      initialPrompt: '做一个办公室摸鱼游戏',
+      titleDraft: '上班摸鱼',
+      revision: 2,
+      slotState: { game_type: 'funny', core_mechanic: 'tap to hide', theme: 'office', input_method: 'tap' },
+      missingRequired: ['win_condition', 'difficulty'],
+      skippedSlots: [],
+      currentQuestion: { slotKey: 'win_condition', label: 'Win Condition', prompt: '玩家怎么才算赢？', skippable: true },
+      conversation: [
+        { role: 'user', content: '做一个办公室摸鱼游戏', kind: 'prompt' },
+        { role: 'assistant', content: '我先补一个最关键的信息：玩家怎么才能赢？' },
+      ],
+      generatedGameId: null,
+      generationTaskId: null,
+      sourceGameId: null,
+      questionBudget: 4,
+      metadata: {
+        orientation: 'landscape',
+        generationTier: 'showcase',
+        readyToGenerate: true,
+        slotFillPct: 0.67,
+      },
+    });
 
     const snapshot = await service.createSession('user-1', {
       prompt: '做一个办公室摸鱼游戏',
@@ -108,7 +144,32 @@ describe('CreationSessionService', () => {
       generationTier: 'showcase',
     });
 
-    expect(gameService.getAiEngineBaseUrl).toHaveBeenCalledWith(undefined);
+    // Phase 1: optimistic creation stores 'initializing' status
+    expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        status: 'initializing',
+        entryMode: 'create',
+        titleDraft: '上班摸鱼',
+        metadata: expect.objectContaining({
+          orientation: 'landscape',
+          generationTier: 'showcase',
+          readyToGenerate: false,
+          slotFillPct: 0,
+        }),
+      }),
+    }));
+    // Snapshot returned immediately reflects 'initializing'
+    expect(snapshot).toEqual(expect.objectContaining({
+      id: 'session-1',
+      status: 'initializing',
+      orientation: 'landscape',
+      generationTier: 'showcase',
+    }));
+
+    // Phase 2: wait for async _finalizeSessionInit to complete
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // AI analysis was called in the background
     expect(axios.post).toHaveBeenCalledWith(
       'https://ai-engine.example/api/v1/ai/dialogue/analyze-turn',
       expect.objectContaining({
@@ -119,36 +180,27 @@ describe('CreationSessionService', () => {
       }),
       { timeout: 5000 },
     );
-    expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({
+    // CAS update transitions from 'initializing' to 'ready'/'collecting'
+    expect(repo.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        id: 'session-1',
+        status: 'initializing',
+        revision: 1,
+      }),
       data: expect.objectContaining({
         status: 'ready',
-        entryMode: 'create',
-        titleDraft: '上班摸鱼',
-        metadata: expect.objectContaining({
-          orientation: 'landscape',
-          generationTier: 'showcase',
-          readyToGenerate: true,
-        }),
+        revision: { increment: 1 },
       }),
     }));
-    expect(snapshot).toEqual(expect.objectContaining({
-      id: 'session-1',
-      status: 'ready',
-      orientation: 'landscape',
-      generationTier: 'showcase',
-      readyToGenerate: true,
-      planDraft: expect.objectContaining({
-        title: '办公室摸鱼计划',
+    // WebSocket push was emitted with the finalized snapshot
+    expect(wsGateway.emitSessionUpdate).toHaveBeenCalledWith(
+      'user-1',
+      'session-1',
+      expect.objectContaining({
+        status: 'ready',
+        readyToGenerate: true,
       }),
-      questionStrategy: expect.objectContaining({
-        slotKey: 'win_condition',
-        mode: 'missing_required',
-      }),
-      confidenceSummary: expect.objectContaining({
-        strongestSlots: expect.arrayContaining(['game_type']),
-        missingCriticalSlots: expect.arrayContaining(['win_condition']),
-      }),
-    }));
+    );
   });
 
   it('appends a user answer and advances the session revision', async () => {
