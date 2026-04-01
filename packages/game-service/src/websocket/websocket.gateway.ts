@@ -18,6 +18,7 @@ interface UserClientsMap {
 
 @WebSocketGateway({
   namespace: '/ws',
+  path: '/ws/socket.io',
   cors: {
     origin: '*',
     credentials: true,

@@ -13,6 +13,7 @@ from src.engine.section_patch import (
     build_patch_protocol,
     build_section_context,
     ensure_structured_section_markers,
+    extract_script_content,
     parse_patch_response,
     validate_patch_candidate,
 )
@@ -128,3 +129,55 @@ def test_validate_patch_candidate_rejects_missing_canvas_regression():
     )
 
     assert "missing_canvas" in errors
+
+
+def test_extract_script_content_prefers_main_game_script_over_helper_bridge():
+    html = (
+        "<!DOCTYPE html><html><body>"
+        "<canvas id='gameCanvas'></canvas>"
+        "<script>const canvas = document.getElementById('gameCanvas'); function boot(){ return canvas; }</script>"
+        "<script>(() => { if (window.__playforgeMobileLayoutBridgeInstalled) return; window.__playforgeMobileLayoutBridgeInstalled = true; })();</script>"
+        "</body></html>"
+    )
+
+    script = extract_script_content(html)
+
+    assert "function boot()" in script
+    assert "__playforgeMobileLayoutBridgeInstalled" not in script
+
+
+def test_apply_section_patches_updates_main_script_and_keeps_helper_bridge():
+    html = (
+        "<!DOCTYPE html><html><body>"
+        "<canvas id='gameCanvas'></canvas>"
+        "<script>const canvas = document.getElementById('gameCanvas'); const score = 1;</script>"
+        "<script>(() => { if (window.__playforgeMobileLayoutBridgeInstalled) return; window.__playforgeMobileLayoutBridgeInstalled = true; })();</script>"
+        "</body></html>"
+    )
+
+    updated = apply_section_patches(
+        html,
+        [SectionPatch(section=PATCH_SECTION_SCRIPT, content="const canvas = document.getElementById('gameCanvas'); const score = 2;")],
+    )
+
+    assert updated.count("const score = 2;") == 1
+    assert "const score = 1;" not in updated
+    assert "__playforgeMobileLayoutBridgeInstalled" in updated
+
+
+def test_validate_patch_candidate_rejects_multiple_html_documents():
+    previous = ensure_structured_section_markers(
+        "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas><script>const score = 1;</script></body></html>"
+    )
+    candidate = ensure_structured_section_markers(
+        "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas><script>const score = 1;</script></body></html>"
+        "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas><script>const score = 2;</script></body></html>"
+    )
+
+    errors = validate_patch_candidate(
+        previous,
+        candidate,
+        allowed_sections=(PATCH_SECTION_BODY, PATCH_SECTION_SCRIPT),
+    )
+
+    assert "multiple_html_documents" in errors

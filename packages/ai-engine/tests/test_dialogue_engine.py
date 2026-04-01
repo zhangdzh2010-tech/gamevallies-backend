@@ -17,6 +17,8 @@ from src.api.models import (
 )
 from src.engine.dialogue_engine import (
     DialogueEngine,
+    FAST_DIALOGUE_SLOT_OVERALL_TIMEOUT_S,
+    FAST_DIALOGUE_SLOT_REQUEST_TIMEOUT_S,
     _infer_game_type_from_sparse_context,
     _infer_slots_from_text,
     _normalize_slot_payload,
@@ -297,6 +299,79 @@ class TestDialogueEngine(unittest.TestCase):
         self.assertFalse(mock_complete.await_args_list[0].kwargs["prefer_fast"])
         self.assertEqual(mock_complete.await_args_list[1].kwargs["step_key"], "dialogue.reply")
         self.assertTrue(mock_complete.await_args_list[1].kwargs["prefer_fast"])
+
+    def test_dialogue_slot_extract_fast_path_skips_truncation_retry_without_excerpt(self):
+        engine = DialogueEngine()
+
+        with patch.object(
+            engine._client,
+            "complete",
+            new=AsyncMock(
+                side_effect=LLMResponseTruncatedError(
+                    "response truncated",
+                    stop_reason="length",
+                )
+            ),
+        ), patch.object(
+            engine._client,
+            "complete_with_truncation_retry",
+            new=AsyncMock(return_value="{}"),
+        ) as mock_retry:
+            with self.assertRaises(LLMResponseTruncatedError):
+                asyncio.run(
+                    engine._complete_slot_request(
+                        messages=[{"role": "user", "content": "make a puzzle game"}],
+                        system="SYSTEM",
+                        step_key="dialogue.slot_extract",
+                        stage="dialogue",
+                        max_tokens=640,
+                    )
+                )
+
+        mock_retry.assert_not_awaited()
+
+    def test_analyze_turn_slot_timeout_uses_fast_budget_and_heuristic_fallback(self):
+        engine = DialogueEngine()
+
+        def fake_get_prompt(key: str, default=None):
+            if key == "prompt.slot_extraction_system":
+                return "DIALOGUE_SLOT_PROMPT_FROM_DB"
+            return DIALOGUE_TEST_PROMPTS.get(key, default)
+
+        with patch.object(engine._client, "is_enabled", return_value=True), patch(
+            "src.engine.dialogue_engine.require_prompt",
+            side_effect=fake_get_prompt,
+        ), patch.object(
+            engine._client,
+            "complete",
+            new=AsyncMock(side_effect=asyncio.TimeoutError("slot extract timed out")),
+        ) as mock_complete:
+            response = asyncio.run(
+                engine.analyze_turn(
+                    AnalyzeDialogueTurnRequest(
+                        session_id="creation-fast-timeout",
+                        user_id="user-1",
+                        conversation=[
+                            ConversationMessage(
+                                role="user",
+                                content="Make a funny office game where you tap to hide from the boss.",
+                            ),
+                        ],
+                        initial_prompt="Make a funny office game where you tap to hide from the boss.",
+                    )
+                )
+            )
+
+        kwargs = mock_complete.await_args.kwargs
+        self.assertEqual(kwargs["step_key"], "dialogue.slot_extract")
+        self.assertEqual(kwargs["request_timeout_s"], FAST_DIALOGUE_SLOT_REQUEST_TIMEOUT_S)
+        self.assertEqual(kwargs["overall_timeout_s"], FAST_DIALOGUE_SLOT_OVERALL_TIMEOUT_S)
+        self.assertGreater(response.slot_fill_pct, 0.0)
+        self.assertTrue(response.slots_updated)
+        self.assertEqual(response.slots.input_method, "tap")
+        self.assertEqual(response.slots.game_type, "funny")
+        self.assertIsNotNone(response.current_question)
+        self.assertIn(response.current_question.slot_key, {"win_condition", "difficulty", "theme"})
 
     def test_educational_prompt_biases_to_educational_slots(self):
         inferred = _infer_slots_from_text(
