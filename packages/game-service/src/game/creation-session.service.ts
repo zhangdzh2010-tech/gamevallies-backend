@@ -10,6 +10,7 @@ import {
 import axios from 'axios';
 import { PrismaService } from '../prisma/prisma.service';
 import { GameService } from './game.service';
+import { GameWebSocketGateway } from '../websocket/websocket.gateway';
 import {
   CreateCreationSessionDto,
   CreateCreationSessionMessageDto,
@@ -18,7 +19,8 @@ import {
 } from './dto';
 import {
   CREATION_SESSION_GENERATING_EXPIRE_MS,
-  CREATION_SESSION_MUTABLE_STATUSES,
+  CREATION_SESSION_INIT_TIMEOUT_MS,
+  CREATION_SESSION_INTERACTIVE_STATUSES,
   DEFAULT_CREATION_SESSION_QUESTION_BUDGET,
 } from './creation-session.constants';
 import {
@@ -94,6 +96,7 @@ export class CreationSessionService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly gameService: GameService,
+    private readonly wsGateway: GameWebSocketGateway,
   ) {}
 
   async createSession(userId: string, dto: CreateCreationSessionDto): Promise<CreationSessionSnapshot> {
@@ -106,54 +109,30 @@ export class CreationSessionService {
     const conversation: CreationSessionConversationMessage[] = [
       this.userMessage(prompt, 'prompt'),
     ];
-    const analysis = await this.analyzeTurnWithRetry({
-      userId,
-      conversation,
-      current_slots: {},
-      skipped_slots: [],
-      entry_mode: dto.entryMode || 'create',
-      title: dto.title,
-      generation_tier: dto.generationTier || 'standard',
-      initial_prompt: prompt,
-    }, dto.regionHint);
-    const normalizedPlanDraft = this.normalizePlanDraft(analysis.plan_draft);
-    const normalizedQuestionStrategy = this.normalizeQuestionStrategy(analysis.question_strategy);
-    const confidenceSummary = this.buildConfidenceSummary(
-      analysis.confidence_by_slot,
-      analysis.ambiguity_flags,
-      analysis.missing_required,
-    );
 
+    // ── Phase 1: Optimistic creation (synchronous, <200ms) ──────────
+    // Create the session immediately with status='initializing' and
+    // return it to the client. AI analysis runs in the background.
     const createData = {
       userId,
-      status: analysis.ready_to_generate ? 'ready' : 'collecting',
+      status: 'initializing' as const,
       entryMode: dto.entryMode || 'create',
       initialPrompt: prompt,
       titleDraft: dto.title?.trim() || null,
       revision: 1,
-      slotState: analysis.slots || {},
-      missingRequired: analysis.missing_required || [],
+      slotState: {},
+      missingRequired: [],
       skippedSlots: [],
-      currentQuestion: this.normalizeQuestion(analysis.current_question),
-      conversation: [
-        ...conversation,
-        this.assistantMessage(analysis.reply),
-      ],
+      currentQuestion: null as any,
+      conversation,
       sourceGameId: dto.sourceGameId || null,
       questionBudget: DEFAULT_CREATION_SESSION_QUESTION_BUDGET,
       metadata: {
         orientation: dto.orientation || null,
         generationTier: dto.generationTier || 'standard',
         regionHint: dto.regionHint || null,
-        readyToGenerate: Boolean(analysis.ready_to_generate),
-        slotFillPct: this.clampSlotFillPct(analysis.slot_fill_pct, analysis.slots || {}),
-        planDraft: normalizedPlanDraft,
-        confidenceSummary,
-        questionStrategy: normalizedQuestionStrategy,
-        confidenceBySlot: this.normalizeNumberMap(analysis.confidence_by_slot),
-        evidenceBySlot: this.normalizeStringMap(analysis.evidence_by_slot),
-        ambiguityFlags: this.normalizeStringList(analysis.ambiguity_flags),
-        nextBestQuestionReason: this.asOptionalString(analysis.next_best_question_reason) || normalizedQuestionStrategy?.reason || null,
+        readyToGenerate: false,
+        slotFillPct: 0,
       },
     };
 
@@ -162,11 +141,11 @@ export class CreationSessionService {
     const created = this.prisma?.$transaction
       ? await this.prisma.$transaction(async (tx: any) => {
           const scopedRepo = tx?.gameCreationSession || repo;
-          // Auto-abandon mutable sessions (collecting / ready)
+          // Auto-abandon interactive sessions (initializing / collecting / ready)
           await scopedRepo.updateMany({
             where: {
               userId,
-              status: { in: [...CREATION_SESSION_MUTABLE_STATUSES] },
+              status: { in: [...CREATION_SESSION_INTERACTIVE_STATUSES] },
             },
             data: {
               status: 'abandoned',
@@ -189,7 +168,7 @@ export class CreationSessionService {
           await repo.updateMany({
             where: {
               userId,
-              status: { in: [...CREATION_SESSION_MUTABLE_STATUSES] },
+              status: { in: [...CREATION_SESSION_INTERACTIVE_STATUSES] },
             },
             data: {
               status: 'abandoned',
@@ -208,17 +187,172 @@ export class CreationSessionService {
           return repo.create({ data: createData });
         })();
 
+    // ── Phase 2: Async analysis (fire-and-forget) ───────────────────
+    const analyzePayload = {
+      userId,
+      conversation,
+      current_slots: {},
+      skipped_slots: [] as string[],
+      entry_mode: dto.entryMode || 'create',
+      title: dto.title,
+      generation_tier: dto.generationTier || 'standard',
+      initial_prompt: prompt,
+    };
+
+    this._finalizeSessionInit(created.id, userId, analyzePayload, dto, dto.regionHint)
+      .catch((err) => this.logger.error(
+        `Session init async phase failed: ${created.id} — ${err?.message}`,
+        err?.stack,
+      ));
+
+    // Timeout safety net: if analysis is still running after INIT_TIMEOUT_MS,
+    // auto-abandon the session so it doesn't stay stuck in 'initializing'.
+    setTimeout(
+      () => this._expireStaleInit(created.id).catch(() => undefined),
+      CREATION_SESSION_INIT_TIMEOUT_MS,
+    );
+
     return this.toSnapshot(created);
+  }
+
+  /**
+   * Background async phase of session creation: run AI analysis and
+   * update the session from 'initializing' to 'collecting'/'ready'.
+   */
+  private async _finalizeSessionInit(
+    sessionId: string,
+    userId: string,
+    analyzePayload: Record<string, unknown>,
+    dto: CreateCreationSessionDto,
+    regionHint?: string,
+  ): Promise<void> {
+    const repo = this.getRepo();
+
+    let analysis: AnalyzeTurnResponsePayload;
+    try {
+      analysis = await this.analyzeTurnWithRetry(analyzePayload, regionHint);
+    } catch (error: any) {
+      // AI analysis failed → mark session as abandoned with error info
+      const initError = this.extractAiError(error, 'Creation session initialization failed');
+      await repo.updateMany({
+        where: { id: sessionId, userId, status: 'initializing' },
+        data: {
+          status: 'abandoned',
+          metadata: {
+            orientation: dto.orientation || null,
+            generationTier: dto.generationTier || 'standard',
+            regionHint: dto.regionHint || null,
+            initError,
+            abandonedAt: new Date().toISOString(),
+          },
+        },
+      });
+      // Notify frontend immediately so it can show the error without polling
+      this.wsGateway.emitSessionError(userId, sessionId, initError, {
+        reason: 'init_failed',
+      });
+      return;
+    }
+
+    // Build the full session data from analysis results
+    const conversation: CreationSessionConversationMessage[] = [
+      this.userMessage(String(analyzePayload.initial_prompt || ''), 'prompt'),
+      this.assistantMessage(analysis.reply),
+    ];
+    const normalizedPlanDraft = this.normalizePlanDraft(analysis.plan_draft);
+    const normalizedQuestionStrategy = this.normalizeQuestionStrategy(analysis.question_strategy);
+    const confidenceSummary = this.buildConfidenceSummary(
+      analysis.confidence_by_slot,
+      analysis.ambiguity_flags,
+      analysis.missing_required,
+    );
+
+    // CAS update: only proceed if session is still in 'initializing' (not abandoned by user)
+    const result = await repo.updateMany({
+      where: { id: sessionId, userId, status: 'initializing', revision: 1 },
+      data: {
+        revision: { increment: 1 },
+        status: analysis.ready_to_generate ? 'ready' : 'collecting',
+        slotState: analysis.slots || {},
+        missingRequired: analysis.missing_required || [],
+        currentQuestion: this.normalizeQuestion(analysis.current_question),
+        conversation,
+        metadata: {
+          orientation: dto.orientation || null,
+          generationTier: dto.generationTier || 'standard',
+          regionHint: dto.regionHint || null,
+          readyToGenerate: Boolean(analysis.ready_to_generate),
+          slotFillPct: this.clampSlotFillPct(analysis.slot_fill_pct, analysis.slots || {}),
+          planDraft: normalizedPlanDraft,
+          confidenceSummary,
+          questionStrategy: normalizedQuestionStrategy,
+          confidenceBySlot: this.normalizeNumberMap(analysis.confidence_by_slot),
+          evidenceBySlot: this.normalizeStringMap(analysis.evidence_by_slot),
+          ambiguityFlags: this.normalizeStringList(analysis.ambiguity_flags),
+          nextBestQuestionReason: this.asOptionalString(analysis.next_best_question_reason) || normalizedQuestionStrategy?.reason || null,
+        },
+      },
+    });
+
+    if (result.count !== 1) {
+      // Session was already abandoned or modified by the user — silently discard analysis
+      this.logger.warn(`Session init CAS miss: ${sessionId} (likely abandoned)`);
+      return;
+    }
+
+    // Push real-time update to the frontend so it can display the first
+    // question immediately instead of waiting for the next poll cycle.
+    try {
+      const updatedSession = await repo.findUnique({ where: { id: sessionId } });
+      if (updatedSession) {
+        this.wsGateway.emitSessionUpdate(userId, sessionId, this.toSnapshot(updatedSession));
+      }
+    } catch (wsError: any) {
+      // Non-critical: frontend will still get the data on next poll
+      this.logger.warn(`Session WS push failed: ${sessionId} — ${wsError?.message}`);
+    }
+  }
+
+  /**
+   * Timeout safety: abandon sessions stuck in 'initializing' too long.
+   */
+  private async _expireStaleInit(sessionId: string): Promise<void> {
+    const repo = this.getRepo();
+    // Look up the session first so we can get the userId for WS push
+    const session = await repo.findUnique({ where: { id: sessionId } });
+    if (!session || session.status !== 'initializing') {
+      return; // Already transitioned — nothing to expire
+    }
+
+    const existingMetadata = this.normalizeMetadata(session.metadata);
+    const result = await repo.updateMany({
+      where: { id: sessionId, status: 'initializing' },
+      data: {
+        status: 'abandoned',
+        metadata: {
+          ...existingMetadata,
+          initError: 'Session initialization timed out',
+          abandonedAt: new Date().toISOString(),
+        },
+      },
+    });
+    if (result.count > 0) {
+      this.logger.warn(`Session init expired: ${sessionId}`);
+      this.wsGateway.emitSessionError(session.userId, sessionId, 'Session initialization timed out', {
+        reason: 'init_timeout',
+      });
+    }
   }
 
   async getActiveSession(userId: string): Promise<CreationSessionSnapshot | null> {
     const repo = this.getRepo();
-    // Only return mutable sessions (collecting / ready). Generating sessions no
-    // longer occupy the active slot so new creations are not blocked.
+    // Return interactive sessions: initializing (AI analysis pending),
+    // collecting (asking questions), or ready (can generate).
+    // Generating sessions no longer occupy the active slot.
     const session = await repo.findFirst({
       where: {
         userId,
-        status: { in: [...CREATION_SESSION_MUTABLE_STATUSES] },
+        status: { in: [...CREATION_SESSION_INTERACTIVE_STATUSES] },
       },
       orderBy: { updatedAt: 'desc' },
     });
@@ -664,6 +798,9 @@ export class CreationSessionService {
   }
 
   private assertSessionMutable(session: any): void {
+    if (session.status === 'initializing') {
+      throw new ConflictException('Creation session is still initializing');
+    }
     if (session.status === 'abandoned') {
       throw new ConflictException('Creation session was abandoned');
     }
@@ -691,9 +828,10 @@ export class CreationSessionService {
     const questionStrategy = this.normalizeQuestionStrategy(metadata.questionStrategy);
     const sessionStatus = String(session.status || 'collecting');
 
-    // Bug 3 fix: when status is ready/generating/completed, clear currentQuestion
-    // to avoid semantic conflict (ready means "can generate", not "please answer more").
-    const effectiveQuestion = (sessionStatus === 'ready' || sessionStatus === 'generating' || sessionStatus === 'completed')
+    // Bug 3 fix: when status is ready/generating/completed/initializing, clear currentQuestion.
+    // - ready/generating/completed: "can generate", not "please answer more"
+    // - initializing: AI analysis hasn't produced a question yet
+    const effectiveQuestion = (sessionStatus === 'initializing' || sessionStatus === 'ready' || sessionStatus === 'generating' || sessionStatus === 'completed')
       ? null
       : currentQuestion;
 
