@@ -1,18 +1,13 @@
 import {
   Controller,
-  Post,
   Get,
   Param,
   Query,
-  UseGuards,
-  Req,
   HttpCode,
   HttpStatus,
-  BadRequestException,
   Logger,
 } from '@nestjs/common';
 import { ForkService } from './fork.service';
-import { JwtAuthGuard } from '../common/jwt-auth.guard';
 import { ok, toPage } from '../common/api-response';
 import { presentGame } from '../common/game-presenter';
 
@@ -21,24 +16,6 @@ export class ForkController {
   private readonly logger = new Logger(ForkController.name);
 
   constructor(private forkService: ForkService) {}
-
-  @Post(':id/fork')
-  @UseGuards(JwtAuthGuard)
-  @HttpCode(HttpStatus.CREATED)
-  async forkGame(@Param('id') id: string, @Req() req: any) {
-    try {
-      const userId = req.user?.sub || req.user?.id;
-      if (!userId) {
-        throw new BadRequestException('Invalid token');
-      }
-
-      const game = await this.forkService.forkGame(id, userId);
-      return ok({ gameId: game.id });
-    } catch (error) {
-      this.logger.error(`Error forking game: ${error.message}`);
-      throw error;
-    }
-  }
 
   @Get(':id/forks')
   @HttpCode(HttpStatus.OK)
