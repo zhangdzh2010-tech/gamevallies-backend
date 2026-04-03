@@ -182,6 +182,79 @@ class CodeGenerator:
             return "medium"
         return "large"
 
+    @staticmethod
+    def _is_prompt_bullet_line(line: str) -> bool:
+        stripped = line.strip()
+        return stripped.startswith("- ") or stripped.startswith("* ")
+
+    @classmethod
+    def _compact_prompt_section(
+        cls,
+        text: str,
+        *,
+        seen_bullets: Optional[set[str]] = None,
+    ) -> str:
+        lines = text.splitlines()
+        compacted: List[str] = []
+        pending_blank = False
+        in_code_fence = False
+
+        for raw_line in lines:
+            line = raw_line.rstrip()
+            stripped = line.strip()
+            if not stripped:
+                pending_blank = bool(compacted)
+                continue
+            if stripped.startswith("```"):
+                if pending_blank and compacted and compacted[-1] != "":
+                    compacted.append("")
+                pending_blank = False
+                compacted.append(line)
+                in_code_fence = not in_code_fence
+                continue
+            if pending_blank and compacted and compacted[-1] != "":
+                compacted.append("")
+            pending_blank = False
+
+            if not in_code_fence and seen_bullets is not None and cls._is_prompt_bullet_line(line):
+                normalized_bullet = re.sub(r"\s+", " ", stripped).lower()
+                if normalized_bullet in seen_bullets:
+                    continue
+                seen_bullets.add(normalized_bullet)
+            compacted.append(line)
+
+        while compacted and not compacted[0].strip():
+            compacted.pop(0)
+        while compacted and not compacted[-1].strip():
+            compacted.pop()
+        return "\n".join(compacted)
+
+    @classmethod
+    def _compose_prompt_sections(
+        cls,
+        sections: List[str],
+        *,
+        dedupe_bullets: bool = True,
+    ) -> str:
+        seen_sections: set[str] = set()
+        seen_bullets: Optional[set[str]] = set() if dedupe_bullets else None
+        composed: List[str] = []
+
+        for section in sections:
+            normalized = (section or "").strip()
+            if not normalized:
+                continue
+            if normalized in seen_sections:
+                continue
+            seen_sections.add(normalized)
+            compacted = cls._compact_prompt_section(
+                normalized,
+                seen_bullets=seen_bullets,
+            )
+            if compacted:
+                composed.append(compacted)
+        return "\n\n".join(composed)
+
     async def generate(
         self,
         spec: GameSpec,
@@ -243,20 +316,25 @@ class CodeGenerator:
         visual_pack_block = self._build_visual_pack_block(spec)
         implementation_budget = self._build_implementation_budget_block(spec, request_text)
         design_program_block = self._build_design_program_block(spec, gdd)
+        mechanic_diversity_block = self._build_mechanic_diversity_block(
+            spec,
+            request_text,
+            runtime_profile,
+        )
         critical_intent_block = self._build_critical_intent_block(
             spec,
             request_text,
             runtime_profile=runtime_profile,
         )
         enriched_block = self._build_enriched_design_block(gdd)
-        full_prompt = "\n\n".join(
-            part
-            for part in [
+        full_prompt = self._compose_prompt_sections(
+            [
                 logic_generate_policy,
                 generation_tier_block,
                 visual_pack_block,
                 profile_few_shot,
                 structured_design,
+                mechanic_diversity_block,
                 design_program_block,
                 critical_intent_block,
                 self._build_ui_language_block(spec.ui_language),
@@ -264,11 +342,9 @@ class CodeGenerator:
                 implementation_budget,
                 self._build_mobile_layout_guardrails(gdd, runtime_contract),
                 require_prompt("prompt.platform_standard"),
-            ]
-            if part
+                enriched_block,
+            ],
         )
-        if enriched_block:
-            full_prompt += "\n\n" + enriched_block
 
         skeleton = self.template_cache.get_skeleton(spec, runtime_profile or "")
         if self._should_include_reference_skeleton(
@@ -278,10 +354,13 @@ class CodeGenerator:
             design_program_block=design_program_block,
             enriched_block=enriched_block,
         ):
-            full_prompt = (
-                "REFERENCE SKELETON (follow this HTML structure, replace game-specific content):\n"
-                f"```html\n{skeleton}\n```\n\n"
-                + full_prompt
+            full_prompt = self._compose_prompt_sections(
+                [
+                    "REFERENCE SKELETON (follow this HTML structure, replace game-specific content):\n"
+                    f"```html\n{skeleton}\n```",
+                    full_prompt,
+                ],
+                dedupe_bullets=False,
             )
 
         try:
@@ -690,6 +769,7 @@ class CodeGenerator:
 
     def _build_design_program_block(self, spec: GameSpec, gdd: GDD) -> str:
         lines: List[str] = []
+        generation_tier = self._resolve_generation_tier(spec)
         defaultish_fields = (
             ("Session length", spec.session_length, "short_bursts"),
             ("Progression shape", spec.progression_shape, "score_chase"),
@@ -737,11 +817,21 @@ class CodeGenerator:
 
         if not lines:
             return ""
+        header = (
+            "DESIGN PROGRAM (HIGH PRIORITY):"
+            if generation_tier == "safe"
+            else "DESIGN PROGRAM (CREATIVE DIRECTION):"
+        )
+        closing_line = (
+            "- Preserve this design program unless a requirement directly conflicts with it."
+            if generation_tier == "safe"
+            else "- Use this as preferred direction, but choose a stronger interpretation when it better serves the brief and runtime clarity."
+        )
         return "\n".join(
             [
-                "DESIGN PROGRAM (HIGH PRIORITY):",
+                header,
                 *lines,
-                "- Preserve this design program unless a requirement directly conflicts with it.",
+                closing_line,
             ]
         )
 
@@ -819,7 +909,7 @@ class CodeGenerator:
             rule for rule in (spec.special_rules or [])
             if "distinctive gameplay loop" in rule.lower() or "avoid the stock" in rule.lower()
         ]
-        if generation_tier != "showcase" and not diversity_rules:
+        if generation_tier == "safe" and not diversity_rules:
             return ""
         prompt_lines = [
             "MECHANIC DIVERSITY GOAL:",
@@ -859,7 +949,7 @@ class CodeGenerator:
         intent_summary = spec.intent_summary if spec else ""
         generation_tier = cls._resolve_generation_tier(spec)
         lines = [
-            "IMPLEMENTATION BUDGET (NON-NEGOTIABLE):",
+            "IMPLEMENTATION SHAPE:",
             "- Use one canvas and one primary requestAnimationFrame loop.",
             "- Keep the whole experience coherent inside one HTML file and one shared state model.",
             "- Reuse the same controls and state machine across the whole experience instead of creating disconnected subsystems.",
@@ -868,17 +958,17 @@ class CodeGenerator:
             lines.extend([
                 "- Keep one main HUD and at most one overlay screen for ready/game-over or level-complete states.",
                 "- Avoid scene managers, dialogue trees, worksheet generators, inventories, or parallel mini-games unless absolutely required for the core mechanic.",
-                "- Prefer the smallest complete mechanic that satisfies the request and runtime contract before adding optional polish.",
+                "- Choose the most engaging compact mechanic that satisfies the request and runtime contract before layering extra polish.",
             ])
         elif generation_tier == "showcase":
             lines.extend([
                 "- Allow a richer presentation layer, a stronger HUD, and 2-3 linked subsystems as long as they all plug into the same loop.",
                 "- Favor one signature mechanic plus one support system such as combos, waves, rescue targets, route goals, risk-reward pickups, or finale beats.",
-                "- Spend budget on clarity, juice, pacing, and progression once boot, input, restart, and visible feedback are secure.",
+                "- Spend budget on clarity, juice, pacing, progression, and memorable payoff once boot, input, restart, and visible feedback are secure.",
             ])
         else:
             lines.extend([
-                "- Allow one stronger support subsystem and a more expressive HUD if they improve the brief.",
+                "- Allow 1-2 supporting subsystems and a more expressive HUD when they improve the brief.",
                 "- Build beyond the minimal safe demo when the brief supports it, while keeping the loop readable and QA-friendly.",
             ])
 
@@ -1133,7 +1223,7 @@ class CodeGenerator:
         )
 
         lines = [
-            "RUNTIME CONTRACT (NON-NEGOTIABLE):",
+            "RUNTIME CONTRACT (MUST STAY FUNCTIONAL):",
             f"- Runtime profile: {profile_value} (contract v{contract_version})",
             (
                 "- Core state flow must support "
@@ -1331,24 +1421,16 @@ class CodeGenerator:
         prompt_bundle_snapshot: Optional[Dict[str, Any]],
         spec: Optional[GameSpec] = None,
     ) -> str:
-        sections = [
-            self._resolved_bundle_prompt(prompt_bundle_snapshot, "locked_contract"),
-            self._resolved_bundle_prompt(prompt_bundle_snapshot, "product_policy"),
-            self._rewrite_system_prompt_for_generation_tier(
-                require_prompt("prompt.code_gen_system"),
-                spec=spec,
-            ),
-        ]
-
-        deduped: List[str] = []
-        seen: set[str] = set()
-        for section in sections:
-            normalized = (section or "").strip()
-            if not normalized or normalized in seen:
-                continue
-            seen.add(normalized)
-            deduped.append(normalized)
-        return "\n\n".join(deduped)
+        return self._compose_prompt_sections(
+            [
+                self._resolved_bundle_prompt(prompt_bundle_snapshot, "locked_contract"),
+                self._resolved_bundle_prompt(prompt_bundle_snapshot, "product_policy"),
+                self._rewrite_system_prompt_for_generation_tier(
+                    require_prompt("prompt.code_gen_system"),
+                    spec=spec,
+                ),
+            ],
+        )
 
     @staticmethod
     def _palette_value(palette: List[str], index: int, fallback: str) -> str:

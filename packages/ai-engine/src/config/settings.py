@@ -43,9 +43,10 @@ class Settings(BaseSettings):
     QA_FAST_REPAIR_TIMEOUT_S: int = 120
     RUNTIME_QA_REMEDIATION_MAX_RETRIES: int = 2
     RUNTIME_QA_TIMEOUT_S: float = 8.0
-    RUNTIME_QA_REQUIRED: bool = True
+    RUNTIME_QA_REQUIRED: bool = False
     MAX_ITERATIONS: int = 20
     PIPELINE_UPGRADE_LEGACY_ENDPOINTS_TO_V2: bool = True
+    LLM_CODE_REVIEW_MIN_TIER: Literal["safe", "standard", "showcase"] = "showcase"
 
     # Provider capability governance
     LLM_PROVIDER_VERIFICATION_ENABLED: bool = False

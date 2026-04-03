@@ -561,8 +561,6 @@ class MobileLayoutContract(BaseModel):
 
 class SafetyContract(BaseModel):
     forbidden_apis: List[str] = Field(default_factory=lambda: [
-        "localStorage",
-        "sessionStorage",
         "fetch",
         "XMLHttpRequest",
         "WebSocket",

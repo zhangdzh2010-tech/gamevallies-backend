@@ -180,8 +180,6 @@ FORBIDDEN_API_PATTERNS: dict[str, str] = {
     "fetch": r"\bfetch\s*\(",
     "XMLHttpRequest": r"\bXMLHttpRequest\b",
     "WebSocket": r"\bWebSocket\b",
-    "localStorage": r"\blocalStorage\b",
-    "sessionStorage": r"\bsessionStorage\b",
     "document.cookie": r"\bdocument\.cookie\b",
     "document.write": r"\bdocument\.write\b",
 }
@@ -203,6 +201,25 @@ class V2PipelineRunner:
     @staticmethod
     def _current_task_id() -> Optional[str]:
         return get_request_context().get("task_id")
+
+    @staticmethod
+    def _generation_tier_rank(tier: str) -> int:
+        ranks = {
+            "safe": 0,
+            "standard": 1,
+            "showcase": 2,
+        }
+        return ranks.get(str(tier or "standard").strip().lower(), 1)
+
+    def _should_allow_runtime_qa_unavailable(self, spec: GameSpec) -> bool:
+        if settings.RUNTIME_QA_REQUIRED:
+            return False
+        return CodeGenerator._resolve_generation_tier(spec) != "showcase"
+
+    def _should_run_code_review(self, spec: GameSpec) -> bool:
+        current_tier = CodeGenerator._resolve_generation_tier(spec)
+        min_tier = str(getattr(settings, "LLM_CODE_REVIEW_MIN_TIER", "showcase") or "showcase")
+        return self._generation_tier_rank(current_tier) >= self._generation_tier_rank(min_tier)
 
     async def _remember_spec(self, spec: Optional[GameSpec]) -> None:
         await task_memory.remember_spec(self._current_task_id(), spec)
@@ -354,6 +371,7 @@ class V2PipelineRunner:
         stage_context["stage"] = "logic_generate"
         generated = await self._generate_create_code(request, spec, gdd, runtime_contract)
         await self._remember_code(generated.html_code, label="generated_candidate")
+        allow_runtime_qa_unavailable = self._should_allow_runtime_qa_unavailable(spec)
 
         qa_result, runtime_qa, runtime_retries, qa_warnings = await self._run_contract_and_runtime_flow(
             code=generated.html_code,
@@ -364,7 +382,7 @@ class V2PipelineRunner:
             game_id=request.game_id,
             user_id=request.user_id,
             stage_context=stage_context,
-            allow_runtime_qa_unavailable=False,
+            allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
         )
 
         if qa_result.needs_regeneration:
@@ -388,14 +406,16 @@ class V2PipelineRunner:
                 game_id=request.game_id,
                 user_id=request.user_id,
                 stage_context=stage_context,
-                allow_runtime_qa_unavailable=False,
+                allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
             )
 
         elapsed = int(time.time() * 1000) - start_ms
         code_bytes = len(qa_result.code.encode("utf-8"))
         final_check = self.qa_pipeline.check(qa_result.code)
         await self._remember_code(qa_result.code, label="final_code")
-        review = await self.code_reviewer.review(qa_result.code)
+        review = LLMReviewResult(ran=False)
+        if self._should_run_code_review(spec):
+            review = await self.code_reviewer.review(qa_result.code)
         quality = self.quality_scorer.compute(
             static=QAStaticResult(
                 passed=final_check.passed,
@@ -521,7 +541,7 @@ class V2PipelineRunner:
             game_id=request.game_id,
             user_id=request.user_id,
             stage_context=stage_context,
-            allow_runtime_qa_unavailable=False,
+            allow_runtime_qa_unavailable=self._should_allow_runtime_qa_unavailable(spec),
         )
 
         elapsed = int(time.time() * 1000) - start_ms

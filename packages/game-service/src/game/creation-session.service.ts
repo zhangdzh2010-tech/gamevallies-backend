@@ -11,6 +11,7 @@ import axios from 'axios';
 import { PrismaService } from '../prisma/prisma.service';
 import { GameService } from './game.service';
 import { GameWebSocketGateway } from '../websocket/websocket.gateway';
+import { CreationSessionRealtimeService } from './creation-session-realtime.service';
 import {
   CreateCreationSessionDto,
   CreateCreationSessionMessageDto,
@@ -113,6 +114,7 @@ export class CreationSessionService {
     private readonly prisma: PrismaService,
     private readonly gameService: GameService,
     private readonly wsGateway: GameWebSocketGateway,
+    private readonly realtimeService: CreationSessionRealtimeService,
   ) {}
 
   async createSession(userId: string, dto: CreateCreationSessionDto): Promise<CreationSessionSnapshot> {
@@ -268,6 +270,9 @@ export class CreationSessionService {
       this.wsGateway.emitSessionError(userId, sessionId, initError, {
         reason: 'init_failed',
       });
+      this.realtimeService.publishError(userId, sessionId, initError, {
+        reason: 'init_failed',
+      });
       return;
     }
 
@@ -322,7 +327,9 @@ export class CreationSessionService {
     try {
       const updatedSession = await repo.findUnique({ where: { id: sessionId } });
       if (updatedSession) {
-        this.wsGateway.emitSessionUpdate(userId, sessionId, this.toSnapshot(updatedSession));
+        const snapshot = this.toSnapshot(updatedSession);
+        this.wsGateway.emitSessionUpdate(userId, sessionId, snapshot);
+        this.realtimeService.publishSnapshot(userId, sessionId, snapshot);
       }
     } catch (wsError: any) {
       // Non-critical: frontend will still get the data on next poll
@@ -356,6 +363,9 @@ export class CreationSessionService {
     if (result.count > 0) {
       this.logger.warn(`Session init expired: ${sessionId}`);
       this.wsGateway.emitSessionError(session.userId, sessionId, 'Session initialization timed out', {
+        reason: 'init_timeout',
+      });
+      this.realtimeService.publishError(session.userId, sessionId, 'Session initialization timed out', {
         reason: 'init_timeout',
       });
     }
@@ -465,7 +475,9 @@ export class CreationSessionService {
       throw new ConflictException('Creation session was updated by another request');
     }
 
-    return this.getSession(userId, session.id);
+    const next = await this.getSession(userId, session.id);
+    this.realtimeService.publishSnapshot(userId, session.id, next);
+    return next;
   }
 
   async skipCurrentQuestion(
@@ -548,7 +560,9 @@ export class CreationSessionService {
       throw new ConflictException('Creation session was updated by another request');
     }
 
-    return this.getSession(userId, session.id);
+    const next = await this.getSession(userId, session.id);
+    this.realtimeService.publishSnapshot(userId, session.id, next);
+    return next;
   }
 
   async generateFromSession(
@@ -558,15 +572,13 @@ export class CreationSessionService {
   ): Promise<any> {
     const repo = this.getRepo();
     const session = await this.requireOwnedSession(userId, sessionId);
-    this.assertRevision(session, dto.revision);
-
-    if (session.status === 'generating') {
-      throw new ConflictException('Creation session is already generating');
-    }
 
     if (session.generatedGameId && session.generationTaskId && session.status === 'completed') {
       throw new ConflictException('Creation session already generated a game');
     }
+
+    this.assertSessionMutable(session);
+    this.assertRevision(session, dto.revision);
 
     const metadata = this.normalizeMetadata(session.metadata);
     const specResponse = await this.specFromSlots({
@@ -603,6 +615,22 @@ export class CreationSessionService {
       throw new ConflictException('Creation session was updated by another request');
     }
 
+    this.realtimeService.publishSnapshot(
+      userId,
+      session.id,
+      this.toSnapshot({
+        ...session,
+        revision: Number(session.revision || 1) + 1,
+        status: 'generating',
+        metadata: {
+          ...metadata,
+          readyToGenerate: true,
+          slotFillPct: specResponse.slot_fill_pct ?? this.computeSlotFillPct(session.slotState || {}),
+          lastTaskStatus: 'starting',
+        },
+      }),
+    );
+
     try {
       const result = await this.gameService.create(userId, {
         title: session.titleDraft || undefined,
@@ -637,9 +665,12 @@ export class CreationSessionService {
         },
       });
 
+      const creationSession = await this.getSession(userId, session.id);
+      this.realtimeService.publishSnapshot(userId, session.id, creationSession);
+
       return {
         ...result,
-        creationSession: await this.getSession(userId, session.id),
+        creationSession,
       };
     } catch (error) {
       await Promise.resolve(repo.update({
@@ -655,6 +686,12 @@ export class CreationSessionService {
           },
         },
       })).catch(() => undefined);
+      try {
+        const rollbackSnapshot = await this.getSession(userId, session.id);
+        this.realtimeService.publishSnapshot(userId, session.id, rollbackSnapshot);
+      } catch {
+        // Ignore publish failures on rollback.
+      }
       throw error;
     }
   }
@@ -679,7 +716,9 @@ export class CreationSessionService {
         },
       },
     });
-    return this.toSnapshot(next);
+    const snapshot = this.toSnapshot(next);
+    this.realtimeService.publishSnapshot(userId, session.id, snapshot);
+    return snapshot;
   }
 
   private async analyzeTurn(
@@ -850,6 +889,7 @@ export class CreationSessionService {
 
     return {
       id: String(session.id),
+      streamPath: `/api/v1/games/creation-sessions/${String(session.id)}/events`,
       status: sessionStatus as CreationSessionSnapshot['status'],
       entryMode: String(session.entryMode || 'create') as CreationSessionSnapshot['entryMode'],
       initialPrompt: String(session.initialPrompt || ''),

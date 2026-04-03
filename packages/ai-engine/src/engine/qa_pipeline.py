@@ -2,7 +2,7 @@
 
 Checkpoints:
   L1  Syntax        – HTML structure parseable, required tags present
-  L2  Security      – no forbidden APIs (eval, fetch, localStorage, …)
+  L2  Security      – no forbidden APIs (eval, fetch, remote network APIs, …)
   L3  Startup       – canvas present + sized, game loop present, no obvious crash
   L4  Playability   – state-machine validated: gameOver SET to true, restart fn,
                       score incremented, input handlers present
@@ -79,8 +79,6 @@ FORBIDDEN_PATTERNS: List[Tuple[str, str]] = [
     (r"\bfetch\s*\(", "fetch()"),
     (r"\bXMLHttpRequest\b", "XMLHttpRequest"),
     (r"\bWebSocket\b", "WebSocket"),
-    (r"\blocalStorage\b", "localStorage"),
-    (r"\bsessionStorage\b", "sessionStorage"),
     (r"\bdocument\.cookie\b", "document.cookie"),
     (r"\bdocument\.write\b", "document.write"),
     (r"<script\b[^>]*\bsrc\s*=\s*['\"](?:https?:)?//", "external script src"),

@@ -40,6 +40,6 @@ export const CREATION_SESSION_INTERACTIVE_STATUSES = [
 export const CREATION_SESSION_GENERATING_EXPIRE_MS = 10 * 60 * 1000; // 10 min
 
 /** Initializing sessions older than this (ms) are considered stale and auto-abandoned. */
-export const CREATION_SESSION_INIT_TIMEOUT_MS = 30_000; // 30s
+export const CREATION_SESSION_INIT_TIMEOUT_MS = 10_000; // 10s
 
 export const DEFAULT_CREATION_SESSION_QUESTION_BUDGET = 4;
