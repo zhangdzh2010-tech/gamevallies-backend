@@ -10,6 +10,7 @@ import json
 import logging
 import math
 import re
+import threading
 import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse, urlunparse
@@ -374,6 +375,64 @@ def _is_retryable_provider_error(exc: Exception) -> bool:
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code in {408, 409, 425, 429} or exc.response.status_code >= 500
     return False
+
+
+_LLM_HTTP_CLIENTS: dict[asyncio.AbstractEventLoop, httpx.AsyncClient] = {}
+_LLM_HTTP_CLIENTS_LOCK = threading.Lock()
+_LLM_CALL_SEMAPHORES: dict[asyncio.AbstractEventLoop, tuple[int, asyncio.Semaphore]] = {}
+_LLM_CALL_SEMAPHORES_LOCK = threading.Lock()
+
+
+def _llm_max_concurrency() -> int:
+    return max(get_timeout_int("timeout.ai_engine.llm.max_concurrency", 10, min_value=1), 1)
+
+
+def _llm_http_limits() -> httpx.Limits:
+    max_connections = max(
+        get_timeout_int("timeout.ai_engine.llm.http_max_connections", 100, min_value=1),
+        1,
+    )
+    max_keepalive_connections = max(
+        get_timeout_int(
+            "timeout.ai_engine.llm.http_max_keepalive_connections",
+            40,
+            min_value=1,
+        ),
+        1,
+    )
+    keepalive_expiry_s = max(
+        get_timeout_int("timeout.ai_engine.llm.http_keepalive_expiry_s", 30, min_value=1),
+        1,
+    )
+    return httpx.Limits(
+        max_connections=max_connections,
+        max_keepalive_connections=min(max_keepalive_connections, max_connections),
+        keepalive_expiry=float(keepalive_expiry_s),
+    )
+
+
+def _llm_http_client() -> httpx.AsyncClient:
+    loop = asyncio.get_running_loop()
+    with _LLM_HTTP_CLIENTS_LOCK:
+        client = _LLM_HTTP_CLIENTS.get(loop)
+        if client is not None and not client.is_closed:
+            return client
+        client = httpx.AsyncClient(limits=_llm_http_limits())
+        _LLM_HTTP_CLIENTS[loop] = client
+        return client
+
+
+def _llm_call_semaphore(max_concurrency: int) -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    with _LLM_CALL_SEMAPHORES_LOCK:
+        cached = _LLM_CALL_SEMAPHORES.get(loop)
+        if cached is not None:
+            cached_limit, semaphore = cached
+            if cached_limit == max_concurrency:
+                return semaphore
+        semaphore = asyncio.Semaphore(max_concurrency)
+        _LLM_CALL_SEMAPHORES[loop] = (max_concurrency, semaphore)
+        return semaphore
 
 
 # ── Output class taxonomy ──────────────────────────────────────────────
@@ -1282,28 +1341,34 @@ class LLMClient:
         step_key: str,
         stage: str,
     ) -> str:
+        semaphore = _llm_call_semaphore(_llm_max_concurrency())
+        queue_started = time.perf_counter()
+        await semaphore.acquire()
+        queue_wait_ms = int((time.perf_counter() - queue_started) * 1000)
         started_at = time.time()
         stop_event = asyncio.Event()
-        await self._emit_task_activity(
-            route=route,
-            stage=stage,
-            step_key=step_key,
-            state="started",
-            elapsed_ms=0,
-        )
-        heartbeat_task = asyncio.create_task(
-            self._heartbeat_loop(
+        heartbeat_task: Optional[asyncio.Task[Any]] = None
+        try:
+            await self._emit_task_activity(
                 route=route,
                 stage=stage,
                 step_key=step_key,
-                started_at=started_at,
-                stop_event=stop_event,
+                state="started",
+                elapsed_ms=0,
             )
-        )
-
-        try:
+            heartbeat_task = asyncio.create_task(
+                self._heartbeat_loop(
+                    route=route,
+                    stage=stage,
+                    step_key=step_key,
+                    started_at=started_at,
+                    stop_event=stop_event,
+                )
+            )
             effective_provider_type = route.provider_type
             route_snapshot = dict(route.route_snapshot or {})
+            if queue_wait_ms > 0:
+                route_snapshot["queue_wait_ms"] = queue_wait_ms
             completion_result: LLMCompletionResult
             if route.provider_type == "anthropic":
                 completion_result = _normalize_completion_result(await self._run_anthropic_with_timeout(
@@ -1340,7 +1405,8 @@ class LLMClient:
                 raise RuntimeError(f"Unsupported provider type: {route.provider_type}")
 
             latency_ms = int((time.time() - started_at) * 1000)
-            await self._finish_heartbeat(stop_event=stop_event, heartbeat_task=heartbeat_task)
+            if heartbeat_task is not None:
+                await self._finish_heartbeat(stop_event=stop_event, heartbeat_task=heartbeat_task)
             await self._emit_task_activity(
                 route=route,
                 stage=stage,
@@ -1377,7 +1443,8 @@ class LLMClient:
             return completion_result.text
         except asyncio.CancelledError:
             latency_ms = int((time.time() - started_at) * 1000)
-            await self._finish_heartbeat(stop_event=stop_event, heartbeat_task=heartbeat_task)
+            if heartbeat_task is not None:
+                await self._finish_heartbeat(stop_event=stop_event, heartbeat_task=heartbeat_task)
             await self._emit_task_activity(
                 route=route,
                 stage=stage,
@@ -1432,7 +1499,8 @@ class LLMClient:
                 error_body_excerpt = str(exc)
 
             latency_ms = int((time.time() - started_at) * 1000)
-            await self._finish_heartbeat(stop_event=stop_event, heartbeat_task=heartbeat_task)
+            if heartbeat_task is not None:
+                await self._finish_heartbeat(stop_event=stop_event, heartbeat_task=heartbeat_task)
             await self._emit_task_activity(
                 route=route,
                 stage=stage,
@@ -1470,6 +1538,8 @@ class LLMClient:
                 "providerVerified": route.route_snapshot.get("provider_verified"),
             })
             raise
+        finally:
+            semaphore.release()
 
     async def _finish_heartbeat(
         self,
@@ -1589,22 +1659,25 @@ class LLMClient:
         }
         url = _build_openai_compatible_chat_url(route.base_url)
 
-        async with httpx.AsyncClient(
+        client = _llm_http_client()
+        response = await client.post(
+            url,
+            headers=headers,
+            json=payload,
             timeout=httpx.Timeout(route.request_timeout_s, connect=route.connect_timeout_s),
-        ) as client:
-            response = await client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            upstream_request_id = _response_request_id(response.headers)
-            try:
-                data = response.json()
-            except ValueError as exc:
-                excerpt = (response.text or "")[:1000] or None
-                logger.error("OpenAI-compatible provider returned non-JSON payload: %s", excerpt)
-                raise OpenAICompatibleResponseParseError(
-                    "OpenAI-compatible response was not valid JSON",
-                    response_excerpt=excerpt,
-                    upstream_request_id=upstream_request_id,
-                ) from exc
+        )
+        response.raise_for_status()
+        upstream_request_id = _response_request_id(response.headers)
+        try:
+            data = response.json()
+        except ValueError as exc:
+            excerpt = (response.text or "")[:1000] or None
+            logger.error("OpenAI-compatible provider returned non-JSON payload: %s", excerpt)
+            raise OpenAICompatibleResponseParseError(
+                "OpenAI-compatible response was not valid JSON",
+                response_excerpt=excerpt,
+                upstream_request_id=upstream_request_id,
+            ) from exc
 
         try:
             choice = data["choices"][0]

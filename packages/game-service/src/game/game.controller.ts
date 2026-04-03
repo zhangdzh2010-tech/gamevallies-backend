@@ -4,6 +4,7 @@ import {
   Get,
   Delete,
   Patch,
+  Sse,
   Param,
   Body,
   Query,
@@ -13,15 +14,21 @@ import {
   HttpStatus,
   BadRequestException,
   HttpException,
+  Header,
   Logger,
+  MessageEvent,
 } from '@nestjs/common';
+import { Observable } from 'rxjs';
 import { GameService } from './game.service';
 import { CreationSessionService } from './creation-session.service';
+import { CreationSessionRealtimeService } from './creation-session-realtime.service';
 import { CreatorReputationService } from './creator-reputation.service';
 import {
+  CreateGameDto,
   CreateCreationSessionDto,
   CreateCreationSessionMessageDto,
   GenerateCreationSessionDto,
+  IterateGameDto,
   PublishGameDto,
   SkipCreationSessionQuestionDto,
 } from './dto';
@@ -39,6 +46,7 @@ export class GameController {
   constructor(
     private gameService: GameService,
     private creationSessionService: CreationSessionService,
+    private creationSessionRealtimeService: CreationSessionRealtimeService,
     private reputationService: CreatorReputationService,
   ) {}
 
@@ -74,6 +82,18 @@ export class GameController {
     }
   }
 
+  @Post('/generate')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async generateGame(@Req() req: any, @Body() dto: CreateGameDto) {
+    const userId = req.user?.sub || req.user?.id;
+    if (!userId) {
+      throw new BadRequestException('Invalid token');
+    }
+
+    return ok(await this.gameService.create(userId, dto));
+  }
+
   @Post('/creation-sessions')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
@@ -96,6 +116,23 @@ export class GameController {
     }
 
     return ok(await this.creationSessionService.getActiveSession(userId));
+  }
+
+  @Sse('/creation-sessions/:sessionId/events')
+  @UseGuards(JwtAuthGuard)
+  @Header('Cache-Control', 'no-cache, no-transform')
+  @Header('X-Accel-Buffering', 'no')
+  async streamCreationSessionEvents(
+    @Req() req: any,
+    @Param('sessionId') sessionId: string,
+  ): Promise<Observable<MessageEvent>> {
+    const userId = req.user?.sub || req.user?.id;
+    if (!userId) {
+      throw new BadRequestException('Invalid token');
+    }
+
+    const snapshot = await this.creationSessionService.getSession(userId, sessionId);
+    return this.creationSessionRealtimeService.streamSession(userId, sessionId, snapshot);
   }
 
   @Get('/creation-sessions/:sessionId')
@@ -355,6 +392,27 @@ export class GameController {
       return ok(await this.gameService.unlock(id, userId));
     } catch (error) {
       this.logger.error(`Error unlocking game: ${error.message}`);
+      throw error;
+    }
+  }
+
+  @Post(':id/iterate')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async iterateGame(
+    @Param('id') id: string,
+    @Req() req: any,
+    @Body() dto: IterateGameDto,
+  ) {
+    try {
+      const userId = req.user?.sub || req.user?.id;
+      if (!userId) {
+        throw new BadRequestException('Invalid token');
+      }
+
+      return ok(await this.gameService.iterate(id, userId, dto));
+    } catch (error) {
+      this.logger.error(`Error iterating game: ${error.message}`);
       throw error;
     }
   }

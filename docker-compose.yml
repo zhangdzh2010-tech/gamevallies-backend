@@ -52,7 +52,7 @@ services:
     environment:
       NODE_ENV: development
       PORT: 3001
-      DATABASE_URL: mysql://gamevallies:playforge_dev_2026@mysql:3306/gamevallies?connection_limit=2
+      DATABASE_URL: mysql://gamevallies:playforge_dev_2026@mysql:3306/gamevallies?connection_limit=20
       REDIS_URL: redis://:playforge_dev_2026@redis:6379
       JWT_SECRET: playforge_jwt_secret_dev_2026
       JWT_REFRESH_SECRET: playforge_refresh_secret_dev_2026
@@ -91,7 +91,7 @@ services:
     environment:
       NODE_ENV: development
       PORT: 3002
-      DATABASE_URL: mysql://gamevallies:playforge_dev_2026@mysql:3306/gamevallies?connection_limit=2
+      DATABASE_URL: mysql://gamevallies:playforge_dev_2026@mysql:3306/gamevallies?connection_limit=20
       REDIS_URL: redis://:playforge_dev_2026@redis:6379
       AI_ENGINE_URL: http://ai-engine:8000
       APP_URL: ${GAME_SERVICE_URL:-http://localhost:3002}
@@ -123,7 +123,7 @@ services:
     environment:
       NODE_ENV: development
       PORT: 3003
-      DATABASE_URL: mysql://gamevallies:playforge_dev_2026@mysql:3306/gamevallies?connection_limit=2
+      DATABASE_URL: mysql://gamevallies:playforge_dev_2026@mysql:3306/gamevallies?connection_limit=20
       REDIS_URL: redis://:playforge_dev_2026@redis:6379
       JWT_SECRET: playforge_jwt_secret_dev_2026
     healthcheck:
@@ -151,7 +151,7 @@ services:
     environment:
       NODE_ENV: development
       PORT: 3004
-      DATABASE_URL: mysql://gamevallies:playforge_dev_2026@mysql:3306/gamevallies?connection_limit=2
+      DATABASE_URL: mysql://gamevallies:playforge_dev_2026@mysql:3306/gamevallies?connection_limit=20
       REDIS_URL: redis://:playforge_dev_2026@redis:6379
       JWT_SECRET: playforge_jwt_secret_dev_2026
     healthcheck:
@@ -192,6 +192,8 @@ services:
       HYBRID_CONFIDENCE_THRESHOLD: "0.5"
       QA_MAX_RETRIES: "2"
       PIPELINE_TIMEOUT_S: "300"
+      RUNTIME_QA_REQUIRED: "false"
+      LLM_CODE_REVIEW_MIN_TIER: showcase
     volumes:
       - ./packages/ai-engine/src:/app/src
     depends_on:

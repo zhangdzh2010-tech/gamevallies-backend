@@ -48,6 +48,7 @@ export interface CreationSessionQuestionStrategy {
 
 export interface CreationSessionSnapshot {
   id: string;
+  streamPath: string;
   status: CreationSessionStatus;
   entryMode: CreationSessionEntryMode;
   initialPrompt: string;
