@@ -19,8 +19,8 @@ _LOADED_AT: float = 0.0
 _LOAD_ERROR_BACKOFF_S = 5.0
 
 TIMEOUT_DEFAULTS: dict[str, str] = {
-    "timeout.pipeline.default_s": "1200",
-    "timeout.pipeline.v2_min_s": "1200",
+    "timeout.pipeline.default_s": "1800",
+    "timeout.pipeline.v2_min_s": "1800",
     "timeout.ai_engine.progress_relay_s": "3",
     "timeout.ai_engine.artifact_relay_s": "5",
     "timeout.ai_engine.stage_summary_relay_s": "5",
@@ -32,6 +32,8 @@ TIMEOUT_DEFAULTS: dict[str, str] = {
     "timeout.ai_engine.qa_fast_repair_s": "120",
     "timeout.ai_engine.runtime_qa.base_s": "8",
     "timeout.ai_engine.runtime_qa.max_s": "30",
+    "timeout.ai_engine.runtime_qa.phase_launch_s": "10",
+    "timeout.ai_engine.runtime_qa.max_concurrency": "2",
     "timeout.ai_engine.runtime_qa.bonus_ge_16000_s": "2",
     "timeout.ai_engine.runtime_qa.bonus_ge_24000_s": "2",
     "timeout.ai_engine.runtime_qa.bonus_ge_32000_s": "10",

@@ -373,6 +373,42 @@ def test_runtime_qa_phase_timeout_records_phase_details(monkeypatch):
     assert result.phase_metrics["content_load_timeout_s"] == 0.05
 
 
+def test_runtime_qa_queues_browser_launches_when_capacity_is_exhausted(monkeypatch):
+    class _FreshPlaywrightFactory:
+        def __call__(self):
+            browser = _ClosableBrowser()
+            browser.context_factory = _SlowContext
+            return _PlaywrightCtx(browser)
+
+    fake_module = types.SimpleNamespace(
+        async_playwright=_FreshPlaywrightFactory(),
+    )
+    monkeypatch.setitem(sys.modules, "playwright.async_api", fake_module)
+
+    original_get_int = sys.modules["src.engine.runtime_qa"].get_timeout_int
+
+    def fake_get_int(key, default, min_value=0, max_value=None):
+        if key == "timeout.ai_engine.runtime_qa.max_concurrency":
+            return 1
+        return original_get_int(key, default, min_value=min_value, max_value=max_value)
+
+    monkeypatch.setattr("src.engine.runtime_qa.get_timeout_int", fake_get_int)
+
+    async def _run_pair():
+        return await asyncio.gather(
+            run_runtime_qa("<html></html>", timeout_s=2.0),
+            run_runtime_qa("<html></html>", timeout_s=2.0),
+        )
+
+    first, second = asyncio.run(_run_pair())
+
+    assert first.ran is True
+    assert second.ran is True
+    assert first.phase_metrics["max_concurrency"] == 1
+    assert second.phase_metrics["max_concurrency"] == 1
+    assert max(first.phase_metrics["queue_wait_ms"], second.phase_metrics["queue_wait_ms"]) >= 500
+
+
 def test_phase_timeout_scales_with_effective_timeout():
     scaled = _phase_timeout_s(
         "timeout.ai_engine.runtime_qa.phase_interaction_s",

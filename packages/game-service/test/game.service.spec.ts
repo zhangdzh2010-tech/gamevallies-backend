@@ -473,6 +473,42 @@ describe('GameService', () => {
     );
   });
 
+  it('keeps polling after a transient upstream snapshot timeout and returns the later terminal snapshot', async () => {
+    jest.useFakeTimers();
+    prisma.generationTask.findUnique.mockResolvedValue(null);
+    mockedAxios.get
+      .mockRejectedValueOnce({
+        code: 'ECONNABORTED',
+        message: 'timeout of 10000ms exceeded',
+      })
+      .mockResolvedValueOnce({
+        data: {
+          task_id: 'upstream-recover',
+          status: 'succeeded',
+          result: {
+            html_code: '<!DOCTYPE html><html><body>ok</body></html>',
+          },
+        },
+      } as any);
+
+    const waitPromise = (service as any).waitForUpstreamTaskTerminal({
+      aiEngineBaseUrl: 'http://ai-engine.test',
+      upstreamTaskId: 'upstream-recover',
+      timeoutS: 30,
+      taskId: 'task-recover',
+    });
+
+    await Promise.resolve();
+    await jest.advanceTimersByTimeAsync(1500);
+
+    await expect(waitPromise).resolves.toEqual(expect.objectContaining({
+      task_id: 'upstream-recover',
+      status: 'succeeded',
+    }));
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+    expect(prisma.generationTask.findUnique).toHaveBeenCalled();
+  });
+
   it('cancels upstream tasks by failing over from persisted to configured ai-engine endpoints', async () => {
     mockedAxios.post
       .mockRejectedValueOnce({
@@ -663,7 +699,7 @@ describe('GameService', () => {
       generationTask: expect.objectContaining({
         taskType: 'pipeline_run',
         status: 'queued',
-        timeoutS: 1200,
+        timeoutS: 1800,
       }),
     }));
     expect(result.taskId).toBe(`${result.gameId}:pipeline_run`);
@@ -702,7 +738,7 @@ describe('GameService', () => {
       requireSubscription: true,
       generationTask: expect.objectContaining({
         taskType: 'pipeline_run',
-        timeoutS: 1200,
+        timeoutS: 1800,
       }),
     }));
 
@@ -1058,7 +1094,7 @@ describe('GameService', () => {
     persistGeneratedGameResultSpy.mockRestore();
   });
 
-  it('clamps v2 create timeouts to at least 1200 seconds', async () => {
+  it('clamps v2 create timeouts to at least 1800 seconds', async () => {
     (configService.get as jest.Mock).mockImplementation((key: string, defaultValue?: string) => {
       const values: Record<string, string> = {
         AI_ENGINE_URL: 'http://ai-engine.test',
@@ -1066,7 +1102,7 @@ describe('GameService', () => {
         APP_URL: 'https://gamevallies.com',
         ADMIN_TOKEN: 'test-admin-token',
         PIPELINE_VERSION: 'v2',
-        PIPELINE_TIMEOUT_S: '1200',
+        PIPELINE_TIMEOUT_S: '1800',
       };
       return values[key] ?? defaultValue;
     });
@@ -1095,7 +1131,7 @@ describe('GameService', () => {
 
     expect(generationTaskService.createTask).toHaveBeenCalledWith(expect.objectContaining({
       pipelineVersion: 'v2',
-      timeoutS: 1200,
+      timeoutS: 1800,
     }));
 
     await new Promise((resolve) => setImmediate(resolve));
@@ -1103,7 +1139,7 @@ describe('GameService', () => {
       expect.any(String),
       'user-v2-timeout',
       'make a slow but valid v2 game',
-      1200,
+      1800,
       expect.any(String),
       expect.any(String),
       expect.any(Object),
@@ -3143,7 +3179,7 @@ describe('GameService', () => {
     jest.useRealTimers();
   });
 
-  it('clamps v2 iteration timeouts to at least 1200 seconds', async () => {
+  it('clamps v2 iteration timeouts to at least 1800 seconds', async () => {
     jest.useFakeTimers();
     (configService.get as jest.Mock).mockImplementation((key: string, defaultValue?: string) => {
       const values: Record<string, string> = {
@@ -3152,7 +3188,7 @@ describe('GameService', () => {
         APP_URL: 'https://gamevallies.com',
         ADMIN_TOKEN: 'test-admin-token',
         PIPELINE_VERSION: 'v2',
-        PIPELINE_TIMEOUT_S: '1200',
+        PIPELINE_TIMEOUT_S: '1800',
       };
       return values[key] ?? defaultValue;
     });
@@ -3181,7 +3217,7 @@ describe('GameService', () => {
 
     expect(generationTaskService.createTask).toHaveBeenCalledWith(expect.objectContaining({
       pipelineVersion: 'v2',
-      timeoutS: 1200,
+      timeoutS: 1800,
     }));
 
     jest.runOnlyPendingTimers();
@@ -3192,7 +3228,7 @@ describe('GameService', () => {
       3,
       expect.any(Array),
       '<!DOCTYPE html><html><body>old</body></html>',
-      1200,
+      1800,
       expect.any(String),
       expect.any(String),
       expect.any(Object),

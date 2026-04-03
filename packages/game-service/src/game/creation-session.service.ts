@@ -247,7 +247,7 @@ export class CreationSessionService {
 
     let analysis: AnalyzeTurnResponsePayload;
     try {
-      analysis = await this.analyzeTurnWithRetry(analyzePayload, regionHint);
+      analysis = await this.analyzeTurn(analyzePayload, regionHint);
     } catch (error: any) {
       // AI analysis failed → mark session as abandoned with error info
       const initError = this.extractAiError(error, 'Creation session initialization failed');
@@ -707,26 +707,6 @@ export class CreationSessionService {
         throw new ServiceUnavailableException(message);
       }
       throw new InternalServerErrorException(message);
-    }
-  }
-
-  /**
-   * analyzeTurn with a single retry for transient (non-4xx) failures.
-   */
-  private async analyzeTurnWithRetry(
-    payload: AnalyzeTurnRequestPayload,
-    regionHint?: string,
-  ): Promise<AnalyzeTurnResponsePayload> {
-    try {
-      return await this.analyzeTurn(payload, regionHint);
-    } catch (error: any) {
-      // Only retry transient errors (5xx / network), not client errors (4xx)
-      if (error instanceof BadRequestException) {
-        throw error;
-      }
-      this.logger.warn(`analyzeTurn transient failure, retrying once: ${error?.message}`);
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      return this.analyzeTurn(payload, regionHint);
     }
   }
 

@@ -204,6 +204,64 @@ describe('CreationSessionService', () => {
     );
   });
 
+  it('abandons initialization after a single transient analyze-turn failure without retrying', async () => {
+    repo.updateMany.mockResolvedValue({ count: 1 });
+    repo.create.mockImplementation(async ({ data }: any) => ({
+      id: 'session-retryless',
+      userId: 'user-retryless',
+      status: data.status,
+      entryMode: data.entryMode,
+      initialPrompt: data.initialPrompt,
+      titleDraft: data.titleDraft,
+      revision: data.revision,
+      slotState: data.slotState,
+      missingRequired: data.missingRequired,
+      skippedSlots: data.skippedSlots,
+      currentQuestion: data.currentQuestion,
+      conversation: data.conversation,
+      generatedGameId: null,
+      generationTaskId: null,
+      sourceGameId: data.sourceGameId,
+      questionBudget: data.questionBudget,
+      metadata: data.metadata,
+      createdAt: new Date('2026-03-30T10:00:00.000Z'),
+      updatedAt: new Date('2026-03-30T10:00:00.000Z'),
+    }));
+    (axios.post as jest.Mock).mockRejectedValueOnce({
+      code: 'ETIMEDOUT',
+      message: 'timeout of 5000ms exceeded',
+    });
+
+    const snapshot = await service.createSession('user-retryless', {
+      prompt: 'Make a quick arcade game.',
+      title: 'Retryless',
+    });
+
+    expect(snapshot).toEqual(expect.objectContaining({
+      id: 'session-retryless',
+      status: 'initializing',
+    }));
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(axios.post).toHaveBeenCalledTimes(1);
+    expect(repo.updateMany).toHaveBeenCalledWith({
+      where: { id: 'session-retryless', userId: 'user-retryless', status: 'initializing' },
+      data: expect.objectContaining({
+        status: 'abandoned',
+        metadata: expect.objectContaining({
+          initError: 'timeout of 5000ms exceeded',
+        }),
+      }),
+    });
+    expect(wsGateway.emitSessionError).toHaveBeenCalledWith(
+      'user-retryless',
+      'session-retryless',
+      'timeout of 5000ms exceeded',
+      expect.objectContaining({ reason: 'init_failed' }),
+    );
+  });
+
   it('appends a user answer and advances the session revision', async () => {
     const existingSession = {
       id: 'session-2',

@@ -25,7 +25,9 @@ import json
 import logging
 import os
 import re
+import threading
 import time
+import weakref
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, TypeVar
 
@@ -36,6 +38,8 @@ from .visual_pack_catalog import get_visual_pack, select_visual_pack
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
+_RUNTIME_QA_SEMAPHORES: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, tuple[int, asyncio.Semaphore]]" = weakref.WeakKeyDictionary()
+_RUNTIME_QA_SEMAPHORE_LOCK = threading.Lock()
 
 
 _INSTRUMENTATION_JS = """
@@ -595,6 +599,23 @@ class RuntimeQAPhaseTimeoutError(asyncio.TimeoutError):
         super().__init__(f"{phase} timed out after {timeout_s:.2f}s")
         self.phase = phase
         self.timeout_s = timeout_s
+
+
+def _runtime_qa_max_concurrency() -> int:
+    return max(get_timeout_int("timeout.ai_engine.runtime_qa.max_concurrency", 4, min_value=1), 1)
+
+
+def _runtime_qa_semaphore(max_concurrency: int) -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    with _RUNTIME_QA_SEMAPHORE_LOCK:
+        cached = _RUNTIME_QA_SEMAPHORES.get(loop)
+        if cached is not None:
+            cached_limit, semaphore = cached
+            if cached_limit == max_concurrency:
+                return semaphore
+        semaphore = asyncio.Semaphore(max_concurrency)
+        _RUNTIME_QA_SEMAPHORES[loop] = (max_concurrency, semaphore)
+        return semaphore
 
 
 def _phase_timeout_s(
@@ -2122,11 +2143,18 @@ async def run_runtime_qa(html_code: str, timeout_s: float | None = None) -> Runt
     js_errors: List[str] = []
     start = time.perf_counter()
     browser = None
+    semaphore: asyncio.Semaphore | None = None
     overall_timeout_s = _overall_timeout_s(effective_timeout_s=effective_timeout_s)
     phase_metrics: Dict[str, Any] = {
         "requested_timeout_s": effective_timeout_s,
         "overall_timeout_s": overall_timeout_s,
     }
+    max_concurrency = _runtime_qa_max_concurrency()
+    phase_metrics["max_concurrency"] = max_concurrency
+    queue_started = time.perf_counter()
+    semaphore = _runtime_qa_semaphore(max_concurrency)
+    await semaphore.acquire()
+    phase_metrics["queue_wait_ms"] = int((time.perf_counter() - queue_started) * 1000)
 
     async def _execute() -> RuntimeQAResult:
         nonlocal browser
@@ -2417,3 +2445,5 @@ async def run_runtime_qa(html_code: str, timeout_s: float | None = None) -> Runt
         if browser is not None:
             with contextlib.suppress(Exception):
                 await browser.close()
+        if semaphore is not None:
+            semaphore.release()
