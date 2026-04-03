@@ -15,7 +15,7 @@ def test_get_raw_uses_catalog_default_when_db_row_missing():
     ):
         value = timeout_store.get_raw("timeout.pipeline.default_s", 999)
 
-    assert value == "1200"
+    assert value == "1800"
 
 
 def test_timeout_store_cache_ttl_falls_back_to_catalog_default_not_env():

@@ -1999,6 +1999,18 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     return /timed out|timeout|deadline exceeded|ECONNABORTED/i.test(message);
   }
 
+  private isTransientUpstreamSnapshotError(error: unknown): boolean {
+    if (this.isTimeoutError(error)) {
+      return true;
+    }
+    const status = Number((error as any)?.response?.status ?? 0);
+    if (status >= 500) {
+      return true;
+    }
+    const code = String((error as any)?.code || '').toUpperCase();
+    return ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN'].includes(code);
+  }
+
   private isFinalTaskStatus(status?: string | null): status is Exclude<EffectiveTaskStatus, 'queued' | 'running'> {
     return status === 'succeeded' || status === 'failed' || status === 'canceled' || status === 'timed_out';
   }
@@ -2303,6 +2315,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     await this.ensureTimeoutConfigCache();
     const deadlineMs = Date.now() + this.buildUpstreamTimeoutMs(params.timeoutS) + this.getUpstreamDeadlineGraceMs();
     let runningMarked = false;
+    let consecutiveSnapshotFailures = 0;
+    let lastSnapshotError: string | null = null;
 
     while (Date.now() <= deadlineMs) {
       if (params.taskId && params.gameId) {
@@ -2316,22 +2330,48 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         }
       }
 
-      const snapshot = await this.fetchUpstreamTaskSnapshot(params.aiEngineBaseUrl, params.upstreamTaskId);
-      if (snapshot) {
-        if (snapshot.status === 'running' && params.taskId && !runningMarked) {
-          runningMarked = await Promise.resolve(this.generationTaskService.markRunning(params.taskId))
-            .then(() => true)
-            .catch(() => false);
+      try {
+        const snapshot = await this.fetchUpstreamTaskSnapshot(params.aiEngineBaseUrl, params.upstreamTaskId);
+        consecutiveSnapshotFailures = 0;
+        lastSnapshotError = null;
+        if (snapshot) {
+          if (snapshot.status === 'running' && params.taskId && !runningMarked) {
+            runningMarked = await Promise.resolve(this.generationTaskService.markRunning(params.taskId))
+              .then(() => true)
+              .catch(() => false);
+          }
+          if (snapshot.status !== 'queued' && snapshot.status !== 'running') {
+            return snapshot;
+          }
         }
-        if (snapshot.status !== 'queued' && snapshot.status !== 'running') {
-          return snapshot;
+      } catch (error) {
+        const message = this.extractErrorMessage(error);
+        if (!this.isTransientUpstreamSnapshotError(error)) {
+          throw error;
+        }
+        consecutiveSnapshotFailures += 1;
+        lastSnapshotError = message;
+        if (params.taskId) {
+          const localTerminalSnapshot = await this.resolveDurableLocalTaskSnapshot(params.taskId);
+          if (localTerminalSnapshot) {
+            return localTerminalSnapshot;
+          }
+        }
+        if (consecutiveSnapshotFailures === 1 || consecutiveSnapshotFailures % 5 === 0) {
+          this.logger.warn(
+            `Transient upstream snapshot failure for ${params.upstreamTaskId} (${consecutiveSnapshotFailures}): ${message}`,
+          );
         }
       }
 
       await new Promise((resolve) => setTimeout(resolve, this.getUpstreamPollIntervalMs()));
     }
 
-    throw new Error(`Upstream AI task ${params.upstreamTaskId} timed out while waiting for completion`);
+    throw new Error(
+      lastSnapshotError
+        ? `Upstream AI task ${params.upstreamTaskId} timed out while waiting for completion (last snapshot error: ${lastSnapshotError})`
+        : `Upstream AI task ${params.upstreamTaskId} timed out while waiting for completion`,
+    );
   }
 
   private async getStoredFailureResponseData(taskId: string): Promise<Record<string, any> | null> {

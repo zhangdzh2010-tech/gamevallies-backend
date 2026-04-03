@@ -147,7 +147,7 @@ async def _relay_progress_to_game_service(
 def _resolve_timeout_s(value: Optional[int]) -> int:
     if value is not None:
         return int(value)
-    return get_timeout_int("timeout.pipeline.default_s", 1200, min_value=30, max_value=3600)
+    return get_timeout_int("timeout.pipeline.default_s", 1800, min_value=30, max_value=3600)
 
 
 def _game_service_headers() -> dict[str, str]:
