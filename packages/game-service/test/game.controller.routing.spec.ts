@@ -2,6 +2,7 @@ import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { CreatorReputationService } from '../src/game/creator-reputation.service';
+import { CreationSessionRealtimeService } from '../src/game/creation-session-realtime.service';
 import { CreationSessionService } from '../src/game/creation-session.service';
 import { GameController } from '../src/game/game.controller';
 import { GameService } from '../src/game/game.service';
@@ -40,6 +41,12 @@ describe('GameController routing', () => {
             skipCurrentQuestion: jest.fn(),
             generateFromSession: jest.fn(),
             abandonSession: jest.fn(),
+          },
+        },
+        {
+          provide: CreationSessionRealtimeService,
+          useValue: {
+            streamSession: jest.fn(),
           },
         },
       ],

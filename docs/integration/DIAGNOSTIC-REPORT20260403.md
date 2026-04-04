@@ -1037,6 +1037,7 @@ CURRENT SAFE PATCH ANCHORS:
 | 6 | 已实现未上线 | diversity block 和创意约束放松已完成代码实现，但 `ai-engine / prompt catalog` 尚未完整上线。 |
 | 10 | 已实现未上线 | `AsyncClient + Semaphore` 并发治理已完成代码实现，但 `ai-engine` 尚未按该方案重发生产。 |
 | 12 | 已实现未上线 | `localStorage / sessionStorage` 放开已完成代码实现，但 `ai-engine` 尚未按该方案重发生产。 |
+| 15 | 已实现未上线 | `game-service` 侧 BullMQ 队列执行、Worker、重复调度 active task sweep 已完成代码接入，并已替换 create / iterate 的本地 `setImmediate` 派发；但生产 Redis / Worker 形态尚未按该方案上线。 |
 
 ### 11.2 部分上线待排障
 
@@ -1053,8 +1054,7 @@ CURRENT SAFE PATCH ANCHORS:
 | 9 | 未实现 | L4 `gameOver / score` 仍未从 `ERROR` 调整为 `WARNING`。 |
 | 11 | 未实现 | `ENABLE_LLM_DESIGN_PASS=true` 尚未开启。 |
 | 13 | 未实现 | WebGL 放开尚未实施。 |
-| 15 | 未实现 | BullMQ 队列化替代内存 `AsyncTaskManager` 尚未开始。 |
-| 16 | 未实现 | `game-service` 多实例 / 集群化尚未开始。 |
+| 16 | 未实现 | `game-service` 多实例 / 集群化尚未开始正式部署；本轮仅先完成了 BullMQ 队列化这一前置条件。 |
 
 ### 11.4 本轮复核与故障修复补充
 
@@ -1066,6 +1066,7 @@ CURRENT SAFE PATCH ANCHORS:
 ### 11.5 本地验证结果
 
 - 已通过 `npx tsc -p packages/game-service/tsconfig.json --noEmit`
+- 已通过 `npm test --workspace=packages/game-service -- --runInBand`（`161 passed`）
 - 已通过 `python -m py_compile scripts/run_live_generation_concurrency.py`
 - 已通过 `python -m compileall packages/ai-engine/src`
 
@@ -1175,16 +1176,34 @@ CURRENT SAFE PATCH ANCHORS:
 | P1-4 | 首轮对话快速通道 | 已完成 | `ai-engine` 尚未按本方案重发生产 | 无 | 已实现未上线 |
 | P1-5 | Prompt 合并去重 | 已完成 | `ai-engine` 尚未按本方案重发生产 | 无 | 已实现未上线 |
 | P1-6 | 放松 `smallest implementation`，接入 diversity block | 已完成 | `ai-engine` / prompt catalog 尚未完整上线 | 无 | 已实现未上线 |
-| P1-7 | Token budget 提升 | 未完成 | 未部署 | 无 | 未实现 |
-| P1-8 | 放宽实体/系统上限 | 未完成 | 未部署 | 无 | 未实现 |
-| P1-9 | L4 `gameOver/score` 从 `ERROR` 改 `WARNING` | 未完成 | 未部署 | 无 | 未实现 |
+| P1-7 | Token budget 提升 | 已完成 | 未部署 | `python -m compileall packages/ai-engine/src`、`python -m pytest packages/ai-engine/tests/test_qa_pipeline.py packages/ai-engine/tests/test_pipeline_v2_runner.py` 通过 | 已实现未上线 |
+| P1-8 | 放宽实体/系统上限 | 已完成 | 未部署 | `python -m compileall packages/ai-engine/src`、`python -m pytest packages/ai-engine/tests/test_qa_pipeline.py packages/ai-engine/tests/test_pipeline_v2_runner.py` 通过 | 已实现未上线 |
+| P1-9 | L4 `gameOver/score` 从 `ERROR` 改 `WARNING` | 已完成 | 未部署 | `python -m compileall packages/ai-engine/src`、`python -m pytest packages/ai-engine/tests/test_qa_pipeline.py packages/ai-engine/tests/test_pipeline_v2_runner.py` 通过 | 已实现未上线 |
 | P1-10 | `AsyncClient + Semaphore` 并发治理 | 已完成 | `ai-engine` 尚未按本方案重发生产 | 无 | 已实现未上线 |
-| P2-11 | `ENABLE_LLM_DESIGN_PASS=true` | 未完成 | 未部署 | 无 | 未实现 |
+| P2-11 | `ENABLE_LLM_DESIGN_PASS=true` | 已完成 | 未部署 | `python -m compileall packages/ai-engine/src` 通过 | 已实现未上线 |
 | P2-12 | 允许 `localStorage/sessionStorage` | 已完成 | `ai-engine` 尚未按本方案重发生产 | 无 | 已实现未上线 |
-| P2-13 | 允许 WebGL | 未完成 | 未部署 | 无 | 未实现 |
+| P2-13 | 允许 WebGL | 已完成 | 未部署 | `python -m compileall packages/ai-engine/src`、`python -m pytest packages/ai-engine/tests/test_qa_pipeline.py packages/ai-engine/tests/test_pipeline_v2_runner.py`、`npx tsc -p packages/game-service/tsconfig.json --noEmit` 通过 | 已实现未上线 |
 | P2-14 | 流式 SSE 返回对话 | 后端已完成 | `game-service` 已上线；前端未接入 | 已验证到“路由已上线但 SSE 超时” | 部分上线待排障 |
-| P2-15 | BullMQ 替代内存任务管理 | 未完成 | 未部署 | 无 | 未实现 |
-| P2-16 | `game-service` 多实例 / 集群化 | 未完成 | 未部署 | 无 | 未实现 |
+| P2-15 | BullMQ 替代内存任务管理 | 已完成（`game-service` 侧最小可交付） | 未部署 | `npx tsc -p packages/game-service/tsconfig.json --noEmit`、`npm test --workspace=packages/game-service -- --runInBand`（`161 passed`）通过 | 已实现未上线 |
+| P2-16 | `game-service` 多实例 / 集群化 | 部分完成（已具备队列化前置条件） | 未部署 | 依赖 `P2-15` 本地验证通过，但尚无多实例现网验证 | 未实现（前置已完成） |
+
+#### 2026-04-04 实施更新
+
+- 本轮已继续完成原方案中的 `P1-7`、`P1-8`、`P1-9`、`P2-11`、`P2-13`、`P2-15` 代码实现，并已同步更新上表状态。
+- `P1-7`：提高 `LLM_LONG_GENERATION_MAX_TOKENS`、`LLM_GENERATION_TOKEN_BUDGET_STANDARD`、`LLM_GENERATION_TOKEN_BUDGET_COMPLEX`，并提高 design pass token/timeout 预算。
+- `P1-8`：放宽预算判断阈值，扩大 prompt 中允许的实体/系统规模，并在 spec 构建阶段自动补充实体种子，降低“生成过度简化”的概率。
+- `P1-9`：runtime contract 不再把缺失 scoring loop / terminal state 作为硬阻断；QA 中“缺失 terminal/completion state”已降为 warning。
+- `P2-11`：`ENABLE_LLM_DESIGN_PASS=true` 已打开。
+- `P2-13`：已放开 runtime contract、prompt catalog、QA blank-screen 检测与 `game-service` schema 的 WebGL 默认限制。
+- `P2-15`：`game-service` 已接入 BullMQ 队列执行层，create / iterate 后台任务改为“优先入队、失败再本地回退”，活跃任务 sweep 也已改成“优先使用 repeatable job，失败再回退本地 timer”，并新增 Worker 负责消费 pipeline run / iterate / reconcile 任务。
+- 本轮本地验证已通过：
+  - `python -m compileall packages/ai-engine/src`
+  - `python -m pytest packages/ai-engine/tests/test_qa_pipeline.py packages/ai-engine/tests/test_pipeline_v2_runner.py`（`123 passed`）
+  - `npx tsc -p packages/game-service/tsconfig.json --noEmit`
+  - `npm test --workspace=packages/game-service -- --runInBand`（`161 passed`）
+- 原方案中仍未完成生产落地的核心基础设施项只剩：
+  - `P2-16 game-service 多实例 / 集群化`
+- 其中 `P2-16` 的关键代码前置条件已具备：后台执行已不再强依赖单进程 `setImmediate + local timer`，后续可继续推进独立 Worker / 多实例部署与现网验证。
 
 ### 11.9 附加线上修复（非原 P0/P1/P2 编号）
 

@@ -28,6 +28,7 @@ describe('GameService', () => {
   let jwtService: JwtService;
   let wsGateway: any;
   let generationTaskService: any;
+  let generationQueueService: any;
 
   const mockAsyncSuccess = (upstreamTaskId: string, result: Record<string, unknown>) => {
     mockedAxios.post.mockResolvedValueOnce({
@@ -118,6 +119,13 @@ describe('GameService', () => {
         createdAt: new Date(),
         updatedAt: new Date(),
       })),
+      createArtifact: jest.fn(async ({ taskId, artifactType, payload, metadata }: any) => ({
+        id: `${taskId || 'artifact'}:${artifactType}`,
+        taskId,
+        artifactType,
+        payloadText: typeof payload === 'string' ? payload : JSON.stringify(payload ?? null),
+        metadata: metadata ?? {},
+      })),
       markRunning: jest.fn(async () => undefined),
       recordProgress: jest.fn(async () => undefined),
       markSucceeded: jest.fn(async () => undefined),
@@ -139,6 +147,15 @@ describe('GameService', () => {
         pollUrl: `/api/v1/games/tasks/${task.id}`,
         artifactsUrl: `/api/v1/games/tasks/${task.id}/artifacts`,
       })),
+    };
+    generationQueueService = {
+      ensureReady: jest.fn(async () => false),
+      ensureOperational: jest.fn(async () => false),
+      enqueueJob: jest.fn(async () => false),
+      ensureActiveTaskSweepScheduler: jest.fn(async () => false),
+      registerWorkerProcessor: jest.fn(async () => false),
+      closeWorker: jest.fn(async () => undefined),
+      closeQueue: jest.fn(async () => undefined),
     };
     jwtService = {
       sign: jest.fn((payload: any) => Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')),
@@ -247,6 +264,7 @@ describe('GameService', () => {
       jwtService,
       wsGateway,
       generationTaskService,
+      generationQueueService,
     );
   });
 
@@ -3096,6 +3114,143 @@ describe('GameService', () => {
     );
     executeIterationTaskSpy.mockRestore();
     jest.useRealTimers();
+  });
+
+  it('persists the iterate source snapshot before queue dispatch', async () => {
+    generationQueueService.enqueueJob.mockResolvedValue(true);
+
+    prisma.game.findUnique.mockResolvedValue({
+      id: 'game-iter-snapshot',
+      authorId: 'user-iter-snapshot',
+      version: 2,
+      status: 'published',
+      updatedAt: new Date('2026-04-04T10:00:00.000Z'),
+    });
+    prisma.generationTask.findFirst.mockResolvedValue(null);
+    bundleService.getLatestBundle.mockResolvedValue({
+      version: 2,
+      htmlCode: '<!DOCTYPE html><html><body>snapshot-source</body></html>',
+      metadata: {},
+    });
+    bundleService.getBundleHistory.mockResolvedValue([]);
+    generationTaskService.getLatestTaskForGame.mockResolvedValue(null);
+
+    await service.iterate('game-iter-snapshot', 'user-iter-snapshot', {
+      feedback: 'make the pacing tighter',
+    } as any);
+
+    expect(generationTaskService.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({
+        currentBundleVersion: 2,
+      }),
+    }));
+    expect(generationTaskService.createArtifact).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'game-iter-snapshot:pipeline_iterate',
+      gameId: 'game-iter-snapshot',
+      userId: 'user-iter-snapshot',
+      artifactType: 'iteration_source_code',
+      contentType: 'text/html',
+      payload: '<!DOCTYPE html><html><body>snapshot-source</body></html>',
+      metadata: expect.objectContaining({
+        bundleVersion: 2,
+        source: 'iterate_request_snapshot',
+      }),
+    }));
+  });
+
+  it('reconciles queued pipeline jobs that already have an upstream task id instead of resubmitting them', async () => {
+    prisma.generationTask.findUnique.mockResolvedValue({
+      id: 'task-existing-upstream',
+      gameId: 'game-existing-upstream',
+      userId: 'user-existing-upstream',
+      status: 'running',
+      timeoutS: 900,
+      upstreamTaskId: 'upstream-existing',
+      metadata: {
+        description: 'runner',
+      },
+      game: {
+        id: 'game-existing-upstream',
+        title: 'Existing upstream game',
+        description: 'runner',
+        canPlay: true,
+        requireSubscription: false,
+        accessGrantSource: GameAccessGrantSource.none,
+        accessGrantSubscriptionId: null,
+      },
+    });
+
+    const reconcileSpy = jest.spyOn(service, 'reconcileGenerationTask').mockResolvedValue({} as any);
+    const executePipelineTaskSpy = jest.spyOn(service as any, 'executePipelineTask').mockResolvedValue(undefined);
+
+    await service.processQueuedPipelineRunTask('task-existing-upstream');
+
+    expect(reconcileSpy).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'task-existing-upstream',
+      upstreamTaskId: 'upstream-existing',
+    }));
+    expect(executePipelineTaskSpy).not.toHaveBeenCalled();
+  });
+
+  it('replays queued iteration jobs from the persisted request snapshot instead of the latest bundle', async () => {
+    prisma.generationTask.findUnique.mockResolvedValue({
+      id: 'task-iter-queued',
+      gameId: 'game-iter-queued',
+      userId: 'user-iter-queued',
+      status: 'queued',
+      timeoutS: 900,
+      version: 3,
+      upstreamTaskId: null,
+      metadata: {
+        feedback: 'make it tighter',
+        conversation: [{ role: 'user', content: 'make it tighter' }],
+        pipelineVersion: 'v2',
+        currentBundleVersion: 2,
+      },
+      game: {
+        id: 'game-iter-queued',
+        title: 'Queued iterate game',
+        description: 'runner',
+        version: 2,
+        status: 'published',
+        visibility: 'public',
+        canPlay: true,
+        requireSubscription: false,
+        accessGrantSource: GameAccessGrantSource.none,
+        accessGrantSubscriptionId: null,
+        forkedFrom: null,
+      },
+    });
+    generationTaskService.findLatestArtifactForTask.mockResolvedValue({
+      payloadText: '<!DOCTYPE html><html><body>persisted-source</body></html>',
+      metadata: { truncated: false },
+      contentType: 'text/html',
+    });
+    bundleService.getLatestBundle.mockResolvedValue({
+      htmlCode: '<!DOCTYPE html><html><body>latest-source</body></html>',
+    });
+
+    const executeIterationTaskSpy = jest.spyOn(service as any, 'executeIterationTask').mockResolvedValue(undefined);
+
+    await service.processQueuedIterationTask('task-iter-queued');
+
+    expect(executeIterationTaskSpy).toHaveBeenCalledWith(
+      'game-iter-queued',
+      'user-iter-queued',
+      'make it tighter',
+      3,
+      [{ role: 'user', content: 'make it tighter' }],
+      '<!DOCTYPE html><html><body>persisted-source</body></html>',
+      900,
+      'task-iter-queued',
+      undefined,
+      expect.objectContaining({
+        game: expect.objectContaining({
+          version: 2,
+          status: 'published',
+        }),
+      }),
+    );
   });
 
   it('inherits persisted landscape orientation when scheduling v2 iteration', async () => {

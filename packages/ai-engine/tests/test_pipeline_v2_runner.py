@@ -91,6 +91,39 @@ def test_runtime_contract_accepts_completion_state_constant_alias():
     assert not any("terminal or completion state" in error.message.lower() for error in errors)
 
 
+def test_runtime_contract_accepts_webgl_context_when_canvas2d_is_not_required():
+    runner = V2PipelineRunner()
+    contract = GameRuntimeContract(runtime_profile="casual_action")
+    code = """
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      </head>
+      <body>
+        <canvas id="gameCanvas"></canvas>
+        <script>
+          const canvas = document.getElementById('gameCanvas');
+          const gl = canvas.getContext('webgl');
+          canvas.width = 360;
+          canvas.height = 640;
+          let state = 'ready';
+          function restartGame() { state = 'ready'; }
+          function startGame() { state = 'playing'; }
+          canvas.addEventListener('pointerdown', function () {
+            startGame();
+            gl.viewport(0, 0, canvas.width, canvas.height);
+          });
+        </script>
+      </body>
+    </html>
+    """
+
+    errors = runner._validate_runtime_contract(code, contract)
+    assert not any(error.type == "contract_canvas" for error in errors)
+
+
 def test_runtime_contract_treats_boot_and_ready_as_same_startup_phase():
     runner = V2PipelineRunner()
     code = """
@@ -674,6 +707,48 @@ def test_validate_runtime_contract_accepts_object_mode_terminal_state_transition
 
     errors = runner._validate_runtime_contract(code, contract)
 
+    assert not any(
+        error.type == "contract_gameplay"
+        and "terminal or completion state" in error.message.lower()
+        for error in errors
+    )
+
+
+def test_validate_runtime_contract_allows_sandbox_loops_without_blocking_score_or_terminal_errors():
+    runner = V2PipelineRunner()
+    contract = GameRuntimeContract(runtime_profile="casual_action")
+    code = """
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      </head>
+      <body>
+        <canvas id="gameCanvas"></canvas>
+        <script>
+          const canvas = document.getElementById('gameCanvas');
+          const ctx = canvas.getContext('2d');
+          canvas.width = 360;
+          canvas.height = 640;
+          let state = 'boot';
+          function restartGame() { state = 'ready'; }
+          function startGame() { state = 'playing'; }
+          canvas.addEventListener('pointerdown', function handleTap() {
+            startGame();
+            ctx.fillRect(0, 0, 32, 32);
+          });
+        </script>
+      </body>
+    </html>
+    """
+
+    errors = runner._validate_runtime_contract(code, contract)
+    assert not any(
+        error.type == "contract_gameplay"
+        and "visible scoring loop" in error.message.lower()
+        for error in errors
+    )
     assert not any(
         error.type == "contract_gameplay"
         and "terminal or completion state" in error.message.lower()

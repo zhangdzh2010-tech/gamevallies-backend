@@ -12,6 +12,7 @@ describe('Game locking behavior', () => {
   let configService: ConfigService;
   let jwtService: JwtService;
   let generationTaskService: any;
+  let generationQueueService: any;
 
   beforeEach(() => {
     prisma = {
@@ -43,6 +44,15 @@ describe('Game locking behavior', () => {
       requestCancel: jest.fn(),
       toTaskSummary: jest.fn(),
     };
+    generationQueueService = {
+      ensureReady: jest.fn(async () => false),
+      ensureOperational: jest.fn(async () => false),
+      enqueueJob: jest.fn(async () => false),
+      ensureActiveTaskSweepScheduler: jest.fn(async () => false),
+      registerWorkerProcessor: jest.fn(async () => false),
+      closeWorker: jest.fn(async () => undefined),
+      closeQueue: jest.fn(async () => undefined),
+    };
     jwtService = {
       sign: jest.fn((payload: any) => Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')),
       verify: jest.fn((token: string) => JSON.parse(Buffer.from(token, 'base64url').toString('utf8'))),
@@ -65,6 +75,7 @@ describe('Game locking behavior', () => {
       jwtService,
       wsGateway,
       generationTaskService,
+      generationQueueService,
     );
   });
 

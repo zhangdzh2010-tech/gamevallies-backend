@@ -34,6 +34,11 @@ import {
   IterateGameDto,
 } from './dto';
 import { GenerationTaskService } from './generation-task.service';
+import { GenerationQueueService } from './generation-queue.service';
+import {
+  GENERATION_QUEUE_JOB_PIPELINE_ITERATE,
+  GENERATION_QUEUE_JOB_PIPELINE_RUN,
+} from './generation-queue.types';
 import {
   TIMEOUT_CONFIG_CATALOG,
   TIMEOUT_CONFIG_CATALOG_BY_KEY,
@@ -325,6 +330,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     private jwtService: JwtService,
     private wsGateway: GameWebSocketGateway,
     private generationTaskService: GenerationTaskService,
+    private generationQueueService: GenerationQueueService,
   ) {
     this.aiEngineUrl = this.configService.get<string>(
       'AI_ENGINE_URL',
@@ -332,15 +338,36 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  onModuleInit(): void {
-    void this.refreshTimeoutConfigCache().catch((error) => {
+  async onModuleInit(): Promise<void> {
+    await this.refreshTimeoutConfigCache().catch((error) => {
       this.logger.warn(`Failed to warm timeout config cache on init: ${error?.message || error}`);
     });
-    this.startActiveTaskSweep();
+    if (!this.timeoutConfigLoadedAt) {
+      await this.syncBackgroundExecutionMode().catch((error) => {
+        this.logger.warn(`Failed to initialize background execution mode on init: ${error?.message || error}`);
+      });
+    }
   }
 
   onModuleDestroy(): void {
     this.stopActiveTaskSweep();
+  }
+
+  private async syncBackgroundExecutionMode(): Promise<void> {
+    const queueReady = await this.generationQueueService.ensureOperational().catch((error) => {
+      this.logger.warn(`Failed to initialize generation queue: ${error?.message || error}`);
+      return false;
+    });
+    if (queueReady) {
+      this.stopActiveTaskSweep();
+      const scheduled = await this.generationQueueService.ensureActiveTaskSweepScheduler(
+        this.getActiveTaskSweepIntervalMs(),
+      );
+      if (scheduled) {
+        return;
+      }
+    }
+    this.startActiveTaskSweep();
   }
 
   private startActiveTaskSweep(): void {
@@ -364,12 +391,9 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   }
 
   private restartActiveTaskSweepIfNeeded(): void {
-    const nextIntervalMs = this.getActiveTaskSweepIntervalMs();
-    if (this.activeTaskSweepTimer && this.currentSweepIntervalMs === nextIntervalMs) {
-      return;
-    }
-    this.stopActiveTaskSweep();
-    this.startActiveTaskSweep();
+    void this.syncBackgroundExecutionMode().catch((error) => {
+      this.logger.warn(`Failed to resync active task sweep mode: ${error?.message || error}`);
+    });
   }
 
   public async refreshTimeoutConfigCache(): Promise<void> {
@@ -390,7 +414,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
 
         this.timeoutConfigCache = nextCache;
         this.timeoutConfigLoadedAt = Date.now();
-        this.restartActiveTaskSweepIfNeeded();
+        await this.syncBackgroundExecutionMode();
       })().finally(() => {
         this.timeoutConfigRefreshPromise = null;
       });
@@ -683,7 +707,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       runtime_profile: profileId,
       metadata: {},
       canvas: {
-        requires_canvas_2d: renderContract.requiresCanvas2D ?? true,
+        requires_canvas_2d: renderContract.requiresCanvas2D ?? false,
+        allow_webgl: renderContract.allowWebgl ?? !(renderContract.requiresCanvas2D === true),
         must_render_within_ms: renderContract.mustRenderWithinMs ?? 1500,
         orientation: (schema.mobileLayoutContract as Record<string, unknown> | undefined)?.orientation ?? 'portrait_first',
         ui_scale_mode: (schema.mobileLayoutContract as Record<string, unknown> | undefined)?.uiScaleMode ?? 'short_edge',
@@ -2587,8 +2612,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           select: {
             id: true,
             title: true,
+            description: true,
             authorId: true,
+            gameType: true,
             status: true,
+            visibility: true,
             version: true,
             publishedAt: true,
             failedStage: true,
@@ -2599,6 +2627,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
             accessGrantSubscriptionId: true,
             canPlay: true,
             requireSubscription: true,
+            forkedFrom: true,
           },
         },
       },
@@ -3226,6 +3255,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           contractVersion: runtimeContract?.version ?? null,
             metadata: {
               description,
+              title,
               region: executionRegion,
               pipelineVersion,
               orientation: requestedOrientation ?? null,
@@ -3233,6 +3263,14 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
               creationSessionId: dto.creationSessionId ?? null,
               entryMode: dto.entryMode ?? null,
               sourceGameId: dto.sourceGameId ?? null,
+              sourceSpec: dto.sourceSpec ?? null,
+              promptBundleSnapshot: promptBundleSnapshot ?? null,
+              runtimeContract: runtimeContract ?? null,
+              canPlay,
+              requireSubscription,
+              quotaRemaining,
+              accessGrantSource,
+              accessGrantSubscriptionId,
             },
             client: tx,
           });
@@ -3256,33 +3294,33 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       });
 
       // Run pipeline asynchronously – client subscribes to WebSocket for progress
-      setImmediate(() => {
-        void this.executePipelineTask(
+      const enqueued = await this.generationQueueService.enqueueJob(
+        GENERATION_QUEUE_JOB_PIPELINE_RUN,
+        task.id,
+      );
+      if (!enqueued) {
+        this.scheduleLocalPipelineExecution(
           gameId,
           userId,
           description,
           timeoutS,
           task.id,
           executionRegion,
-            {
-              pipelineVersion,
-              title,
-              orientation: requestedOrientation,
-              generationTier: requestedGenerationTier,
-              access,
-              sourceSpec: dto.sourceSpec ?? null,
-              creationSessionId: dto.creationSessionId ?? null,
-              entryMode: dto.entryMode ?? null,
-              sourceGameId: dto.sourceGameId ?? null,
-              promptBundleSnapshot,
-              runtimeContract,
-            },
-        ).catch((error) => {
-          this.logger.error(
-            `Background pipeline task crashed for game ${gameId}: ${this.extractErrorMessage(error)}`,
-          );
-        });
-      });
+          {
+            pipelineVersion,
+            title,
+            orientation: requestedOrientation,
+            generationTier: requestedGenerationTier,
+            access,
+            sourceSpec: dto.sourceSpec ?? null,
+            creationSessionId: dto.creationSessionId ?? null,
+            entryMode: dto.entryMode ?? null,
+            sourceGameId: dto.sourceGameId ?? null,
+            promptBundleSnapshot,
+            runtimeContract,
+          },
+        );
+      }
 
       const generationTask = this.withAuthorPreviewUrls(
         this.generationTaskService.toTaskSummary(task),
@@ -3304,6 +3342,205 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       this.logger.error(`Failed to create game: ${error.message}`);
       throw error;
     }
+  }
+
+  private scheduleLocalPipelineExecution(
+    gameId: string,
+    userId: string,
+    description: string,
+    timeoutS?: number,
+    taskId?: string,
+    executionRegion?: string,
+    options: CreateExecutionOptions = {},
+  ): void {
+    setImmediate(() => {
+      void this.executePipelineTask(
+        gameId,
+        userId,
+        description,
+        timeoutS,
+        taskId,
+        executionRegion,
+        options,
+      ).catch((error) => {
+        this.logger.error(
+          `Background pipeline task crashed for game ${gameId}: ${this.extractErrorMessage(error)}`,
+        );
+      });
+    });
+  }
+
+  private scheduleLocalIterationExecution(
+    gameId: string,
+    userId: string,
+    feedback: string,
+    nextVersion: number,
+    conversationHistory: Array<{ role: string; content: string }>,
+    currentCode: string,
+    timeoutS?: number,
+    taskId?: string,
+    executionRegion?: string,
+    options: IterateExecutionOptions = {},
+  ): void {
+    setImmediate(() => {
+      void this.executeIterationTask(
+        gameId,
+        userId,
+        feedback,
+        nextVersion,
+        conversationHistory,
+        currentCode,
+        timeoutS,
+        taskId,
+        executionRegion,
+        options,
+      ).catch((error) => {
+        this.logger.error(
+          `Background iteration task crashed for game ${gameId}: ${this.extractErrorMessage(error)}`,
+        );
+      });
+    });
+  }
+
+  private normalizeTaskMetadataRecord(metadata: unknown): Record<string, any> {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      return {};
+    }
+    return metadata as Record<string, any>;
+  }
+
+  private extractTaskMetadataObject<T = Record<string, unknown>>(
+    metadata: Record<string, any>,
+    key: string,
+  ): T | null {
+    const value = metadata[key];
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+    return value as T;
+  }
+
+  private async restoreQueuedIterationSourceCode(
+    taskId: string,
+    gameId: string,
+    metadata: Record<string, any>,
+  ): Promise<string> {
+    const sourceArtifact = await this.generationTaskService.findLatestArtifactForTask(
+      taskId,
+      'iteration_source_code',
+    ).catch(() => null);
+
+    const truncated = Boolean(
+      sourceArtifact?.metadata
+      && typeof sourceArtifact.metadata === 'object'
+      && !Array.isArray(sourceArtifact.metadata)
+      && (sourceArtifact.metadata as Record<string, unknown>).truncated,
+    );
+    if (!truncated && typeof sourceArtifact?.payloadText === 'string' && sourceArtifact.payloadText.trim()) {
+      return sourceArtifact.payloadText;
+    }
+
+    const bundleVersion = Number.parseInt(String(metadata.currentBundleVersion ?? ''), 10);
+    if (Number.isFinite(bundleVersion) && bundleVersion > 0) {
+      const sourceBundle = await this.bundleService.getBundle(gameId, bundleVersion).catch(() => null);
+      if (typeof sourceBundle?.htmlCode === 'string' && sourceBundle.htmlCode.trim()) {
+        return sourceBundle.htmlCode;
+      }
+    }
+
+    const latestBundle = await this.bundleService.getLatestBundle(gameId).catch(() => null);
+    return typeof latestBundle?.htmlCode === 'string' ? latestBundle.htmlCode : '';
+  }
+
+  async processQueuedPipelineRunTask(taskId: string): Promise<void> {
+    const task = await this.getTaskWithGame(taskId);
+    if (!task || this.isFinalTaskStatus(task.status)) {
+      return;
+    }
+    if (task.upstreamTaskId) {
+      await this.reconcileGenerationTask(task);
+      return;
+    }
+
+    const metadata = this.normalizeTaskMetadataRecord(task.metadata);
+    const access: AccessGrantDecision = {
+      canPlay: Boolean(metadata.canPlay ?? task.game?.canPlay ?? true),
+      requireSubscription: Boolean(metadata.requireSubscription ?? task.game?.requireSubscription ?? false),
+      quotaRemaining: Number(metadata.quotaRemaining ?? 0) || 0,
+      accessGrantSource: (metadata.accessGrantSource || task.game?.accessGrantSource || GameAccessGrantSource.none) as GameAccessGrantSource,
+      accessGrantSubscriptionId: (metadata.accessGrantSubscriptionId || task.game?.accessGrantSubscriptionId || null) as string | null,
+    };
+
+    await this.executePipelineTask(
+      task.gameId,
+      task.userId,
+      String(metadata.description || task.game?.description || ''),
+      task.timeoutS ?? undefined,
+      task.id,
+      task.region || undefined,
+      {
+        pipelineVersion: metadata.pipelineVersion === 'v1' ? 'v1' : 'v2',
+        title: String(metadata.title || task.game?.title || '').trim() || undefined,
+        orientation: this.normalizeRequestedOrientation(metadata.orientation),
+        generationTier: this.normalizeRequestedGenerationTier(metadata.generationTier) || 'standard',
+        access,
+        sourceSpec: this.extractTaskMetadataObject<Record<string, unknown>>(metadata, 'sourceSpec'),
+        creationSessionId: typeof metadata.creationSessionId === 'string' ? metadata.creationSessionId : null,
+        entryMode: typeof metadata.entryMode === 'string' ? metadata.entryMode : null,
+        sourceGameId: typeof metadata.sourceGameId === 'string' ? metadata.sourceGameId : null,
+        promptBundleSnapshot: this.extractTaskMetadataObject<PromptBundleSnapshotPayload>(metadata, 'promptBundleSnapshot'),
+        runtimeContract: this.extractTaskMetadataObject<RuntimeContractPayload>(metadata, 'runtimeContract'),
+      },
+    );
+  }
+
+  async processQueuedIterationTask(taskId: string): Promise<void> {
+    const task = await this.getTaskWithGame(taskId);
+    if (!task || this.isFinalTaskStatus(task.status)) {
+      return;
+    }
+    if (task.upstreamTaskId) {
+      await this.reconcileGenerationTask(task);
+      return;
+    }
+
+    const metadata = this.normalizeTaskMetadataRecord(task.metadata);
+    const currentCode = await this.restoreQueuedIterationSourceCode(task.id, task.gameId, metadata);
+    await this.executeIterationTask(
+      task.gameId,
+      task.userId,
+      String(metadata.feedback || ''),
+      task.version || 1,
+      this.normalizeConversationHistory(metadata.conversation),
+      currentCode,
+      task.timeoutS ?? undefined,
+      task.id,
+      task.region || undefined,
+      {
+        pipelineVersion: metadata.pipelineVersion === 'v1' ? 'v1' : 'v2',
+        promptBundleSnapshot: this.extractTaskMetadataObject<PromptBundleSnapshotPayload>(metadata, 'promptBundleSnapshot'),
+        runtimeContract: this.extractTaskMetadataObject<RuntimeContractPayload>(metadata, 'runtimeContract'),
+        orientation: this.normalizeRequestedOrientation(metadata.orientation),
+        generationTier: this.normalizeRequestedGenerationTier(metadata.generationTier) || 'standard',
+        game: task.game ? {
+          gameType: task.game.gameType ?? null,
+          status: task.game.status ?? null,
+          visibility: task.game.visibility ?? null,
+          version: task.game.version ?? null,
+          canPlay: task.game.canPlay ?? null,
+          requireSubscription: task.game.requireSubscription ?? null,
+          accessGrantSource: task.game.accessGrantSource ?? null,
+          accessGrantSubscriptionId: task.game.accessGrantSubscriptionId ?? null,
+          forkedFrom: task.game.forkedFrom ?? null,
+        } : undefined,
+        sourceSpec: this.extractTaskMetadataObject<Record<string, unknown>>(metadata, 'sourceSpec'),
+        sourceBundleContext: this.extractTaskMetadataObject<SourceBundleContextPayload>(metadata, 'sourceBundleContext'),
+      },
+    );
+  }
+
+  async processQueuedActiveTaskSweep(): Promise<void> {
+    await this.reconcileActiveTasksInBackground();
   }
 
   /**
@@ -5524,16 +5761,44 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
             region: executionRegion,
             conversation: conversationHistory,
             baseStatus,
+            currentBundleVersion: bundle?.version ?? null,
             pipelineVersion,
             orientation: requestedOrientation ?? null,
             generationTier: requestedGenerationTier,
+            sourceSpec: sourceSpec ?? null,
+            sourceBundleContext: sourceBundleContext ?? null,
+            promptBundleSnapshot: promptBundleSnapshot ?? null,
+            runtimeContract: runtimeContract ?? null,
           },
           client: tx,
         });
       });
 
-      setImmediate(() => {
-        void this.executeIterationTask(
+      if (typeof bundle?.htmlCode === 'string' && bundle.htmlCode.trim()) {
+        await this.generationTaskService.createArtifact({
+          taskId: task.id,
+          gameId: id,
+          userId,
+          artifactType: 'iteration_source_code',
+          contentType: 'text/html',
+          payload: bundle.htmlCode,
+          metadata: {
+            bundleVersion: bundle.version ?? null,
+            source: 'iterate_request_snapshot',
+          },
+        }).catch((error) => {
+          this.logger.warn(
+            `Failed to persist iteration source snapshot for task ${task.id}: ${this.extractErrorMessage(error)}`,
+          );
+        });
+      }
+
+      const enqueued = await this.generationQueueService.enqueueJob(
+        GENERATION_QUEUE_JOB_PIPELINE_ITERATE,
+        task.id,
+      );
+      if (!enqueued) {
+        this.scheduleLocalIterationExecution(
           id,
           userId,
           dto.feedback,
@@ -5553,12 +5818,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
             sourceSpec,
             sourceBundleContext,
           },
-        ).catch((error) => {
-          this.logger.error(
-            `Background iteration task crashed for game ${id}: ${this.extractErrorMessage(error)}`,
-          );
-        });
-      });
+        );
+      }
 
       const generationTask = this.withAuthorPreviewUrls(
         this.generationTaskService.toTaskSummary(task),

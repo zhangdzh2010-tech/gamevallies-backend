@@ -410,7 +410,11 @@ export class GameController {
         throw new BadRequestException('Invalid token');
       }
 
-      return ok(await this.gameService.iterate(id, userId, dto));
+      const result = await this.gameService.iterate(id, userId, dto);
+      return ok({
+        ...result,
+        iterationId: `${result.gameId}:v${result.version}`,
+      });
     } catch (error) {
       this.logger.error(`Error iterating game: ${error.message}`);
       throw error;
