@@ -61,7 +61,7 @@ Return ONLY valid JSON with these keys:
 }
 
 Rules:
-- Keep designs implementable in a single HTML file with Canvas 2D.
+- Keep designs implementable in a single HTML file with canvas rendering (Canvas 2D or inline WebGL).
 - Match the game type and core mechanic from the spec.
 - Level count: 3-5 for action games, 5-10 for puzzle games, 1 for endless games.
 - Total expected play time: 45-90 seconds for arcade, 120-180 for puzzle.

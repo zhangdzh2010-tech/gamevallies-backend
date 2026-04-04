@@ -9,6 +9,8 @@ import { GameSchemaBootstrapService } from './game-schema-bootstrap.service';
 import { InternalGenerationController } from './internal-generation.controller';
 import { CreatorReputationService } from './creator-reputation.service';
 import { GenerationTaskService } from './generation-task.service';
+import { GenerationQueueService } from './generation-queue.service';
+import { GenerationQueueWorkerService } from './generation-queue.worker';
 import { CreationSessionService } from './creation-session.service';
 import { CreationSessionRealtimeService } from './creation-session-realtime.service';
 import { PrismaModule } from '../prisma/prisma.module';
@@ -35,6 +37,8 @@ import { WebSocketModule } from '../websocket/websocket.module';
     CreatorReputationService,
     GameSchemaBootstrapService,
     GenerationTaskService,
+    GenerationQueueService,
+    GenerationQueueWorkerService,
     CreationSessionService,
     CreationSessionRealtimeService,
   ],

@@ -9,6 +9,9 @@ describe('GameController', () => {
   let reputationService: {
     getReputation: jest.Mock;
   };
+  let creationSessionRealtimeService: {
+    streamSession: jest.Mock;
+  };
   let creationSessionService: {
     createSession: jest.Mock;
     getActiveSession: jest.Mock;
@@ -27,6 +30,9 @@ describe('GameController', () => {
     reputationService = {
       getReputation: jest.fn(),
     };
+    creationSessionRealtimeService = {
+      streamSession: jest.fn(),
+    };
     creationSessionService = {
       createSession: jest.fn(),
       getActiveSession: jest.fn(),
@@ -40,6 +46,7 @@ describe('GameController', () => {
     controller = new GameController(
       gameService as any,
       creationSessionService as any,
+      creationSessionRealtimeService as any,
       reputationService as any,
     );
   });

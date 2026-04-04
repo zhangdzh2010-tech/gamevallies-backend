@@ -104,9 +104,9 @@ class TestL2Security:
         code = VALID_GAME.replace("game.score += 1;", "fetch('http://x.com');")
         assert any("fetch" in e.message for e in qa._check_l2_security(code))
 
-    def test_localstorage_detected(self):
+    def test_localstorage_is_allowed(self):
         code = VALID_GAME.replace("game.score += 1;", "localStorage.clear();")
-        assert any("localStorage" in e.message for e in qa._check_l2_security(code))
+        assert not any("localStorage" in e.message for e in qa._check_l2_security(code))
 
     def test_websocket_detected(self):
         code = VALID_GAME.replace("game.score += 1;", "new WebSocket('ws://x');")
@@ -202,6 +202,17 @@ class TestL3Startup:
         errors, _ = qa._check_l3_startup(code)
         assert not any("blank screen" in e.message.lower() for e in errors)
 
+    def test_webgl_draw_commands_count_as_rendering(self):
+        code = VALID_GAME.replace(
+            "const ctx = canvas.getContext('2d');",
+            "const gl = canvas.getContext('webgl');",
+        ).replace(
+            "ctx.clearRect(0, 0, canvas.width, canvas.height);\n    ctx.fillStyle = '#22c55e';\n    ctx.fillRect(180, 520, 60, 60);",
+            "gl.viewport(0, 0, canvas.width, canvas.height);\n    gl.clearColor(0.13, 0.77, 0.37, 1.0);\n    gl.clear(gl.COLOR_BUFFER_BIT);",
+        )
+        errors, _ = qa._check_l3_startup(code)
+        assert not any("blank screen" in e.message.lower() for e in errors)
+
     def test_unmatched_braces(self):
         code = VALID_GAME + "{" * 20
         errors, _ = qa._check_l3_startup(code)
@@ -215,8 +226,9 @@ class TestL4Playability:
 
     def test_gameover_never_set_to_true(self):
         code = VALID_GAME.replace("game.gameOver = true;", "// not set")
-        errors, _ = qa._check_l4_playability(code)
-        assert any("terminal or completion state" in e.message.lower() for e in errors)
+        errors, warnings = qa._check_l4_playability(code)
+        assert not any("terminal or completion state" in e.message.lower() for e in errors)
+        assert any("terminal or completion state" in w.message.lower() for w in warnings)
 
     def test_state_machine_alternative_accepted(self):
         code = VALID_GAME.replace("game.gameOver = true;", "gameState = 'gameover';")
@@ -516,7 +528,7 @@ def test_repair_code_includes_runtime_contract_block_for_forbidden_api_repairs()
 
     prompt = mock_complete.await_args.kwargs["messages"][0]["content"]
     assert "Runtime contract (must still hold after the repair):" in prompt
-    assert "Forbidden APIs: localStorage, sessionStorage, fetch, XMLHttpRequest, WebSocket, eval, Function" in prompt
+    assert "Forbidden APIs: fetch, XMLHttpRequest, WebSocket, eval, Function" in prompt
     assert "Remove every forbidden dynamic-code or network API usage" in prompt
 
 

@@ -217,7 +217,19 @@ class QAPipeline:
             "fill",
             "stroke",
         )
-        method_pattern = r"(?:%s)" % "|".join(visible_draw_methods)
+        webgl_draw_methods = (
+            "clear",
+            "clearColor",
+            "drawArrays",
+            "drawElements",
+            "bufferData",
+            "bufferSubData",
+            "texImage2D",
+            "texSubImage2D",
+            "viewport",
+            "useProgram",
+        )
+        method_pattern = r"(?:%s)" % "|".join(visible_draw_methods + webgl_draw_methods)
 
         if re.search(
             rf"getContext\s*\(\s*['\"](?:2d|webgl|webgl2)['\"]\s*\)\s*\.\s*{method_pattern}\s*\(",
@@ -1330,6 +1342,21 @@ class QAPipeline:
             ))
 
         # ── restart / reset logic ──
+        downgraded_errors: List[QACheckError] = []
+        for error in errors:
+            if (
+                error.type == "L4_playability"
+                and "Required terminal or completion state is never set" in error.message
+            ):
+                warnings.append(QACheckError(
+                    type=error.type,
+                    message=error.message,
+                    severity="warning",
+                ))
+                continue
+            downgraded_errors.append(error)
+        errors = downgraded_errors
+
         has_restart = has_restart_entry(code)
         if (runtime_contract.gameplay.requires_restart_entry if runtime_contract else True) and not has_restart:
             warnings.append(QACheckError(

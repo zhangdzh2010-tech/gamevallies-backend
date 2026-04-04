@@ -9,6 +9,7 @@ describe('CreationSessionService', () => {
   let repo: any;
   let gameService: any;
   let wsGateway: any;
+  let realtimeService: any;
 
   beforeEach(() => {
     repo = {
@@ -31,7 +32,16 @@ describe('CreationSessionService', () => {
       emitSessionError: jest.fn(),
       emitToUser: jest.fn(),
     };
-    service = new CreationSessionService(prisma as any, gameService as any, wsGateway as any);
+    realtimeService = {
+      publishSnapshot: jest.fn(),
+      publishError: jest.fn(),
+    };
+    service = new CreationSessionService(
+      prisma as any,
+      gameService as any,
+      wsGateway as any,
+      realtimeService as any,
+    );
     (axios.post as jest.Mock).mockReset();
   });
 

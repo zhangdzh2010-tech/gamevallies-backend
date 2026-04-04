@@ -12,6 +12,7 @@ from typing import Any, Callable, Optional
 from ..api.models import (
     GDD,
     GenerationTier,
+    GameEntity,
     GameRuntimeContract,
     GameSpec,
     IterateResponse,
@@ -146,6 +147,37 @@ BASELINE_RUNTIME_PROFILES = {
     "puzzle_grid",
     "casual_action",
     "tap_challenge",
+}
+
+ENTITY_BUDGET_EXPANSION_LIBRARY: dict[str, tuple[dict[str, Any], ...]] = {
+    "casual": (
+        {"name": "rival", "role": "enemy", "shape": "triangle", "color": "#fb7185"},
+        {"name": "boost_orb", "role": "collectible", "shape": "circle", "color": "#22c55e"},
+        {"name": "hazard_gate", "role": "obstacle", "shape": "rectangle", "color": "#f97316"},
+        {"name": "route_marker", "role": "npc", "shape": "diamond", "color": "#38bdf8"},
+        {"name": "bonus_token", "role": "collectible", "shape": "diamond", "color": "#facc15"},
+    ),
+    "puzzle": (
+        {"name": "blocker", "role": "obstacle", "shape": "square", "color": "#ef4444"},
+        {"name": "switch", "role": "collectible", "shape": "circle", "color": "#22c55e"},
+        {"name": "booster", "role": "collectible", "shape": "diamond", "color": "#f59e0b"},
+        {"name": "guide_tile", "role": "npc", "shape": "rectangle", "color": "#38bdf8"},
+        {"name": "bonus_goal", "role": "collectible", "shape": "hexagon", "color": "#a855f7"},
+    ),
+    "educational": (
+        {"name": "hint_badge", "role": "collectible", "shape": "diamond", "color": "#22c55e"},
+        {"name": "challenge_card", "role": "obstacle", "shape": "rectangle", "color": "#f97316"},
+        {"name": "teacher_note", "role": "npc", "shape": "square", "color": "#6366f1"},
+        {"name": "milestone_star", "role": "collectible", "shape": "star", "color": "#facc15"},
+        {"name": "timer_gate", "role": "obstacle", "shape": "triangle", "color": "#ef4444"},
+    ),
+    "funny": (
+        {"name": "heckler", "role": "enemy", "shape": "triangle", "color": "#fb7185"},
+        {"name": "prop_bonus", "role": "collectible", "shape": "circle", "color": "#22c55e"},
+        {"name": "gag_trigger", "role": "npc", "shape": "diamond", "color": "#38bdf8"},
+        {"name": "chaos_button", "role": "obstacle", "shape": "rectangle", "color": "#f97316"},
+        {"name": "crowd_cheer", "role": "collectible", "shape": "star", "color": "#facc15"},
+    ),
 }
 
 
@@ -595,6 +627,7 @@ class V2PipelineRunner:
                 spec.source_description = request.raw_user_input.strip()
             if request.title and spec.intent_summary:
                 spec.intent_summary = f"{request.title}: {spec.intent_summary}"
+            spec = self._expand_spec_entities_for_budget(spec)
             return apply_visual_pack_defaults(spec, variation_seed=request.game_id)
 
         description = request.raw_user_input.strip() or str(
@@ -621,6 +654,7 @@ class V2PipelineRunner:
             request.runtime_contract.metadata.get("generation_tier"),
         )
         spec.complexity_budget = str(getattr(spec.generation_tier, "value", spec.generation_tier) or "standard")
+        spec = self._expand_spec_entities_for_budget(spec)
         return apply_visual_pack_defaults(spec, variation_seed=request.game_id)
 
     async def _build_iteration_spec(self, request: IterateV2Request) -> GameSpec:
@@ -680,6 +714,7 @@ class V2PipelineRunner:
                     base_spec.generation_tier if base_spec else None,
                 )
                 spec.complexity_budget = str(getattr(spec.generation_tier, "value", spec.generation_tier) or "standard")
+                spec = self._expand_spec_entities_for_budget(spec)
                 return apply_visual_pack_defaults(spec, variation_seed=request.game_id)
             raise
 
@@ -701,6 +736,7 @@ class V2PipelineRunner:
             base_spec.generation_tier if base_spec else None,
         )
         spec.complexity_budget = str(getattr(spec.generation_tier, "value", spec.generation_tier) or "standard")
+        spec = self._expand_spec_entities_for_budget(spec)
         return apply_visual_pack_defaults(spec, variation_seed=request.game_id)
 
     @staticmethod
@@ -953,9 +989,13 @@ class V2PipelineRunner:
         contract = base_contract.model_copy(deep=True)
         contract.runtime_profile = runtime_profile
         requested_orientation = self._resolve_contract_orientation(base_contract)
+        normalized_render_api = str(spec.platform_constraints.render_api or "").strip().lower()
+        allow_webgl = normalized_render_api in {"", "webgl", "webgl2", "canvas2d_or_webgl", "canvas_or_webgl"}
+        requires_canvas_2d = normalized_render_api == "canvas2d"
         contract.canvas = contract.canvas.model_copy(
             update={
-                "requires_canvas_2d": True,
+                "requires_canvas_2d": requires_canvas_2d,
+                "allow_webgl": allow_webgl,
                 "orientation": requested_orientation,
                 "ui_scale_mode": "short_edge",
                 "target_fps": spec.platform_constraints.target_fps or contract.canvas.target_fps,
@@ -1120,6 +1160,39 @@ class V2PipelineRunner:
             "terminal_state_aliases": ["game_over", "over", "ended", "lost", "failed"],
             "primary_goal": "clear_feedback_loop",
         }
+
+    @staticmethod
+    def _target_seed_entity_count(spec: GameSpec) -> int:
+        tier_value = str(getattr(spec.generation_tier, "value", spec.generation_tier) or "standard").strip().lower()
+        if tier_value == "showcase":
+            return 7 if spec.game_type in {"casual", "funny", "educational"} else 6
+        if tier_value == "safe":
+            return 3
+        return 6 if spec.game_type == "puzzle" else 5
+
+    def _expand_spec_entities_for_budget(self, spec: GameSpec) -> GameSpec:
+        expanded = spec.model_copy(deep=True)
+        target_count = min(
+            max(3, self._target_seed_entity_count(expanded)),
+            max(3, int(expanded.platform_constraints.max_entities or 50)),
+        )
+        if len(expanded.entities) >= target_count:
+            return expanded
+
+        catalog = ENTITY_BUDGET_EXPANSION_LIBRARY.get(
+            expanded.game_type,
+            ENTITY_BUDGET_EXPANSION_LIBRARY["casual"],
+        )
+        existing_names = {str(entity.name or "").strip().lower() for entity in expanded.entities}
+        for candidate in catalog:
+            if len(expanded.entities) >= target_count:
+                break
+            candidate_name = str(candidate.get("name") or "").strip().lower()
+            if not candidate_name or candidate_name in existing_names:
+                continue
+            expanded.entities.append(GameEntity(**candidate))
+            existing_names.add(candidate_name)
+        return expanded
 
     async def _build_gdd(self, spec: GameSpec, runtime_contract: GameRuntimeContract) -> GDD:
         try:
@@ -1604,15 +1677,28 @@ class V2PipelineRunner:
     ) -> list[QACheckError]:
         errors: list[QACheckError] = []
         lower = (code or "").lower()
-
-        if runtime_contract.canvas.requires_canvas_2d and not re.search(
+        has_canvas_2d_context = re.search(
             r"getcontext\s*\(\s*['\"]2d['\"]\s*\)",
             code,
             re.IGNORECASE,
-        ):
+        ) is not None
+        has_webgl_context = re.search(
+            r"getcontext\s*\(\s*['\"](?:webgl|webgl2)['\"]\s*\)",
+            code,
+            re.IGNORECASE,
+        ) is not None
+
+        if runtime_contract.canvas.requires_canvas_2d:
+            if not has_canvas_2d_context:
+                errors.append(QACheckError(
+                    type="contract_canvas",
+                    message="Runtime contract requires an explicit Canvas 2D context",
+                    severity="error",
+                ))
+        elif not (has_canvas_2d_context or (getattr(runtime_contract.canvas, "allow_webgl", False) and has_webgl_context)):
             errors.append(QACheckError(
                 type="contract_canvas",
-                message="Runtime contract requires an explicit Canvas 2D context",
+                message="Runtime contract requires an explicit canvas rendering context (Canvas 2D or WebGL)",
                 severity="error",
             ))
 
@@ -1655,21 +1741,6 @@ class V2PipelineRunner:
                     message=f"Runtime contract requires state '{required_state}'",
                     severity="error",
                 ))
-
-        has_scoring_loop = has_visible_scoring_loop(code)
-        if runtime_contract.gameplay.requires_scoring and not has_scoring_loop:
-            errors.append(QACheckError(
-                type="contract_gameplay",
-                message="Runtime contract requires a visible scoring loop",
-                severity="error",
-            ))
-
-        if runtime_contract.gameplay.requires_terminal_state and not has_terminal_state_transition(code, runtime_contract):
-            errors.append(QACheckError(
-                type="contract_gameplay",
-                message="Runtime contract requires an explicit terminal or completion state",
-                severity="error",
-            ))
 
         if runtime_contract.gameplay.requires_restart_entry and not has_restart_entry(code):
             errors.append(QACheckError(

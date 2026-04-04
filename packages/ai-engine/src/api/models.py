@@ -275,7 +275,7 @@ class PlatformConstraints(BaseModel):
     max_code_size_kb: int = 300
     max_entities: int = 50
     input_mode: str = "touch_only"
-    render_api: str = "canvas2d"
+    render_api: str = "canvas2d_or_webgl"
     max_memory_mb: int = 100
     target_fps: int = 60
 
@@ -532,7 +532,8 @@ class FontClamp(BaseModel):
 
 
 class CanvasContract(BaseModel):
-    requires_canvas_2d: bool = True
+    requires_canvas_2d: bool = False
+    allow_webgl: bool = True
     must_render_within_ms: int = 1500
     orientation: str = "portrait_first"
     ui_scale_mode: str = "short_edge"

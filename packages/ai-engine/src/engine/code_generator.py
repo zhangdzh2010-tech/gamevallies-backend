@@ -159,13 +159,13 @@ class CodeGenerator:
             )
 
         if generation_tier == "safe":
-            if special_rules_count >= 3 or entity_count >= 5 or game_type in ("educational",):
+            if special_rules_count >= 4 or entity_count >= 6 or game_type in ("educational",):
                 return max(1024, settings.LLM_GENERATION_TOKEN_BUDGET_STANDARD)
-            if special_rules_count == 0 and entity_count <= 2 and game_type in ("casual", "funny"):
+            if special_rules_count <= 1 and entity_count <= 3 and game_type in ("casual", "funny"):
                 return max(1024, settings.LLM_GENERATION_TOKEN_BUDGET_SIMPLE)
             return max(1024, settings.LLM_GENERATION_TOKEN_BUDGET_STANDARD)
 
-        if special_rules_count >= 3 or entity_count >= 5 or game_type in ("educational",):
+        if special_rules_count >= 4 or entity_count >= 6 or game_type in ("educational",):
             return max(1024, settings.LLM_GENERATION_TOKEN_BUDGET_COMPLEX)
         return max(1024, settings.LLM_GENERATION_TOKEN_BUDGET_STANDARD)
 
@@ -631,7 +631,7 @@ class CodeGenerator:
         self,
         entities: List[Any],
         *,
-        max_items: int = 6,
+        max_items: int = 8,
     ) -> str:
         if not entities:
             return "  - none"
@@ -962,20 +962,22 @@ class CodeGenerator:
             ])
         elif generation_tier == "showcase":
             lines.extend([
-                "- Allow a richer presentation layer, a stronger HUD, and 2-3 linked subsystems as long as they all plug into the same loop.",
+                "- Allow a richer presentation layer, a stronger HUD, and 3-5 linked subsystems as long as they all plug into the same loop.",
                 "- Favor one signature mechanic plus one support system such as combos, waves, rescue targets, route goals, risk-reward pickups, or finale beats.",
+                "- Showcase briefs may use 5-8 active entities or families when they stay legible and share the same core loop.",
                 "- Spend budget on clarity, juice, pacing, progression, and memorable payoff once boot, input, restart, and visible feedback are secure.",
             ])
         else:
             lines.extend([
-                "- Allow 1-2 supporting subsystems and a more expressive HUD when they improve the brief.",
+                "- Allow 2-4 supporting subsystems and a more expressive HUD when they improve the brief.",
+                "- Standard briefs may use roughly 4-6 active entities or families when they reinforce the same mechanic.",
                 "- Build beyond the minimal safe demo when the brief supports it, while keeping the loop readable and QA-friendly.",
             ])
 
         if game_type == "casual":
             lines.extend([
                 "- Keep the round structure readable and avoid spawning multiple unrelated subsystems.",
-                "- Use one main action loop, but supporting pickups, rescue targets, combo chains, or chase goals are allowed when they share the same controls.",
+                "- Use one main action loop, but supporting pickups, rescue targets, combo chains, chase goals, or escort targets are allowed when they share the same controls.",
             ])
         if game_type in {"puzzle", "educational"}:
             lines.extend([
@@ -1444,10 +1446,10 @@ class CodeGenerator:
         if shape_key == "triangle":
             return "Canvas path triangle with filled color and subtle outline"
         if shape_key in {"square", "rectangle"}:
-            return "Filled rounded rectangle drawn with Canvas 2D primitives"
+            return "Filled rounded rectangle drawn with inline canvas primitives"
         if shape_key == "diamond":
             return "Rotated square diamond drawn with Canvas path commands"
-        return "Filled circle or simple geometric sprite drawn with Canvas 2D primitives"
+        return "Filled circle or simple geometric sprite drawn with inline canvas primitives"
 
     @staticmethod
     def _derive_player_init_pos(game_type: str, canvas_w: int, canvas_h: int) -> str:
@@ -1461,7 +1463,7 @@ class CodeGenerator:
         *,
         fallback_speed: float,
         fallback_spawn_interval: int,
-        max_entities: int = 3,
+        max_entities: int = 8,
     ) -> str:
         if not entities:
             return "  - none"
