@@ -40,6 +40,10 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_ENV_FILE = os.path.join(ROOT_DIR, ".env.deploy")
 
 
+def _is_truthy(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def configure_utf8_stdio() -> None:
     """Force UTF-8 stdio on Windows so deploy logs do not depend on GBK shells."""
     os.environ.setdefault("PYTHONUTF8", "1")
@@ -68,8 +72,13 @@ def configure_utf8_stdio() -> None:
 configure_utf8_stdio()
 
 
-def load_env_file(path: str) -> None:
-    """Load .env-style values as UTF-8 without overwriting existing env vars."""
+def load_env_file(path: str, *, preserve_existing: bool = False) -> None:
+    """Load .env-style values as UTF-8.
+
+    By default `.env.deploy` is the source of truth for deployment values.
+    Operators can opt into preserving shell overrides via
+    `DEPLOY_PRESERVE_SHELL_ENV=1`.
+    """
     if not os.path.exists(path):
         return
 
@@ -81,11 +90,18 @@ def load_env_file(path: str) -> None:
             name, value = line.split("=", 1)
             name = name.strip()
             value = value.strip().strip('"').strip("'")
-            if name and name not in os.environ:
-                os.environ[name] = value
+            if not name:
+                continue
+            existing = os.environ.get(name)
+            if preserve_existing and existing not in (None, ""):
+                continue
+            os.environ[name] = value
 
 
-load_env_file(DEFAULT_ENV_FILE)
+load_env_file(
+    DEFAULT_ENV_FILE,
+    preserve_existing=_is_truthy(os.environ.get("DEPLOY_PRESERVE_SHELL_ENV")),
+)
 
 # svc key → function name in VeFaaS console (须与控制台函数名一致)
 # type="python" 表示 AI 引擎（独立 Dockerfile，不同构建参数）
@@ -159,11 +175,93 @@ COMMON_RUNTIME_ENV_KEYS = [
     "FEED_SERVICE_URL",
 ]
 
+USER_SERVICE_OPTIONAL_ENV_KEYS = [
+    "ALIYUN_ACCESS_KEY_ID", "ALIYUN_ACCESS_KEY_SECRET",
+    "ALIYUN_SMS_REGION_ID", "ALIYUN_SMS_SIGN_NAME",
+    "ALIYUN_SMS_TPL_REGISTER", "ALIYUN_SMS_TPL_LOGIN",
+    "VERIFY_CODE_SEND_INTERVAL_SECONDS",
+    "WECHAT_MINIAPP_APP_ID", "WECHAT_MINIAPP_APP_SECRET",
+    "WECHAT_H5_APP_ID", "WECHAT_H5_APP_SECRET", "WECHAT_H5_OAUTH_SCOPE",
+    "WECHAT_PAY_MODE", "WECHAT_PAY_MERCHANT_ID",
+    "WECHAT_PAY_NOTIFY_URL", "WECHAT_PAY_SERIAL_NO",
+    "WECHAT_PAY_PRIVATE_KEY", "WECHAT_PAY_PRIVATE_KEY_PATH",
+    "WECHAT_PAY_PUBLIC_KEY", "WECHAT_PAY_PUBLIC_KEY_PATH",
+    "WECHAT_PAY_API_V3_KEY", "WECHAT_PAY_API_BASE",
+    "ALIPAY_MODE", "ALIPAY_APP_ID",
+    "ALIPAY_PRIVATE_KEY", "ALIPAY_PRIVATE_KEY_PATH",
+    "ALIPAY_PUBLIC_KEY", "ALIPAY_PUBLIC_KEY_PATH",
+    "ALIPAY_NOTIFY_URL", "ALIPAY_GATEWAY",
+    "ALIPAY_SIGN_TYPE", "ALIPAY_SELLER_ID",
+    "BILLING_DEFAULT_FREE_QUOTA",
+]
+
+USER_SERVICE_MANAGED_ENV_KEYS = set(COMMON_RUNTIME_ENV_KEYS + [
+    "NODE_ENV",
+    "PORT",
+    "CORS_ORIGIN",
+    "ADMIN_TOKEN",
+    "AI_ENGINE_URL_CN_SHANGHAI",
+    "AI_ENGINE_URL_AP_SOUTHEAST_JOHOR",
+    "AI_ENGINE_DEFAULT_REGION",
+    "SERVICE_REGION",
+    "AI_ENGINE_URL",
+    "GAME_SERVICE_UPSTREAM_URL",
+    "FEED_SERVICE_UPSTREAM_URL",
+] + USER_SERVICE_OPTIONAL_ENV_KEYS)
+
+AI_ENGINE_MANAGED_ENV_KEYS = {
+    "ENVIRONMENT",
+    "PORT",
+    "DATABASE_URL",
+    "REDIS_URL",
+    "LLM_MODE",
+    "LLM_API_KEY",
+    "LLM_BASE_URL",
+    "LLM_MODEL",
+    "LLM_FAST_MODEL",
+    "CORS_ORIGINS",
+    "TEMPLATE_CONFIDENCE_THRESHOLD",
+    "HYBRID_CONFIDENCE_THRESHOLD",
+    "QA_MAX_RETRIES",
+    "PIPELINE_TIMEOUT_S",
+    "SERVICE_REGION",
+    "LLM_GATEWAY_CACHE_TTL_S",
+    "GAME_SERVICE_UPSTREAM_URL",
+    "ADMIN_TOKEN",
+}
+
+GAME_SERVICE_MANAGED_ENV_KEYS = set(COMMON_RUNTIME_ENV_KEYS + [
+    "NODE_ENV",
+    "PORT",
+    "CORS_ORIGIN",
+    "ADMIN_TOKEN",
+    "AI_ENGINE_URL_CN_SHANGHAI",
+    "AI_ENGINE_URL_AP_SOUTHEAST_JOHOR",
+    "AI_ENGINE_DEFAULT_REGION",
+    "SERVICE_REGION",
+    "AI_ENGINE_URL",
+    "APP_URL",
+])
+
+FEED_SERVICE_MANAGED_ENV_KEYS = set(COMMON_RUNTIME_ENV_KEYS + [
+    "NODE_ENV",
+    "PORT",
+    "CORS_ORIGIN",
+    "ADMIN_TOKEN",
+    "AI_ENGINE_URL_CN_SHANGHAI",
+    "AI_ENGINE_URL_AP_SOUTHEAST_JOHOR",
+    "AI_ENGINE_DEFAULT_REGION",
+    "SERVICE_REGION",
+    "AI_ENGINE_URL",
+    "APP_URL",
+])
+
 SERVICE_REQUIRED_ENV_KEYS = {
     "user-service": [
         "GAME_SERVICE_UPSTREAM_URL",
         "FEED_SERVICE_UPSTREAM_URL",
         "WECHAT_PAY_MODE",
+        "ALIPAY_MODE",
         "BILLING_DEFAULT_FREE_QUOTA",
         "WECHAT_MINIAPP_APP_ID",
         "WECHAT_MINIAPP_APP_SECRET",
@@ -845,20 +943,7 @@ def _env_vars(port: int, svc: dict | None = None) -> dict:
 
     # 阿里云短信 Dysmsapi（仅 user-service 需要）
     if svc_name == "user-service":
-        for key in [
-            "ALIYUN_ACCESS_KEY_ID", "ALIYUN_ACCESS_KEY_SECRET",
-            "ALIYUN_SMS_REGION_ID", "ALIYUN_SMS_SIGN_NAME",
-            "ALIYUN_SMS_TPL_REGISTER", "ALIYUN_SMS_TPL_LOGIN",
-            "VERIFY_CODE_SEND_INTERVAL_SECONDS",
-            "WECHAT_MINIAPP_APP_ID", "WECHAT_MINIAPP_APP_SECRET",
-            "WECHAT_H5_APP_ID", "WECHAT_H5_APP_SECRET", "WECHAT_H5_OAUTH_SCOPE",
-            "WECHAT_PAY_MODE", "WECHAT_PAY_MERCHANT_ID",
-            "WECHAT_PAY_NOTIFY_URL", "WECHAT_PAY_SERIAL_NO",
-            "WECHAT_PAY_PRIVATE_KEY", "WECHAT_PAY_PRIVATE_KEY_PATH",
-            "WECHAT_PAY_PUBLIC_KEY", "WECHAT_PAY_PUBLIC_KEY_PATH",
-            "WECHAT_PAY_API_V3_KEY", "WECHAT_PAY_API_BASE",
-            "BILLING_DEFAULT_FREE_QUOTA",
-        ]:
+        for key in USER_SERVICE_OPTIONAL_ENV_KEYS:
             val = os.environ.get(key, "")
             if val:
                 env[key] = val
@@ -906,6 +991,20 @@ def _extract_existing_envs(function) -> dict[str, str]:
     return existing
 
 
+def _managed_env_keys(*, ai: bool = False, svc: dict | None = None) -> set[str]:
+    if ai:
+        return set(AI_ENGINE_MANAGED_ENV_KEYS)
+
+    svc_name = svc["svc"] if svc else ""
+    if svc_name == "user-service":
+        return set(USER_SERVICE_MANAGED_ENV_KEYS)
+    if svc_name == "game-service":
+        return set(GAME_SERVICE_MANAGED_ENV_KEYS)
+    if svc_name == "feed-service":
+        return set(FEED_SERVICE_MANAGED_ENV_KEYS)
+    return set(COMMON_RUNTIME_ENV_KEYS)
+
+
 def build_envs_update(
     port: int,
     ai: bool = False,
@@ -914,6 +1013,9 @@ def build_envs_update(
 ) -> list:
     src = _ai_env_vars(port, svc=svc) if ai else _env_vars(port, svc=svc)
     merged = dict(existing or {})
+    managed_keys = _managed_env_keys(ai=ai, svc=svc)
+    for key in managed_keys:
+        merged.pop(key, None)
     merged.update(src)
     return [
         volcenginesdkvefaas.EnvForUpdateFunctionInput(key=k, value=v)
@@ -1006,6 +1108,26 @@ def validate_env(target_services: list[dict]) -> None:
                     missing.add("WECHAT_PAY_PRIVATE_KEY or WECHAT_PAY_PRIVATE_KEY_PATH")
                 if not has_public_key:
                     missing.add("WECHAT_PAY_PUBLIC_KEY or WECHAT_PAY_PUBLIC_KEY_PATH")
+
+            alipay_mode = os.environ.get("ALIPAY_MODE", "").strip().lower()
+            if alipay_mode == "real":
+                missing.update(_missing_env([
+                    "ALIPAY_APP_ID",
+                    "ALIPAY_NOTIFY_URL",
+                ]))
+
+                has_alipay_private_key = bool(
+                    os.environ.get("ALIPAY_PRIVATE_KEY", "").strip()
+                    or os.environ.get("ALIPAY_PRIVATE_KEY_PATH", "").strip()
+                )
+                has_alipay_public_key = bool(
+                    os.environ.get("ALIPAY_PUBLIC_KEY", "").strip()
+                    or os.environ.get("ALIPAY_PUBLIC_KEY_PATH", "").strip()
+                )
+                if not has_alipay_private_key:
+                    missing.add("ALIPAY_PRIVATE_KEY or ALIPAY_PRIVATE_KEY_PATH")
+                if not has_alipay_public_key:
+                    missing.add("ALIPAY_PUBLIC_KEY or ALIPAY_PUBLIC_KEY_PATH")
 
         if svc["svc"] == "ai-engine" and svc.get("execution_region") == "ap_southeast_johor":
             if not VOLCENGINE_VPC_ID_AP_SOUTHEAST_JOHOR:

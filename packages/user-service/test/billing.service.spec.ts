@@ -12,6 +12,7 @@ describe('BillingService', () => {
   let prisma: any;
   let configService: ConfigService;
   let wechatPayService: any;
+  let alipayPayService: any;
 
   beforeEach(() => {
     prisma = {
@@ -62,6 +63,9 @@ describe('BillingService', () => {
           WECHAT_MINIAPP_APP_ID: 'wx-miniapp',
           WECHAT_H5_APP_ID: 'wx-h5-app',
           WECHAT_PAY_NOTIFY_URL: 'https://example.com/api/v1/subscription/wechat/notify',
+          ALIPAY_APP_ID: '2021000000000000',
+          ALIPAY_NOTIFY_URL: 'https://example.com/api/v1/subscription/alipay/notify',
+          ALIPAY_PUBLIC_KEY: 'placeholder-public-key',
           PUBLIC_WEB_BASE_URL: 'https://gamevallies.com',
         };
         return values[key];
@@ -74,8 +78,13 @@ describe('BillingService', () => {
       createPayment: jest.fn(),
       parsePaidNotification: jest.fn(),
     };
+    alipayPayService = {
+      isMockMode: jest.fn(() => true),
+      createPayment: jest.fn(),
+      parsePaidNotification: jest.fn(),
+    };
 
-    service = new BillingService(prisma, configService, wechatPayService);
+    service = new BillingService(prisma, configService, wechatPayService, alipayPayService);
     prisma.systemConfig.findUnique.mockResolvedValue({ id: 'cfg_bootstrap' });
   });
 
@@ -393,6 +402,207 @@ describe('BillingService', () => {
         },
       ),
     ).rejects.toThrow('微信内 H5 支付必须使用 JSAPI');
+  });
+
+  it('creates an alipay wap order and stores the provider-specific payload', async () => {
+    prisma.subscriptionOrder.updateMany.mockResolvedValue({ count: 0 });
+    prisma.subscriptionOrder.findFirst.mockResolvedValue(null);
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'user-1',
+      wxOpenId: null,
+    });
+    prisma.subscriptionPlan.findFirst.mockResolvedValue({
+      id: 'plan_monthly_basic',
+      name: '鍩虹鏈堝崱',
+      price: 990,
+      currency: 'CNY',
+      period: SubscriptionPeriod.monthly,
+      quota: 10,
+    });
+    alipayPayService.createPayment.mockResolvedValue({
+      rawResponse: { pay_url: 'https://openapi.alipay.com/gateway.do?foo=bar' },
+      payment: {
+        provider: 'alipay',
+        flow: 'wap',
+        payUrl: 'https://openapi.alipay.com/gateway.do?foo=bar',
+      },
+    });
+    prisma.subscriptionOrder.create.mockResolvedValue(undefined);
+
+    const result = await service.createOrder(
+      'user-1',
+      { planId: 'plan_monthly_basic' },
+      '127.0.0.1',
+      {
+        provider: 'alipay_wap',
+        returnUrl: 'https://gamevallies.com/payment/result',
+      },
+    );
+
+    expect(alipayPayService.createPayment).toHaveBeenCalledWith({
+      flow: 'wap',
+      description: 'GameVallies 鍩虹鏈堝崱',
+      outTradeNo: expect.stringMatching(/^gv/),
+      amount: 990,
+      notifyUrl: 'https://example.com/api/v1/subscription/alipay/notify',
+      returnUrl: 'https://gamevallies.com/payment/result',
+    });
+    expect(prisma.subscriptionOrder.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        userId: 'user-1',
+        planId: 'plan_monthly_basic',
+        provider: 'alipay_wap',
+        prepayId: null,
+        paymentPayload: expect.objectContaining({
+          provider: 'alipay_wap',
+          flow: 'wap',
+        }),
+      }),
+    });
+    expect(result).toEqual({
+      orderId: expect.stringMatching(/^order_/),
+      payment: {
+        provider: 'alipay',
+        flow: 'wap',
+        payUrl: 'https://openapi.alipay.com/gateway.do?foo=bar',
+      },
+    });
+  });
+
+  it('accepts a valid alipay paid notification and activates the order', async () => {
+    prisma.subscriptionOrder.findUnique.mockResolvedValue({
+      id: 'order_1',
+      userId: 'user-1',
+      planId: 'plan_monthly_basic',
+      amount: 990,
+      provider: 'alipay_wap',
+      gameIdToUnlock: null,
+      status: SubscriptionOrderStatus.pending,
+      paymentId: null,
+      plan: {
+        id: 'plan_monthly_basic',
+        name: '鍩虹鏈堝崱',
+        quota: 10,
+        period: SubscriptionPeriod.monthly,
+      },
+    });
+    prisma.userSubscription.updateMany.mockResolvedValue({ count: 0 });
+    prisma.userSubscription.count.mockResolvedValue(0);
+    prisma.user.update.mockResolvedValue(undefined);
+    prisma.userSubscription.create.mockResolvedValue({
+      id: 'sub_1',
+      planId: 'plan_monthly_basic',
+      expiresAt: new Date('2026-05-01T00:00:00.000Z'),
+      usedThisPeriod: 0,
+      quotaThisPeriod: 10,
+      plan: {
+        id: 'plan_monthly_basic',
+        name: '鍩虹鏈堝崱',
+        quota: 10,
+        period: SubscriptionPeriod.monthly,
+      },
+    });
+    prisma.userQuota.upsert.mockResolvedValue({
+      userId: 'user-1',
+      totalFreeQuota: 5,
+      usedFreeQuota: 0,
+    });
+    prisma.subscriptionOrder.update.mockResolvedValue(undefined);
+    alipayPayService.parsePaidNotification.mockResolvedValue({
+      out_trade_no: 'trade_1',
+      trade_no: 'alipay_trade_1',
+      trade_status: 'TRADE_SUCCESS',
+      app_id: '2021000000000000',
+      total_amount: '9.90',
+    });
+
+    const result = await service.handleAlipayNotification({
+      out_trade_no: 'trade_1',
+      trade_no: 'alipay_trade_1',
+      trade_status: 'TRADE_SUCCESS',
+      app_id: '2021000000000000',
+      total_amount: '9.90',
+      sign: 'signature',
+    });
+
+    expect(result).toBe('success');
+    expect(prisma.subscriptionOrder.update).toHaveBeenCalledWith({
+      where: { id: 'order_1' },
+      data: expect.objectContaining({
+        status: SubscriptionOrderStatus.paid,
+        paymentId: 'alipay_trade_1',
+      }),
+    });
+  });
+
+  it('rejects a successful alipay notification when app_id is missing', async () => {
+    prisma.subscriptionOrder.findUnique.mockResolvedValue({
+      id: 'order_1',
+      userId: 'user-1',
+      planId: 'plan_monthly_basic',
+      amount: 990,
+      provider: 'alipay_wap',
+      gameIdToUnlock: null,
+      status: SubscriptionOrderStatus.pending,
+      paymentId: null,
+      plan: {
+        id: 'plan_monthly_basic',
+        name: '基础月卡',
+        quota: 10,
+        period: SubscriptionPeriod.monthly,
+      },
+    });
+    alipayPayService.parsePaidNotification.mockResolvedValue({
+      out_trade_no: 'trade_1',
+      trade_no: 'alipay_trade_1',
+      trade_status: 'TRADE_SUCCESS',
+      total_amount: '9.90',
+    });
+
+    await expect(service.handleAlipayNotification({
+      out_trade_no: 'trade_1',
+      trade_no: 'alipay_trade_1',
+      trade_status: 'TRADE_SUCCESS',
+      total_amount: '9.90',
+      sign: 'signature',
+    })).rejects.toThrow('Alipay notification missing app_id');
+
+    expect(prisma.subscriptionOrder.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects a successful alipay notification when total_amount is missing', async () => {
+    prisma.subscriptionOrder.findUnique.mockResolvedValue({
+      id: 'order_1',
+      userId: 'user-1',
+      planId: 'plan_monthly_basic',
+      amount: 990,
+      provider: 'alipay_wap',
+      gameIdToUnlock: null,
+      status: SubscriptionOrderStatus.pending,
+      paymentId: null,
+      plan: {
+        id: 'plan_monthly_basic',
+        name: '基础月卡',
+        quota: 10,
+        period: SubscriptionPeriod.monthly,
+      },
+    });
+    alipayPayService.parsePaidNotification.mockResolvedValue({
+      out_trade_no: 'trade_1',
+      trade_no: 'alipay_trade_1',
+      trade_status: 'TRADE_SUCCESS',
+      app_id: '2021000000000000',
+    });
+
+    await expect(service.handleAlipayNotification({
+      out_trade_no: 'trade_1',
+      trade_no: 'alipay_trade_1',
+      trade_status: 'TRADE_SUCCESS',
+      app_id: '2021000000000000',
+      sign: 'signature',
+    })).rejects.toThrow('Alipay notification missing total_amount');
+
+    expect(prisma.subscriptionOrder.update).not.toHaveBeenCalled();
   });
 
   it('mock payment activates subscription and unlocks the linked game', async () => {

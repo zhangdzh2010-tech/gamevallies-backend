@@ -14,6 +14,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
+import { AlipayPayService, AlipayTradeFlow } from './alipay-pay.service';
 import { WechatPayService } from './wechat-pay.service';
 import { CreateSubscriptionOrderDto } from './dto/create-subscription-order.dto';
 
@@ -50,7 +51,10 @@ const PLAN_BOOTSTRAP_MARKER_KEY = 'billing.subscription_plans_bootstrapped_at';
 
 type BillingDbClient = PrismaService | Prisma.TransactionClient;
 
+type PaymentProvider = 'wechat_pay' | 'alipay_wap' | 'alipay_page';
+
 type CreateOrderOptions = {
+  provider?: PaymentProvider;
   clientPlatform?: 'weapp' | 'h5' | 'wechat_h5';
   wechatPayFlow?: 'jsapi' | 'mweb' | 'native';
   returnUrl?: string;
@@ -61,13 +65,23 @@ type CreateOrderOptions = {
   };
 };
 
-type PaymentRoutingDecision = {
+type WechatPaymentRoutingDecision = {
+  provider: 'wechat_pay';
   tradeType: 'jsapi' | 'h5';
   appId: string;
   openId?: string;
   clientPlatform: 'weapp' | 'h5' | 'wechat_h5';
   wechatPayFlow: 'jsapi' | 'mweb' | 'native';
+  returnUrl?: string;
 };
+
+type AlipayPaymentRoutingDecision = {
+  provider: 'alipay_wap' | 'alipay_page';
+  flow: AlipayTradeFlow;
+  returnUrl?: string;
+};
+
+type PaymentRoutingDecision = WechatPaymentRoutingDecision | AlipayPaymentRoutingDecision;
 
 @Injectable()
 export class BillingService {
@@ -75,6 +89,7 @@ export class BillingService {
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
     private readonly wechatPayService: WechatPayService,
+    private readonly alipayPayService: AlipayPayService,
   ) {}
 
   async getQuota(userId: string) {
@@ -159,17 +174,29 @@ export class BillingService {
     const now = new Date();
     const paymentDecision = this.resolvePaymentRouting(user, options);
     const orderId = `order_${this.formatTimestamp(now)}_${randomBytes(4).toString('hex')}`;
-    const outTradeNo = `gv${this.formatTimestamp(now)}${randomBytes(5).toString('hex')}`.slice(0, 32);
-    const notifyUrl = this.resolveNotifyUrl();
-    await this.expireStalePendingOrders(userId, plan.id, dto.gameId || null, now);
+    const initialOutTradeNo = `gv${this.formatTimestamp(now)}${randomBytes(5).toString('hex')}`.slice(0, 32);
+    const notifyUrl = this.resolveNotifyUrl(paymentDecision.provider);
+    await this.expireStalePendingOrders(
+      userId,
+      plan.id,
+      dto.gameId || null,
+      paymentDecision.provider,
+      now,
+    );
 
     const reusableOrder = await this.findReusablePendingOrder(
       userId,
       plan.id,
       dto.gameId || null,
+      paymentDecision.provider,
       now,
     );
-    if (paymentDecision.tradeType === 'jsapi' && reusableOrder?.prepayId) {
+    const outTradeNo = paymentDecision.provider !== 'wechat_pay' && reusableOrder?.outTradeNo
+      ? reusableOrder.outTradeNo
+      : initialOutTradeNo;
+    if (paymentDecision.provider === 'wechat_pay'
+      && paymentDecision.tradeType === 'jsapi'
+      && reusableOrder?.prepayId) {
       return {
         orderId: reusableOrder.id,
         payment: this.wechatPayService.buildPaymentFromPrepayId(
@@ -180,7 +207,10 @@ export class BillingService {
     }
 
     const reusableH5Url = this.extractReusableH5Url(reusableOrder?.paymentResponse);
-    if (paymentDecision.tradeType === 'h5' && reusableH5Url && reusableOrder) {
+    if (paymentDecision.provider === 'wechat_pay'
+      && paymentDecision.tradeType === 'h5'
+      && reusableH5Url
+      && reusableOrder) {
       return {
         orderId: reusableOrder.id,
         payment: {
@@ -189,23 +219,48 @@ export class BillingService {
       };
     }
 
-    const paymentResult = await this.wechatPayService.createPayment({
-      appId: paymentDecision.appId,
-      openId: paymentDecision.openId,
-      description: `GameVallies ${plan.name}`,
-      outTradeNo,
-      amount: plan.price,
-      notifyUrl,
-      clientIp,
-      tradeType: paymentDecision.tradeType,
-      h5Info: paymentDecision.tradeType === 'h5'
-        ? {
-            type: 'Wap',
-            appName: 'GameVallies',
-            appUrl: this.resolveWebBaseUrl(),
-          }
-        : undefined,
-    });
+    const paymentResult = paymentDecision.provider === 'wechat_pay'
+      ? await this.wechatPayService.createPayment({
+        appId: paymentDecision.appId,
+        openId: paymentDecision.openId,
+        description: `GameVallies ${plan.name}`,
+        outTradeNo,
+        amount: plan.price,
+        notifyUrl,
+        clientIp,
+        tradeType: paymentDecision.tradeType,
+        h5Info: paymentDecision.tradeType === 'h5'
+          ? {
+              type: 'Wap',
+              appName: 'GameVallies',
+              appUrl: this.resolveWebBaseUrl(),
+            }
+          : undefined,
+      })
+      : await this.alipayPayService.createPayment({
+        flow: paymentDecision.flow,
+        description: `GameVallies ${plan.name}`,
+        outTradeNo,
+        amount: plan.price,
+        notifyUrl,
+        returnUrl: paymentDecision.returnUrl,
+      });
+
+    if (paymentDecision.provider !== 'wechat_pay' && reusableOrder) {
+      await this.prisma.subscriptionOrder.update({
+        where: { id: reusableOrder.id },
+        data: {
+          paymentPayload: this.buildPaymentPayload(paymentDecision, notifyUrl, clientIp),
+          paymentResponse: paymentResult.rawResponse as unknown as Prisma.InputJsonValue,
+          expiresAt: new Date(now.getTime() + 2 * 60 * 60 * 1000),
+        },
+      });
+
+      return {
+        orderId: reusableOrder.id,
+        payment: paymentResult.payment,
+      };
+    }
 
     await this.prisma.subscriptionOrder.create({
       data: {
@@ -215,19 +270,12 @@ export class BillingService {
         amount: plan.price,
         currency: plan.currency,
         status: SubscriptionOrderStatus.pending,
+        provider: paymentDecision.provider,
         outTradeNo,
-        prepayId: paymentResult.prepayId,
+        prepayId: 'prepayId' in paymentResult ? paymentResult.prepayId : null,
         gameIdToUnlock: dto.gameId || null,
         description: `GameVallies ${plan.name}`,
-        paymentPayload: {
-          appId: paymentDecision.appId,
-          notifyUrl,
-          clientIp,
-          clientPlatform: paymentDecision.clientPlatform,
-          wechatPayFlow: paymentDecision.wechatPayFlow,
-          tradeType: paymentDecision.tradeType,
-          returnUrl: options.returnUrl || null,
-        } as unknown as Prisma.InputJsonValue,
+        paymentPayload: this.buildPaymentPayload(paymentDecision, notifyUrl, clientIp),
         paymentResponse: paymentResult.rawResponse as unknown as Prisma.InputJsonValue,
         expiresAt: new Date(now.getTime() + 2 * 60 * 60 * 1000),
       },
@@ -278,6 +326,7 @@ export class BillingService {
     return {
       orderId: effectiveOrder.id,
       status: effectiveOrder.status,
+      provider: effectiveOrder.provider,
       planId: effectiveOrder.planId,
       planName: effectiveOrder.plan.name,
       amount: effectiveOrder.amount,
@@ -318,15 +367,12 @@ export class BillingService {
   }
 
   async mockPayOrder(userId: string, orderId: string) {
-    if (!this.wechatPayService.isMockMode()) {
-      throw new BadRequestException('Mock payment is only available in WECHAT_PAY_MODE=mock');
-    }
-
     const order = await this.prisma.subscriptionOrder.findUnique({
       where: { id: orderId },
       select: {
         id: true,
         userId: true,
+        provider: true,
       },
     });
 
@@ -336,6 +382,13 @@ export class BillingService {
 
     if (order.userId !== userId) {
       throw new ForbiddenException('You do not have permission to pay this order');
+    }
+
+    const mockEnabled = order.provider === 'wechat_pay'
+      ? this.wechatPayService.isMockMode()
+      : this.alipayPayService.isMockMode();
+    if (!mockEnabled) {
+      throw new BadRequestException('Mock payment is only available in mock payment mode');
     }
 
     return this.completeOrderPaymentById(orderId, `mock_${orderId}`);
@@ -377,6 +430,41 @@ export class BillingService {
       code: 'SUCCESS',
       message: '成功',
     };
+  }
+
+  async handleAlipayNotification(
+    payload: Record<string, string | string[] | undefined>,
+  ) {
+    const notification = await this.alipayPayService.parsePaidNotification(payload);
+    const outTradeNo = notification.out_trade_no;
+    if (!outTradeNo) {
+      throw new BadRequestException('Alipay notification missing out_trade_no');
+    }
+
+    const order = await this.prisma.subscriptionOrder.findUnique({
+      where: { outTradeNo },
+      include: {
+        plan: true,
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Subscription order not found');
+    }
+
+    this.assertAlipayNotificationMatchesOrder(order, notification);
+
+    if (notification.trade_status === 'TRADE_SUCCESS' || notification.trade_status === 'TRADE_FINISHED') {
+      await this.completeOrderPaymentByOutTradeNo(
+        outTradeNo,
+        notification.trade_no,
+        notification,
+      );
+    } else {
+      await this.updateOrderStatusFromAlipayState(outTradeNo, notification);
+    }
+
+    return 'success';
   }
 
   private async completeOrderPaymentById(orderId: string, paymentId: string) {
@@ -562,6 +650,31 @@ export class BillingService {
     });
   }
 
+  private async updateOrderStatusFromAlipayState(
+    outTradeNo: string,
+    paymentResponse: Record<string, string>,
+  ) {
+    const nextStatus = this.mapAlipayTradeStateToOrderStatus(
+      paymentResponse.trade_status,
+    );
+
+    if (!nextStatus || nextStatus === SubscriptionOrderStatus.pending) {
+      return;
+    }
+
+    await this.prisma.subscriptionOrder.updateMany({
+      where: {
+        outTradeNo,
+        status: SubscriptionOrderStatus.pending,
+      },
+      data: {
+        status: nextStatus,
+        paymentId: paymentResponse.trade_no || undefined,
+        paymentResponse: paymentResponse as unknown as Prisma.InputJsonValue,
+      },
+    });
+  }
+
   private mapWechatTradeStateToOrderStatus(
     tradeState: unknown,
   ): SubscriptionOrderStatus | null {
@@ -583,10 +696,27 @@ export class BillingService {
     }
   }
 
+  private mapAlipayTradeStateToOrderStatus(
+    tradeState: unknown,
+  ): SubscriptionOrderStatus | null {
+    switch (tradeState) {
+      case 'TRADE_SUCCESS':
+      case 'TRADE_FINISHED':
+        return SubscriptionOrderStatus.paid;
+      case 'TRADE_CLOSED':
+        return SubscriptionOrderStatus.canceled;
+      case 'WAIT_BUYER_PAY':
+        return SubscriptionOrderStatus.pending;
+      default:
+        return null;
+    }
+  }
+
   private async expireStalePendingOrders(
     userId: string,
     planId: string,
     gameIdToUnlock: string | null,
+    provider: PaymentProvider,
     now: Date,
   ) {
     await this.prisma.subscriptionOrder.updateMany({
@@ -594,6 +724,7 @@ export class BillingService {
         userId,
         planId,
         gameIdToUnlock,
+        provider,
         status: SubscriptionOrderStatus.pending,
         expiresAt: {
           lte: now,
@@ -609,6 +740,7 @@ export class BillingService {
     userId: string,
     planId: string,
     gameIdToUnlock: string | null,
+    provider: PaymentProvider,
     now: Date,
   ) {
     return this.prisma.subscriptionOrder.findFirst({
@@ -616,6 +748,7 @@ export class BillingService {
         userId,
         planId,
         gameIdToUnlock,
+        provider,
         status: SubscriptionOrderStatus.pending,
         expiresAt: {
           gt: now,
@@ -623,6 +756,7 @@ export class BillingService {
       },
       select: {
         id: true,
+        outTradeNo: true,
         prepayId: true,
         paymentResponse: true,
       },
@@ -630,6 +764,54 @@ export class BillingService {
         createdAt: 'desc',
       },
     });
+  }
+
+  private assertAlipayNotificationMatchesOrder(
+    order: {
+      amount: number;
+      provider: string;
+    },
+    notification: Record<string, string>,
+  ) {
+    if (!order.provider.startsWith('alipay')) {
+      throw new BadRequestException('Order provider does not match Alipay notification');
+    }
+
+    const isSuccessfulPayment = notification.trade_status === 'TRADE_SUCCESS'
+      || notification.trade_status === 'TRADE_FINISHED';
+    const appId = notification.app_id;
+    if (isSuccessfulPayment && !appId) {
+      throw new BadRequestException('Alipay notification missing app_id');
+    }
+    const expectedAppId = this.configService.get<string>('ALIPAY_APP_ID');
+    if (expectedAppId && appId && appId !== expectedAppId) {
+      throw new BadRequestException('Alipay notification app_id mismatch');
+    }
+
+    const totalAmount = notification.total_amount;
+    if (isSuccessfulPayment && !totalAmount) {
+      throw new BadRequestException('Alipay notification missing total_amount');
+    }
+    if (totalAmount && this.convertYuanToCents(totalAmount) !== order.amount) {
+      throw new BadRequestException('Alipay notification total_amount mismatch');
+    }
+
+    const sellerId = notification.seller_id;
+    const expectedSellerId = this.configService.get<string>('ALIPAY_SELLER_ID');
+    if (expectedSellerId && isSuccessfulPayment && !sellerId) {
+      throw new BadRequestException('Alipay notification missing seller_id');
+    }
+    if (expectedSellerId && sellerId && sellerId !== expectedSellerId) {
+      throw new BadRequestException('Alipay notification seller_id mismatch');
+    }
+  }
+
+  private convertYuanToCents(amount: string): number {
+    if (!/^\d+(?:\.\d{1,2})?$/.test(amount.trim())) {
+      throw new BadRequestException('Invalid Alipay total_amount');
+    }
+
+    return Math.round(Number.parseFloat(amount) * 100);
   }
 
   private async assertGameOwnership(userId: string, gameId: string) {
@@ -834,15 +1016,26 @@ export class BillingService {
     user: { wxOpenId: string | null },
     options: CreateOrderOptions,
   ): PaymentRoutingDecision {
+    const provider = options.provider || 'wechat_pay';
+    if (provider === 'alipay_wap' || provider === 'alipay_page') {
+      return {
+        provider,
+        flow: provider === 'alipay_page' ? 'page' : 'wap',
+        returnUrl: options.returnUrl,
+      };
+    }
+
     const clientPlatform = options.clientPlatform || 'weapp';
     const wechatPayFlow = options.wechatPayFlow || (clientPlatform === 'h5' ? 'mweb' : 'jsapi');
 
     if (clientPlatform === 'h5') {
       return {
+        provider: 'wechat_pay',
         tradeType: 'h5',
         appId: this.configService.get<string>('WECHAT_H5_APP_ID') || '',
         clientPlatform,
         wechatPayFlow,
+        returnUrl: options.returnUrl,
       };
     }
 
@@ -861,11 +1054,13 @@ export class BillingService {
       }
 
       return {
+        provider: 'wechat_pay',
         tradeType: 'jsapi',
         appId: h5AppId,
         openId: h5OpenId,
         clientPlatform,
         wechatPayFlow,
+        returnUrl: options.returnUrl,
       };
     }
 
@@ -879,11 +1074,13 @@ export class BillingService {
     }
 
     return {
+      provider: 'wechat_pay',
       tradeType: 'jsapi',
       appId: miniappAppId,
       openId: miniappOpenId,
       clientPlatform: 'weapp',
       wechatPayFlow,
+      returnUrl: options.returnUrl,
     };
   }
 
@@ -897,6 +1094,32 @@ export class BillingService {
     return typeof h5Url === 'string' && h5Url.trim() ? h5Url.trim() : null;
   }
 
+  private buildPaymentPayload(
+    paymentDecision: PaymentRoutingDecision,
+    notifyUrl: string,
+    clientIp: string,
+  ): Prisma.InputJsonValue {
+    if (paymentDecision.provider !== 'wechat_pay') {
+      return {
+        provider: paymentDecision.provider,
+        flow: paymentDecision.flow,
+        notifyUrl,
+        returnUrl: paymentDecision.returnUrl || null,
+      } as unknown as Prisma.InputJsonValue;
+    }
+
+    return {
+      provider: paymentDecision.provider,
+      appId: paymentDecision.appId,
+      notifyUrl,
+      clientIp,
+      clientPlatform: paymentDecision.clientPlatform,
+      wechatPayFlow: paymentDecision.wechatPayFlow,
+      tradeType: paymentDecision.tradeType,
+      returnUrl: paymentDecision.returnUrl || null,
+    } as unknown as Prisma.InputJsonValue;
+  }
+
   private resolveWebBaseUrl() {
     return (
       this.configService.get<string>('PUBLIC_WEB_BASE_URL')
@@ -905,9 +1128,12 @@ export class BillingService {
     ).replace(/\/$/, '');
   }
 
-  private resolveNotifyUrl() {
-    const configured = this.configService.get<string>('WECHAT_PAY_NOTIFY_URL')
-      || process.env.WECHAT_PAY_NOTIFY_URL;
+  private resolveNotifyUrl(provider: PaymentProvider) {
+    const configured = provider === 'wechat_pay'
+      ? this.configService.get<string>('WECHAT_PAY_NOTIFY_URL')
+        || process.env.WECHAT_PAY_NOTIFY_URL
+      : this.configService.get<string>('ALIPAY_NOTIFY_URL')
+        || process.env.ALIPAY_NOTIFY_URL;
     if (configured) {
       return configured;
     }
@@ -919,10 +1145,16 @@ export class BillingService {
     ).replace(/\/$/, '');
     if (!publicBase) {
       const port = process.env.PORT || '3001';
-      return `http://127.0.0.1:${port}/api/v1/subscription/wechat/notify`;
+      const path = provider === 'wechat_pay'
+        ? '/api/v1/subscription/wechat/notify'
+        : '/api/v1/subscription/alipay/notify';
+      return `http://127.0.0.1:${port}${path}`;
     }
 
-    return `${publicBase}/api/v1/subscription/wechat/notify`;
+    const path = provider === 'wechat_pay'
+      ? '/api/v1/subscription/wechat/notify'
+      : '/api/v1/subscription/alipay/notify';
+    return `${publicBase}${path}`;
   }
 
   private formatTimestamp(date: Date) {
