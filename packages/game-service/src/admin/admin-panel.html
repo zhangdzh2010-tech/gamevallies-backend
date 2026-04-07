@@ -549,6 +549,7 @@ tbody tr:hover{background:#f8fafc}
 .toast-success{background:#16a34a;color:#fff}
 .toast-error{background:#dc2626;color:#fff}
 .toast-info{background:#2563eb;color:#fff}
+.toast-warning{background:#d97706;color:#fff}
 @keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
 
 /* Loading */
@@ -1396,107 +1397,6 @@ tbody tr:hover{background:#f8fafc}
         </div>
       </div>
 
-      <div style="display:none">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:12px;flex-wrap:wrap">
-        <div>
-          <h2 style="font-size:18px;font-weight:600;color:#1e293b">LLM 网关配置</h2>
-          <p style="font-size:12px;color:#94a3b8;margin-top:4px">管理 Provider 池、步骤路由，并支持在线测试与热刷新。</p>
-        </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn-secondary" onclick="refreshGateway()">热刷新网关</button>
-          <button class="btn btn-secondary" onclick="loadLlmGateway()">刷新列表</button>
-        </div>
-      </div>
-      <div class="form-grid" style="align-items:start">
-        <div style="background:#fff;border-radius:10px;border:1px solid #e5e7eb;padding:20px">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-            <h3 style="font-size:15px;font-weight:600;color:#1e293b">Provider</h3>
-            <button class="btn btn-secondary btn-sm" onclick="resetProviderForm()">新建 Provider</button>
-          </div>
-          <div class="form-grid">
-            <div class="form-group">
-              <label>名称</label>
-              <input type="text" id="llm-provider-name" placeholder="如 MiniMax Shanghai">
-            </div>
-            <div class="form-group">
-              <label>Provider 类型</label>
-              <select id="llm-provider-type">
-                <option value="openai_compatible">openai_compatible</option>
-                <option value="anthropic">anthropic</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Region Target</label>
-              <select id="llm-provider-region-target"></select>
-            </div>
-            <div class="form-group">
-              <label>优先级</label>
-              <input type="number" id="llm-provider-priority" placeholder="100">
-            </div>
-            <div class="form-group full">
-              <label>Base URL</label>
-              <input type="text" id="llm-provider-base-url" placeholder="https://api.minimaxi.com/v1">
-            </div>
-            <div class="form-group full">
-              <label>API Key</label>
-              <input type="password" id="llm-provider-api-key" placeholder="留空表示更新时保留原值">
-            </div>
-            <div class="form-group">
-              <label>主模型</label>
-              <input type="text" id="llm-provider-model" placeholder="MiniMax-M2.5">
-            </div>
-            <div class="form-group">
-              <label>快模型</label>
-              <input type="text" id="llm-provider-fast-model" placeholder="MiniMax-M2.5">
-            </div>
-            <div class="form-group">
-              <label>请求超时（秒）</label>
-              <input type="number" id="llm-provider-timeout" placeholder="600">
-            </div>
-            <div class="form-group">
-              <label>连接超时（秒）</label>
-              <input type="number" id="llm-provider-connect-timeout" placeholder="15">
-            </div>
-            <div class="form-group full">
-              <label>描述</label>
-              <input type="text" id="llm-provider-description" placeholder="可选说明">
-            </div>
-            <div class="form-group full">
-              <label><input type="checkbox" id="llm-provider-enabled" checked style="width:auto;margin-right:8px"> 启用</label>
-            </div>
-          </div>
-          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
-            <button class="btn btn-secondary" onclick="resetProviderForm()">重置</button>
-            <button class="btn btn-primary" onclick="saveProvider()">保存 Provider</button>
-          </div>
-        </div>
-        <div style="background:#fff;border-radius:10px;border:1px solid #e5e7eb;padding:20px">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-            <h3 style="font-size:15px;font-weight:600;color:#1e293b">固定步骤绑定</h3>
-            <div style="display:flex;align-items:center;gap:8px">
-              <label style="font-size:13px;color:#64748b">Execution Region</label>
-              <select id="llm-route-execution-region" onchange="handleExecutionRegionChange()">
-                <option value="cn_shanghai">cn_shanghai</option>
-                <option value="ap_southeast_johor">ap_southeast_johor</option>
-              </select>
-            </div>
-          </div>
-          <div style="font-size:13px;color:#64748b;line-height:1.6">
-            步骤为系统内置固定目录。请直接在下方列表中为每个步骤选择 Provider，Region 会随所选 Provider 自动确定。
-          </div>
-        </div>
-      </div>
-      <div style="margin-top:16px" class="table-wrap">
-        <div style="padding:16px 18px;border-bottom:1px solid #e5e7eb;font-size:15px;font-weight:600;color:#1e293b">Provider 列表</div>
-        <div id="llmProviderTableWrap"></div>
-      </div>
-      <div style="margin-top:16px" class="table-wrap">
-        <div style="padding:16px 18px;border-bottom:1px solid #e5e7eb;font-size:15px;font-weight:600;color:#1e293b">固定步骤绑定列表</div>
-        <div id="llmRouteTableWrap"></div>
-      </div>
-    </div>
-    </div>
-
     <!-- Create Game -->
     <div id="page-create" class="page">
       <h2 style="font-size:18px;font-weight:600;color:#1e293b;margin-bottom:20px">添加新游戏</h2>
@@ -1863,6 +1763,12 @@ function buildTaskDetailMarkup(task, options = {}) {
   const gameLink = task.gameUrl
     ? `<div class="log-linkbox" style="margin-top:10px"><div class="log-linkicon">↗</div><div class="log-linkmeta"><div class="label">Play</div><a href="${escAttr(task.gameUrl)}" target="_blank" rel="noopener noreferrer">${escHtml(task.gameUrl)}</a></div></div>`
     : '';
+  const intentBuildPanel = renderIntentBuildPanel(task.intentBuild);
+  const generationSummary = renderTaskGenerationSummary(task);
+  const issueListPanel = renderIssueListPanel(task.issueList, {
+    emptyText: '<div class="log-empty">当前任务没有记录结构化 QA 问题。</div>',
+  });
+  const qaArtifactsPanel = renderQaArtifactsPanel(task.qaArtifacts || []);
   const inputPrompt = task.inputPrompt || task.game?.description || '';
   const gameStatus = task.game?.status || '-';
 
@@ -1900,6 +1806,14 @@ function buildTaskDetailMarkup(task, options = {}) {
       </div>
       ${previewLink}
       ${gameLink}
+      <div class="section-title">意图构建</div>
+      ${intentBuildPanel}
+      <div class="section-title">生成摘要</div>
+      ${generationSummary}
+      <div class="section-title">QA 问题清单</div>
+      ${issueListPanel}
+      <div class="section-title">QA 报告</div>
+      ${qaArtifactsPanel}
       <div class="section-title">原始输入</div>
       ${inputPrompt ? `<div class="log-textbox">${escHtml(inputPrompt)}</div>` : '<div class="log-empty">暂无原始输入</div>'}
       <div class="section-title">结果摘要</div>
@@ -3111,82 +3025,6 @@ async function loadLogs() {
   }
 }
 
-function renderLogs(d) {
-  setHtml('logsSummary', `<span class="llm-pill">共 ${fmtNum(d.total || 0)} 条记录</span><span class="llm-pill">第 ${fmtNum(d.page || 1)} / ${fmtNum(d.totalPages || 1)} 页</span>`);
-  const search = document.getElementById('log-search')?.value?.trim() || '';
-  const status = document.getElementById('log-status')?.value || 'all';
-  const summaryPill = document.getElementById('logsSummaryPill');
-  if (summaryPill) {
-    summaryPill.textContent = `${status === 'all' ? '全部状态' : statusLabel(status)} · ${search ? `关键词「${search}」` : '默认排序'}`;
-  }
-  const statusLabels = { generating: '生成中', draft: '草稿', published: '已发布', failed: '失败', banned: '已封禁', review: '审核中' };
-  const statusColors = { generating: 'generating', draft: 'draft', published: 'published', failed: 'failed', banned: 'banned', review: 'review' };
-  const gameBaseUrl = window.location.origin;
-
-  let html = '<div class="table-wrap"><table><thead><tr>' +
-    '<th>用户</th><th>提示词</th><th>游戏标题</th><th>状态</th>' +
-    '<th>失败信息</th><th>策略</th><th>耗时</th><th>大小</th><th>QA</th><th>创建时间</th><th>操作</th>' +
-    '</tr></thead><tbody>';
-
-  if (!d.items.length) {
-    html += '<tr><td colspan="11" style="text-align:center;color:#94a3b8;padding:40px">暂无记录</td></tr>';
-  }
-
-  for (const g of d.items) {
-    const desc = g.description ? (g.description.length > 50 ? g.description.slice(0, 50) + '...' : g.description) : '-';
-    const author = g.author ? (g.author.displayName || g.author.username) : '-';
-    const st = statusLabels[g.status] || g.status;
-    const stCls = statusColors[g.status] || 'draft';
-    const strategy = g.strategy || '-';
-    const timeMs = g.genTimeMs ? (g.genTimeMs / 1000).toFixed(1) + 's' : '-';
-    const size = g.codeSizeBytes ? (g.codeSizeBytes / 1024).toFixed(1) + 'KB' : '-';
-    const qa = g.qaPassed === true ? '<span style="color:#16a34a">通过</span>' : g.qaPassed === false ? '<span style="color:#dc2626">失败</span>' : '-';
-    const retrySummaryParts = [];
-    if (g.retryCount) retrySummaryParts.push('总重试 ' + g.retryCount);
-    if (Number(g.qaRetries || 0) > 0) retrySummaryParts.push('QA ' + g.qaRetries);
-    if (Number(g.iterationRetries || 0) > 0) retrySummaryParts.push('迭代 ' + g.iterationRetries);
-    const qaSummary = retrySummaryParts.length
-      ? qa + '<div style="font-size:11px;color:#64748b;margin-top:4px">' + retrySummaryParts.join(' / ') + '</div>'
-      : qa;
-    const time = new Date(g.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
-    const previewUrl = g.previewUrl || (gameBaseUrl + '/games/' + g.gameId + '/preview');
-    const failureReason = g.failedReason ? (g.failedReason.length > 36 ? g.failedReason.slice(0, 36) + '...' : g.failedReason) : '-';
-    const failureSummary = g.failedStage ? (`<div style="font-size:12px;color:#dc2626">${escHtml(g.failedStage)}</div><div style="font-size:11px;color:#64748b" title="${escAttr(g.failedReason || '')}">${escHtml(failureReason)}</div>`) : '-';
-
-    html += '<tr>' +
-      '<td><strong>' + escHtml(author) + '</strong></td>' +
-      '<td title="' + escAttr(g.description || '') + '">' + escHtml(desc) + '</td>' +
-      '<td>' + escHtml(g.title) + '</td>' +
-      '<td><span class="badge badge-' + stCls + '">' + st + '</span></td>' +
-      '<td>' + failureSummary + '</td>' +
-      '<td>' + strategy + '</td>' +
-      '<td>' + timeMs + '</td>' +
-      '<td>' + size + '</td>' +
-      '<td>' + qaSummary + '</td>' +
-      '<td>' + time + '</td>' +
-      '<td>' +
-        '<div class="action-cell">' +
-        '<a href="' + previewUrl + '" target="_blank" class="abtn abtn-preview" style="text-decoration:none">预览</a>' +
-        '<button class="abtn abtn-edit" onclick="showLogDetail(\'' + g.gameId + '\', \'source\')">源码</button>' +
-        '<button class="abtn abtn-edit" onclick="showLogDetail(\'' + g.gameId + '\')">详情</button>' +
-        '</div>' +
-      '</td>' +
-      '</tr>';
-  }
-  html += '</tbody></table></div>';
-
-  // Pagination
-  html += '<div class="pagination"><div class="info">共 ' + d.total + ' 条，第 ' + d.page + '/' + d.totalPages + ' 页</div><div class="pages">';
-  html += '<button ' + (d.page <= 1 ? 'disabled' : '') + ' onclick="logPage=' + (d.page-1) + ';loadLogs()">上一页</button>';
-  for (let i = Math.max(1, d.page-2); i <= Math.min(d.totalPages, d.page+2); i++) {
-    html += '<button class="' + (i===d.page?'active':'') + '" onclick="logPage=' + i + ';loadLogs()">' + i + '</button>';
-  }
-  html += '<button ' + (d.page >= d.totalPages ? 'disabled' : '') + ' onclick="logPage=' + (d.page+1) + ';loadLogs()">下一页</button>';
-  html += '</div></div>';
-
-  document.getElementById('logTableWrap').innerHTML = html;
-}
-
 async function showLogDetail(gameId, focusSection) {
   try {
     const g = await api('/games/' + gameId);
@@ -3373,7 +3211,10 @@ async function showLogDetail(gameId, focusSection) {
       }
     }
   } catch(e) {
-    alert('加载详情失败: ' + e.message);
+    showDetailErrorOverlay('加载生成记录失败', e.message, {
+      overlayKey: 'generation-log:error:' + gameId,
+      maxWidth: '560px',
+    });
   }
 }
 
@@ -3396,6 +3237,16 @@ function showDetailOverlay(title, detailHtml, options = {}) {
   return overlay;
 }
 
+function showDetailErrorOverlay(title, message, options = {}) {
+  const detailHtml = `
+    <div class="workspace-empty" style="color:#dc2626;text-align:left">
+      <div style="font-size:14px;font-weight:600;margin-bottom:8px">${escHtml(title)}</div>
+      <div>${escHtml(message || '未知错误')}</div>
+    </div>
+  `;
+  return showDetailOverlay(title, detailHtml, options);
+}
+
 async function showTaskDetailModal(taskId, options = {}) {
   try {
     const task = await api('/tasks/' + taskId);
@@ -3412,11 +3263,21 @@ async function showTaskDetailModal(taskId, options = {}) {
       focusSelector: options.focusSection === 'source' ? '[data-task-source-card="true"]' : null,
     });
   } catch (e) {
-    alert('加载任务详情失败: ' + e.message);
+    showDetailErrorOverlay('加载任务详情失败', e.message, {
+      overlayKey: 'task-detail:error:' + taskId,
+      maxWidth: '560px',
+    });
   }
 }
 
 function renderLogs(d) {
+  setHtml('logsSummary', `<span class="llm-pill">共 ${fmtNum(d.total || 0)} 条记录</span><span class="llm-pill">第 ${fmtNum(d.page || 1)} / ${fmtNum(d.totalPages || 1)} 页</span>`);
+  const search = document.getElementById('log-search')?.value?.trim() || '';
+  const status = document.getElementById('log-status')?.value || 'all';
+  const summaryPill = document.getElementById('logsSummaryPill');
+  if (summaryPill) {
+    summaryPill.textContent = `${status === 'all' ? '全部状态' : statusLabel(status)} · ${search ? `关键词「${search}」` : '默认排序'}`;
+  }
   const statusLabels = { generating: '生成中', draft: '草稿', published: '已发布', failed: '失败', banned: '已封禁', review: '审核中' };
   const statusColors = { generating: 'generating', draft: 'draft', published: 'published', failed: 'failed', banned: 'banned', review: 'review' };
   const gameBaseUrl = window.location.origin;
@@ -3436,6 +3297,10 @@ function renderLogs(d) {
     const st = statusLabels[g.status] || g.status;
     const stCls = statusColors[g.status] || 'draft';
     const strategy = g.strategy || '-';
+    const strategySummary = [
+      `<div>${escHtml(strategy)}</div>`,
+      g.generationTier ? `<div style="font-size:11px;color:#64748b;margin-top:4px">层级 ${escHtml(g.generationTier)}</div>` : '',
+    ].filter(Boolean).join('');
     const timeMs = g.genTimeMs ? (g.genTimeMs / 1000).toFixed(1) + 's' : '-';
     const size = g.codeSizeBytes ? (g.codeSizeBytes / 1024).toFixed(1) + 'KB' : '-';
     const qa = g.qaPassed === true ? '<span style="color:#16a34a">通过</span>' : g.qaPassed === false ? '<span style="color:#dc2626">失败</span>' : '-';
@@ -3443,6 +3308,10 @@ function renderLogs(d) {
     if (g.retryCount) retrySummaryParts.push('总重试 ' + g.retryCount);
     if (Number(g.qaRetries || 0) > 0) retrySummaryParts.push('QA ' + g.qaRetries);
     if (Number(g.iterationRetries || 0) > 0) retrySummaryParts.push('迭代 ' + g.iterationRetries);
+    if (Number(g.qaWarningCount || 0) > 0) retrySummaryParts.push('告警 ' + g.qaWarningCount);
+    if (g.runtimeQaUnavailable) {
+      retrySummaryParts.push('Runtime QA 不可用' + (g.runtimeQaUnavailableKind ? `（${g.runtimeQaUnavailableKind}）` : ''));
+    }
     const qaSummary = retrySummaryParts.length
       ? qa + '<div style="font-size:11px;color:#64748b;margin-top:4px">' + retrySummaryParts.join(' / ') + '</div>'
       : qa;
@@ -3452,6 +3321,9 @@ function renderLogs(d) {
     const failureSummary = g.failedStage
       ? (`<div style="font-size:12px;color:#dc2626">${escHtml(g.failedStage)}</div><div style="font-size:11px;color:#64748b" title="${escAttr(g.failedReason || '')}">${escHtml(failureReason)}</div>`)
       : '-';
+    const titleMeta = [];
+    if (g.intentFingerprint) titleMeta.push('Intent ' + formatFingerprint(g.intentFingerprint));
+    if (g.specFingerprint) titleMeta.push('Spec ' + formatFingerprint(g.specFingerprint));
     const sourceAction = g.taskId
       ? `showTaskDetailModal('${g.taskId}', { focusSection: 'source' })`
       : `showLogDetail('${g.gameId}', 'source')`;
@@ -3462,10 +3334,10 @@ function renderLogs(d) {
     html += '<tr>' +
       '<td><strong>' + escHtml(author) + '</strong></td>' +
       '<td title="' + escAttr(g.description || '') + '">' + escHtml(desc) + '</td>' +
-      '<td>' + escHtml(g.title) + '</td>' +
+      '<td><div>' + escHtml(g.title) + '</div>' + (titleMeta.length ? '<div style="font-size:11px;color:#64748b;margin-top:4px">' + escHtml(titleMeta.join(' · ')) + '</div>' : '') + '</td>' +
       '<td><span class="badge badge-' + stCls + '">' + st + '</span></td>' +
       '<td>' + failureSummary + '</td>' +
-      '<td>' + strategy + '</td>' +
+      '<td>' + strategySummary + '</td>' +
       '<td>' + timeMs + '</td>' +
       '<td>' + size + '</td>' +
       '<td>' + qaSummary + '</td>' +
@@ -3716,7 +3588,7 @@ async function saveModalConfig() {
     const idx = configList.findIndex(x => x.configKey === modalCurrentKey);
     if (idx >= 0) configList[idx].configValue = value;
     renderConfigs();
-    toast('Prompt 已保存');
+    toast('Prompt 配置已保存');
     closePromptModal();
   } catch(e) {
     toast('保存失败: ' + e.message, 'error');
@@ -3726,13 +3598,13 @@ async function saveModalConfig() {
   }
 }
 
-// Keep legacy saveConfig for compatibility
+// 兼容旧的单项保存入口
 async function saveConfig(key) {
   const textarea = document.getElementById('cfg-' + key);
   if (!textarea) return;
   try {
     await api('/configs/' + encodeURIComponent(key), { method: 'PUT', body: { value: textarea.value } });
-    toast('Prompt 已保存');
+    toast('Prompt 配置已保存');
   } catch(e) {
     toast('保存失败: ' + e.message, 'error');
   }
@@ -3892,14 +3764,12 @@ async function saveTimeoutConfig(key) {
       body: { value, category: 'timeout' },
     });
     if (result && result.refreshResult && result.refreshResult.partialFailure) {
-      toast(`Timeout config saved, but ${result.refreshResult.failed} node(s) did not refresh`, 'error');
+      toast(`超时配置已保存，但仍有 ${result.refreshResult.failed} 个节点未刷新`, 'warning');
     } else {
-      toast('Timeout config saved');
+      toast('超时配置已保存');
     }
     await loadTimeoutConfigs();
     return;
-    toast('超时配置已保存');
-    await loadTimeoutConfigs();
   } catch (e) {
     toast('保存失败: ' + e.message, 'error');
   }
@@ -4032,6 +3902,243 @@ function renderTaskEventDetail(details) {
   return `<pre class="log-code" style="max-height:180px;margin-top:10px">${escHtml(JSON.stringify(details, null, 2))}</pre>`;
 }
 
+function toPlainObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function toArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function hasObjectKeys(value) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length);
+}
+
+function formatFingerprint(value) {
+  if (!value && value !== 0) return '-';
+  const text = String(value);
+  if (text.length <= 18) return text;
+  return `${text.slice(0, 8)}...${text.slice(-6)}`;
+}
+
+function summarizePromptDedup(source) {
+  const queue = [toPlainObject(source)];
+  while (queue.length) {
+    const current = queue.shift();
+    if (!hasObjectKeys(current)) continue;
+    const promptFingerprint = current.promptFingerprint ?? current.prompt_fingerprint ?? null;
+    const savedTokens = current.savedTokens
+      ?? current.saved_tokens
+      ?? current.savedTokensEstimate
+      ?? current.saved_tokens_estimate
+      ?? null;
+    const removedBlocks = current.removedBlocks ?? current.removed_blocks ?? null;
+    const requestedInputTokens = current.requestedInputTokens
+      ?? current.requested_input_tokens
+      ?? current.inputTokensBefore
+      ?? current.input_tokens_before
+      ?? null;
+    const effectiveInputTokens = current.effectiveInputTokens
+      ?? current.effective_input_tokens
+      ?? current.inputTokensAfter
+      ?? current.input_tokens_after
+      ?? null;
+
+    if (
+      promptFingerprint
+      || savedTokens !== null
+      || removedBlocks !== null
+      || requestedInputTokens !== null
+      || effectiveInputTokens !== null
+    ) {
+      return {
+        promptFingerprint,
+        savedTokens,
+        removedBlocks,
+        requestedInputTokens,
+        effectiveInputTokens,
+      };
+    }
+
+    Object.values(current).forEach((value) => {
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        queue.push(value);
+      }
+    });
+  }
+
+  return null;
+}
+
+function aggregatePromptDedup(logs) {
+  const summaries = toArray(logs)
+    .map(log => summarizePromptDedup(log))
+    .filter(Boolean);
+  if (!summaries.length) return null;
+
+  const totals = summaries.reduce((acc, summary) => {
+    if (Number.isFinite(Number(summary.savedTokens))) acc.savedTokens += Number(summary.savedTokens);
+    if (Number.isFinite(Number(summary.removedBlocks))) acc.removedBlocks += Number(summary.removedBlocks);
+    if (Number.isFinite(Number(summary.requestedInputTokens))) acc.requestedInputTokens += Number(summary.requestedInputTokens);
+    if (Number.isFinite(Number(summary.effectiveInputTokens))) acc.effectiveInputTokens += Number(summary.effectiveInputTokens);
+    if (!acc.promptFingerprint && summary.promptFingerprint) acc.promptFingerprint = summary.promptFingerprint;
+    return acc;
+  }, {
+    count: summaries.length,
+    savedTokens: 0,
+    removedBlocks: 0,
+    requestedInputTokens: 0,
+    effectiveInputTokens: 0,
+    promptFingerprint: null,
+  });
+
+  return totals;
+}
+
+function renderPromptDedupPanel(summary, options = {}) {
+  if (!summary) {
+    return options.emptyText || '';
+  }
+
+  return `
+    <div class="log-card" style="padding:14px 16px;${options.compact ? 'margin-top:10px;' : ''}">
+      <div class="log-card-title" style="margin-bottom:8px">
+        <div>
+          <strong style="font-size:14px;color:#0f172a">${escHtml(options.title || 'Prompt 去重')}</strong>
+          <div class="log-card-sub">${escHtml(options.subtitle || '提示词准入阶段的去重指标')}</div>
+        </div>
+        <span class="badge badge-generating">${escHtml(String(summary.count || 1))} 次样本</span>
+      </div>
+      <div class="log-kv-grid">
+        <div class="log-kv"><div class="k">Prompt 指纹</div><div class="v"><code>${escHtml(formatFingerprint(summary.promptFingerprint))}</code></div></div>
+        <div class="log-kv"><div class="k">节省 Tokens</div><div class="v">${escHtml(fmtNum(summary.savedTokens || 0))}</div></div>
+        <div class="log-kv"><div class="k">移除块数</div><div class="v">${escHtml(fmtNum(summary.removedBlocks || 0))}</div></div>
+        <div class="log-kv"><div class="k">请求 Tokens</div><div class="v">${escHtml(fmtNum(summary.requestedInputTokens || 0))}</div></div>
+        <div class="log-kv"><div class="k">生效 Tokens</div><div class="v">${escHtml(fmtNum(summary.effectiveInputTokens || 0))}</div></div>
+      </div>
+    </div>
+  `;
+}
+
+function renderIntentBuildPanel(intentBuild) {
+  const snapshot = toPlainObject(intentBuild);
+  if (!hasObjectKeys(snapshot)) {
+    return '<div class="log-empty">当前任务没有保存意图构建快照。</div>';
+  }
+
+  const brief = snapshot.brief || snapshot.summary || snapshot.intentBrief || '';
+  const frozenSpec = snapshot.frozenSpec ?? snapshot.frozen_spec ?? null;
+
+  return `
+    <div class="log-card" style="padding:14px 16px">
+      <div class="log-kv-grid">
+        <div class="log-kv"><div class="k">Intent Fingerprint</div><div class="v"><code>${escHtml(formatFingerprint(snapshot.intentFingerprint || snapshot.intent_fingerprint))}</code></div></div>
+        <div class="log-kv"><div class="k">Spec Fingerprint</div><div class="v"><code>${escHtml(formatFingerprint(snapshot.specFingerprint || snapshot.spec_fingerprint))}</code></div></div>
+      </div>
+      ${brief ? `<div class="log-textbox" style="margin-top:10px">${escHtml(brief)}</div>` : '<div class="log-empty" style="margin-top:10px">没有保存意图摘要。</div>'}
+      ${frozenSpec ? `<pre class="log-code" style="max-height:220px;margin-top:10px">${escHtml(JSON.stringify(frozenSpec, null, 2))}</pre>` : '<div class="log-empty" style="margin-top:10px">没有保存冻结后的 spec。</div>'}
+    </div>
+  `;
+}
+
+function renderTaskGenerationSummary(task) {
+  const summary = toPlainObject(task?.resultSummary);
+  const runtimeQaReport = toPlainObject(task?.runtimeQaReport);
+  const warnings = toArray(task?.qaWarnings);
+  const runtimeQaState = task?.runtimeQaUnavailable
+    ? `不可用${task.runtimeQaUnavailableKind ? ` (${task.runtimeQaUnavailableKind})` : ''}`
+    : (hasObjectKeys(runtimeQaReport) ? '已采集' : '-');
+
+  return `
+    <div class="log-card" style="padding:14px 16px">
+      <div class="log-kv-grid">
+        <div class="log-kv"><div class="k">生成层级</div><div class="v">${escHtml(task?.generationTier || summary.generationTier || summary.generation_tier || '-')}</div></div>
+        <div class="log-kv"><div class="k">生成策略</div><div class="v">${escHtml(summary.strategy || '-')}</div></div>
+        <div class="log-kv"><div class="k">QA 告警</div><div class="v">${escHtml(fmtNum(warnings.length))}</div></div>
+        <div class="log-kv"><div class="k">Runtime QA</div><div class="v">${escHtml(runtimeQaState)}</div></div>
+        <div class="log-kv"><div class="k">Runtime QA Phase</div><div class="v">${escHtml(task?.runtimeQaUnavailablePhase || runtimeQaReport.unavailablePhase || '-')}</div></div>
+        <div class="log-kv"><div class="k">Runtime QA Reason</div><div class="v">${escHtml(task?.runtimeQaUnavailableReason || runtimeQaReport.unavailableReason || '-')}</div></div>
+      </div>
+      ${warnings.length
+        ? `<div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">${warnings.map((warning) => {
+            const item = toPlainObject(warning);
+            const label = item.type || item.family || item.severity || 'warning';
+            const message = item.message || item.reason || item.title || '-';
+            return `<div class="log-note"><strong>${escHtml(String(label))}</strong> · ${escHtml(String(message))}</div>`;
+          }).join('')}</div>`
+        : '<div class="log-empty" style="margin-top:10px">没有记录 QA 告警。</div>'}
+    </div>
+  `;
+}
+
+function renderIssueListPanel(issueList, options = {}) {
+  const summary = toPlainObject(issueList);
+  const items = toArray(summary.items);
+  if (!items.length) {
+    return options.emptyText || '<div class="log-empty">没有结构化问题记录。</div>';
+  }
+
+  return `
+    <div class="log-card" style="padding:14px 16px">
+      <div class="log-kv-grid">
+        <div class="log-kv"><div class="k">问题数</div><div class="v">${escHtml(fmtNum(items.length))}</div></div>
+        <div class="log-kv"><div class="k">错误</div><div class="v">${escHtml(fmtNum(summary.errorCount || 0))}</div></div>
+        <div class="log-kv"><div class="k">告警</div><div class="v">${escHtml(fmtNum(summary.warningCount || 0))}</div></div>
+        <div class="log-kv"><div class="k">阻塞</div><div class="v">${escHtml(fmtNum(summary.blockingCount || 0))}</div></div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px;margin-top:10px">
+        ${items.map((issue) => {
+          const item = toPlainObject(issue);
+          const location = hasObjectKeys(item.location) ? JSON.stringify(item.location) : '';
+          return `
+            <div class="log-card" style="padding:12px 14px;background:#f8fafc">
+              <div class="log-card-title" style="margin-bottom:8px">
+                <div>
+                  <strong style="font-size:13px;color:#0f172a">${escHtml(String(item.family || item.type || '问题'))}</strong>
+                  <div class="log-card-sub">${escHtml(String(item.message || '-'))}</div>
+                </div>
+                <span class="badge ${String(item.severity || '').toLowerCase() === 'warning' ? 'badge-review' : 'badge-failed'}">${escHtml(String(item.severity || 'error'))}</span>
+              </div>
+              ${item.repairHint ? `<div class="log-note"><strong>修复建议：</strong>${escHtml(String(item.repairHint))}</div>` : ''}
+              ${location ? `<pre class="log-code" style="max-height:120px;margin-top:10px">${escHtml(location)}</pre>` : ''}
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderQaArtifactsPanel(artifacts) {
+  const items = toArray(artifacts);
+  if (!items.length) {
+    return '<div class="log-empty">当前任务没有保存 QA 报告。</div>';
+  }
+
+  return `
+    <div style="display:flex;flex-direction:column;gap:10px">
+      ${items.map((artifact) => {
+        const report = toPlainObject(artifact?.report);
+        const issueList = toPlainObject(artifact?.issueList);
+        const issueCount = toArray(issueList.items).length;
+        return `
+          <div class="log-card" style="padding:14px 16px">
+            <div class="log-card-title" style="margin-bottom:8px">
+              <div>
+                <strong style="font-size:14px;color:#0f172a">${escHtml(String(artifact?.artifactType || '-'))}</strong>
+                <div class="log-card-sub">${escHtml(fmtDateTime(artifact?.createdAt))}</div>
+              </div>
+              <span class="badge badge-draft">${escHtml(fmtNum(issueCount))} issues</span>
+            </div>
+            ${hasObjectKeys(issueList) ? renderIssueListPanel(issueList) : ''}
+            ${hasObjectKeys(report) ? `<pre class="log-code" style="max-height:220px;margin-top:${hasObjectKeys(issueList) ? '10px' : '0'}">${escHtml(JSON.stringify(report, null, 2))}</pre>` : '<div class="log-empty">No artifact payload was available.</div>'}
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
 function routeMatchStrategyLabel(strategy) {
   const labels = {
     exact: '精确匹配',
@@ -4052,6 +4159,7 @@ function renderRouteSnapshotPanel(snapshot, options = {}) {
   const routeId = snapshot.route_id || '-';
   const configVersion = snapshot.config_version ?? '-';
   const fallbackCount = Array.isArray(snapshot.fallback_provider_ids) ? snapshot.fallback_provider_ids.length : 0;
+  const promptDedupSummary = summarizePromptDedup(snapshot);
   return `
     <div class="log-card" style="padding:14px 16px">
       <div class="log-kv-grid">
@@ -4063,6 +4171,11 @@ function renderRouteSnapshotPanel(snapshot, options = {}) {
         <div class="log-kv"><div class="k">Fallback 数</div><div class="v">${escHtml(String(fallbackCount))}</div></div>
         <div class="log-kv"><div class="k">配置版本</div><div class="v">${escHtml(String(configVersion))}</div></div>
       </div>
+      ${renderPromptDedupPanel(promptDedupSummary, {
+        compact: true,
+        title: 'Prompt 去重',
+        subtitle: '本次路由快照记录的提示词去重指标',
+      })}
       <pre class="log-code" style="max-height:180px;margin-top:10px">${escHtml(JSON.stringify(snapshot, null, 2))}</pre>
     </div>
   `;
@@ -4161,9 +4274,19 @@ function summarizeLlmLogs(logs) {
 
 function renderLlmUsageSummary(logs) {
   const summary = summarizeLlmLogs(logs);
+  const promptDedupSummary = aggregatePromptDedup(logs);
   if (!summary.callCount) return '<div class="log-empty">暂无 LLM Token 统计</div>';
   if (!summary.usageCount) {
-    return '<div class="log-card" style="padding:14px 16px;margin-bottom:12px"><div class="log-empty">当前这些 Provider 没有返回精确 token usage，后台暂时无法汇总。</div></div>';
+    return `
+      <div class="log-card" style="padding:14px 16px;margin-bottom:12px">
+        <div class="log-empty">当前这些 Provider 没有返回精确 token usage，后台暂时无法汇总。</div>
+        ${renderPromptDedupPanel(promptDedupSummary, {
+          compact: true,
+          title: 'Prompt 去重',
+          subtitle: '当前已采集 LLM 调用的聚合去重指标',
+        })}
+      </div>
+    `;
   }
   return `
     <div class="log-card" style="padding:14px 16px;margin-bottom:12px">
@@ -4179,81 +4302,13 @@ function renderLlmUsageSummary(logs) {
         <div class="log-kv"><div class="k">输出 Tokens</div><div class="v">${escHtml(fmtTokenCount(summary.outputTokens))}</div></div>
         <div class="log-kv"><div class="k">总 Tokens</div><div class="v">${escHtml(fmtTokenCount(summary.totalTokens))}</div></div>
       </div>
+      ${renderPromptDedupPanel(promptDedupSummary, {
+        compact: true,
+        title: 'Prompt 去重',
+        subtitle: '当前已采集 LLM 调用的聚合去重指标',
+      })}
     </div>
   `;
-}
-
-async function showTaskDetail(taskId, options = {}) {
-  currentTaskDetailId = taskId;
-  const wrap = document.getElementById('taskDetailWrap');
-  if (!options.silent) {
-    wrap.innerHTML = '<div class="loading"><div class="spinner"></div><div style="margin-top:8px">加载详情...</div></div>';
-  }
-  try {
-    const task = await api('/tasks/' + taskId);
-    if (currentTaskDetailId !== taskId) return;
-
-    const events = renderTaskEvents(task.events || []);
-    const llmLogs = renderLlmLogs(task.llmCallLogs || []);
-    const durationMs = task.startedAt && task.completedAt
-      ? new Date(task.completedAt).getTime() - new Date(task.startedAt).getTime()
-      : null;
-    const routeSnapshot = task.routeSnapshot
-      ? `<pre class="log-code" style="max-height:180px">${escHtml(JSON.stringify(task.routeSnapshot, null, 2))}</pre>`
-      : '<div class="log-empty">暂无最近路由快照</div>';
-    const resultSummary = task.resultSummary
-      ? `<pre class="log-code" style="max-height:220px">${escHtml(JSON.stringify(task.resultSummary, null, 2))}</pre>`
-      : '<div class="log-empty">暂无结果摘要</div>';
-    const previewLink = task.previewUrl
-      ? `<div class="log-linkbox" style="margin-top:14px"><div class="log-linkicon">▶</div><div class="log-linkmeta"><div class="label">Preview</div><a href="${escAttr(task.previewUrl)}" target="_blank" rel="noopener noreferrer">${escHtml(task.previewUrl)}</a></div></div>`
-      : '';
-
-    wrap.innerHTML = `
-      <div class="log-card">
-        <div class="log-card-title">
-          <div>
-            <h4>任务详情</h4>
-            <div class="log-card-sub" style="margin-top:4px"><code>${escHtml(task.id)}</code></div>
-          </div>
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <span class="badge ${taskStatusBadge(task.status)}">${escHtml(task.status)}</span>
-            <button class="btn btn-secondary btn-sm" onclick="showTaskDetail('${task.id}')">刷新详情</button>
-            ${canTerminateTask(task.status) ? `<button class="btn btn-danger btn-sm" onclick="terminateTask('${task.id}')">结束任务</button>` : ''}
-          </div>
-        </div>
-        <div class="log-kv-grid">
-          <div class="log-kv"><div class="k">游戏</div><div class="v">${escHtml(task.game?.title || task.gameId || '-')}</div></div>
-          <div class="log-kv"><div class="k">用户</div><div class="v">${escHtml(task.user?.displayName || task.user?.username || task.userId || '-')}</div></div>
-          <div class="log-kv"><div class="k">类型</div><div class="v">${escHtml(task.taskType)}</div></div>
-          <div class="log-kv"><div class="k">阶段</div><div class="v">${escHtml(task.progressStage || task.failedStage || '-')}</div></div>
-          <div class="log-kv"><div class="k">进度</div><div class="v">${task.progressPct ?? '-'}%</div></div>
-          <div class="log-kv"><div class="k">当前消息</div><div class="v">${escHtml(task.progressMessage || '-')}</div></div>
-          <div class="log-kv"><div class="k">超时</div><div class="v">${escHtml(String(task.timeoutS || '-'))}s</div></div>
-          <div class="log-kv"><div class="k">耗时</div><div class="v">${escHtml(fmtDurationMs(durationMs))}</div></div>
-          <div class="log-kv"><div class="k">创建时间</div><div class="v">${escHtml(fmtDateTime(task.createdAt))}</div></div>
-          <div class="log-kv"><div class="k">开始时间</div><div class="v">${escHtml(fmtDateTime(task.startedAt))}</div></div>
-          <div class="log-kv"><div class="k">完成时间</div><div class="v">${escHtml(fmtDateTime(task.completedAt))}</div></div>
-          <div class="log-kv"><div class="k">配置版本</div><div class="v">${task.gatewayConfigVersion ?? '-'}</div></div>
-          <div class="log-kv"><div class="k">Fallback</div><div class="v">${escHtml(task.fallback || '-')}</div></div>
-          <div class="log-kv"><div class="k">错误</div><div class="v">${escHtml(task.errorMessage || '-')}</div></div>
-        </div>
-        ${previewLink}
-        <div class="section-title">结果摘要</div>
-        ${resultSummary}
-        <div class="section-title">最近路由快照</div>
-        ${routeSnapshot}
-        <div class="section-title">阶段时间线</div>
-        <div style="display:flex;flex-direction:column;gap:12px">${events}</div>
-        <div class="section-title">LLM 调用明细</div>
-        <div style="display:flex;flex-direction:column;gap:12px">${llmLogs}</div>
-      </div>
-    `;
-    scheduleTaskDetailRefresh(task.id, task.status);
-  } catch (e) {
-    if (options.silent) return;
-    clearTaskDetailRefresh();
-    wrap.innerHTML = `<div class="loading" style="color:#dc2626">详情加载失败: ${escHtml(e.message)}</div>`;
-  }
 }
 
 async function showTaskDetail(taskId, options = {}) {
@@ -4275,244 +4330,7 @@ async function showTaskDetail(taskId, options = {}) {
 }
 
 // ===================== LLM Gateway =====================
-async function loadLlmGateway() {
-  document.getElementById('llmProviderTableWrap').innerHTML = '<div class="loading"><div class="spinner"></div><div style="margin-top:8px">加载中...</div></div>';
-  document.getElementById('llmRouteTableWrap').innerHTML = '<div class="loading"><div class="spinner"></div><div style="margin-top:8px">加载中...</div></div>';
-  try {
-    currentExecutionRegion = document.getElementById('llm-route-execution-region')?.value || currentExecutionRegion || 'cn_shanghai';
-    const [providers, routes, steps, regionTargets] = await Promise.all([
-      api('/llm/providers'),
-      api('/llm/routes?executionRegion=' + encodeURIComponent(currentExecutionRegion)),
-      api('/llm/steps'),
-      api('/cloud/ai-engine-region-targets?providerSelectableOnly=true'),
-    ]);
-    llmProviders = providers || [];
-    llmRoutes = routes || [];
-    llmSteps = steps || [];
-    llmRegionTargets = regionTargets || [];
-    renderProviderTable();
-    renderRouteTable();
-    renderProviderRegionTargetOptions();
-    if (!currentProviderId) resetProviderForm();
-  } catch (e) {
-    toast('加载 LLM 网关失败: ' + e.message, 'error');
-  }
-}
 
-function renderProviderRegionTargetOptions() {
-  const select = document.getElementById('llm-provider-region-target');
-  if (!select) return;
-  const previousValue = select.value;
-  if (!llmRegionTargets.length) {
-    select.innerHTML = '<option value="">暂无可用 Region Target</option>';
-    return;
-  }
-  select.innerHTML = llmRegionTargets.map(target => (
-    `<option value="${escAttr(target.id)}">${escHtml(target.displayName || target.executionRegion)} · ${escHtml(target.cloudRegionCode || '')}</option>`
-  )).join('');
-  if (previousValue && Array.from(select.options).some(option => option.value === previousValue)) {
-    select.value = previousValue;
-  }
-}
-
-function handleExecutionRegionChange() {
-  currentExecutionRegion = document.getElementById('llm-route-execution-region')?.value || 'cn_shanghai';
-  loadLlmGateway();
-}
-
-function renderProviderTable() {
-  const wrap = document.getElementById('llmProviderTableWrap');
-  if (!llmProviders.length) {
-    wrap.innerHTML = '<div class="loading">暂无 Provider</div>';
-    return;
-  }
-  let html = '<table><thead><tr><th>名称</th><th>类型</th><th>Region</th><th>模型</th><th>超时</th><th>优先级</th><th>状态</th><th>操作</th></tr></thead><tbody>';
-  for (const provider of llmProviders) {
-    html += `<tr>
-      <td>${escHtml(provider.name)}<div style="font-size:11px;color:#94a3b8;margin-top:2px">${escHtml(provider.apiKeyMasked || '')}</div></td>
-      <td>${escHtml(provider.providerType)}</td>
-      <td>${escHtml(provider.regionDisplayName || provider.region)}<div style="font-size:11px;color:#94a3b8;margin-top:2px">${escHtml(provider.cloudRegionCode || '')}</div></td>
-      <td>${escHtml(provider.model)}${provider.fastModel ? `<div style="font-size:11px;color:#94a3b8;margin-top:2px">fast: ${escHtml(provider.fastModel)}</div>` : ''}</td>
-      <td>${provider.requestTimeoutS}s / ${provider.connectTimeoutS}s</td>
-      <td>${provider.priority}</td>
-      <td>${provider.enabled ? '启用' : '停用'}</td>
-      <td>
-        <button class="abtn abtn-edit" onclick="editProvider('${provider.id}')">编辑</button>
-        <button class="abtn abtn-preview" onclick="testProvider('${provider.id}')">测试</button>
-        <button class="abtn abtn-delete" onclick="deleteProvider('${provider.id}')">删除</button>
-      </td>
-    </tr>`;
-  }
-  html += '</tbody></table>';
-  wrap.innerHTML = html;
-}
-
-function renderRouteTable() {
-  const wrap = document.getElementById('llmRouteTableWrap');
-  if (!llmRoutes.length) {
-    wrap.innerHTML = '<div class="loading">暂无步骤绑定</div>';
-    return;
-  }
-  const regionProviders = llmProviders.filter(provider => provider.region === currentExecutionRegion);
-  let html = '<table><thead><tr><th>步骤</th><th>Execution Region</th><th>Provider</th><th>模型</th><th>状态</th><th>操作</th></tr></thead><tbody>';
-  for (const route of llmRoutes) {
-    const domKey = route.stepKey.replace(/[^a-zA-Z0-9_-]/g, '-');
-    const stepTitle = route.displayName
-      ? `${route.displayName} · ${route.stepKey}`
-      : route.stepKey;
-    const stepHint = route.stageLabel || '';
-    const providerOptions = regionProviders.map(provider => (
-      `<option value="${escAttr(provider.id)}" ${provider.id === route.providerId ? 'selected' : ''}>${escHtml(provider.name)} (${escHtml(provider.regionDisplayName || provider.region)}) · ${escHtml(provider.model)}${provider.fastModel ? ' / fast ' + escHtml(provider.fastModel) : ''}</option>`
-    )).join('');
-    html += `<tr>
-      <td>
-        <div style="font-weight:600;color:#0f172a">${escHtml(stepTitle)}</div>
-        ${stepHint ? `<div style="font-size:11px;color:#94a3b8;margin-top:2px">${escHtml(stepHint)}</div>` : ''}
-      </td>
-      <td>${escHtml(route.executionRegion)}</td>
-      <td>
-        <select id="llm-route-binding-provider-${escAttr(domKey)}">
-          ${providerOptions || '<option value="">暂无可用 Provider</option>'}
-        </select>
-      </td>
-      <td>${escHtml(route.modelDefault || '-')} ${route.modelFast ? `<div style="font-size:11px;color:#94a3b8;margin-top:2px">fast: ${escHtml(route.modelFast)}</div>` : ''}</td>
-      <td><label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="llm-route-binding-enabled-${escAttr(domKey)}" ${route.enabled ? 'checked' : ''}> 启用</label></td>
-      <td>
-        <button class="abtn abtn-preview" onclick="saveRouteBinding('${escAttr(route.stepKey)}')">保存</button>
-      </td>
-    </tr>`;
-  }
-  html += '</tbody></table>';
-  wrap.innerHTML = html;
-}
-
-async function saveRouteBinding(stepKey) {
-  const route = llmRoutes.find(item => item.stepKey === stepKey);
-  if (!route) {
-    toast('未找到步骤绑定', 'error');
-    return;
-  }
-  const domKey = stepKey.replace(/[^a-zA-Z0-9_-]/g, '-');
-  const providerId = document.getElementById(`llm-route-binding-provider-${domKey}`)?.value || '';
-  const enabled = document.getElementById(`llm-route-binding-enabled-${domKey}`)?.checked !== false;
-  if (!providerId) {
-    toast('请先选择 Provider', 'error');
-    return;
-  }
-  try {
-    await api(route.id ? '/llm/routes/' + route.id : '/llm/routes', {
-      method: route.id ? 'PUT' : 'POST',
-      body: {
-        stepKey: route.stepKey,
-        executionRegion: route.executionRegion || currentExecutionRegion,
-        providerId,
-        enabled,
-      },
-    });
-    toast('步骤绑定已保存');
-    loadLlmGateway();
-  } catch (e) {
-    toast('保存步骤绑定失败: ' + e.message, 'error');
-  }
-}
-
-function resetProviderForm() {
-  currentProviderId = null;
-  document.getElementById('llm-provider-name').value = '';
-  document.getElementById('llm-provider-type').value = 'openai_compatible';
-  renderProviderRegionTargetOptions();
-  document.getElementById('llm-provider-region-target').value = llmRegionTargets[0]?.id || '';
-  document.getElementById('llm-provider-priority').value = '100';
-  document.getElementById('llm-provider-base-url').value = '';
-  document.getElementById('llm-provider-api-key').value = '';
-  document.getElementById('llm-provider-model').value = '';
-  document.getElementById('llm-provider-fast-model').value = '';
-  document.getElementById('llm-provider-timeout').value = '600';
-  document.getElementById('llm-provider-connect-timeout').value = '15';
-  document.getElementById('llm-provider-description').value = '';
-  document.getElementById('llm-provider-enabled').checked = true;
-}
-
-function editProvider(id) {
-  const provider = llmProviders.find(item => item.id === id);
-  if (!provider) return;
-  currentProviderId = id;
-  document.getElementById('llm-provider-name').value = provider.name || '';
-  document.getElementById('llm-provider-type').value = provider.providerType || 'openai_compatible';
-  renderProviderRegionTargetOptions();
-  document.getElementById('llm-provider-region-target').value = provider.regionTargetId || '';
-  document.getElementById('llm-provider-priority').value = provider.priority ?? 100;
-  document.getElementById('llm-provider-base-url').value = provider.baseUrl || '';
-  document.getElementById('llm-provider-api-key').value = '';
-  document.getElementById('llm-provider-model').value = provider.model || '';
-  document.getElementById('llm-provider-fast-model').value = provider.fastModel || '';
-  document.getElementById('llm-provider-timeout').value = provider.requestTimeoutS ?? 600;
-  document.getElementById('llm-provider-connect-timeout').value = provider.connectTimeoutS ?? 15;
-  document.getElementById('llm-provider-description').value = provider.description || '';
-  document.getElementById('llm-provider-enabled').checked = provider.enabled !== false;
-}
-
-async function saveProvider() {
-  const body = {
-    name: document.getElementById('llm-provider-name').value.trim(),
-    providerType: document.getElementById('llm-provider-type').value,
-    regionTargetId: document.getElementById('llm-provider-region-target').value,
-    priority: Number(document.getElementById('llm-provider-priority').value || 100),
-    baseUrl: document.getElementById('llm-provider-base-url').value.trim(),
-    apiKey: document.getElementById('llm-provider-api-key').value.trim(),
-    model: document.getElementById('llm-provider-model').value.trim(),
-    fastModel: document.getElementById('llm-provider-fast-model').value.trim(),
-    requestTimeoutS: Number(document.getElementById('llm-provider-timeout').value || 600),
-    connectTimeoutS: Number(document.getElementById('llm-provider-connect-timeout').value || 15),
-    description: document.getElementById('llm-provider-description').value.trim(),
-    enabled: document.getElementById('llm-provider-enabled').checked,
-  };
-  try {
-    await api(currentProviderId ? '/llm/providers/' + currentProviderId : '/llm/providers', {
-      method: currentProviderId ? 'PUT' : 'POST',
-      body,
-    });
-    toast('Provider 已保存');
-    resetProviderForm();
-    loadLlmGateway();
-  } catch (e) {
-    toast('保存 Provider 失败: ' + e.message, 'error');
-  }
-}
-
-async function testProvider(id) {
-  try {
-    const result = await api('/llm/providers/' + id + '/test', { method: 'POST' });
-    toast(result.success ? `测试成功，耗时 ${result.latencyMs}ms` : `测试失败: ${result.errorMessage}`, result.success ? 'success' : 'error');
-  } catch (e) {
-    toast('测试 Provider 失败: ' + e.message, 'error');
-  }
-}
-
-async function deleteProvider(id) {
-  const yes = await confirmDialog('确认删除', '确定删除这个 Provider 吗？');
-  if (!yes) return;
-  try {
-    await api('/llm/providers/' + id, { method: 'DELETE' });
-    toast('Provider 已删除');
-    resetProviderForm();
-    loadLlmGateway();
-  } catch (e) {
-    toast('删除 Provider 失败: ' + e.message, 'error');
-  }
-}
-
-async function refreshGateway() {
-  try {
-    await api('/llm/refresh', { method: 'POST' });
-    toast('LLM 网关已热刷新');
-    loadLlmGateway();
-  } catch (e) {
-    toast('热刷新失败: ' + e.message, 'error');
-  }
-}
-
-// ===================== LLM Gateway V2 =====================
 async function loadLlmGateway() {
   const providerWrap = document.getElementById('llm2ProviderTableWrap');
   const routeWrap = document.getElementById('llm2RouteTableWrap');

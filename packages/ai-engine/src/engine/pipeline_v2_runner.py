@@ -1277,7 +1277,6 @@ class V2PipelineRunner:
                     runtime_profile=runtime_contract.runtime_profile,
                     prompt_bundle_snapshot=request.prompt_bundle_snapshot.model_dump(),
                     game_spec=spec,
-                    source_bundle_context=request.source_bundle_context,
                 )
             except Exception as exc:
                 last_exc = exc
@@ -1317,7 +1316,12 @@ class V2PipelineRunner:
         contract_errors = self._validate_contract_bundle(pre_repaired, runtime_contract)
         if static_check.passed and not contract_errors:
             logger.info("Code passed all checks on first attempt; skipping repair loop and running runtime QA directly")
-            qa_result = QAResult(success=True, code=pre_repaired, retries=0)
+            qa_result = QAResult(
+                success=True,
+                code=pre_repaired,
+                retries=0,
+                issue_list=static_check.issue_list,
+            )
             # Fast-path: jump directly to runtime QA, skip the contract_qa stage notification
             stage_context["stage"] = "runtime_simulation_qa"
             self._notify(progress_cb, "runtime_simulation_qa", 92, "Running runtime simulation QA", {
@@ -1335,7 +1339,12 @@ class V2PipelineRunner:
                 user_id=user_id,
                 allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
             )
-            return QAResult(success=True, code=final_code, retries=qa_result.retries), runtime_qa, runtime_retries, qa_warnings
+            return QAResult(
+                success=True,
+                code=final_code,
+                retries=qa_result.retries,
+                issue_list=qa_result.issue_list,
+            ), runtime_qa, runtime_retries, qa_warnings
         else:
             qa_result = await self._run_contract_qa_loop(
                 code=code,
@@ -1392,7 +1401,12 @@ class V2PipelineRunner:
             user_id=user_id,
             allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
         )
-        return QAResult(success=True, code=final_code, retries=qa_result.retries), runtime_qa, runtime_retries, qa_warnings
+        return QAResult(
+            success=True,
+            code=final_code,
+            retries=qa_result.retries,
+            issue_list=qa_result.issue_list,
+        ), runtime_qa, runtime_retries, qa_warnings
 
     async def _run_contract_qa_loop(
         self,
@@ -1407,20 +1421,39 @@ class V2PipelineRunner:
         max_retries: Optional[int] = None,
     ) -> QAResult:
         retries_allowed = settings.QA_MAX_RETRIES if max_retries is None else max_retries
+        retries_allowed = min(max(0, int(retries_allowed)), 1)
         current_code = self.qa_pipeline._apply_deterministic_repairs(code)
         repair_attempts = 0
 
         for attempt in range(retries_allowed + 1):
             errors = self._validate_contract_bundle(current_code, runtime_contract)
             if not errors:
-                return QAResult(success=True, code=current_code, retries=repair_attempts)
+                return QAResult(
+                    success=True,
+                    code=current_code,
+                    retries=repair_attempts,
+                    issue_list=self.qa_pipeline.build_issue_list([], []),
+                )
 
             if attempt >= 1 and self.qa_pipeline._errors_look_like_truncation(errors):
                 logger.warning("Contract QA: truncation persists after %d repair(s); signaling regeneration", repair_attempts)
-                return QAResult(success=False, code=current_code, retries=repair_attempts, last_errors=errors, needs_regeneration=True)
+                return QAResult(
+                    success=False,
+                    code=current_code,
+                    retries=repair_attempts,
+                    last_errors=errors,
+                    needs_regeneration=True,
+                    issue_list=self.qa_pipeline.build_issue_list(errors, []),
+                )
 
             if attempt == retries_allowed:
-                return QAResult(success=False, code=current_code, retries=repair_attempts, last_errors=errors)
+                return QAResult(
+                    success=False,
+                    code=current_code,
+                    retries=repair_attempts,
+                    last_errors=errors,
+                    issue_list=self.qa_pipeline.build_issue_list(errors, []),
+                )
 
             self._notify(progress_cb, "targeted_remediation", 84, f"Contract QA failed, applying targeted remediation ({attempt + 1}/{retries_allowed})", {
                 "gameId": game_id,
@@ -1441,7 +1474,12 @@ class V2PipelineRunner:
             )
             repair_attempts += 1
 
-        return QAResult(success=False, code=current_code, retries=repair_attempts)
+        return QAResult(
+            success=False,
+            code=current_code,
+            retries=repair_attempts,
+            issue_list=self.qa_pipeline.build_issue_list([], []),
+        )
 
     async def _run_runtime_qa_loop(
         self,
@@ -1457,6 +1495,7 @@ class V2PipelineRunner:
     ) -> tuple[str, Any, int, list[dict[str, Any]]]:
         current_code = code
         remediation_attempts = max(0, int(settings.RUNTIME_QA_REMEDIATION_MAX_RETRIES or 1))
+        remediation_attempts = min(remediation_attempts, 1)
         total_retries = 0
         qa_warnings: list[dict[str, Any]] = []
 
@@ -1910,14 +1949,22 @@ class V2PipelineRunner:
         }
 
     @staticmethod
-    def _serialize_errors(errors: list[QACheckError]) -> list[dict[str, str]]:
+    def _serialize_errors(errors: list[QACheckError]) -> list[dict[str, Any]]:
         return [
             {
-                "type": error.type,
-                "message": error.message,
-                "severity": error.severity,
+                "type": enriched.type,
+                "message": enriched.message,
+                "severity": enriched.severity,
+                "family": enriched.family or "generic",
+                "blocking": bool(enriched.blocking if enriched.blocking is not None else True),
+                "repairHint": enriched.repair_hint or "",
+                **(
+                    {"location": enriched.location.model_dump(exclude_none=True)}
+                    if enriched.location is not None
+                    else {}
+                ),
             }
-            for error in errors
+            for enriched in (QAPipeline.enrich_issue(error) for error in errors)
         ]
 
     @staticmethod
@@ -1926,6 +1973,9 @@ class V2PipelineRunner:
         return {
             "type": "runtime_qa_unavailable",
             "severity": "warning",
+            "family": "runtime_startup",
+            "blocking": False,
+            "repairHint": "Retry runtime QA later or inspect the runtime environment if Playwright/browser infrastructure is unavailable.",
             "message": f"Runtime QA unavailable: {unavailable_reason}",
             "kind": getattr(runtime_qa, "unavailable_kind", None),
             "phase": getattr(runtime_qa, "unavailable_phase", None),

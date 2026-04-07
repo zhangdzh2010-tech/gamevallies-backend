@@ -11,7 +11,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import axios from 'axios';
 import {
   GameAccessGrantSource,
@@ -49,6 +49,10 @@ import {
   normalizeRuntimeProfileId,
   runtimeProfileLookupCandidates,
 } from './runtime-profile-ids';
+import {
+  buildIntentBuildSnapshot,
+  normalizeIntentBuildSnapshot,
+} from './intent-build.util';
 
 // Pipeline stage labels for WebSocket progress events
 const STAGE_LABELS: Record<string, string> = {
@@ -165,6 +169,19 @@ interface SourceBundleContextPayload {
   latest_iteration_type?: string | null;
   summary?: string | null;
   recent_revisions?: SourceBundleRevisionPayload[];
+}
+
+interface DirectIntentAnalyzeResponsePayload {
+  slots?: Record<string, unknown>;
+  missing_required?: string[];
+  slot_fill_pct?: number;
+  ready_to_generate?: boolean;
+}
+
+interface DirectIntentSpecResponsePayload {
+  spec?: Record<string, unknown> | null;
+  missing_required?: string[];
+  slot_fill_pct?: number;
 }
 
 interface CreateGameCommand extends CreateGameDto {
@@ -540,6 +557,44 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     ).trim();
 
     return normalized === 'ap_southeast_johor' ? normalized : 'cn_shanghai';
+  }
+
+  private normalizeOptionalString(value: unknown): string | undefined {
+    const normalized = String(value || '').trim();
+    return normalized || undefined;
+  }
+
+  private buildCreateIntentVariationSeed(params: {
+    userId: string;
+    description: string;
+    title?: string | null;
+    generationTier: GenerationTier;
+    entryMode?: string | null;
+  }): string {
+    const fingerprint = JSON.stringify({
+      userId: params.userId,
+      description: params.description.trim(),
+      title: this.normalizeOptionalString(params.title) || null,
+      generationTier: params.generationTier,
+      entryMode: this.normalizeOptionalString(params.entryMode) || 'create',
+    });
+    return createHash('sha256').update(fingerprint).digest('hex').slice(0, 24);
+  }
+
+  private buildCreateIntentBuild(params: {
+    title?: string | null;
+    description: string;
+    entryMode?: string | null;
+    generationTier: GenerationTier;
+    sourceSpec?: Record<string, unknown> | null;
+  }) {
+    return buildIntentBuildSnapshot({
+      title: this.normalizeOptionalString(params.title),
+      initialPrompt: params.description,
+      entryMode: this.normalizeOptionalString(params.entryMode) || 'create',
+      generationTier: params.generationTier,
+      sourceSpec: params.sourceSpec || null,
+    });
   }
 
   private parseConfigList(key: string): Set<string> {
@@ -1248,6 +1303,295 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         },
       };
     }
+
+  private async mergeGenerationTaskMetadata(
+    taskId: string,
+    patch: Record<string, unknown>,
+  ): Promise<void> {
+    const currentTask = await Promise.resolve(this.prisma.generationTask.findUnique({
+      where: { id: taskId },
+      select: { metadata: true },
+    })).catch(() => null);
+    const metadata = currentTask?.metadata && typeof currentTask.metadata === 'object' && !Array.isArray(currentTask.metadata)
+      ? { ...(currentTask.metadata as Record<string, unknown>) }
+      : {};
+
+    await Promise.resolve(this.prisma.generationTask.update({
+      where: { id: taskId },
+      data: {
+        metadata: {
+          ...metadata,
+          ...patch,
+        } as Prisma.InputJsonValue,
+      },
+    })).catch((error) => {
+      this.logger.warn(`Failed to update task metadata for ${taskId}: ${this.extractErrorMessage(error)}`);
+    });
+  }
+
+  private async analyzeCreateIntentTurn(params: {
+    userId: string;
+    description: string;
+    title?: string;
+    generationTier: GenerationTier;
+    entryMode?: string | null;
+    executionRegion?: string;
+  }): Promise<DirectIntentAnalyzeResponsePayload> {
+    const aiEngineUrl = await this.getAiEngineBaseUrl(params.executionRegion);
+    const timeoutMs = await this.getExpandPromptRequestTimeoutMs();
+    const response = await axios.post(
+      `${aiEngineUrl}/api/v1/ai/dialogue/analyze-turn`,
+      {
+        user_id: params.userId,
+        conversation: [
+          {
+            role: 'user',
+            content: params.description,
+            kind: 'prompt',
+          },
+        ],
+        current_slots: {},
+        skipped_slots: [],
+        entry_mode: this.normalizeOptionalString(params.entryMode) || 'create',
+        generation_tier: params.generationTier,
+        ...(params.title ? { title: params.title } : {}),
+        initial_prompt: params.description,
+      },
+      { timeout: timeoutMs },
+    );
+    return response.data || {};
+  }
+
+  private async buildCreateSpecFromPrompt(params: {
+    userId: string;
+    description: string;
+    title?: string;
+    generationTier: GenerationTier;
+    executionRegion?: string;
+    slots: Record<string, unknown>;
+    variationSeed: string;
+  }): Promise<DirectIntentSpecResponsePayload> {
+    const aiEngineUrl = await this.getAiEngineBaseUrl(params.executionRegion);
+    const timeoutMs = await this.getExpandPromptRequestTimeoutMs();
+    const response = await axios.post(
+      `${aiEngineUrl}/api/v1/ai/dialogue/spec-from-slots`,
+      {
+        slots: params.slots,
+        source_description: params.description,
+        ...(params.title ? { title: params.title } : {}),
+        generation_tier: params.generationTier,
+        skipped_slots: [],
+        variation_seed: params.variationSeed,
+      },
+      { timeout: timeoutMs },
+    );
+    return response.data || {};
+  }
+
+  private buildAiGatewayStageError(
+    error: unknown,
+    fallback: string,
+    failedStage: string,
+    failureFamily: string,
+  ): Error {
+    const wrapped = new Error(this.extractAiGatewayErrorMessage(error, fallback));
+    (wrapped as Error & { failedStage?: string; failureFamily?: string }).failedStage = failedStage;
+    (wrapped as Error & { failedStage?: string; failureFamily?: string }).failureFamily = failureFamily;
+    return wrapped;
+  }
+
+  private extractAiGatewayErrorMessage(error: unknown, fallback: string): string {
+    const raw = (error as any)?.response?.data?.detail
+      ?? (error as any)?.response?.data?.message
+      ?? (error as any)?.message
+      ?? fallback;
+    return this.stringifyAiGatewayErrorDetail(raw, fallback);
+  }
+
+  private stringifyAiGatewayErrorDetail(value: unknown, fallback: string): string {
+    if (value == null) {
+      return fallback;
+    }
+    if (typeof value === 'string') {
+      const normalized = value.trim();
+      return normalized || fallback;
+    }
+    if (Array.isArray(value)) {
+      const parts = value
+        .map((item) => this.stringifyAiGatewayErrorDetail(item, ''))
+        .map((item) => item.trim())
+        .filter(Boolean);
+      return parts.join('; ') || fallback;
+    }
+    if (typeof value === 'object') {
+      const record = value as Record<string, unknown>;
+      for (const candidate of [record.detail, record.message, record.msg, record.reason, record.error]) {
+        const rendered = this.stringifyAiGatewayErrorDetail(candidate, '');
+        if (rendered) {
+          return rendered;
+        }
+      }
+      const parts = Object.entries(record)
+        .map(([key, item]) => {
+          const rendered = this.stringifyAiGatewayErrorDetail(item, '');
+          return rendered ? `${key}=${rendered}` : '';
+        })
+        .filter(Boolean);
+      return parts.join(', ') || fallback;
+    }
+    const normalized = String(value).trim();
+    return normalized || fallback;
+  }
+
+  private async ensureCreateSourceSpec(params: {
+    gameId: string;
+    userId: string;
+    description: string;
+    taskId?: string;
+    executionRegion?: string;
+    title?: string;
+    generationTier: GenerationTier;
+    entryMode?: string | null;
+    sourceSpec?: Record<string, unknown> | null;
+  }): Promise<Record<string, unknown> | null> {
+    if (params.sourceSpec && Object.keys(params.sourceSpec).length > 0) {
+      return params.sourceSpec;
+    }
+
+    const variationSeed = this.buildCreateIntentVariationSeed({
+      userId: params.userId,
+      description: params.description,
+      title: params.title,
+      generationTier: params.generationTier,
+      entryMode: params.entryMode,
+    });
+
+    if (params.taskId) {
+      await Promise.resolve(this.generationTaskService.recordProgress({
+        taskId: params.taskId,
+        gameId: params.gameId,
+        userId: params.userId,
+        stage: 'spec_build',
+        percentage: 15,
+        message: 'Building structured source spec',
+        details: {
+          source: 'zero_question',
+        },
+      })).catch(() => undefined);
+    }
+
+    let analysis: DirectIntentAnalyzeResponsePayload;
+    try {
+      analysis = await this.analyzeCreateIntentTurn({
+        userId: params.userId,
+        description: params.description,
+        title: params.title,
+        generationTier: params.generationTier,
+        entryMode: params.entryMode,
+        executionRegion: params.executionRegion,
+      });
+    } catch (error) {
+      throw this.buildAiGatewayStageError(
+        error,
+        'Create intent analysis failed',
+        'spec_build',
+        'intent_analysis',
+      );
+    }
+
+    let specResponse: DirectIntentSpecResponsePayload;
+    try {
+      specResponse = await this.buildCreateSpecFromPrompt({
+        userId: params.userId,
+        description: params.description,
+        title: params.title,
+        generationTier: params.generationTier,
+        executionRegion: params.executionRegion,
+        slots: analysis.slots || {},
+        variationSeed,
+      });
+    } catch (error) {
+      throw this.buildAiGatewayStageError(
+        error,
+        'Create source spec compilation failed',
+        'spec_build',
+        'source_spec_compile',
+      );
+    }
+
+    const missingRequired = Array.isArray(specResponse.missing_required)
+      ? specResponse.missing_required
+      : [];
+    const compiledSpec = specResponse.spec && typeof specResponse.spec === 'object' && !Array.isArray(specResponse.spec)
+      ? specResponse.spec
+      : null;
+    if (!compiledSpec || missingRequired.length > 0) {
+      const details = missingRequired.length > 0
+        ? `missing: ${missingRequired.join(', ')}`
+        : 'spec payload missing';
+      const error = new Error(`Zero-question source spec is incomplete (${details})`);
+      (error as Error & { failedStage?: string; failureFamily?: string }).failedStage = 'spec_build';
+      (error as Error & { failedStage?: string; failureFamily?: string }).failureFamily = 'source_spec_incomplete';
+      throw error;
+    }
+
+    const intentBuild = this.buildCreateIntentBuild({
+      title: params.title,
+      description: params.description,
+      entryMode: params.entryMode,
+      generationTier: params.generationTier,
+      sourceSpec: compiledSpec,
+    });
+    if (params.taskId) {
+      await this.mergeGenerationTaskMetadata(params.taskId, {
+        sourceSpec: compiledSpec,
+        intentBuild,
+        sourceSpecBuild: {
+          source: 'zero_question',
+          variationSeed,
+          readyToGenerate: Boolean(analysis.ready_to_generate),
+          slotFillPct: Number(specResponse.slot_fill_pct ?? analysis.slot_fill_pct ?? 0) || 0,
+          missingRequired,
+          builtAt: new Date().toISOString(),
+        },
+      });
+      await Promise.resolve(this.generationTaskService.createArtifact({
+        taskId: params.taskId,
+        gameId: params.gameId,
+        userId: params.userId,
+        artifactType: 'source_spec',
+        contentType: 'application/json',
+        payload: compiledSpec,
+        metadata: {
+          source: 'zero_question',
+          variationSeed,
+          readyToGenerate: Boolean(analysis.ready_to_generate),
+          slotFillPct: Number(specResponse.slot_fill_pct ?? analysis.slot_fill_pct ?? 0) || 0,
+          missingRequired,
+          intentFingerprint: intentBuild.intentFingerprint,
+          specFingerprint: intentBuild.specFingerprint,
+        },
+      })).catch((error) => {
+        this.logger.warn(`Failed to persist source spec artifact for task ${params.taskId}: ${this.extractErrorMessage(error)}`);
+      });
+      await Promise.resolve(this.generationTaskService.createArtifact({
+        taskId: params.taskId,
+        gameId: params.gameId,
+        userId: params.userId,
+        artifactType: 'intent_build',
+        contentType: 'application/json',
+        payload: intentBuild,
+        metadata: {
+          source: 'zero_question',
+          variationSeed,
+        },
+      })).catch((error) => {
+        this.logger.warn(`Failed to persist intent build artifact for task ${params.taskId}: ${this.extractErrorMessage(error)}`);
+      });
+    }
+
+    return compiledSpec;
+  }
 
   private buildIterateV2Payload(params: {
     gameId: string;
@@ -3162,6 +3506,13 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       const requestedOrientation = this.normalizeRequestedOrientation(dto.orientation)
         ?? this.inferRequestedOrientationFromText(description, title);
       const requestedGenerationTier = this.normalizeRequestedGenerationTier(dto.generationTier) || 'standard';
+      const initialIntentBuild = this.buildCreateIntentBuild({
+        title,
+        description,
+        entryMode: dto.entryMode,
+        generationTier: requestedGenerationTier,
+        sourceSpec: dto.sourceSpec ?? null,
+      });
       const executionRegion = this.resolveExecutionRegion(dto.regionHint);
       const pipelineVersion = this.resolvePipelineVersion({
         entrypoint: 'create',
@@ -3264,6 +3615,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
               entryMode: dto.entryMode ?? null,
               sourceGameId: dto.sourceGameId ?? null,
               sourceSpec: dto.sourceSpec ?? null,
+              intentBuild: initialIntentBuild,
               promptBundleSnapshot: promptBundleSnapshot ?? null,
               runtimeContract: runtimeContract ?? null,
               canPlay,
@@ -3286,6 +3638,37 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           task,
         };
       });
+
+      if (initialIntentBuild.frozenSpec) {
+        await Promise.resolve(this.generationTaskService.createArtifact({
+          taskId: task.id,
+          gameId,
+          userId,
+          artifactType: 'intent_build',
+          contentType: 'application/json',
+          payload: initialIntentBuild,
+          metadata: {
+            source: dto.creationSessionId ? 'creation_session' : 'create_request',
+          },
+        })).catch((error) => {
+          this.logger.warn(`Failed to persist intent build artifact for task ${task.id}: ${this.extractErrorMessage(error)}`);
+        });
+        await Promise.resolve(this.generationTaskService.createArtifact({
+          taskId: task.id,
+          gameId,
+          userId,
+          artifactType: 'source_spec',
+          contentType: 'application/json',
+          payload: initialIntentBuild.frozenSpec,
+          metadata: {
+            source: dto.creationSessionId ? 'creation_session' : 'create_request',
+            intentFingerprint: initialIntentBuild.intentFingerprint,
+            specFingerprint: initialIntentBuild.specFingerprint,
+          },
+        })).catch((error) => {
+          this.logger.warn(`Failed to persist source spec artifact for task ${task.id}: ${this.extractErrorMessage(error)}`);
+        });
+      }
 
       this.emitProgress(userId, gameId, 'started', 0, {
         stage: 'started',
@@ -4538,20 +4921,34 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       const aiEngineBaseUrls = await this.resolveAiEngineEndpointCandidates(executionRegion);
       const resolvedRegion = this.resolveExecutionRegion(executionRegion);
       const pipelineVersion = options.pipelineVersion === 'v1' ? 'v1' : 'v2';
-        const runtimeProfileHint = this.inferRuntimeProfileHint(
-          this.resolveRuntimeHintGameType(options.sourceSpec, null),
+      const normalizedTitle = this.normalizeOptionalString(options.title);
+      if (taskId) {
+        await this.generationTaskService.markRunning(taskId!);
+      }
+      const resolvedSourceSpec = pipelineVersion === 'v2'
+        ? await this.ensureCreateSourceSpec({
+          gameId,
+          userId,
           description,
-          options.title,
-        );
+          taskId,
+          executionRegion: resolvedRegion,
+          title: normalizedTitle,
+          generationTier,
+          entryMode: options.entryMode,
+          sourceSpec: options.sourceSpec,
+        })
+        : (options.sourceSpec ?? null);
+      const runtimeProfileHint = this.inferRuntimeProfileHint(
+        this.resolveRuntimeHintGameType(resolvedSourceSpec, null),
+        description,
+        normalizedTitle,
+      );
       const promptBundleSnapshot = pipelineVersion === 'v2'
         ? (options.promptBundleSnapshot ?? await this.buildPromptBundleSnapshot('create', runtimeProfileHint, generationTier))
         : null;
       const runtimeContract = pipelineVersion === 'v2'
         ? (options.runtimeContract ?? await this.buildDefaultRuntimeContract('create', runtimeProfileHint, options.orientation, generationTier))
         : null;
-      if (taskId) {
-        await this.generationTaskService.markRunning(taskId!);
-      }
 
       const handle = await this.requestUpstreamAsyncTask({
         aiEngineBaseUrls,
@@ -4570,7 +4967,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
               orientation: options.orientation,
               generationTier,
               access: options.access,
-              sourceSpec: options.sourceSpec,
+              sourceSpec: resolvedSourceSpec,
               creationSessionId: options.creationSessionId,
               entryMode: options.entryMode,
               sourceGameId: options.sourceGameId,
@@ -4919,7 +5316,9 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
 
     return {
       message: this.extractErrorMessage(error),
-      failedStage: undefined,
+      failedStage: typeof error?.failed_stage === 'string'
+        ? error.failed_stage
+        : (typeof error?.failedStage === 'string' ? error.failedStage : undefined),
       retryCount: 0,
       fallback: undefined,
       failureFamily: typeof error?.failure_family === 'string'

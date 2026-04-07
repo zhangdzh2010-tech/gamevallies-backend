@@ -28,6 +28,7 @@ from src.services.llm_client import (
     _extract_openai_message_text,
     _is_anthropic_protocol_mismatch,
 )
+from src.services.prompt_dedup import deep_dedupe_prompt
 from src.services.task_memory import task_memory
 
 
@@ -732,7 +733,7 @@ def test_complete_fails_fast_when_all_routed_providers_are_below_required_output
                 ))
                 raise AssertionError("expected provider capacity failure")
             except LLMProviderCapacityError as exc:
-                assert exc.required_output_tokens == 12288
+                assert exc.required_output_tokens == llm_client_module._required_output_floor(8192, "xlarge")
                 assert exc.step_key == "iterate.mechanic_change"
                 assert exc.candidate_caps[0]["maxTokens"] == 8192
     finally:
@@ -813,6 +814,224 @@ def test_complete_injects_task_memory_for_task_scoped_calls():
         settings.LLM_MODE = old_mode
 
 
+def test_deep_dedupe_prompt_preserves_conflicting_structured_values():
+    result = deep_dedupe_prompt(
+        system="RUNTIME CONTRACT\n- orientation: portrait_first",
+        messages=[{
+            "role": "user",
+            "content": "RUNTIME CONTRACT\n- orientation: landscape",
+        }],
+        compression_policy="code_generation",
+    )
+
+    combined = "\n".join([
+        result.system or "",
+        *(message["content"] for message in result.messages),
+    ])
+    assert "portrait_first" in combined
+    assert "landscape" in combined
+    assert result.metrics.removed_block_count == 0
+
+
+def test_deep_dedupe_prompt_preserves_one_sided_numeric_constraints():
+    result = deep_dedupe_prompt(
+        system="SPEC SUMMARY\n- enemy_count: spawn 3 enemies at once",
+        messages=[{
+            "role": "user",
+            "content": "SPEC SUMMARY\n- enemy_count: spawn enemies at once",
+        }],
+        compression_policy="code_generation",
+    )
+
+    combined = "\n".join([
+        result.system or "",
+        *(message["content"] for message in result.messages),
+    ])
+    assert "spawn 3 enemies at once" in combined
+    assert "spawn enemies at once" in combined
+    assert result.metrics.removed_block_count == 0
+
+
+def test_complete_deep_dedupes_duplicate_task_memory_blocks_and_records_metrics():
+    client = LLMClient()
+    route = SimpleNamespace(
+        provider_id="provider-capped",
+        provider_name="MiniMax Capped",
+        provider_type="openai_compatible",
+        region="cn-shanghai",
+        base_url="https://provider.example/v1",
+        api_key="secret",
+        model="MiniMax-M2.7",
+        fast_model="MiniMax-M2.7",
+        request_timeout_s=600,
+        connect_timeout_s=15,
+        context_window=128000,
+        max_tokens=4096,
+        tokenizer_family="openai_cl100k_compatible",
+        strict_admission=True,
+        safety_margin_tokens=2048,
+        config_version=123,
+        route_snapshot={"step_key": "iterate.mechanic_change"},
+    )
+    old_mode = settings.LLM_MODE
+    settings.LLM_MODE = "real"
+
+    try:
+        captured = {}
+
+        async def run_case():
+            await task_memory.begin_task(
+                "task-memory-dedup-1",
+                task_meta={"entrypoint": "iterate", "title": "Dedup Test"},
+                source_context_summary=(
+                    "LATEST USER REQUEST\n"
+                    "- requested_change: make the player jump higher\n"
+                    "- keep_controls: tap only"
+                ),
+            )
+            with llm_request_context(game_id="game-1", user_id="user-1", task_id="task-memory-dedup-1"):
+                return await client.complete(
+                    messages=[{
+                        "role": "user",
+                        "content": (
+                            "LATEST USER REQUEST\n"
+                            "- requested_change: make the player jump higher\n"
+                            "- keep_controls: tap only\n"
+                            "- unique_goal: add floating coins"
+                        ),
+                    }],
+                    step_key="iterate.mechanic_change",
+                    stage="code_generating",
+                    response_size_hint="large",
+                    context_scope="task",
+                    compression_policy="iteration_rewrite",
+                )
+
+        async def fake_complete_with_route(**kwargs):
+            captured["system"] = kwargs["system"]
+            captured["messages"] = kwargs["messages"]
+            captured["route_snapshot"] = kwargs["route"].route_snapshot
+            return "ok"
+
+        with patch.object(llm_client_module.gateway, "has_enabled_provider", return_value=True), patch.object(
+            llm_client_module.gateway,
+            "resolve",
+            return_value=route,
+        ), patch.object(
+            client,
+            "_complete_with_route",
+            new=AsyncMock(side_effect=fake_complete_with_route),
+        ):
+            result = asyncio.run(run_case())
+
+        assert result == "ok"
+        combined = "\n".join([
+            captured["system"] or "",
+            *(message["content"] for message in captured["messages"]),
+        ])
+        assert combined.count("requested_change: make the player jump higher") == 1
+        assert combined.count("keep_controls: tap only") == 1
+        assert captured["route_snapshot"]["prompt_dedup_applied"] is True
+        assert captured["route_snapshot"]["prompt_dedup_removed_block_count"] >= 2
+        assert captured["route_snapshot"]["prompt_dedup_saved_tokens_estimate"] > 0
+        assert captured["route_snapshot"]["requested_input_tokens"] > captured["route_snapshot"]["estimated_input_tokens"]
+        assert captured["route_snapshot"]["prompt_dedup_base_input_tokens"] == captured["route_snapshot"]["requested_input_tokens"]
+        assert captured["route_snapshot"]["prompt_fingerprint"]
+        assert any(
+            block["reason"] == "exact_duplicate"
+            for block in captured["route_snapshot"]["prompt_dedup_removed_blocks"]
+        )
+    finally:
+        asyncio.run(task_memory.clear_task("task-memory-dedup-1"))
+        settings.LLM_MODE = old_mode
+
+
+def test_complete_semantically_dedupes_near_duplicate_task_memory_blocks():
+    client = LLMClient()
+    route = SimpleNamespace(
+        provider_id="provider-capped",
+        provider_name="MiniMax Capped",
+        provider_type="openai_compatible",
+        region="cn-shanghai",
+        base_url="https://provider.example/v1",
+        api_key="secret",
+        model="MiniMax-M2.7",
+        fast_model="MiniMax-M2.7",
+        request_timeout_s=600,
+        connect_timeout_s=15,
+        context_window=128000,
+        max_tokens=4096,
+        tokenizer_family="openai_cl100k_compatible",
+        strict_admission=True,
+        safety_margin_tokens=2048,
+        config_version=123,
+        route_snapshot={"step_key": "iterate.mechanic_change"},
+    )
+    old_mode = settings.LLM_MODE
+    settings.LLM_MODE = "real"
+
+    try:
+        captured = {}
+
+        async def run_case():
+            await task_memory.begin_task(
+                "task-memory-dedup-2",
+                task_meta={"entrypoint": "iterate", "title": "Dedup Semantic Test"},
+                source_context_summary=(
+                    "LATEST USER REQUEST\n"
+                    "- requested_change: make the hero move faster and jump higher"
+                ),
+            )
+            with llm_request_context(game_id="game-2", user_id="user-2", task_id="task-memory-dedup-2"):
+                return await client.complete(
+                    messages=[{
+                        "role": "user",
+                        "content": (
+                            "LATEST USER REQUEST\n"
+                            "- requested_change: make the hero move faster, jump higher\n"
+                            "- unique_goal: add floating coins"
+                        ),
+                    }],
+                    step_key="iterate.mechanic_change",
+                    stage="code_generating",
+                    response_size_hint="large",
+                    context_scope="task",
+                    compression_policy="iteration_rewrite",
+                )
+
+        async def fake_complete_with_route(**kwargs):
+            captured["system"] = kwargs["system"]
+            captured["messages"] = kwargs["messages"]
+            captured["route_snapshot"] = kwargs["route"].route_snapshot
+            return "ok"
+
+        with patch.object(llm_client_module.gateway, "has_enabled_provider", return_value=True), patch.object(
+            llm_client_module.gateway,
+            "resolve",
+            return_value=route,
+        ), patch.object(
+            client,
+            "_complete_with_route",
+            new=AsyncMock(side_effect=fake_complete_with_route),
+        ):
+            result = asyncio.run(run_case())
+
+        assert result == "ok"
+        combined = "\n".join([
+            captured["system"] or "",
+            *(message["content"] for message in captured["messages"]),
+        ])
+        assert combined.count("requested_change: make the hero move faster") == 1
+        assert captured["route_snapshot"]["prompt_dedup_applied"] is True
+        assert any(
+            block["reason"] == "semantic_duplicate"
+            for block in captured["route_snapshot"]["prompt_dedup_removed_blocks"]
+        )
+    finally:
+        asyncio.run(task_memory.clear_task("task-memory-dedup-2"))
+        settings.LLM_MODE = old_mode
+
+
 def test_complete_rejects_requests_that_still_exceed_context_after_compression():
     client = LLMClient()
     route = SimpleNamespace(
@@ -843,6 +1062,14 @@ def test_complete_rejects_requests_that_still_exceed_context_after_compression()
             "resolve",
             return_value=route,
         ), patch.object(
+            llm_client_module.gateway,
+            "emit_llm_call_log",
+            new=AsyncMock(),
+        ) as emit_log, patch.object(
+            llm_client_module.gateway,
+            "emit_task_activity",
+            new=AsyncMock(),
+        ), patch.object(
             client,
             "_complete_with_route",
             new=AsyncMock(side_effect=AssertionError("request should fail before upstream call")),
@@ -863,6 +1090,12 @@ def test_complete_rejects_requests_that_still_exceed_context_after_compression()
             except LLMContextWindowExceededError as exc:
                 assert exc.allowed_input_tokens < exc.estimated_input_tokens
                 assert exc.context_window == 900
+        assert emit_log.await_count == 1
+        payload = emit_log.await_args_list[0].args[0]
+        assert payload["success"] is False
+        assert payload["errorCode"] == "LLMContextWindowExceededError"
+        assert payload["routeSnapshot"]["estimated_input_tokens"] > payload["routeSnapshot"]["allowed_input_tokens"]
+        assert payload["routeSnapshot"]["prompt_fingerprint"]
     finally:
         settings.LLM_MODE = old_mode
 

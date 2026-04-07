@@ -165,6 +165,12 @@ describe('CreationSessionService', () => {
           generationTier: 'showcase',
           readyToGenerate: false,
           slotFillPct: 0,
+          intentBuild: expect.objectContaining({
+            brief: expect.any(String),
+            frozenSpec: null,
+            intentFingerprint: expect.any(String),
+            specFingerprint: null,
+          }),
         }),
       }),
     }));
@@ -174,6 +180,11 @@ describe('CreationSessionService', () => {
       status: 'initializing',
       orientation: 'landscape',
       generationTier: 'showcase',
+      intentBuild: expect.objectContaining({
+        intentFingerprint: expect.any(String),
+        specFingerprint: null,
+        frozenSpec: null,
+      }),
     }));
 
     // Phase 2: wait for async _finalizeSessionInit to complete
@@ -201,6 +212,14 @@ describe('CreationSessionService', () => {
       data: expect.objectContaining({
         status: 'ready',
         revision: { increment: 1 },
+        metadata: expect.objectContaining({
+          intentBuild: expect.objectContaining({
+            brief: expect.any(String),
+            frozenSpec: null,
+            intentFingerprint: expect.any(String),
+            specFingerprint: null,
+          }),
+        }),
       }),
     }));
     // WebSocket push was emitted with the finalized snapshot
@@ -376,6 +395,14 @@ describe('CreationSessionService', () => {
       data: expect.objectContaining({
         status: 'ready',
         revision: { increment: 1 },
+        metadata: expect.objectContaining({
+          intentBuild: expect.objectContaining({
+            brief: expect.any(String),
+            frozenSpec: null,
+            intentFingerprint: expect.any(String),
+            specFingerprint: null,
+          }),
+        }),
       }),
     }));
     expect(snapshot).toEqual(expect.objectContaining({
@@ -484,6 +511,21 @@ describe('CreationSessionService', () => {
       creationSessionId: 'session-3',
       entryMode: 'fork',
       sourceGameId: 'game-source-1',
+    }));
+    expect(repo.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'session-3' },
+      data: expect.objectContaining({
+        metadata: expect.objectContaining({
+          intentBuild: expect.objectContaining({
+            brief: expect.any(String),
+            frozenSpec: expect.objectContaining({
+              game_type: 'funny',
+            }),
+            intentFingerprint: expect.any(String),
+            specFingerprint: expect.any(String),
+          }),
+        }),
+      }),
     }));
     expect(result).toEqual(expect.objectContaining({
       gameId: 'game-1',

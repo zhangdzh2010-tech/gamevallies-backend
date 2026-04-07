@@ -32,6 +32,10 @@ import {
   CreationSessionQuestionStrategy,
   CreationSessionSnapshot,
 } from './types/creation-session.types';
+import {
+  buildIntentBuildSnapshot,
+  normalizeIntentBuildSnapshot,
+} from './intent-build.util';
 
 const REQUIRED_SLOT_KEYS = [
   'game_type',
@@ -151,6 +155,12 @@ export class CreationSessionService {
         regionHint: dto.regionHint || null,
         readyToGenerate: false,
         slotFillPct: 0,
+        intentBuild: this.buildSessionIntentBuild({
+          initialPrompt: prompt,
+          title: dto.title,
+          entryMode: dto.entryMode || 'create',
+          generationTier: dto.generationTier || 'standard',
+        }),
       },
     };
 
@@ -288,6 +298,15 @@ export class CreationSessionService {
       analysis.ambiguity_flags,
       analysis.missing_required,
     );
+    const intentBuild = this.buildSessionIntentBuild({
+      initialPrompt: analyzePayload.initial_prompt,
+      title: dto.title,
+      planDraft: normalizedPlanDraft,
+      slotState: analysis.slots || {},
+      entryMode: dto.entryMode || 'create',
+      generationTier: dto.generationTier || 'standard',
+      missingRequired: analysis.missing_required || [],
+    });
 
     // CAS update: only proceed if session is still in 'initializing' (not abandoned by user)
     const result = await repo.updateMany({
@@ -308,6 +327,7 @@ export class CreationSessionService {
           planDraft: normalizedPlanDraft,
           confidenceSummary,
           questionStrategy: normalizedQuestionStrategy,
+          intentBuild,
           confidenceBySlot: this.normalizeNumberMap(analysis.confidence_by_slot),
           evidenceBySlot: this.normalizeStringMap(analysis.evidence_by_slot),
           ambiguityFlags: this.normalizeStringList(analysis.ambiguity_flags),
@@ -433,6 +453,16 @@ export class CreationSessionService {
       analysis.ambiguity_flags,
       analysis.missing_required,
     );
+    const intentBuild = this.buildSessionIntentBuild({
+      initialPrompt: session.initialPrompt,
+      title: session.titleDraft,
+      planDraft: normalizedPlanDraft,
+      slotState: analysis.slots || {},
+      skippedSlots,
+      entryMode: String(session.entryMode || 'create'),
+      generationTier: String(metadata.generationTier || 'standard'),
+      missingRequired: analysis.missing_required || [],
+    });
     // Bug 4 fix: once a session reaches 'ready', it never reverts to 'collecting'.
     // This prevents unstable oscillation near the AI engine's fill_pct threshold.
     const nextStatus = analysis.ready_to_generate
@@ -463,6 +493,7 @@ export class CreationSessionService {
           planDraft: normalizedPlanDraft,
           confidenceSummary,
           questionStrategy: normalizedQuestionStrategy,
+          intentBuild,
           confidenceBySlot: this.normalizeNumberMap(analysis.confidence_by_slot),
           evidenceBySlot: this.normalizeStringMap(analysis.evidence_by_slot),
           ambiguityFlags: this.normalizeStringList(analysis.ambiguity_flags),
@@ -519,6 +550,16 @@ export class CreationSessionService {
       analysis.ambiguity_flags,
       analysis.missing_required,
     );
+    const intentBuild = this.buildSessionIntentBuild({
+      initialPrompt: session.initialPrompt,
+      title: session.titleDraft,
+      planDraft: normalizedPlanDraft,
+      slotState: analysis.slots || {},
+      skippedSlots,
+      entryMode: String(session.entryMode || 'create'),
+      generationTier: String(metadata.generationTier || 'standard'),
+      missingRequired: analysis.missing_required || [],
+    });
 
     // Bug 4 fix: same single-direction locking as in appendMessage()
     const nextStatus = analysis.ready_to_generate
@@ -548,6 +589,7 @@ export class CreationSessionService {
           planDraft: normalizedPlanDraft,
           confidenceSummary,
           questionStrategy: normalizedQuestionStrategy,
+          intentBuild,
           confidenceBySlot: this.normalizeNumberMap(analysis.confidence_by_slot),
           evidenceBySlot: this.normalizeStringMap(analysis.evidence_by_slot),
           ambiguityFlags: this.normalizeStringList(analysis.ambiguity_flags),
@@ -581,6 +623,7 @@ export class CreationSessionService {
     this.assertRevision(session, dto.revision);
 
     const metadata = this.normalizeMetadata(session.metadata);
+    const currentPlanDraft = this.normalizePlanDraft(metadata.planDraft);
     const specResponse = await this.specFromSlots({
       session_id: session.id,
       slots: this.normalizeSlotState(session.slotState),
@@ -590,6 +633,17 @@ export class CreationSessionService {
       skipped_slots: this.normalizeStringList(session.skippedSlots),
       variation_seed: session.id,
     }, this.asOptionalString(metadata.regionHint));
+    const intentBuild = this.buildSessionIntentBuild({
+      initialPrompt: session.initialPrompt,
+      title: session.titleDraft,
+      planDraft: currentPlanDraft,
+      slotState: this.normalizeSlotState(session.slotState),
+      skippedSlots: this.normalizeStringList(session.skippedSlots),
+      sourceSpec: specResponse.spec || null,
+      entryMode: String(session.entryMode || 'create'),
+      generationTier: String(metadata.generationTier || 'standard'),
+      missingRequired: specResponse.missing_required || [],
+    });
 
     const rollbackStatus = session.status === 'collecting' ? 'collecting' : 'ready';
     const claimResult = await repo.updateMany({
@@ -607,6 +661,7 @@ export class CreationSessionService {
           readyToGenerate: true,
           slotFillPct: specResponse.slot_fill_pct ?? this.computeSlotFillPct(session.slotState || {}),
           lastTaskStatus: 'starting',
+          intentBuild,
         },
       },
     });
@@ -627,6 +682,7 @@ export class CreationSessionService {
           readyToGenerate: true,
           slotFillPct: specResponse.slot_fill_pct ?? this.computeSlotFillPct(session.slotState || {}),
           lastTaskStatus: 'starting',
+          intentBuild,
         },
       }),
     );
@@ -661,6 +717,7 @@ export class CreationSessionService {
             slotFillPct: specResponse.slot_fill_pct ?? this.computeSlotFillPct(session.slotState || {}),
             lastTaskStatus: 'queued',
             completedAt: new Date().toISOString(),
+            intentBuild,
           },
         },
       });
@@ -683,6 +740,7 @@ export class CreationSessionService {
             slotFillPct: specResponse.slot_fill_pct ?? this.computeSlotFillPct(session.slotState || {}),
             lastTaskStatus: 'failed',
             lastErrorMessage: this.extractAiError(error, 'Creation session generation failed'),
+            intentBuild,
           },
         },
       })).catch(() => undefined);
@@ -863,6 +921,30 @@ export class CreationSessionService {
     }
   }
 
+  private buildSessionIntentBuild(params: {
+    initialPrompt?: string | null;
+    title?: string | null;
+    planDraft?: CreationSessionPlanDraft | null;
+    slotState?: Record<string, unknown> | null;
+    skippedSlots?: string[] | null;
+    sourceSpec?: Record<string, unknown> | null;
+    entryMode?: string | null;
+    generationTier?: string | null;
+    missingRequired?: string[] | null;
+  }) {
+    return buildIntentBuildSnapshot({
+      title: this.asOptionalString(params.title),
+      initialPrompt: this.asOptionalString(params.initialPrompt),
+      planDraft: params.planDraft,
+      slotState: params.slotState || {},
+      skippedSlots: params.skippedSlots || [],
+      sourceSpec: params.sourceSpec || null,
+      entryMode: this.asOptionalString(params.entryMode) || 'create',
+      generationTier: this.asOptionalString(params.generationTier) || 'standard',
+      missingRequired: params.missingRequired || [],
+    });
+  }
+
   private toSnapshot(session: any): CreationSessionSnapshot {
     const metadata = this.normalizeMetadata(session?.metadata);
     const slotState = this.normalizeSlotState(session?.slotState);
@@ -871,6 +953,7 @@ export class CreationSessionService {
     const planDraft = this.normalizePlanDraft(metadata.planDraft);
     const confidenceSummary = this.normalizeConfidenceSummary(metadata.confidenceSummary);
     const questionStrategy = this.normalizeQuestionStrategy(metadata.questionStrategy);
+    const intentBuild = normalizeIntentBuildSnapshot(metadata.intentBuild);
     const sessionStatus = String(session.status || 'collecting');
 
     // Bug 3 fix: when status is ready/generating/completed/initializing, clear currentQuestion.
@@ -911,6 +994,7 @@ export class CreationSessionService {
       planDraft,
       confidenceSummary,
       questionStrategy,
+      intentBuild,
       metadata,
     };
   }

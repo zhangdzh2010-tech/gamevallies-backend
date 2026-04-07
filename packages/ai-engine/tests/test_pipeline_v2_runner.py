@@ -5,6 +5,7 @@ import os
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -202,7 +203,42 @@ def test_contract_qa_loop_passes_prompt_bundle_snapshot_to_repair_code():
     assert kwargs["prompt_bundle_snapshot"] == prompt_bundle_snapshot
 
 
-def test_runtime_qa_loop_allows_second_targeted_remediation_attempt():
+def test_contract_qa_loop_caps_targeted_repairs_to_one_round():
+    runner = V2PipelineRunner()
+    error = QACheckError(
+        type="contract_gameplay",
+        message="Runtime contract requires primary touch or pointer gameplay handlers",
+        severity="error",
+    )
+
+    with patch.object(
+        runner,
+        "_validate_contract_bundle",
+        side_effect=[[error], [error], []],
+    ), patch.object(
+        runner.qa_pipeline,
+        "repair_code",
+        new=AsyncMock(return_value="<!DOCTYPE html><html><body>fix-1</body></html>"),
+    ) as mock_repair:
+        result = asyncio.run(
+            runner._run_contract_qa_loop(
+                code="<!DOCTYPE html><html><body>broken</body></html>",
+                spec=GameSpec(game_type="casual"),
+                runtime_contract=GameRuntimeContract(),
+                prompt_bundle_snapshot={"layers": {}},
+                progress_cb=None,
+                game_id="game-1",
+                user_id="user-1",
+                max_retries=3,
+            )
+        )
+
+    assert result.success is False
+    assert result.retries == 1
+    assert mock_repair.await_count == 1
+
+
+def test_runtime_qa_loop_caps_targeted_remediation_to_one_round():
     runner = V2PipelineRunner()
     runtime_fail = SimpleNamespace(
         ran=True,
@@ -215,56 +251,40 @@ def test_runtime_qa_loop_allows_second_targeted_remediation_attempt():
         canvas_changed_after_input=True,
         dom_changed_after_input=False,
     )
-    runtime_pass = SimpleNamespace(
-        ran=True,
-        js_errors=[],
-        canvas_renders=True,
-        registered_input_handlers=["pointerdown"],
-        direct_input_handlers=[],
-        triggered_input_handlers=["pointerdown"],
-        interaction_performed=True,
-        canvas_changed_after_input=True,
-        dom_changed_after_input=False,
-    )
-
     with patch(
         "src.engine.pipeline_v2_runner.run_runtime_qa",
-        new=AsyncMock(side_effect=[runtime_fail, runtime_fail, runtime_pass]),
+        new=AsyncMock(side_effect=[runtime_fail, runtime_fail, runtime_fail]),
     ), patch(
         "src.engine.pipeline_v2_runner.settings.RUNTIME_QA_REMEDIATION_MAX_RETRIES",
         2,
     ), patch.object(
         runner.qa_pipeline,
         "repair_code",
-        new=AsyncMock(side_effect=[
-            "<!DOCTYPE html><html><body>fix-1</body></html>",
-            "<!DOCTYPE html><html><body>fix-2</body></html>",
-        ]),
+        new=AsyncMock(return_value="<!DOCTYPE html><html><body>fix-1</body></html>"),
     ) as mock_repair, patch.object(
         runner,
         "_run_contract_qa_loop",
-        new=AsyncMock(side_effect=[
-            SimpleNamespace(success=True, code="<!DOCTYPE html><html><body>fix-1-pass</body></html>", retries=0),
-            SimpleNamespace(success=True, code="<!DOCTYPE html><html><body>fix-2-pass</body></html>", retries=0),
-        ]),
+        new=AsyncMock(return_value=SimpleNamespace(
+            success=True,
+            code="<!DOCTYPE html><html><body>fix-1-pass</body></html>",
+            retries=0,
+        )),
     ):
-        final_code, runtime_qa, retries, qa_warnings = asyncio.run(
-            runner._run_runtime_qa_loop(
-                code="<!DOCTYPE html><html><body>initial</body></html>",
-                spec=GameSpec(game_type="casual"),
-                runtime_contract=GameRuntimeContract(),
-                prompt_bundle_snapshot={"layers": {}},
-                progress_cb=None,
-                game_id="game-1",
-                user_id="user-1",
+        with pytest.raises(PipelineExecutionError) as exc_info:
+            asyncio.run(
+                runner._run_runtime_qa_loop(
+                    code="<!DOCTYPE html><html><body>initial</body></html>",
+                    spec=GameSpec(game_type="casual"),
+                    runtime_contract=GameRuntimeContract(),
+                    prompt_bundle_snapshot={"layers": {}},
+                    progress_cb=None,
+                    game_id="game-1",
+                    user_id="user-1",
+                )
             )
-        )
 
-    assert final_code == "<!DOCTYPE html><html><body>fix-2-pass</body></html>"
-    assert runtime_qa.registered_input_handlers == ["pointerdown"]
-    assert retries == 2
-    assert qa_warnings == []
-    assert mock_repair.await_count == 2
+    assert "failed runtime QA" in str(exc_info.value)
+    assert mock_repair.await_count == 1
 
 
 def test_runtime_qa_timeout_scales_with_candidate_size_and_remediation_round():
@@ -1217,6 +1237,9 @@ def test_runtime_qa_timeout_can_soft_fail_for_published_iteration():
     assert qa_warnings == [{
         "type": "runtime_qa_unavailable",
         "severity": "warning",
+        "family": "runtime_startup",
+        "blocking": False,
+        "repairHint": "Retry runtime QA later or inspect the runtime environment if Playwright/browser infrastructure is unavailable.",
         "message": "Runtime QA unavailable: runtime_qa_timeout:60.00s",
         "kind": "timeout",
         "phase": "overall",
