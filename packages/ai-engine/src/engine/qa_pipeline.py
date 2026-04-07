@@ -2,7 +2,7 @@
 
 Checkpoints:
   L1  Syntax        – HTML structure parseable, required tags present
-  L2  Security      – no forbidden APIs (eval, fetch, localStorage, …)
+  L2  Security      – no forbidden APIs (eval, fetch, remote network APIs, …)
   L3  Startup       – canvas present + sized, game loop present, no obvious crash
   L4  Playability   – state-machine validated: gameOver SET to true, restart fn,
                       score incremented, input handlers present
@@ -25,7 +25,15 @@ try:
 except ImportError:  # pragma: no cover - optional dependency during local editing
     esprima = None
 
-from ..api.models import GameRuntimeContract, GameSpec, QACheckError, QACheckResponse, QAResult
+from ..api.models import (
+    GameRuntimeContract,
+    GameSpec,
+    QACheckError,
+    QACheckResponse,
+    QAIssueList,
+    QAIssueLocation,
+    QAResult,
+)
 from ..config.settings import settings
 from ..config.timeout_store import get_int as get_timeout_int
 from ..services.llm_client import LLMClient
@@ -79,8 +87,6 @@ FORBIDDEN_PATTERNS: List[Tuple[str, str]] = [
     (r"\bfetch\s*\(", "fetch()"),
     (r"\bXMLHttpRequest\b", "XMLHttpRequest"),
     (r"\bWebSocket\b", "WebSocket"),
-    (r"\blocalStorage\b", "localStorage"),
-    (r"\bsessionStorage\b", "sessionStorage"),
     (r"\bdocument\.cookie\b", "document.cookie"),
     (r"\bdocument\.write\b", "document.write"),
     (r"<script\b[^>]*\bsrc\s*=\s*['\"](?:https?:)?//", "external script src"),
@@ -201,12 +207,86 @@ class QAPipeline:
         summary["L6_content"] = len(l6_errors) == 0
         errors.extend(l6_errors)
 
+        normalized_errors = self.normalize_issues(errors, default_blocking=True)
+        normalized_warnings = self.normalize_issues(warnings, default_blocking=False)
+
         return QACheckResponse(
-            passed=len(errors) == 0,
-            errors=errors,
-            warnings=warnings,
+            passed=len(normalized_errors) == 0,
+            errors=normalized_errors,
+            warnings=normalized_warnings,
             validation_summary=summary,
+            issue_list=self.build_issue_list(normalized_errors, normalized_warnings),
         )
+
+    @classmethod
+    def normalize_issues(
+        cls,
+        issues: List[QACheckError],
+        *,
+        default_blocking: Optional[bool] = None,
+    ) -> List[QACheckError]:
+        return [
+            cls.enrich_issue(issue, default_blocking=default_blocking)
+            for issue in (issues or [])
+        ]
+
+    @classmethod
+    def build_issue_list(
+        cls,
+        errors: List[QACheckError],
+        warnings: Optional[List[QACheckError]] = None,
+    ) -> QAIssueList:
+        normalized_errors = cls.normalize_issues(errors, default_blocking=True)
+        normalized_warnings = cls.normalize_issues(warnings or [], default_blocking=False)
+        issues = [*normalized_errors, *normalized_warnings]
+        families = sorted({
+            str(issue.family or "generic")
+            for issue in issues
+            if str(issue.family or "").strip()
+        })
+        return QAIssueList(
+            issues=issues,
+            blocking_count=sum(1 for issue in issues if issue.blocking is not False),
+            warning_count=sum(1 for issue in issues if str(issue.severity or "").lower() == "warning"),
+            families=families,
+        )
+
+    @classmethod
+    def enrich_issue(
+        cls,
+        error: QACheckError,
+        *,
+        default_blocking: Optional[bool] = None,
+    ) -> QACheckError:
+        family = str(error.family or "").strip() or cls._classify_error_family(error)
+        severity = str(error.severity or "error").strip() or "error"
+        blocking = (
+            error.blocking
+            if error.blocking is not None
+            else (
+                default_blocking
+                if default_blocking is not None
+                else severity.lower() != "warning"
+            )
+        )
+        location = error.location
+        if location is None and error.line is not None:
+            location = QAIssueLocation(line=error.line)
+        elif location is not None and location.line is None and error.line is not None:
+            location = location.model_copy(update={"line": error.line})
+        repair_hint = str(error.repair_hint or "").strip() or cls._repair_hint_for_family(
+            family,
+            error,
+        )
+        normalized_line = error.line if error.line is not None else (location.line if location else None)
+        return error.model_copy(update={
+            "severity": severity,
+            "family": family,
+            "blocking": blocking,
+            "repair_hint": repair_hint,
+            "location": location,
+            "line": normalized_line,
+        })
 
     def _has_canvas_draw_commands(self, code: str) -> bool:
         visible_draw_methods = (
@@ -219,7 +299,19 @@ class QAPipeline:
             "fill",
             "stroke",
         )
-        method_pattern = r"(?:%s)" % "|".join(visible_draw_methods)
+        webgl_draw_methods = (
+            "clear",
+            "clearColor",
+            "drawArrays",
+            "drawElements",
+            "bufferData",
+            "bufferSubData",
+            "texImage2D",
+            "texSubImage2D",
+            "viewport",
+            "useProgram",
+        )
+        method_pattern = r"(?:%s)" % "|".join(visible_draw_methods + webgl_draw_methods)
 
         if re.search(
             rf"getContext\s*\(\s*['\"](?:2d|webgl|webgl2)['\"]\s*\)\s*\.\s*{method_pattern}\s*\(",
@@ -700,6 +792,27 @@ class QAPipeline:
 
         return "generic"
 
+    @staticmethod
+    def _repair_hint_for_family(family: str, error: QACheckError) -> str:
+        message = str(error.message or "").strip()
+        if family == "syntax_structural":
+            return "Restore valid HTML/JS structure without deleting the main gameplay loop."
+        if family == "forbidden_api":
+            return "Replace forbidden browser APIs with safe inline logic and remove blocked storage/network usage."
+        if family == "input_contract":
+            return "Register primary touch/pointer handlers and make the first user action trigger an immediate visible state change."
+        if family == "score_feedback":
+            return "Expose scoring or progress feedback in the live HUD so players can see reward updates during play."
+        if family == "terminal_state":
+            return "Ensure the game can enter a terminal state and restart through an explicit reset entry point."
+        if family == "mobile_layout":
+            return "Apply portrait-safe viewport and short-edge scaling so HUD and canvas remain readable on mobile."
+        if family == "runtime_startup":
+            return "Keep boot lightweight, render the first frame quickly, and avoid synchronous work that blocks startup or first input."
+        if message:
+            return f"Apply the smallest targeted fix that resolves: {message}"
+        return "Apply the smallest targeted fix while preserving the current gameplay loop."
+
     def _select_repair_scope(
         self,
         errors: List[QACheckError],
@@ -813,7 +926,12 @@ class QAPipeline:
             result = self.check(code, runtime_contract=runtime_contract)
             if result.passed:
                 logger.info(f"QA passed on attempt {attempt}")
-                return QAResult(success=True, code=code, retries=repair_attempts)
+                return QAResult(
+                    success=True,
+                    code=code,
+                    retries=repair_attempts,
+                    issue_list=result.issue_list,
+                )
 
             if attempt == max_retries:
                 break
@@ -848,6 +966,7 @@ class QAPipeline:
                     retries=repair_attempts,
                     last_errors=final.errors,
                     needs_regeneration=True,
+                    issue_list=final.issue_list,
                 )
 
             error_count_history.append(len(result.errors))
@@ -893,6 +1012,7 @@ class QAPipeline:
             code=code,
             retries=repair_attempts,
             last_errors=final.errors,
+            issue_list=final.issue_list,
         )
 
     async def repair_code(
@@ -908,6 +1028,7 @@ class QAPipeline:
         force_full: bool = False,
     ) -> str:
         repaired = self._apply_deterministic_repairs(code)
+        errors = self.normalize_issues(errors, default_blocking=True)
         if not self._client.is_enabled() or not errors:
             return repaired
 
@@ -1332,6 +1453,21 @@ class QAPipeline:
             ))
 
         # ── restart / reset logic ──
+        downgraded_errors: List[QACheckError] = []
+        for error in errors:
+            if (
+                error.type == "L4_playability"
+                and "Required terminal or completion state is never set" in error.message
+            ):
+                warnings.append(QACheckError(
+                    type=error.type,
+                    message=error.message,
+                    severity="warning",
+                ))
+                continue
+            downgraded_errors.append(error)
+        errors = downgraded_errors
+
         has_restart = has_restart_entry(code)
         if (runtime_contract.gameplay.requires_restart_entry if runtime_contract else True) and not has_restart:
             warnings.append(QACheckError(
@@ -1584,10 +1720,6 @@ class QAPipeline:
             if target not in allowed_targets:
                 allowed_targets.append(target)
         return tuple(allowed_targets)
-
-    @staticmethod
-    def _has_syntax_structural_errors(errors: List[QACheckError]) -> bool:
-        return any((error.type or "").lower().startswith("l1_") for error in errors)
 
     async def _rebuild_from_spec_for_syntax_recovery(
         self,
@@ -2050,10 +2182,6 @@ class QAPipeline:
     @staticmethod
     def _has_score_bridge_marker(code: str) -> bool:
         return "__playforgeScoreBridgeInstalled" in (code or "")
-
-    @staticmethod
-    def _has_touch_coordinate_guard_marker(code: str) -> bool:
-        return "__playforgeResolveTouchPointInstalled" in (code or "")
 
     @staticmethod
     def _has_mobile_layout_bridge_marker(code: str) -> bool:

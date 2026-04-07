@@ -1546,6 +1546,46 @@ class DialogueEngine:
     def __init__(self) -> None:
         self._client = LLMClient()
 
+    @staticmethod
+    def _should_use_first_turn_fast_path(history: List[ConversationMessage]) -> bool:
+        user_count = 0
+        assistant_count = 0
+        for message in history:
+            normalized = _normalize_free_text(message.content)
+            if not normalized:
+                continue
+            if message.role == "user":
+                user_count += 1
+            elif message.role == "assistant":
+                assistant_count += 1
+        return user_count == 1 and assistant_count == 0
+
+    def _apply_heuristic_turn_slot_update(
+        self,
+        *,
+        session: DialogueSession,
+        source_text: str,
+        title: Optional[str] = None,
+        allow_sparse_fallback: bool = True,
+    ) -> List[str]:
+        old_slots = session.slots.model_copy()
+        heuristic_slot_data = _build_heuristic_slot_payload(
+            raw_text="",
+            source_text=source_text,
+            title=title,
+            preferred_game_type=str(session.slots.game_type or "") or None,
+            variation_seed=session.session_id,
+            allow_sparse_fallback=allow_sparse_fallback,
+        )
+        for key, value in heuristic_slot_data.items():
+            if value is not None and hasattr(session.slots, key):
+                setattr(session.slots, key, value)
+
+        return [
+            key for key in SlotState.model_fields
+            if getattr(session.slots, key) != getattr(old_slots, key)
+        ]
+
     async def _complete_slot_request(
         self,
         *,
@@ -1556,6 +1596,7 @@ class DialogueEngine:
         max_tokens: int,
     ) -> str:
         is_fast_dialogue_slot_extract = step_key == "dialogue.slot_extract"
+        prefer_fast_route = is_fast_dialogue_slot_extract or step_key == "intent_parse"
         request_timeout_s = (
             FAST_DIALOGUE_SLOT_REQUEST_TIMEOUT_S
             if is_fast_dialogue_slot_extract
@@ -1573,7 +1614,7 @@ class DialogueEngine:
                 messages=messages,
                 step_key=step_key,
                 stage=stage,
-                prefer_fast=False,
+                prefer_fast=prefer_fast_route,
                 allow_provider_fallback=True,
                 response_size_hint="small",
                 context_scope="task",
@@ -1599,7 +1640,7 @@ class DialogueEngine:
                 messages=messages,
                 step_key=step_key,
                 stage=stage,
-                prefer_fast=False,
+                prefer_fast=prefer_fast_route,
                 allow_provider_fallback=True,
                 response_size_hint="small",
                 context_scope="task",
@@ -1692,6 +1733,13 @@ class DialogueEngine:
             ):
                 authoritative_slots.add(answered_slot_key)
                 blocked_slots.add(answered_slot_key)
+        elif self._should_use_first_turn_fast_path(history):
+            updated_slots = self._apply_heuristic_turn_slot_update(
+                session=session,
+                source_text=source_text,
+                title=req.title,
+                allow_sparse_fallback=True,
+            )
         else:
             updated_slots = await self._extract_slots_from_conversation(
                 session,
@@ -1875,6 +1923,33 @@ class DialogueEngine:
         )
 
     async def _llm_process(self, session: DialogueSession) -> Tuple[str, List[str]]:
+        if self._should_use_first_turn_fast_path(session.history):
+            source_text = _source_description_from_history(session.history)
+            updated = self._apply_heuristic_turn_slot_update(
+                session=session,
+                source_text=source_text,
+                title=None,
+                allow_sparse_fallback=True,
+            )
+            current_question, _ = _build_dialogue_question(
+                session.slots,
+                skipped_slots=[],
+                blocked_slots=[],
+                source_text=source_text,
+                entry_mode="create",
+                confidence_by_slot={},
+                ambiguity_flags=[],
+            )
+            ready_to_generate = bool(session.slots.fill_pct() >= 0.67 or current_question is None)
+            reply = _compose_creation_session_reply(
+                slots=session.slots,
+                current_question=current_question,
+                ready_to_generate=ready_to_generate,
+                source_text=source_text,
+                title=None,
+            )
+            return reply, updated
+
         old_slots = session.slots.model_copy()
 
         slot_text = await self._complete_slot_request(

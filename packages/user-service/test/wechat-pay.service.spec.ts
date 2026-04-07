@@ -73,6 +73,10 @@ describe('WechatPayService', () => {
         }),
       }),
     );
+    expect('package' in result.payment).toBe(true);
+    if (!('package' in result.payment) || !('signType' in result.payment)) {
+      throw new Error('Expected JSAPI payment payload');
+    }
     expect(result.prepayId).toBe('wx_prepay_123');
     expect(result.payment.package).toBe('prepay_id=wx_prepay_123');
     expect(result.payment.signType).toBe('RSA');

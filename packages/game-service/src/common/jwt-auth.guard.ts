@@ -12,25 +12,55 @@ function decodeJwtPayload(token: string) {
     throw new BadRequestException('Invalid token');
   }
 
-  const payload = parts[1]
-    .replace(/-/g, '+')
-    .replace(/_/g, '/')
-    .padEnd(Math.ceil(parts[1].length / 4) * 4, '=');
+  try {
+    const payload = parts[1]
+      .replace(/-/g, '+')
+      .replace(/_/g, '/')
+      .padEnd(Math.ceil(parts[1].length / 4) * 4, '=');
 
-  return JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
+    return JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
+  } catch {
+    throw new BadRequestException('Invalid token');
+  }
+}
+
+function extractBearerToken(authHeader: unknown): string | null {
+  if (typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) {
+    return null;
+  }
+  const token = authHeader.substring(7).trim();
+  return token || null;
+}
+
+function extractSseQueryToken(request: any): string | null {
+  const queryToken = request?.query?.token;
+  if (typeof queryToken !== 'string' || !queryToken.trim()) {
+    return null;
+  }
+
+  const method = String(request?.method || '').toUpperCase();
+  const acceptHeader = request?.headers?.accept;
+  const accepts = Array.isArray(acceptHeader) ? acceptHeader.join(',') : String(acceptHeader || '');
+
+  if (method !== 'GET' || !accepts.toLowerCase().includes('text/event-stream')) {
+    return null;
+  }
+
+  return queryToken.trim();
 }
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest();
-    const authHeader = request.headers.authorization;
+    const token =
+      extractBearerToken(request.headers.authorization) || extractSseQueryToken(request);
 
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    if (!token) {
       throw new UnauthorizedException('Authentication required');
     }
 
-    const decoded = decodeJwtPayload(authHeader.substring(7));
+    const decoded = decodeJwtPayload(token);
     if (!decoded?.sub && !decoded?.id) {
       throw new UnauthorizedException('Invalid token');
     }

@@ -13,7 +13,7 @@ export interface TimeoutConfigCatalogEntry {
 export const TIMEOUT_CONFIG_CATALOG: TimeoutConfigCatalogEntry[] = [
   {
     key: 'timeout.pipeline.default_s',
-    defaultValue: '1200',
+    defaultValue: '1800',
     description: '默认生成任务总超时。create / iterate 未显式传 timeoutS 时使用这个值。',
     service: 'shared',
     group: 'pipeline',
@@ -22,7 +22,7 @@ export const TIMEOUT_CONFIG_CATALOG: TimeoutConfigCatalogEntry[] = [
   },
   {
     key: 'timeout.pipeline.v2_min_s',
-    defaultValue: '1200',
+    defaultValue: '1800',
     description: 'V2 生成链路允许的最小总超时。用户传入更小值时会被抬到这个下限。',
     service: 'shared',
     group: 'pipeline',

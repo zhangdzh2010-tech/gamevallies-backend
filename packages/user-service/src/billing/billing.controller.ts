@@ -20,6 +20,11 @@ import { CreateSubscriptionOrderDto } from './dto/create-subscription-order.dto'
 class CreateSubscriptionOrderQueryDto {
   @IsOptional()
   @IsString()
+  @IsIn(['wechat_pay', 'alipay_wap', 'alipay_page'])
+  provider?: 'wechat_pay' | 'alipay_wap' | 'alipay_page';
+
+  @IsOptional()
+  @IsString()
   @IsIn(['weapp', 'h5', 'wechat_h5'])
   clientPlatform?: 'weapp' | 'h5' | 'wechat_h5';
 
@@ -67,6 +72,7 @@ export class BillingController {
         dto,
         this.resolveClientIp(req),
         {
+          provider: query.provider,
           clientPlatform: query.clientPlatform,
           wechatPayFlow: query.wechatPayFlow,
           returnUrl: query.returnUrl,
@@ -117,5 +123,11 @@ export class BillingController {
       body ?? req.body,
       rawBody,
     );
+  }
+
+  @Post('subscription/alipay/notify')
+  @HttpCode(HttpStatus.OK)
+  async handleAlipayNotify(@Body() body: Record<string, string | string[] | undefined>) {
+    return this.billingService.handleAlipayNotification(body || {});
   }
 }

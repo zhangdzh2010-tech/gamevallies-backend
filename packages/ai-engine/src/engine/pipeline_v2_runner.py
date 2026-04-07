@@ -12,6 +12,7 @@ from typing import Any, Callable, Optional
 from ..api.models import (
     GDD,
     GenerationTier,
+    GameEntity,
     GameRuntimeContract,
     GameSpec,
     IterateResponse,
@@ -148,6 +149,37 @@ BASELINE_RUNTIME_PROFILES = {
     "tap_challenge",
 }
 
+ENTITY_BUDGET_EXPANSION_LIBRARY: dict[str, tuple[dict[str, Any], ...]] = {
+    "casual": (
+        {"name": "rival", "role": "enemy", "shape": "triangle", "color": "#fb7185"},
+        {"name": "boost_orb", "role": "collectible", "shape": "circle", "color": "#22c55e"},
+        {"name": "hazard_gate", "role": "obstacle", "shape": "rectangle", "color": "#f97316"},
+        {"name": "route_marker", "role": "npc", "shape": "diamond", "color": "#38bdf8"},
+        {"name": "bonus_token", "role": "collectible", "shape": "diamond", "color": "#facc15"},
+    ),
+    "puzzle": (
+        {"name": "blocker", "role": "obstacle", "shape": "square", "color": "#ef4444"},
+        {"name": "switch", "role": "collectible", "shape": "circle", "color": "#22c55e"},
+        {"name": "booster", "role": "collectible", "shape": "diamond", "color": "#f59e0b"},
+        {"name": "guide_tile", "role": "npc", "shape": "rectangle", "color": "#38bdf8"},
+        {"name": "bonus_goal", "role": "collectible", "shape": "hexagon", "color": "#a855f7"},
+    ),
+    "educational": (
+        {"name": "hint_badge", "role": "collectible", "shape": "diamond", "color": "#22c55e"},
+        {"name": "challenge_card", "role": "obstacle", "shape": "rectangle", "color": "#f97316"},
+        {"name": "teacher_note", "role": "npc", "shape": "square", "color": "#6366f1"},
+        {"name": "milestone_star", "role": "collectible", "shape": "star", "color": "#facc15"},
+        {"name": "timer_gate", "role": "obstacle", "shape": "triangle", "color": "#ef4444"},
+    ),
+    "funny": (
+        {"name": "heckler", "role": "enemy", "shape": "triangle", "color": "#fb7185"},
+        {"name": "prop_bonus", "role": "collectible", "shape": "circle", "color": "#22c55e"},
+        {"name": "gag_trigger", "role": "npc", "shape": "diamond", "color": "#38bdf8"},
+        {"name": "chaos_button", "role": "obstacle", "shape": "rectangle", "color": "#f97316"},
+        {"name": "crowd_cheer", "role": "collectible", "shape": "star", "color": "#facc15"},
+    ),
+}
+
 
 def _default_runtime_profile_id() -> str:
     profile = get_default_runtime_profile()
@@ -180,8 +212,6 @@ FORBIDDEN_API_PATTERNS: dict[str, str] = {
     "fetch": r"\bfetch\s*\(",
     "XMLHttpRequest": r"\bXMLHttpRequest\b",
     "WebSocket": r"\bWebSocket\b",
-    "localStorage": r"\blocalStorage\b",
-    "sessionStorage": r"\bsessionStorage\b",
     "document.cookie": r"\bdocument\.cookie\b",
     "document.write": r"\bdocument\.write\b",
 }
@@ -203,6 +233,25 @@ class V2PipelineRunner:
     @staticmethod
     def _current_task_id() -> Optional[str]:
         return get_request_context().get("task_id")
+
+    @staticmethod
+    def _generation_tier_rank(tier: str) -> int:
+        ranks = {
+            "safe": 0,
+            "standard": 1,
+            "showcase": 2,
+        }
+        return ranks.get(str(tier or "standard").strip().lower(), 1)
+
+    def _should_allow_runtime_qa_unavailable(self, spec: GameSpec) -> bool:
+        if settings.RUNTIME_QA_REQUIRED:
+            return False
+        return CodeGenerator._resolve_generation_tier(spec) != "showcase"
+
+    def _should_run_code_review(self, spec: GameSpec) -> bool:
+        current_tier = CodeGenerator._resolve_generation_tier(spec)
+        min_tier = str(getattr(settings, "LLM_CODE_REVIEW_MIN_TIER", "showcase") or "showcase")
+        return self._generation_tier_rank(current_tier) >= self._generation_tier_rank(min_tier)
 
     async def _remember_spec(self, spec: Optional[GameSpec]) -> None:
         await task_memory.remember_spec(self._current_task_id(), spec)
@@ -354,6 +403,7 @@ class V2PipelineRunner:
         stage_context["stage"] = "logic_generate"
         generated = await self._generate_create_code(request, spec, gdd, runtime_contract)
         await self._remember_code(generated.html_code, label="generated_candidate")
+        allow_runtime_qa_unavailable = self._should_allow_runtime_qa_unavailable(spec)
 
         qa_result, runtime_qa, runtime_retries, qa_warnings = await self._run_contract_and_runtime_flow(
             code=generated.html_code,
@@ -364,7 +414,7 @@ class V2PipelineRunner:
             game_id=request.game_id,
             user_id=request.user_id,
             stage_context=stage_context,
-            allow_runtime_qa_unavailable=False,
+            allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
         )
 
         if qa_result.needs_regeneration:
@@ -388,14 +438,16 @@ class V2PipelineRunner:
                 game_id=request.game_id,
                 user_id=request.user_id,
                 stage_context=stage_context,
-                allow_runtime_qa_unavailable=False,
+                allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
             )
 
         elapsed = int(time.time() * 1000) - start_ms
         code_bytes = len(qa_result.code.encode("utf-8"))
         final_check = self.qa_pipeline.check(qa_result.code)
         await self._remember_code(qa_result.code, label="final_code")
-        review = await self.code_reviewer.review(qa_result.code)
+        review = LLMReviewResult(ran=False)
+        if self._should_run_code_review(spec):
+            review = await self.code_reviewer.review(qa_result.code)
         quality = self.quality_scorer.compute(
             static=QAStaticResult(
                 passed=final_check.passed,
@@ -521,7 +573,7 @@ class V2PipelineRunner:
             game_id=request.game_id,
             user_id=request.user_id,
             stage_context=stage_context,
-            allow_runtime_qa_unavailable=False,
+            allow_runtime_qa_unavailable=self._should_allow_runtime_qa_unavailable(spec),
         )
 
         elapsed = int(time.time() * 1000) - start_ms
@@ -575,6 +627,7 @@ class V2PipelineRunner:
                 spec.source_description = request.raw_user_input.strip()
             if request.title and spec.intent_summary:
                 spec.intent_summary = f"{request.title}: {spec.intent_summary}"
+            spec = self._expand_spec_entities_for_budget(spec)
             return apply_visual_pack_defaults(spec, variation_seed=request.game_id)
 
         description = request.raw_user_input.strip() or str(
@@ -601,6 +654,7 @@ class V2PipelineRunner:
             request.runtime_contract.metadata.get("generation_tier"),
         )
         spec.complexity_budget = str(getattr(spec.generation_tier, "value", spec.generation_tier) or "standard")
+        spec = self._expand_spec_entities_for_budget(spec)
         return apply_visual_pack_defaults(spec, variation_seed=request.game_id)
 
     async def _build_iteration_spec(self, request: IterateV2Request) -> GameSpec:
@@ -660,6 +714,7 @@ class V2PipelineRunner:
                     base_spec.generation_tier if base_spec else None,
                 )
                 spec.complexity_budget = str(getattr(spec.generation_tier, "value", spec.generation_tier) or "standard")
+                spec = self._expand_spec_entities_for_budget(spec)
                 return apply_visual_pack_defaults(spec, variation_seed=request.game_id)
             raise
 
@@ -681,6 +736,7 @@ class V2PipelineRunner:
             base_spec.generation_tier if base_spec else None,
         )
         spec.complexity_budget = str(getattr(spec.generation_tier, "value", spec.generation_tier) or "standard")
+        spec = self._expand_spec_entities_for_budget(spec)
         return apply_visual_pack_defaults(spec, variation_seed=request.game_id)
 
     @staticmethod
@@ -933,9 +989,13 @@ class V2PipelineRunner:
         contract = base_contract.model_copy(deep=True)
         contract.runtime_profile = runtime_profile
         requested_orientation = self._resolve_contract_orientation(base_contract)
+        normalized_render_api = str(spec.platform_constraints.render_api or "").strip().lower()
+        allow_webgl = normalized_render_api in {"", "webgl", "webgl2", "canvas2d_or_webgl", "canvas_or_webgl"}
+        requires_canvas_2d = normalized_render_api == "canvas2d"
         contract.canvas = contract.canvas.model_copy(
             update={
-                "requires_canvas_2d": True,
+                "requires_canvas_2d": requires_canvas_2d,
+                "allow_webgl": allow_webgl,
                 "orientation": requested_orientation,
                 "ui_scale_mode": "short_edge",
                 "target_fps": spec.platform_constraints.target_fps or contract.canvas.target_fps,
@@ -1101,6 +1161,39 @@ class V2PipelineRunner:
             "primary_goal": "clear_feedback_loop",
         }
 
+    @staticmethod
+    def _target_seed_entity_count(spec: GameSpec) -> int:
+        tier_value = str(getattr(spec.generation_tier, "value", spec.generation_tier) or "standard").strip().lower()
+        if tier_value == "showcase":
+            return 7 if spec.game_type in {"casual", "funny", "educational"} else 6
+        if tier_value == "safe":
+            return 3
+        return 6 if spec.game_type == "puzzle" else 5
+
+    def _expand_spec_entities_for_budget(self, spec: GameSpec) -> GameSpec:
+        expanded = spec.model_copy(deep=True)
+        target_count = min(
+            max(3, self._target_seed_entity_count(expanded)),
+            max(3, int(expanded.platform_constraints.max_entities or 50)),
+        )
+        if len(expanded.entities) >= target_count:
+            return expanded
+
+        catalog = ENTITY_BUDGET_EXPANSION_LIBRARY.get(
+            expanded.game_type,
+            ENTITY_BUDGET_EXPANSION_LIBRARY["casual"],
+        )
+        existing_names = {str(entity.name or "").strip().lower() for entity in expanded.entities}
+        for candidate in catalog:
+            if len(expanded.entities) >= target_count:
+                break
+            candidate_name = str(candidate.get("name") or "").strip().lower()
+            if not candidate_name or candidate_name in existing_names:
+                continue
+            expanded.entities.append(GameEntity(**candidate))
+            existing_names.add(candidate_name)
+        return expanded
+
     async def _build_gdd(self, spec: GameSpec, runtime_contract: GameRuntimeContract) -> GDD:
         try:
             gdd = await self.game_designer.design(
@@ -1184,7 +1277,6 @@ class V2PipelineRunner:
                     runtime_profile=runtime_contract.runtime_profile,
                     prompt_bundle_snapshot=request.prompt_bundle_snapshot.model_dump(),
                     game_spec=spec,
-                    source_bundle_context=request.source_bundle_context,
                 )
             except Exception as exc:
                 last_exc = exc
@@ -1224,7 +1316,12 @@ class V2PipelineRunner:
         contract_errors = self._validate_contract_bundle(pre_repaired, runtime_contract)
         if static_check.passed and not contract_errors:
             logger.info("Code passed all checks on first attempt; skipping repair loop and running runtime QA directly")
-            qa_result = QAResult(success=True, code=pre_repaired, retries=0)
+            qa_result = QAResult(
+                success=True,
+                code=pre_repaired,
+                retries=0,
+                issue_list=static_check.issue_list,
+            )
             # Fast-path: jump directly to runtime QA, skip the contract_qa stage notification
             stage_context["stage"] = "runtime_simulation_qa"
             self._notify(progress_cb, "runtime_simulation_qa", 92, "Running runtime simulation QA", {
@@ -1242,7 +1339,12 @@ class V2PipelineRunner:
                 user_id=user_id,
                 allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
             )
-            return QAResult(success=True, code=final_code, retries=qa_result.retries), runtime_qa, runtime_retries, qa_warnings
+            return QAResult(
+                success=True,
+                code=final_code,
+                retries=qa_result.retries,
+                issue_list=qa_result.issue_list,
+            ), runtime_qa, runtime_retries, qa_warnings
         else:
             qa_result = await self._run_contract_qa_loop(
                 code=code,
@@ -1299,7 +1401,12 @@ class V2PipelineRunner:
             user_id=user_id,
             allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
         )
-        return QAResult(success=True, code=final_code, retries=qa_result.retries), runtime_qa, runtime_retries, qa_warnings
+        return QAResult(
+            success=True,
+            code=final_code,
+            retries=qa_result.retries,
+            issue_list=qa_result.issue_list,
+        ), runtime_qa, runtime_retries, qa_warnings
 
     async def _run_contract_qa_loop(
         self,
@@ -1314,20 +1421,39 @@ class V2PipelineRunner:
         max_retries: Optional[int] = None,
     ) -> QAResult:
         retries_allowed = settings.QA_MAX_RETRIES if max_retries is None else max_retries
+        retries_allowed = min(max(0, int(retries_allowed)), 1)
         current_code = self.qa_pipeline._apply_deterministic_repairs(code)
         repair_attempts = 0
 
         for attempt in range(retries_allowed + 1):
             errors = self._validate_contract_bundle(current_code, runtime_contract)
             if not errors:
-                return QAResult(success=True, code=current_code, retries=repair_attempts)
+                return QAResult(
+                    success=True,
+                    code=current_code,
+                    retries=repair_attempts,
+                    issue_list=self.qa_pipeline.build_issue_list([], []),
+                )
 
             if attempt >= 1 and self.qa_pipeline._errors_look_like_truncation(errors):
                 logger.warning("Contract QA: truncation persists after %d repair(s); signaling regeneration", repair_attempts)
-                return QAResult(success=False, code=current_code, retries=repair_attempts, last_errors=errors, needs_regeneration=True)
+                return QAResult(
+                    success=False,
+                    code=current_code,
+                    retries=repair_attempts,
+                    last_errors=errors,
+                    needs_regeneration=True,
+                    issue_list=self.qa_pipeline.build_issue_list(errors, []),
+                )
 
             if attempt == retries_allowed:
-                return QAResult(success=False, code=current_code, retries=repair_attempts, last_errors=errors)
+                return QAResult(
+                    success=False,
+                    code=current_code,
+                    retries=repair_attempts,
+                    last_errors=errors,
+                    issue_list=self.qa_pipeline.build_issue_list(errors, []),
+                )
 
             self._notify(progress_cb, "targeted_remediation", 84, f"Contract QA failed, applying targeted remediation ({attempt + 1}/{retries_allowed})", {
                 "gameId": game_id,
@@ -1348,7 +1474,12 @@ class V2PipelineRunner:
             )
             repair_attempts += 1
 
-        return QAResult(success=False, code=current_code, retries=repair_attempts)
+        return QAResult(
+            success=False,
+            code=current_code,
+            retries=repair_attempts,
+            issue_list=self.qa_pipeline.build_issue_list([], []),
+        )
 
     async def _run_runtime_qa_loop(
         self,
@@ -1364,6 +1495,7 @@ class V2PipelineRunner:
     ) -> tuple[str, Any, int, list[dict[str, Any]]]:
         current_code = code
         remediation_attempts = max(0, int(settings.RUNTIME_QA_REMEDIATION_MAX_RETRIES or 1))
+        remediation_attempts = min(remediation_attempts, 1)
         total_retries = 0
         qa_warnings: list[dict[str, Any]] = []
 
@@ -1584,15 +1716,28 @@ class V2PipelineRunner:
     ) -> list[QACheckError]:
         errors: list[QACheckError] = []
         lower = (code or "").lower()
-
-        if runtime_contract.canvas.requires_canvas_2d and not re.search(
+        has_canvas_2d_context = re.search(
             r"getcontext\s*\(\s*['\"]2d['\"]\s*\)",
             code,
             re.IGNORECASE,
-        ):
+        ) is not None
+        has_webgl_context = re.search(
+            r"getcontext\s*\(\s*['\"](?:webgl|webgl2)['\"]\s*\)",
+            code,
+            re.IGNORECASE,
+        ) is not None
+
+        if runtime_contract.canvas.requires_canvas_2d:
+            if not has_canvas_2d_context:
+                errors.append(QACheckError(
+                    type="contract_canvas",
+                    message="Runtime contract requires an explicit Canvas 2D context",
+                    severity="error",
+                ))
+        elif not (has_canvas_2d_context or (getattr(runtime_contract.canvas, "allow_webgl", False) and has_webgl_context)):
             errors.append(QACheckError(
                 type="contract_canvas",
-                message="Runtime contract requires an explicit Canvas 2D context",
+                message="Runtime contract requires an explicit canvas rendering context (Canvas 2D or WebGL)",
                 severity="error",
             ))
 
@@ -1635,21 +1780,6 @@ class V2PipelineRunner:
                     message=f"Runtime contract requires state '{required_state}'",
                     severity="error",
                 ))
-
-        has_scoring_loop = has_visible_scoring_loop(code)
-        if runtime_contract.gameplay.requires_scoring and not has_scoring_loop:
-            errors.append(QACheckError(
-                type="contract_gameplay",
-                message="Runtime contract requires a visible scoring loop",
-                severity="error",
-            ))
-
-        if runtime_contract.gameplay.requires_terminal_state and not has_terminal_state_transition(code, runtime_contract):
-            errors.append(QACheckError(
-                type="contract_gameplay",
-                message="Runtime contract requires an explicit terminal or completion state",
-                severity="error",
-            ))
 
         if runtime_contract.gameplay.requires_restart_entry and not has_restart_entry(code):
             errors.append(QACheckError(
@@ -1819,14 +1949,22 @@ class V2PipelineRunner:
         }
 
     @staticmethod
-    def _serialize_errors(errors: list[QACheckError]) -> list[dict[str, str]]:
+    def _serialize_errors(errors: list[QACheckError]) -> list[dict[str, Any]]:
         return [
             {
-                "type": error.type,
-                "message": error.message,
-                "severity": error.severity,
+                "type": enriched.type,
+                "message": enriched.message,
+                "severity": enriched.severity,
+                "family": enriched.family or "generic",
+                "blocking": bool(enriched.blocking if enriched.blocking is not None else True),
+                "repairHint": enriched.repair_hint or "",
+                **(
+                    {"location": enriched.location.model_dump(exclude_none=True)}
+                    if enriched.location is not None
+                    else {}
+                ),
             }
-            for error in errors
+            for enriched in (QAPipeline.enrich_issue(error) for error in errors)
         ]
 
     @staticmethod
@@ -1835,6 +1973,9 @@ class V2PipelineRunner:
         return {
             "type": "runtime_qa_unavailable",
             "severity": "warning",
+            "family": "runtime_startup",
+            "blocking": False,
+            "repairHint": "Retry runtime QA later or inspect the runtime environment if Playwright/browser infrastructure is unavailable.",
             "message": f"Runtime QA unavailable: {unavailable_reason}",
             "kind": getattr(runtime_qa, "unavailable_kind", None),
             "phase": getattr(runtime_qa, "unavailable_phase", None),

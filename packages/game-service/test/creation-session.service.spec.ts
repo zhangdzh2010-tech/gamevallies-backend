@@ -9,6 +9,7 @@ describe('CreationSessionService', () => {
   let repo: any;
   let gameService: any;
   let wsGateway: any;
+  let realtimeService: any;
 
   beforeEach(() => {
     repo = {
@@ -31,7 +32,16 @@ describe('CreationSessionService', () => {
       emitSessionError: jest.fn(),
       emitToUser: jest.fn(),
     };
-    service = new CreationSessionService(prisma as any, gameService as any, wsGateway as any);
+    realtimeService = {
+      publishSnapshot: jest.fn(),
+      publishError: jest.fn(),
+    };
+    service = new CreationSessionService(
+      prisma as any,
+      gameService as any,
+      wsGateway as any,
+      realtimeService as any,
+    );
     (axios.post as jest.Mock).mockReset();
   });
 
@@ -155,6 +165,12 @@ describe('CreationSessionService', () => {
           generationTier: 'showcase',
           readyToGenerate: false,
           slotFillPct: 0,
+          intentBuild: expect.objectContaining({
+            brief: expect.any(String),
+            frozenSpec: null,
+            intentFingerprint: expect.any(String),
+            specFingerprint: null,
+          }),
         }),
       }),
     }));
@@ -164,6 +180,11 @@ describe('CreationSessionService', () => {
       status: 'initializing',
       orientation: 'landscape',
       generationTier: 'showcase',
+      intentBuild: expect.objectContaining({
+        intentFingerprint: expect.any(String),
+        specFingerprint: null,
+        frozenSpec: null,
+      }),
     }));
 
     // Phase 2: wait for async _finalizeSessionInit to complete
@@ -191,6 +212,14 @@ describe('CreationSessionService', () => {
       data: expect.objectContaining({
         status: 'ready',
         revision: { increment: 1 },
+        metadata: expect.objectContaining({
+          intentBuild: expect.objectContaining({
+            brief: expect.any(String),
+            frozenSpec: null,
+            intentFingerprint: expect.any(String),
+            specFingerprint: null,
+          }),
+        }),
       }),
     }));
     // WebSocket push was emitted with the finalized snapshot
@@ -201,6 +230,64 @@ describe('CreationSessionService', () => {
         status: 'ready',
         readyToGenerate: true,
       }),
+    );
+  });
+
+  it('abandons initialization after a single transient analyze-turn failure without retrying', async () => {
+    repo.updateMany.mockResolvedValue({ count: 1 });
+    repo.create.mockImplementation(async ({ data }: any) => ({
+      id: 'session-retryless',
+      userId: 'user-retryless',
+      status: data.status,
+      entryMode: data.entryMode,
+      initialPrompt: data.initialPrompt,
+      titleDraft: data.titleDraft,
+      revision: data.revision,
+      slotState: data.slotState,
+      missingRequired: data.missingRequired,
+      skippedSlots: data.skippedSlots,
+      currentQuestion: data.currentQuestion,
+      conversation: data.conversation,
+      generatedGameId: null,
+      generationTaskId: null,
+      sourceGameId: data.sourceGameId,
+      questionBudget: data.questionBudget,
+      metadata: data.metadata,
+      createdAt: new Date('2026-03-30T10:00:00.000Z'),
+      updatedAt: new Date('2026-03-30T10:00:00.000Z'),
+    }));
+    (axios.post as jest.Mock).mockRejectedValueOnce({
+      code: 'ETIMEDOUT',
+      message: 'timeout of 5000ms exceeded',
+    });
+
+    const snapshot = await service.createSession('user-retryless', {
+      prompt: 'Make a quick arcade game.',
+      title: 'Retryless',
+    });
+
+    expect(snapshot).toEqual(expect.objectContaining({
+      id: 'session-retryless',
+      status: 'initializing',
+    }));
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(axios.post).toHaveBeenCalledTimes(1);
+    expect(repo.updateMany).toHaveBeenCalledWith({
+      where: { id: 'session-retryless', userId: 'user-retryless', status: 'initializing' },
+      data: expect.objectContaining({
+        status: 'abandoned',
+        metadata: expect.objectContaining({
+          initError: 'timeout of 5000ms exceeded',
+        }),
+      }),
+    });
+    expect(wsGateway.emitSessionError).toHaveBeenCalledWith(
+      'user-retryless',
+      'session-retryless',
+      'timeout of 5000ms exceeded',
+      expect.objectContaining({ reason: 'init_failed' }),
     );
   });
 
@@ -308,6 +395,14 @@ describe('CreationSessionService', () => {
       data: expect.objectContaining({
         status: 'ready',
         revision: { increment: 1 },
+        metadata: expect.objectContaining({
+          intentBuild: expect.objectContaining({
+            brief: expect.any(String),
+            frozenSpec: null,
+            intentFingerprint: expect.any(String),
+            specFingerprint: null,
+          }),
+        }),
       }),
     }));
     expect(snapshot).toEqual(expect.objectContaining({
@@ -416,6 +511,21 @@ describe('CreationSessionService', () => {
       creationSessionId: 'session-3',
       entryMode: 'fork',
       sourceGameId: 'game-source-1',
+    }));
+    expect(repo.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'session-3' },
+      data: expect.objectContaining({
+        metadata: expect.objectContaining({
+          intentBuild: expect.objectContaining({
+            brief: expect.any(String),
+            frozenSpec: expect.objectContaining({
+              game_type: 'funny',
+            }),
+            intentFingerprint: expect.any(String),
+            specFingerprint: expect.any(String),
+          }),
+        }),
+      }),
     }));
     expect(result).toEqual(expect.objectContaining({
       gameId: 'game-1',
