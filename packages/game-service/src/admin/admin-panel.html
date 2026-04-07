@@ -1075,19 +1075,22 @@ tbody tr:hover{background:#f8fafc}
 
     <!-- Prompt Pipeline -->
     <div id="page-prompts" class="page">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:12px;flex-wrap:wrap">
         <div>
-          <h2 style="font-size:18px;font-weight:600;color:#1e293b">AI Prompt 流水线配置</h2>
-          <p style="font-size:12px;color:#94a3b8;margin-top:3px">点击阶段节点快速定位，修改后 AI 引擎自动读取最新配置</p>
+          <h2 style="font-size:18px;font-weight:600;color:#1e293b">五步 Prompt 管理</h2>
+          <p style="font-size:12px;color:#94a3b8;margin-top:3px">按当前五步生成主链展示系统 prompt、live prompt bundle 和 runtime profile few-shot。</p>
         </div>
-        <button class="btn btn-secondary" onclick="initPrompts()">↺ 恢复默认</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-secondary" onclick="refreshPromptPipeline()">热刷新 Prompt Cache</button>
+          <button class="btn btn-secondary" onclick="initPrompts()">恢复默认</button>
+        </div>
       </div>
 
-      <!-- Pipeline Flow Diagram — full width, even distribution -->
+      <div id="promptPipelineSummary" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px"></div>
+
       <div id="pipelineNav" style="display:flex;align-items:stretch;background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px 24px;margin-bottom:28px">
       </div>
 
-      <!-- Prompt Cards grouped by stage -->
       <div id="promptList">
         <div style="color:#94a3b8;text-align:center;padding:40px">加载中...</div>
       </div>
@@ -1100,6 +1103,7 @@ tbody tr:hover{background:#f8fafc}
               <div id="modalStageTag" style="display:inline-block;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:600;margin-bottom:6px"></div>
               <div id="modalKey" style="font-size:15px;font-weight:700;color:#1e293b;font-family:monospace"></div>
               <div id="modalDesc" style="font-size:12px;color:#64748b;margin-top:2px"></div>
+              <div id="modalEditorMode" style="font-size:11px;color:#94a3b8;margin-top:6px"></div>
             </div>
             <button onclick="closePromptModal()" style="background:none;border:none;font-size:20px;color:#94a3b8;cursor:pointer;line-height:1;padding:0 0 0 12px">✕</button>
           </div>
@@ -1112,7 +1116,7 @@ tbody tr:hover{background:#f8fafc}
             <div id="modalVarsHint" style="margin-top:8px;font-size:11px;color:#94a3b8"></div>
           </div>
           <div style="padding:16px 24px;border-top:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between">
-            <button onclick="resetModalToDefault()" style="background:none;border:1px solid #e5e7eb;border-radius:7px;padding:7px 14px;font-size:13px;color:#64748b;cursor:pointer">↺ 重置为默认</button>
+            <button id="modalResetBtn" onclick="resetModalToDefault()" style="background:none;border:1px solid #e5e7eb;border-radius:7px;padding:7px 14px;font-size:13px;color:#64748b;cursor:pointer">↺ 重置为默认</button>
             <div style="display:flex;gap:10px">
               <button onclick="closePromptModal()" style="background:#f1f5f9;border:none;border-radius:7px;padding:8px 18px;font-size:13px;color:#475569;cursor:pointer">取消</button>
               <button id="modalSaveBtn" onclick="saveModalConfig()" style="background:#2563eb;border:none;border-radius:7px;padding:8px 20px;font-size:13px;color:#fff;cursor:pointer;font-weight:500">保存</button>
@@ -3361,9 +3365,8 @@ function renderLogs(d) {
 }
 
 // ===================== System Config (Prompts) =====================
-let configList = [];
-let modalCurrentKey = null;
-let defaultPrompts = {};
+let promptPipeline = { steps: [], extras: [], summary: null };
+let modalCurrent = null;
 
 const PIPELINE_STAGES = [
   {
@@ -3563,7 +3566,7 @@ function updateModalCharCount() {
   document.getElementById('modalCharCount').textContent = `${ta.value.length} 字符`;
 }
 
-async function resetModalToDefault() {
+async function legacyResetModalToDefault() {
   if (!modalCurrentKey) return;
   if (!confirm('将重置为内置默认值（需服务器初始化支持），确认？')) return;
   await api('/configs/init-prompts', { method: 'POST' });
@@ -3618,6 +3621,557 @@ async function initPrompts() {
     loadConfigs();
   } catch(e) {
     toast('初始化失败: ' + e.message, 'error');
+  }
+}
+
+function promptSections() {
+  const steps = Array.isArray(promptPipeline.steps)
+    ? promptPipeline.steps.map((section) => ({ ...section, isExtra: false }))
+    : [];
+  const extras = Array.isArray(promptPipeline.extras)
+    ? promptPipeline.extras.map((section) => ({ ...section, isExtra: true }))
+    : [];
+  return steps.concat(extras);
+}
+
+function findPromptItemByKey(key) {
+  for (const section of promptSections()) {
+    const prompts = Array.isArray(section.prompts) ? section.prompts : [];
+    const item = prompts.find((entry) => entry && entry.configKey === key);
+    if (item) {
+      return { section, item };
+    }
+  }
+  return null;
+}
+
+function findBundleSupportItem(kind, id, version) {
+  for (const section of Array.isArray(promptPipeline.steps) ? promptPipeline.steps : []) {
+    const support = Array.isArray(section.support) ? section.support : [];
+    for (const block of support) {
+      if (!block || block.kind !== kind || !Array.isArray(block.items)) continue;
+      const item = block.items.find((entry) => entry && entry.id === id && Number(entry.version) === Number(version));
+      if (item) {
+        return { section, block, item };
+      }
+    }
+  }
+  return null;
+}
+
+function findRuntimeProfileItem(id) {
+  for (const section of Array.isArray(promptPipeline.steps) ? promptPipeline.steps : []) {
+    const support = Array.isArray(section.support) ? section.support : [];
+    for (const block of support) {
+      if (!block || block.kind !== 'runtime_profiles' || !Array.isArray(block.items)) continue;
+      const item = block.items.find((entry) => entry && entry.id === id);
+      if (item) {
+        return { section, block, item };
+      }
+    }
+  }
+  return null;
+}
+
+function promptPreviewText(value, limit = 160) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > limit ? `${text.slice(0, limit)}...` : text;
+}
+
+function renderPromptVariableChips(variables, section) {
+  const list = Array.isArray(variables) ? variables.filter(Boolean) : [];
+  if (!list.length) return '';
+  return list.map((variable) => `
+    <code style="font-size:10px;color:${section.color};background:${section.bg};border:1px solid ${section.border};padding:1px 6px;border-radius:4px">${escHtml(variable)}</code>
+  `).join('');
+}
+
+function renderSourcePill(item, section) {
+  const source = String(item?.source || 'db').toLowerCase() === 'catalog' ? 'Catalog' : 'DB';
+  const isDefault = item?.isDefault
+    ? '<span style="font-size:10px;color:#475569;background:#f8fafc;border:1px solid #cbd5e1;padding:1px 6px;border-radius:999px">Default</span>'
+    : '';
+  return `
+    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+      <span style="font-size:10px;color:${section.color};background:${section.bg};border:1px solid ${section.border};padding:1px 6px;border-radius:999px">${source}</span>
+      ${isDefault}
+    </div>
+  `;
+}
+
+function renderPromptCard(item, section) {
+  const preview = promptPreviewText(item.configValue);
+  const note = item.note ? `<div style="font-size:11px;color:#94a3b8;margin-top:6px">${escHtml(item.note)}</div>` : '';
+  return `
+    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;border-left:3px solid ${section.color}">
+      <div style="padding:14px 18px">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
+          <div style="flex:1;min-width:0">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <strong style="font-size:13px;color:#1e293b">${escHtml(item.displayName || item.shortKey || item.configKey)}</strong>
+              <code style="font-size:11px;color:#475569;background:#f8fafc;border:1px solid #e2e8f0;padding:2px 8px;border-radius:5px">${escHtml(item.shortKey || item.configKey)}</code>
+              ${renderPromptVariableChips(item.variables, section)}
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:6px">
+              ${renderSourcePill(item, section)}
+              ${item.updatedAt ? `<span style="font-size:11px;color:#94a3b8">Updated ${escHtml(new Date(item.updatedAt).toLocaleString())}</span>` : ''}
+            </div>
+            <div style="font-size:12px;color:#64748b;margin-top:8px">${escHtml(item.description || '')}</div>
+            ${note}
+            <div style="font-size:12px;color:#94a3b8;margin-top:8px;line-height:1.6;font-family:monospace">${escHtml(preview || '(empty)')}</div>
+          </div>
+          <button onclick="openPromptModal('${escAttr(item.configKey)}')" style="flex-shrink:0;padding:6px 14px;background:${section.bg};border:1.5px solid ${section.border};border-radius:7px;font-size:12px;font-weight:600;color:${section.color};cursor:pointer;white-space:nowrap">Edit</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderRuntimeProfileCard(item, section) {
+  const summary = item.contractSummary || {};
+  const states = Array.isArray(summary.requiredStates) ? summary.requiredStates.join(', ') : '';
+  const modes = Array.isArray(summary.inputModes) ? summary.inputModes.join(', ') : '';
+  const gestures = Array.isArray(summary.gestures) ? summary.gestures.join(', ') : '';
+  return `
+    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:14px 18px">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <strong style="font-size:13px;color:#1e293b">${escHtml(item.displayName || item.id)}</strong>
+            <code style="font-size:11px;color:#475569;background:#f8fafc;border:1px solid #e2e8f0;padding:2px 8px;border-radius:5px">${escHtml(item.id)}</code>
+            <span style="font-size:10px;color:${item.enabled ? '#065f46' : '#92400e'};background:${item.enabled ? '#ecfdf5' : '#fffbeb'};border:1px solid ${item.enabled ? '#a7f3d0' : '#fde68a'};padding:1px 6px;border-radius:999px">${item.enabled ? 'Enabled' : 'Disabled'}</span>
+            ${renderSourcePill(item, section)}
+          </div>
+          <div style="font-size:12px;color:#64748b;margin-top:8px">Skeleton: ${escHtml(item.skeletonVersion || 'v1')}</div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;font-size:11px;color:#64748b">
+            ${states ? `<span>States: ${escHtml(states)}</span>` : ''}
+            ${modes ? `<span>Inputs: ${escHtml(modes)}</span>` : ''}
+            ${gestures ? `<span>Gestures: ${escHtml(gestures)}</span>` : ''}
+          </div>
+          <div style="font-size:12px;color:#94a3b8;margin-top:8px;line-height:1.6;font-family:monospace">${escHtml(promptPreviewText(item.fewShotPrompt || '(empty)'))}</div>
+        </div>
+        <button onclick="openRuntimeProfileModal('${escAttr(item.id)}')" style="flex-shrink:0;padding:6px 14px;background:${section.bg};border:1.5px solid ${section.border};border-radius:7px;font-size:12px;font-weight:600;color:${section.color};cursor:pointer;white-space:nowrap">Edit</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderPromptBundlePolicyCard(item, section) {
+  return `
+    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:14px 18px">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <strong style="font-size:13px;color:#1e293b">${escHtml(item.id)}</strong>
+            <code style="font-size:11px;color:#475569;background:#f8fafc;border:1px solid #e2e8f0;padding:2px 8px;border-radius:5px">v${escHtml(String(item.version))}</code>
+            <span style="font-size:10px;color:${String(item.status).toLowerCase() === 'active' ? '#065f46' : '#92400e'};background:${String(item.status).toLowerCase() === 'active' ? '#ecfdf5' : '#fffbeb'};border:1px solid ${String(item.status).toLowerCase() === 'active' ? '#a7f3d0' : '#fde68a'};padding:1px 6px;border-radius:999px">${escHtml(item.status || 'draft')}</span>
+            ${renderSourcePill(item, section)}
+          </div>
+          <div style="font-size:12px;color:#64748b;margin-top:8px">Product policy</div>
+          <div style="font-size:12px;color:#94a3b8;margin-top:4px;line-height:1.6;font-family:monospace">${escHtml(promptPreviewText(item.productPolicy || '(empty)'))}</div>
+          <div style="font-size:12px;color:#64748b;margin-top:8px">Locked contract override</div>
+          <div style="font-size:12px;color:#94a3b8;margin-top:4px;line-height:1.6;font-family:monospace">${escHtml(promptPreviewText(item.lockedContractOverride || '(empty)'))}</div>
+        </div>
+        <button onclick="openBundlePolicyModal('${escAttr(item.id)}', ${Number(item.version)})" style="flex-shrink:0;padding:6px 14px;background:${section.bg};border:1.5px solid ${section.border};border-radius:7px;font-size:12px;font-weight:600;color:${section.color};cursor:pointer;white-space:nowrap">Edit</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderPromptBundleRepairCard(item, section) {
+  return `
+    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:14px 18px">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <strong style="font-size:13px;color:#1e293b">${escHtml(item.id)}</strong>
+            <code style="font-size:11px;color:#475569;background:#f8fafc;border:1px solid #e2e8f0;padding:2px 8px;border-radius:5px">v${escHtml(String(item.version))}</code>
+            <span style="font-size:10px;color:${String(item.status).toLowerCase() === 'active' ? '#065f46' : '#92400e'};background:${String(item.status).toLowerCase() === 'active' ? '#ecfdf5' : '#fffbeb'};border:1px solid ${String(item.status).toLowerCase() === 'active' ? '#a7f3d0' : '#fde68a'};padding:1px 6px;border-radius:999px">${escHtml(item.status || 'draft')}</span>
+            ${renderSourcePill(item, section)}
+          </div>
+          <div style="font-size:12px;color:#64748b;margin-top:8px">Repair playbook</div>
+          <div style="font-size:12px;color:#94a3b8;margin-top:4px;line-height:1.6;font-family:monospace">${escHtml(promptPreviewText(item.repairPlaybook || '(empty)'))}</div>
+        </div>
+        <button onclick="openBundleRepairModal('${escAttr(item.id)}', ${Number(item.version)})" style="flex-shrink:0;padding:6px 14px;background:${section.bg};border:1.5px solid ${section.border};border-radius:7px;font-size:12px;font-weight:600;color:${section.color};cursor:pointer;white-space:nowrap">Edit</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderSupportBlock(block, section) {
+  const description = block?.description ? `<div style="font-size:12px;color:#64748b;margin-top:4px">${escHtml(block.description)}</div>` : '';
+  let content = '';
+  if (block.kind === 'runtime_profiles') {
+    content = Array.isArray(block.items) && block.items.length
+      ? block.items.map((item) => renderRuntimeProfileCard(item, section)).join('')
+      : '<div style="color:#94a3b8;background:#fff;border:1px dashed #e5e7eb;border-radius:12px;padding:18px;text-align:center">No runtime profiles</div>';
+  } else if (block.kind === 'prompt_bundle_policy') {
+    content = Array.isArray(block.items) && block.items.length
+      ? block.items.map((item) => renderPromptBundlePolicyCard(item, section)).join('')
+      : '<div style="color:#94a3b8;background:#fff;border:1px dashed #e5e7eb;border-radius:12px;padding:18px;text-align:center">No prompt bundles</div>';
+  } else if (block.kind === 'prompt_bundle_repair') {
+    content = Array.isArray(block.items) && block.items.length
+      ? block.items.map((item) => renderPromptBundleRepairCard(item, section)).join('')
+      : '<div style="color:#94a3b8;background:#fff;border:1px dashed #e5e7eb;border-radius:12px;padding:18px;text-align:center">No repair bundles</div>';
+  } else {
+    content = `<div style="background:#fff;border:1px dashed ${section.border};border-radius:12px;padding:18px;font-size:12px;color:#64748b">${escHtml(block.description || 'This stage is deterministic and does not have an independent prompt layer.')}</div>`;
+  }
+  return `
+    <div style="display:grid;gap:12px;margin-top:14px">
+      <div>
+        <div style="font-size:13px;font-weight:700;color:#1e293b">${escHtml(block.title || 'Support')}</div>
+        ${description}
+      </div>
+      <div style="display:grid;gap:12px">${content}</div>
+    </div>
+  `;
+}
+
+function renderPipelineSummary() {
+  const wrap = document.getElementById('promptPipelineSummary');
+  const summary = promptPipeline.summary || {};
+  const cards = [
+    { label: 'Prompt Configs', value: summary.promptConfigCount || 0, color: '#7c3aed', bg: '#f5f3ff', border: '#ddd6fe' },
+    { label: 'Prompt Bundles', value: summary.promptBundleCount || 0, color: '#2563eb', bg: '#eff6ff', border: '#bfdbfe' },
+    { label: 'Active Bundles', value: summary.activePromptBundleCount || 0, color: '#0f766e', bg: '#ecfeff', border: '#99f6e4' },
+    { label: 'Runtime Profiles', value: summary.runtimeProfileCount || 0, color: '#d97706', bg: '#fffbeb', border: '#fde68a' },
+    { label: 'Enabled Profiles', value: summary.enabledRuntimeProfileCount || 0, color: '#e11d48', bg: '#fff1f2', border: '#fecdd3' },
+  ];
+  wrap.innerHTML = cards.map((card) => `
+    <div style="min-width:150px;background:${card.bg};border:1px solid ${card.border};border-radius:12px;padding:12px 14px">
+      <div style="font-size:11px;font-weight:700;letter-spacing:.04em;color:${card.color};text-transform:uppercase">${card.label}</div>
+      <div style="font-size:24px;font-weight:700;color:#1e293b;margin-top:6px">${escHtml(String(card.value))}</div>
+    </div>
+  `).join('');
+}
+
+async function loadConfigs() {
+  const nav = document.getElementById('pipelineNav');
+  const list = document.getElementById('promptList');
+  nav.innerHTML = '<div style="color:#94a3b8;text-align:center;width:100%">Loading...</div>';
+  list.innerHTML = '<div style="color:#94a3b8;padding:40px;text-align:center;background:#fff;border-radius:12px;border:1px dashed #e5e7eb">Loading prompt pipeline...</div>';
+  try {
+    promptPipeline = await api('/prompt-pipeline');
+    renderPipelineSummary();
+    renderPipelineNav();
+    renderConfigs();
+  } catch (e) {
+    console.error('Load prompt pipeline error:', e);
+    nav.innerHTML = '<div style="color:#dc2626;text-align:center;width:100%">Load failed</div>';
+    list.innerHTML = `<div style="color:#dc2626;padding:40px;text-align:center;background:#fff;border-radius:12px;border:1px dashed #fecaca">Load failed: ${escHtml(e.message)}</div>`;
+  }
+}
+
+function renderPipelineNav() {
+  const nav = document.getElementById('pipelineNav');
+  const steps = Array.isArray(promptPipeline.steps) ? promptPipeline.steps : [];
+  if (!steps.length) {
+    nav.innerHTML = '<div style="color:#94a3b8;text-align:center;width:100%">No pipeline metadata</div>';
+    return;
+  }
+  nav.innerHTML = steps.map((stage, index) => `
+    <div style="display:flex;align-items:center;flex:1;min-width:0">
+      <div onclick="scrollToStage('${escAttr(stage.id)}')" style="flex:1;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:6px;padding:14px 10px;border-radius:12px;border:1.5px solid ${stage.border};background:${stage.bg};transition:box-shadow .15s,transform .15s" onmouseover="this.style.boxShadow='0 6px 20px rgba(0,0,0,.1)';this.style.transform='translateY(-2px)'" onmouseout="this.style.boxShadow='none';this.style.transform='none'">
+        <div style="font-size:11px;font-weight:700;color:${stage.color};letter-spacing:.03em">${escHtml(stage.tag || `Step ${index + 1}`)}</div>
+        <div style="font-size:13px;font-weight:700;color:#1e293b;text-align:center">${escHtml(stage.title || stage.id)}</div>
+        <div style="font-size:11px;color:#94a3b8">${escHtml(String((Array.isArray(stage.prompts) ? stage.prompts.length : 0) + (Array.isArray(stage.support) ? stage.support.length : 0)))} items</div>
+      </div>
+      ${index < steps.length - 1 ? `
+        <div style="display:flex;align-items:center;padding:0 6px;flex-shrink:0">
+          <div style="width:32px;height:2px;background:linear-gradient(90deg,${stage.color}88,${steps[index + 1].color}88);border-radius:1px"></div>
+          <div style="font-size:14px;color:#cbd5e1;margin-left:-2px">></div>
+        </div>` : ''}
+    </div>
+  `).join('');
+}
+
+function scrollToStage(id) {
+  const el = document.getElementById('stage-' + id);
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function renderSection(section, isExtra = false) {
+  const prompts = Array.isArray(section.prompts) ? section.prompts : [];
+  const support = Array.isArray(section.support) ? section.support : [];
+  const items = [];
+
+  if (prompts.length) {
+    items.push(`<div style="display:grid;gap:12px">${prompts.map((item) => renderPromptCard(item, section)).join('')}</div>`);
+  }
+  if (support.length) {
+    items.push(support.map((block) => renderSupportBlock(block, section)).join(''));
+  }
+  if (!items.length) {
+    items.push('<div style="color:#94a3b8;background:#fff;border:1px dashed #e5e7eb;border-radius:12px;padding:18px;text-align:center">No editable prompt assets in this section</div>');
+  }
+
+  return `
+    <div id="stage-${escAttr(section.id)}" style="margin-bottom:28px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+        <div style="width:3px;height:36px;background:${section.color};border-radius:2px;flex-shrink:0"></div>
+        <div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="font-size:15px;font-weight:700;color:#1e293b">${escHtml(section.title || section.id)}</span>
+            <span style="font-size:11px;font-weight:600;color:${section.color};background:${section.bg};border:1px solid ${section.border};padding:1px 8px;border-radius:20px">${escHtml(section.tag || (isExtra ? 'Extra' : 'Step'))}</span>
+          </div>
+          <div style="font-size:12px;color:#64748b;margin-top:4px">${escHtml(section.description || '')}</div>
+        </div>
+      </div>
+      <div style="display:grid;gap:12px;padding-left:18px">${items.join('')}</div>
+    </div>
+  `;
+}
+
+function renderConfigs() {
+  const el = document.getElementById('promptList');
+  const steps = Array.isArray(promptPipeline.steps) ? promptPipeline.steps : [];
+  const extras = Array.isArray(promptPipeline.extras) ? promptPipeline.extras : [];
+  if (!steps.length && !extras.length) {
+    el.innerHTML = '<div style="color:#94a3b8;padding:40px;text-align:center;background:#fff;border-radius:12px;border:1px dashed #e5e7eb">No prompt pipeline data</div>';
+    return;
+  }
+
+  const stepHtml = steps.map((section) => renderSection(section, false)).join('');
+  const extraHtml = extras.length
+    ? `
+      <div style="margin:24px 0 16px;padding-top:20px;border-top:1px solid #e5e7eb">
+        <div style="font-size:14px;font-weight:700;color:#1e293b;margin-bottom:12px">Extras</div>
+        ${extras.map((section) => renderSection(section, true)).join('')}
+      </div>
+    `
+    : '';
+
+  el.innerHTML = stepHtml + extraHtml;
+}
+
+function openPromptModal(key) {
+  const found = findPromptItemByKey(key);
+  if (!found) return;
+  setPromptModalState({
+    mode: 'prompt',
+    key,
+    section: found.section,
+    title: found.item.displayName || found.item.shortKey || found.item.configKey,
+    description: found.item.description || '',
+    value: String(found.item.configValue || ''),
+    resetValue: found.item.defaultValue !== undefined ? String(found.item.defaultValue || '') : String(found.item.configValue || ''),
+    resetLabel: found.item.defaultValue !== undefined ? 'Reset to catalog default' : 'Reset to current value',
+    editorMode: 'Plain text prompt',
+    varsHint: Array.isArray(found.item.variables) && found.item.variables.length
+      ? `Variables: ${found.item.variables.map((variable) => `<code style="background:#f1f5f9;padding:1px 5px;border-radius:3px;color:#475569">${escHtml(variable)}</code>`).join(' ')}`
+      : '',
+    saveLabel: 'Save prompt',
+  });
+}
+
+function openBundlePolicyModal(id, version) {
+  const found = findBundleSupportItem('prompt_bundle_policy', id, version);
+  if (!found) return;
+  setPromptModalState({
+    mode: 'bundle_policy',
+    id,
+    version,
+    section: found.section,
+    title: `${found.item.id} v${found.item.version}`,
+    description: 'Edit live prompt bundle policy payload.',
+    value: JSON.stringify({
+      status: found.item.status,
+      productPolicy: found.item.productPolicy,
+      lockedContractOverride: found.item.lockedContractOverride,
+      profileOverrides: found.item.profileOverrides,
+      metadata: found.item.metadata,
+    }, null, 2),
+    resetLabel: 'Reset to current payload',
+    editorMode: 'JSON payload',
+    varsHint: 'Allowed fields: status, productPolicy, lockedContractOverride, profileOverrides, metadata',
+    saveLabel: 'Save policy',
+  });
+}
+
+function openBundleRepairModal(id, version) {
+  const found = findBundleSupportItem('prompt_bundle_repair', id, version);
+  if (!found) return;
+  setPromptModalState({
+    mode: 'bundle_repair',
+    id,
+    version,
+    section: found.section,
+    title: `${found.item.id} v${found.item.version}`,
+    description: 'Edit live repair playbook payload.',
+    value: JSON.stringify({
+      status: found.item.status,
+      repairPlaybook: found.item.repairPlaybook,
+      metadata: found.item.metadata,
+    }, null, 2),
+    resetLabel: 'Reset to current payload',
+    editorMode: 'JSON payload',
+    varsHint: 'Allowed fields: status, repairPlaybook, metadata',
+    saveLabel: 'Save repair',
+  });
+}
+
+function openRuntimeProfileModal(id) {
+  const found = findRuntimeProfileItem(id);
+  if (!found) return;
+  setPromptModalState({
+    mode: 'runtime_profile',
+    id,
+    section: found.section,
+    title: found.item.displayName || found.item.id,
+    description: 'Edit runtime profile catalog payload.',
+    value: JSON.stringify({
+      displayName: found.item.displayName,
+      enabled: found.item.enabled,
+      skeletonVersion: found.item.skeletonVersion,
+      fewShotPrompt: found.item.fewShotPrompt,
+      metadata: found.item.metadata,
+    }, null, 2),
+    resetLabel: 'Reset to current payload',
+    editorMode: 'JSON payload',
+    varsHint: 'Allowed fields: displayName, enabled, skeletonVersion, fewShotPrompt, metadata',
+    saveLabel: 'Save profile',
+  });
+}
+
+function setPromptModalState(state) {
+  modalCurrent = {
+    ...state,
+    resetValue: state.resetValue !== undefined ? String(state.resetValue) : String(state.value || ''),
+  };
+  const section = state.section || { bg: '#f1f5f9', color: '#64748b', border: '#e5e7eb', tag: 'Prompt' };
+  document.getElementById('modalStageTag').textContent = `${section.tag || 'Prompt'} / ${section.title || section.id || ''}`;
+  document.getElementById('modalStageTag').style.background = section.bg || '#f1f5f9';
+  document.getElementById('modalStageTag').style.color = section.color || '#64748b';
+  document.getElementById('modalStageTag').style.border = `1px solid ${section.border || '#e5e7eb'}`;
+  document.getElementById('modalKey').textContent = state.title || '';
+  document.getElementById('modalDesc').textContent = state.description || '';
+  document.getElementById('modalEditorMode').textContent = state.editorMode || '';
+  document.getElementById('modalTextarea').value = state.value || '';
+  document.getElementById('modalVarsHint').innerHTML = state.varsHint || '';
+  document.getElementById('modalResetBtn').textContent = state.resetLabel || 'Reset';
+  document.getElementById('modalSaveBtn').textContent = state.saveLabel || 'Save';
+  updateModalCharCount();
+  const modal = document.getElementById('promptModal');
+  modal.style.display = 'flex';
+  setTimeout(() => document.getElementById('modalTextarea').focus(), 50);
+}
+
+function closePromptModal() {
+  document.getElementById('promptModal').style.display = 'none';
+  modalCurrent = null;
+}
+
+function updateModalCharCount() {
+  const ta = document.getElementById('modalTextarea');
+  document.getElementById('modalCharCount').textContent = `${ta.value.length} chars`;
+}
+
+function handlePromptRefreshToast(refreshResult, successMessage) {
+  if (!refreshResult) {
+    toast(successMessage);
+    return;
+  }
+  if (refreshResult.partialFailure) {
+    toast(`${successMessage}; refreshed ${refreshResult.refreshed}, failed ${refreshResult.failed}`, 'warning');
+    return;
+  }
+  toast(`${successMessage}; refreshed ${refreshResult.refreshed}`, 'success');
+}
+
+function resetModalToDefault() {
+  if (!modalCurrent) return;
+  document.getElementById('modalTextarea').value = modalCurrent.resetValue || '';
+  updateModalCharCount();
+}
+
+async function saveModalConfig() {
+  if (!modalCurrent) return;
+  const textarea = document.getElementById('modalTextarea');
+  const value = textarea.value;
+  const btn = document.getElementById('modalSaveBtn');
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+  try {
+    let result;
+    if (modalCurrent.mode === 'prompt') {
+      result = await api('/configs/' + encodeURIComponent(modalCurrent.key), {
+        method: 'PUT',
+        body: { value },
+      });
+      handlePromptRefreshToast(result?.refreshResult, 'Prompt saved');
+    } else if (modalCurrent.mode === 'bundle_policy') {
+      const payload = value.trim() ? JSON.parse(value) : {};
+      result = await api(`/prompt-bundles/${encodeURIComponent(modalCurrent.id)}/${encodeURIComponent(modalCurrent.version)}`, {
+        method: 'PUT',
+        body: {
+          section: 'policy',
+          payload,
+        },
+      });
+      handlePromptRefreshToast(result?.refreshResult, 'Bundle policy saved');
+    } else if (modalCurrent.mode === 'bundle_repair') {
+      const payload = value.trim() ? JSON.parse(value) : {};
+      result = await api(`/prompt-bundles/${encodeURIComponent(modalCurrent.id)}/${encodeURIComponent(modalCurrent.version)}`, {
+        method: 'PUT',
+        body: {
+          section: 'repair',
+          payload,
+        },
+      });
+      handlePromptRefreshToast(result?.refreshResult, 'Repair playbook saved');
+    } else if (modalCurrent.mode === 'runtime_profile') {
+      const payload = value.trim() ? JSON.parse(value) : {};
+      result = await api(`/runtime-profiles/${encodeURIComponent(modalCurrent.id)}`, {
+        method: 'PUT',
+        body: { payload },
+      });
+      handlePromptRefreshToast(result?.refreshResult, 'Runtime profile saved');
+    }
+    await loadConfigs();
+    closePromptModal();
+  } catch (e) {
+    toast('Save failed: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+}
+
+async function saveConfig(key) {
+  const textarea = document.getElementById('cfg-' + key);
+  if (!textarea) {
+    openPromptModal(key);
+    return;
+  }
+  try {
+    const result = await api('/configs/' + encodeURIComponent(key), { method: 'PUT', body: { value: textarea.value } });
+    handlePromptRefreshToast(result?.refreshResult, 'Prompt saved');
+    await loadConfigs();
+  } catch (e) {
+    toast('Save failed: ' + e.message, 'error');
+  }
+}
+
+async function refreshPromptPipeline() {
+  try {
+    const result = await api('/configs/refresh-prompts', { method: 'POST' });
+    handlePromptRefreshToast(result, 'Prompt cache refreshed');
+    await loadConfigs();
+  } catch (e) {
+    toast('Refresh failed: ' + e.message, 'error');
+  }
+}
+
+async function initPrompts() {
+  if (!confirm('Initialize missing default prompt configs and refresh AI prompt caches?')) return;
+  try {
+    const result = await api('/configs/init-prompts', { method: 'POST' });
+    handlePromptRefreshToast(result?.refreshResult, `Initialized ${result.created} prompt configs`);
+    await loadConfigs();
+  } catch (e) {
+    toast('Initialize failed: ' + e.message, 'error');
   }
 }
 

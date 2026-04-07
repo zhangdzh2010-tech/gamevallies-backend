@@ -907,32 +907,6 @@ def _resolve_cover_copy(
         "subtitle": subtitle,
     }
 
-
-def _split_cover_title_lines(title: str, *, max_lines: int = 3) -> list[str]:
-    normalized = re.sub(r"\s+", " ", str(title or "").strip())
-    if not normalized:
-        return ["Playable Build"]
-
-    if " " in normalized:
-        words = normalized.split(" ")
-        target = max(6, min(14, max(len(normalized) // max_lines, 8)))
-        lines: list[str] = []
-        current = ""
-        for word in words:
-            tentative = f"{current} {word}".strip()
-            if current and len(tentative) > target and len(lines) < max_lines - 1:
-                lines.append(current)
-                current = word
-            else:
-                current = tentative
-        if current:
-            lines.append(current)
-        return lines[:max_lines]
-
-    chunk = 6 if len(normalized) > 12 else 8
-    return [normalized[index:index + chunk] for index in range(0, len(normalized), chunk)][:max_lines]
-
-
 def _resolve_fallback_cover_variant(
     *,
     title: str,

@@ -106,6 +106,16 @@ describe('AdminService', () => {
         upsert: jest.fn(),
         delete: jest.fn(),
       },
+      promptBundle: {
+        findMany: jest.fn(),
+        findFirst: jest.fn(),
+        updateMany: jest.fn(),
+      },
+      runtimeProfileCatalog: {
+        findMany: jest.fn(),
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
     };
     prisma.$transaction.mockImplementation(async (callback: (tx: any) => any) => callback(prisma));
     configService = {
@@ -278,6 +288,157 @@ describe('AdminService', () => {
         process.env.ADMIN_TOKEN = originalAdminToken;
       }
     }
+  });
+
+  it('lists prompt configs by merging catalog defaults with db values', async () => {
+    prisma.systemConfig.findMany.mockResolvedValue([
+      {
+        id: 'cfg-prompt-1',
+        configKey: 'prompt.dialogue_system',
+        configValue: 'custom dialogue prompt',
+        description: 'custom prompt',
+        category: 'prompt',
+        createdAt: new Date('2026-04-07T00:00:00.000Z'),
+        updatedAt: new Date('2026-04-07T00:05:00.000Z'),
+      },
+    ]);
+
+    const result = await service.listConfigs('prompt');
+
+    expect(result).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        configKey: 'prompt.dialogue_system',
+        configValue: 'custom dialogue prompt',
+        source: 'db',
+        isDefault: false,
+        displayName: '对话骨架',
+      }),
+      expect.objectContaining({
+        configKey: 'prompt.dialogue_reply_system',
+        source: 'catalog',
+        isDefault: true,
+      }),
+    ]));
+  });
+
+  it('upserts prompt configs and refreshes prompt caches', async () => {
+    prisma.systemConfig.upsert.mockResolvedValue({
+      id: 'cfg-prompt-2',
+      configKey: 'prompt.dialogue_reply_system',
+      configValue: 'new reply system prompt',
+      description: 'Prompt description',
+      category: 'prompt',
+    });
+    const refreshSpy = jest
+      .spyOn(service, 'refreshPromptConfigs')
+      .mockResolvedValue({ refreshed: 2, failed: 0, partialFailure: false } as any);
+
+    const result = await service.upsertConfig('prompt.dialogue_reply_system', {
+      value: 'new reply system prompt',
+    });
+
+    expect(prisma.systemConfig.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { configKey: 'prompt.dialogue_reply_system' },
+      update: expect.objectContaining({
+        configValue: 'new reply system prompt',
+        category: 'prompt',
+      }),
+      create: expect.objectContaining({
+        configKey: 'prompt.dialogue_reply_system',
+        category: 'prompt',
+      }),
+    }));
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
+    expect(result).toEqual(expect.objectContaining({
+      configKey: 'prompt.dialogue_reply_system',
+      refreshResult: expect.objectContaining({
+        refreshed: 2,
+        failed: 0,
+        partialFailure: false,
+      }),
+    }));
+
+    refreshSpy.mockRestore();
+  });
+
+  it('builds prompt pipeline payload with five core steps and live bundle/runtime sections', async () => {
+    prisma.systemConfig.findMany.mockResolvedValue([
+      {
+        id: 'cfg-prompt-1',
+        configKey: 'prompt.dialogue_system',
+        configValue: 'custom dialogue prompt',
+        description: 'custom prompt',
+        category: 'prompt',
+        createdAt: new Date('2026-04-07T00:00:00.000Z'),
+        updatedAt: new Date('2026-04-07T00:05:00.000Z'),
+      },
+    ]);
+    prisma.promptBundle.findMany.mockResolvedValue([
+      {
+        id: 'runtime-v1',
+        version: 1,
+        status: 'active',
+        productPolicy: 'bundle product policy',
+        lockedContractOverride: 'bundle lock',
+        repairPlaybook: 'bundle repair',
+        profileOverrides: { logic_generate: { state_flow: 'boot -> ready -> playing -> game_over' } },
+        metadata: { family: 'runtime-rearchitecture' },
+        updatedAt: new Date('2026-04-07T00:10:00.000Z'),
+      },
+    ]);
+    prisma.runtimeProfileCatalog.findMany.mockResolvedValue([
+      {
+        id: 'casual_arcade',
+        displayName: 'Casual Arcade',
+        enabled: true,
+        skeletonVersion: 'v1',
+        fewShotPrompt: 'few shot prompt',
+        contractSchema: {
+          runtimeProfile: 'casual_arcade',
+          inputContract: { requiredModes: ['pointer', 'touch'], gestures: ['tap'] },
+          stateContract: { requiredStates: ['boot', 'ready', 'playing', 'game_over'] },
+          safetyContract: { forbiddenApis: ['fetch', 'eval'] },
+          mobileLayoutContract: { orientation: 'portrait_first', uiScaleMode: 'short_edge' },
+        },
+        metadata: { default: true },
+        updatedAt: new Date('2026-04-07T00:12:00.000Z'),
+      },
+    ]);
+
+    const result = await service.getPromptPipeline();
+
+    expect(result.summary).toEqual(expect.objectContaining({
+      promptBundleCount: expect.any(Number),
+      runtimeProfileCount: expect.any(Number),
+    }));
+    expect(result.steps).toHaveLength(5);
+    expect(result.steps[0]).toEqual(expect.objectContaining({
+      stepNumber: 1,
+      title: '专家访谈与意图冻结',
+    }));
+    expect(result.steps[1].support[0]).toEqual(expect.objectContaining({
+      kind: 'runtime_profiles',
+      items: expect.arrayContaining([
+        expect.objectContaining({
+          id: 'casual_arcade',
+          fewShotPrompt: 'few shot prompt',
+        }),
+      ]),
+    }));
+    expect(result.steps[2].support[0]).toEqual(expect.objectContaining({
+      kind: 'prompt_bundle_policy',
+      items: expect.arrayContaining([
+        expect.objectContaining({
+          id: 'runtime-v1',
+          productPolicy: 'bundle product policy',
+        }),
+      ]),
+    }));
+    expect(result.extras).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'extra_iterate',
+      }),
+    ]));
   });
 
   it('returns dashboard subscription overview with a date range filter', async () => {

@@ -17,6 +17,9 @@ import * as bcrypt from 'bcryptjs';
 import axios from 'axios';
 import { GameService } from '../game/game.service';
 import promptCatalog from '../game/catalogs/prompt-catalog.json';
+import promptBundleCatalog from '../game/catalogs/prompt-bundle-catalog.json';
+import runtimeProfileCatalog from '../game/catalogs/runtime-profile-catalog.json';
+import promptPipelineCatalog from '../game/catalogs/prompt-pipeline-catalog.json';
 import { TIMEOUT_CONFIG_CATALOG, TIMEOUT_CONFIG_CATALOG_BY_KEY } from '../game/catalogs/timeout-catalog';
 import { normalizeGameType } from '../game/game-type-catalog';
 import { normalizeIntentBuildSnapshot } from '../game/intent-build.util';
@@ -59,6 +62,77 @@ interface DashboardDateRange {
   from: Date | null;
   to: Date | null;
 }
+
+interface PromptCatalogEntry {
+  key: string;
+  description?: string;
+  value?: string;
+}
+
+interface PromptBundleCatalogEntry {
+  id: string;
+  version: number;
+  status?: string;
+  productPolicy?: string;
+  lockedContractOverride?: string | null;
+  repairPlaybook?: string;
+  profileOverrides?: any;
+  metadata?: any;
+}
+
+interface RuntimeProfileCatalogEntry {
+  id: string;
+  displayName?: string;
+  enabled?: boolean;
+  skeletonVersion?: string;
+  contractSchema?: any;
+  fewShotPrompt?: string | null;
+  metadata?: any;
+}
+
+interface PromptPipelineSupportCatalog {
+  kind: string;
+  title: string;
+  description?: string;
+}
+
+interface PromptPipelineSectionCatalog {
+  id: string;
+  stepNumber?: number;
+  tag?: string;
+  title: string;
+  description?: string;
+  color?: string;
+  bg?: string;
+  border?: string;
+  promptKeys: string[];
+  support?: PromptPipelineSupportCatalog[];
+}
+
+interface PromptPipelineCatalog {
+  steps: PromptPipelineSectionCatalog[];
+  extras?: PromptPipelineSectionCatalog[];
+  itemMeta?: Record<string, { displayName?: string; variables?: string[]; note?: string }>;
+}
+
+const DEFAULT_PROMPT_CATALOG: PromptCatalogEntry[] = Array.isArray(promptCatalog)
+  ? (promptCatalog as PromptCatalogEntry[])
+  : [];
+const DEFAULT_PROMPT_BUNDLE_CATALOG: PromptBundleCatalogEntry[] = Array.isArray(promptBundleCatalog)
+  ? (promptBundleCatalog as PromptBundleCatalogEntry[])
+  : [];
+const DEFAULT_RUNTIME_PROFILE_CATALOG: RuntimeProfileCatalogEntry[] = Array.isArray(runtimeProfileCatalog)
+  ? (runtimeProfileCatalog as RuntimeProfileCatalogEntry[])
+  : [];
+const PROMPT_PIPELINE_CATALOG: PromptPipelineCatalog = (
+  promptPipelineCatalog
+  && typeof promptPipelineCatalog === 'object'
+  && !Array.isArray(promptPipelineCatalog)
+)
+  ? (promptPipelineCatalog as PromptPipelineCatalog)
+  : { steps: [], extras: [], itemMeta: {} };
+const PROMPT_PIPELINE_ITEM_META = PROMPT_PIPELINE_CATALOG.itemMeta || {};
+const PROMPT_CATALOG_BY_KEY = new Map(DEFAULT_PROMPT_CATALOG.map((entry) => [entry.key, entry]));
 
 @Injectable()
 export class AdminService {
@@ -4153,7 +4227,60 @@ export class AdminService {
 
   // ===================== System Config =====================
 
+  private promptItemMeta(key: string) {
+    return PROMPT_PIPELINE_ITEM_META[key] || {};
+  }
+
+  private promptDisplayName(key: string) {
+    const meta = this.promptItemMeta(key);
+    if (typeof meta.displayName === 'string' && meta.displayName.trim()) {
+      return meta.displayName.trim();
+    }
+    return key.replace(/^(prompt|bundle)\./, '');
+  }
+
+  private mergePromptConfigs(configs: any[]) {
+    const existingMap = new Map(configs.map((config) => [config.configKey, config]));
+    const merged = DEFAULT_PROMPT_CATALOG.map((entry) => {
+      const existing = existingMap.get(entry.key);
+      const meta = this.promptItemMeta(entry.key);
+      const variables = Array.isArray(meta.variables)
+        ? meta.variables.filter((value) => typeof value === 'string' && value.trim())
+        : [];
+      return {
+        id: existing?.id || `catalog:${entry.key}`,
+        configKey: entry.key,
+        configValue: existing?.configValue ?? entry.value ?? '',
+        description: existing?.description ?? entry.description ?? null,
+        category: 'prompt',
+        createdAt: existing?.createdAt ?? null,
+        updatedAt: existing?.updatedAt ?? null,
+        defaultValue: entry.value ?? '',
+        source: existing ? 'db' : 'catalog',
+        isDefault: !existing,
+        displayName: this.promptDisplayName(entry.key),
+        variables,
+      };
+    });
+
+    const extras = configs
+      .filter((config) => !PROMPT_CATALOG_BY_KEY.has(config.configKey))
+      .map((config) => ({
+        ...config,
+        defaultValue: null,
+        source: 'db',
+        isDefault: false,
+        displayName: this.promptDisplayName(config.configKey),
+        variables: [],
+      }));
+
+    return [...merged, ...extras];
+  }
+
   private mergeCatalogConfigs(category: string | undefined, configs: any[]) {
+    if (category === 'prompt') {
+      return this.mergePromptConfigs(configs);
+    }
     if (category !== 'timeout') {
       return configs;
     }
@@ -4239,6 +4366,24 @@ export class AdminService {
       where: { configKey: key },
     });
     if (!config) {
+      const promptEntry = PROMPT_CATALOG_BY_KEY.get(key);
+      if (promptEntry) {
+        const meta = this.promptItemMeta(key);
+        return {
+          id: `catalog:${key}`,
+          configKey: key,
+          configValue: promptEntry.value ?? '',
+          description: promptEntry.description ?? null,
+          category: 'prompt',
+          createdAt: null,
+          updatedAt: null,
+          defaultValue: promptEntry.value ?? '',
+          source: 'catalog',
+          isDefault: true,
+          displayName: this.promptDisplayName(key),
+          variables: Array.isArray(meta.variables) ? meta.variables : [],
+        };
+      }
       const timeoutCatalog = TIMEOUT_CONFIG_CATALOG_BY_KEY.get(key);
       if (timeoutCatalog) {
         return {
@@ -4265,8 +4410,9 @@ export class AdminService {
 
   async upsertConfig(key: string, data: { value: string; description?: string; category?: string }) {
     const timeoutCatalog = TIMEOUT_CONFIG_CATALOG_BY_KEY.get(key);
+    const promptCatalogEntry = PROMPT_CATALOG_BY_KEY.get(key);
     const category = data.category || (timeoutCatalog ? 'timeout' : 'prompt');
-    const description = data.description ?? timeoutCatalog?.description ?? null;
+    const description = data.description ?? timeoutCatalog?.description ?? promptCatalogEntry?.description ?? null;
     const config = await this.prisma.systemConfig.upsert({
       where: { configKey: key },
       update: {
@@ -4289,7 +4435,11 @@ export class AdminService {
         refreshResult,
       };
     }
-    return config;
+    const refreshResult = await this.refreshPromptConfigs();
+    return {
+      ...config,
+      refreshResult,
+    };
   }
 
   async initDefaultPrompts() {
@@ -4316,7 +4466,58 @@ export class AdminService {
       });
       created++;
     }
-    return { created, skipped, total: defaults.length };
+    const refreshResult = await this.refreshPromptConfigs();
+    return { created, skipped, total: defaults.length, refreshResult };
+  }
+
+  async refreshPromptConfigs() {
+    const urls = await this.getAiEngineAdminBaseUrls();
+    const adminToken = this.getAdminToken();
+    const requestTimeoutMs = await this.resolveTimeoutConfigValue(
+      'timeout.game_service.admin_refresh_timeout_ms',
+      { min: 1000 },
+    );
+    const settledResults = await Promise.allSettled(
+      urls.map(async (baseUrl) => {
+        const response = await axios.post(
+          `${baseUrl}/api/v1/ai/prompts/refresh`,
+          {},
+          {
+            headers: {
+              'x-admin-token': adminToken,
+            },
+            timeout: requestTimeoutMs,
+          },
+        );
+        return {
+          baseUrl,
+          data: response.data,
+        };
+      }),
+    );
+    const aiEngine = settledResults.map((result, index) => {
+      const baseUrl = urls[index];
+      if (result.status === 'fulfilled') {
+        return {
+          baseUrl,
+          status: 'ok',
+          data: result.value.data,
+        };
+      }
+      return {
+        baseUrl,
+        status: 'error',
+        errorMessage: result.reason?.message || String(result.reason || 'unknown error'),
+      };
+    });
+    const successCount = aiEngine.filter((item) => item.status === 'ok').length;
+    const failureCount = aiEngine.length - successCount;
+    return {
+      refreshed: successCount,
+      failed: failureCount,
+      partialFailure: failureCount > 0,
+      aiEngine,
+    };
   }
 
   async initDefaultTimeouts() {
@@ -4403,10 +4604,44 @@ export class AdminService {
     if (status) {
       where.status = status;
     }
-    return this.prisma.promptBundle.findMany({
+    const bundles = await this.prisma.promptBundle.findMany({
       where,
       orderBy: [{ id: 'asc' }, { version: 'desc' }],
     });
+    const existingMap = new Map(
+      bundles.map((bundle) => [`${bundle.id}::${bundle.version}`, bundle]),
+    );
+    const merged = DEFAULT_PROMPT_BUNDLE_CATALOG.map((entry) => {
+      const existing = existingMap.get(`${entry.id}::${entry.version}`);
+      return {
+        id: entry.id,
+        version: entry.version,
+        status: existing?.status ?? entry.status ?? 'draft',
+        productPolicy: existing?.productPolicy ?? entry.productPolicy ?? '',
+        lockedContractOverride: existing?.lockedContractOverride ?? entry.lockedContractOverride ?? null,
+        repairPlaybook: existing?.repairPlaybook ?? entry.repairPlaybook ?? '',
+        profileOverrides: existing?.profileOverrides ?? entry.profileOverrides ?? null,
+        metadata: existing?.metadata ?? entry.metadata ?? null,
+        createdAt: existing?.createdAt ?? null,
+        updatedAt: existing?.updatedAt ?? null,
+        source: existing ? 'db' : 'catalog',
+      };
+    });
+    const extras = bundles
+      .filter((bundle) => !DEFAULT_PROMPT_BUNDLE_CATALOG.some((entry) => entry.id === bundle.id && entry.version === bundle.version))
+      .map((bundle) => ({
+        ...bundle,
+        source: 'db',
+      }));
+    const result = [...merged, ...extras]
+      .filter((bundle) => !status || String(bundle.status || '').toLowerCase() === status.toLowerCase())
+      .sort((a, b) => {
+        if (a.id === b.id) {
+          return Number(b.version || 0) - Number(a.version || 0);
+        }
+        return String(a.id).localeCompare(String(b.id));
+      });
+    return result;
   }
 
   async listRuntimeProfiles(enabledOnly = false) {
@@ -4414,10 +4649,310 @@ export class AdminService {
     if (enabledOnly) {
       where.enabled = true;
     }
-    return this.prisma.runtimeProfileCatalog.findMany({
+    const profiles = await this.prisma.runtimeProfileCatalog.findMany({
       where,
       orderBy: [{ enabled: 'desc' }, { id: 'asc' }],
     });
+    const existingMap = new Map(profiles.map((profile) => [profile.id, profile]));
+    const merged = DEFAULT_RUNTIME_PROFILE_CATALOG.map((entry) => {
+      const existing = existingMap.get(entry.id);
+      return {
+        id: entry.id,
+        displayName: existing?.displayName ?? entry.displayName ?? entry.id,
+        enabled: existing?.enabled ?? entry.enabled ?? true,
+        skeletonVersion: existing?.skeletonVersion ?? entry.skeletonVersion ?? 'v1',
+        contractSchema: existing?.contractSchema ?? entry.contractSchema ?? {},
+        fewShotPrompt: existing?.fewShotPrompt ?? entry.fewShotPrompt ?? '',
+        metadata: existing?.metadata ?? entry.metadata ?? null,
+        createdAt: existing?.createdAt ?? null,
+        updatedAt: existing?.updatedAt ?? null,
+        source: existing ? 'db' : 'catalog',
+      };
+    });
+    const extras = profiles
+      .filter((profile) => !DEFAULT_RUNTIME_PROFILE_CATALOG.some((entry) => entry.id === profile.id))
+      .map((profile) => ({
+        ...profile,
+        source: 'db',
+      }));
+    return [...merged, ...extras]
+      .filter((profile) => !enabledOnly || Boolean(profile.enabled))
+      .sort((a, b) => {
+        if (Boolean(a.enabled) !== Boolean(b.enabled)) {
+          return Boolean(a.enabled) ? -1 : 1;
+        }
+        return String(a.id).localeCompare(String(b.id));
+      });
+  }
+
+  private summarizeRuntimeProfileContract(contractSchema: any) {
+    const contract = this.asPlainObject(contractSchema);
+    const inputContract = this.asPlainObject(contract.inputContract);
+    const stateContract = this.asPlainObject(contract.stateContract);
+    const safetyContract = this.asPlainObject(contract.safetyContract);
+    const mobileLayoutContract = this.asPlainObject(contract.mobileLayoutContract);
+    return {
+      runtimeProfile: typeof contract.runtimeProfile === 'string' ? contract.runtimeProfile : null,
+      requiredStates: Array.isArray(stateContract.requiredStates) ? stateContract.requiredStates : [],
+      inputModes: Array.isArray(inputContract.requiredModes) ? inputContract.requiredModes : [],
+      gestures: Array.isArray(inputContract.gestures) ? inputContract.gestures : [],
+      forbiddenApis: Array.isArray(safetyContract.forbiddenApis) ? safetyContract.forbiddenApis : [],
+      orientation: typeof mobileLayoutContract.orientation === 'string' ? mobileLayoutContract.orientation : null,
+      uiScaleMode: typeof mobileLayoutContract.uiScaleMode === 'string' ? mobileLayoutContract.uiScaleMode : null,
+    };
+  }
+
+  async getPromptPipeline() {
+    const [promptConfigs, promptBundles, runtimeProfiles] = await Promise.all([
+      this.listConfigs('prompt'),
+      this.listPromptBundles(),
+      this.listRuntimeProfiles(false),
+    ]);
+
+    const promptMap = new Map(promptConfigs.map((item: any) => [item.configKey, item]));
+    const assignedKeys = new Set<string>();
+
+    const buildPromptItems = (keys: string[]) => keys
+      .map((key) => {
+        assignedKeys.add(key);
+        const config = promptMap.get(key);
+        if (!config) {
+          return null;
+        }
+        const meta = this.promptItemMeta(key);
+        return {
+          kind: 'prompt',
+          configKey: config.configKey,
+          shortKey: String(config.configKey || '').replace(/^(prompt|bundle)\./, ''),
+          displayName: this.promptDisplayName(key),
+          description: config.description || null,
+          configValue: config.configValue ?? '',
+          defaultValue: config.defaultValue ?? '',
+          source: config.source || 'db',
+          isDefault: Boolean(config.isDefault),
+          updatedAt: config.updatedAt ?? null,
+          variables: Array.isArray(config.variables) ? config.variables : (Array.isArray(meta.variables) ? meta.variables : []),
+          note: typeof meta.note === 'string' ? meta.note : null,
+        };
+      })
+      .filter(Boolean);
+
+    const buildSupportItems = (step: PromptPipelineSectionCatalog) => (step.support || []).map((support) => {
+      if (support.kind === 'runtime_profiles') {
+        return {
+          kind: 'runtime_profiles',
+          title: support.title,
+          description: support.description || '',
+          items: runtimeProfiles.map((profile: any) => ({
+            kind: 'runtime_profile',
+            id: profile.id,
+            displayName: profile.displayName,
+            enabled: Boolean(profile.enabled),
+            skeletonVersion: profile.skeletonVersion || 'v1',
+            fewShotPrompt: profile.fewShotPrompt || '',
+            source: profile.source || 'db',
+            isDefault: Boolean(this.asPlainObject(profile.metadata).default),
+            metadata: profile.metadata ?? null,
+            contractSchema: profile.contractSchema ?? {},
+            contractSummary: this.summarizeRuntimeProfileContract(profile.contractSchema),
+            updatedAt: profile.updatedAt ?? null,
+          })),
+        };
+      }
+      if (support.kind === 'prompt_bundle_policy') {
+        return {
+          kind: 'prompt_bundle_policy',
+          title: support.title,
+          description: support.description || '',
+          items: promptBundles.map((bundle: any) => ({
+            kind: 'prompt_bundle_policy_item',
+            id: bundle.id,
+            version: bundle.version,
+            status: bundle.status || 'draft',
+            source: bundle.source || 'db',
+            productPolicy: bundle.productPolicy || '',
+            lockedContractOverride: bundle.lockedContractOverride || '',
+            profileOverrides: bundle.profileOverrides ?? null,
+            metadata: bundle.metadata ?? null,
+            updatedAt: bundle.updatedAt ?? null,
+          })),
+        };
+      }
+      if (support.kind === 'prompt_bundle_repair') {
+        return {
+          kind: 'prompt_bundle_repair',
+          title: support.title,
+          description: support.description || '',
+          items: promptBundles.map((bundle: any) => ({
+            kind: 'prompt_bundle_repair_item',
+            id: bundle.id,
+            version: bundle.version,
+            status: bundle.status || 'draft',
+            source: bundle.source || 'db',
+            repairPlaybook: bundle.repairPlaybook || '',
+            metadata: bundle.metadata ?? null,
+            updatedAt: bundle.updatedAt ?? null,
+          })),
+        };
+      }
+      return {
+        kind: 'note',
+        title: support.title,
+        description: support.description || '',
+        items: [],
+      };
+    });
+
+    const steps = (PROMPT_PIPELINE_CATALOG.steps || []).map((step) => {
+      const promptItems = buildPromptItems(step.promptKeys || []);
+      return {
+        id: step.id,
+        stepNumber: step.stepNumber || null,
+        tag: step.tag || null,
+        title: step.title,
+        description: step.description || '',
+        color: step.color || '#2563eb',
+        bg: step.bg || '#eff6ff',
+        border: step.border || '#bfdbfe',
+        prompts: promptItems,
+        support: buildSupportItems(step),
+        itemCount: promptItems.length + (step.support || []).length,
+      };
+    });
+
+    const extras = (PROMPT_PIPELINE_CATALOG.extras || []).map((section) => ({
+      id: section.id,
+      tag: section.tag || '附加',
+      title: section.title,
+      description: section.description || '',
+      color: section.color || '#475569',
+      bg: section.bg || '#f8fafc',
+      border: section.border || '#cbd5e1',
+      prompts: buildPromptItems(section.promptKeys || []),
+    }));
+
+    const unassignedPrompts = promptConfigs
+      .filter((item: any) => !assignedKeys.has(item.configKey))
+      .map((item: any) => ({
+        kind: 'prompt',
+        configKey: item.configKey,
+        shortKey: String(item.configKey || '').replace(/^(prompt|bundle)\./, ''),
+        displayName: item.displayName || this.promptDisplayName(item.configKey),
+        description: item.description || null,
+        configValue: item.configValue ?? '',
+        defaultValue: item.defaultValue ?? '',
+        source: item.source || 'db',
+        isDefault: Boolean(item.isDefault),
+        updatedAt: item.updatedAt ?? null,
+        variables: Array.isArray(item.variables) ? item.variables : [],
+        note: null,
+      }));
+
+    if (unassignedPrompts.length) {
+      extras.push({
+        id: 'extra_unassigned',
+        tag: '附加',
+        title: '未归档 Prompt',
+        description: 'catalog 之外或尚未归入五步流程的 prompt 项。',
+        color: '#475569',
+        bg: '#f8fafc',
+        border: '#cbd5e1',
+        prompts: unassignedPrompts,
+      });
+    }
+
+    return {
+      summary: {
+        promptConfigCount: promptConfigs.length,
+        promptBundleCount: promptBundles.length,
+        activePromptBundleCount: promptBundles.filter((bundle: any) => String(bundle.status || '').toLowerCase() === 'active').length,
+        runtimeProfileCount: runtimeProfiles.length,
+        enabledRuntimeProfileCount: runtimeProfiles.filter((profile: any) => Boolean(profile.enabled)).length,
+      },
+      steps,
+      extras,
+    };
+  }
+
+  async updatePromptBundle(id: string, version: number, body: any) {
+    const existing = await this.prisma.promptBundle.findFirst({
+      where: { id, version },
+    });
+    if (!existing) {
+      throw new NotFoundException('Prompt bundle not found');
+    }
+
+    const section = body?.section === 'repair' ? 'repair' : 'policy';
+    const payload = body?.payload && typeof body.payload === 'object' && !Array.isArray(body.payload)
+      ? body.payload
+      : {};
+    const nextMetadata = payload.metadata !== undefined ? payload.metadata : existing.metadata;
+    const data = section === 'repair'
+      ? {
+        status: typeof payload.status === 'string' && payload.status.trim() ? payload.status.trim() : existing.status,
+        repairPlaybook: typeof payload.repairPlaybook === 'string' ? payload.repairPlaybook : existing.repairPlaybook,
+        metadata: nextMetadata,
+      }
+      : {
+        status: typeof payload.status === 'string' && payload.status.trim() ? payload.status.trim() : existing.status,
+        productPolicy: typeof payload.productPolicy === 'string' ? payload.productPolicy : existing.productPolicy,
+        lockedContractOverride: payload.lockedContractOverride === null
+          ? null
+          : typeof payload.lockedContractOverride === 'string'
+            ? payload.lockedContractOverride
+            : existing.lockedContractOverride,
+        profileOverrides: payload.profileOverrides !== undefined ? payload.profileOverrides : existing.profileOverrides,
+        metadata: nextMetadata,
+      };
+
+    await this.prisma.promptBundle.updateMany({
+      where: { id, version },
+      data,
+    });
+    const updated = await this.prisma.promptBundle.findFirst({
+      where: { id, version },
+    });
+    const refreshResult = await this.refreshPromptConfigs();
+    return {
+      ...(updated || existing),
+      refreshResult,
+    };
+  }
+
+  async updateRuntimeProfile(id: string, body: any) {
+    const existing = await this.prisma.runtimeProfileCatalog.findUnique({
+      where: { id },
+    });
+    if (!existing) {
+      throw new NotFoundException('Runtime profile not found');
+    }
+
+    const payload = body?.payload && typeof body.payload === 'object' && !Array.isArray(body.payload)
+      ? body.payload
+      : {};
+    const updated = await this.prisma.runtimeProfileCatalog.update({
+      where: { id },
+      data: {
+        displayName: typeof payload.displayName === 'string' && payload.displayName.trim()
+          ? payload.displayName.trim()
+          : existing.displayName,
+        enabled: payload.enabled !== undefined ? Boolean(payload.enabled) : existing.enabled,
+        skeletonVersion: typeof payload.skeletonVersion === 'string' && payload.skeletonVersion.trim()
+          ? payload.skeletonVersion.trim()
+          : existing.skeletonVersion,
+        fewShotPrompt: payload.fewShotPrompt === null
+          ? null
+          : typeof payload.fewShotPrompt === 'string'
+            ? payload.fewShotPrompt
+            : existing.fewShotPrompt,
+        metadata: payload.metadata !== undefined ? payload.metadata : existing.metadata,
+      },
+    });
+    const refreshResult = await this.refreshPromptConfigs();
+    return {
+      ...updated,
+      refreshResult,
+    };
   }
 
   // ===================== Migration =====================

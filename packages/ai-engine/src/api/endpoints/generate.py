@@ -22,12 +22,14 @@ Legacy endpoints (kept for backward compatibility):
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import logging
 import re
 import traceback
 import httpx
 from fastapi import APIRouter, Header, HTTPException, Query, status as http_status
+from fastapi.responses import StreamingResponse
 from typing import Optional, Any
 
 from ..models import (
@@ -500,39 +502,6 @@ def _upgrade_iterate_request_to_v2(
             "compat_source": source,
             "upgraded_from": "IterateRequest",
         },
-    )
-
-
-def _adapt_v2_run_request(request: RunPipelineV2Request) -> RunPipelineRequest:
-    description = request.raw_user_input.strip() or str(
-        request.normalized_request.get("description", "")
-    ).strip()
-    if not description:
-        raise HTTPException(status_code=400, detail="raw_user_input is required")
-
-    return RunPipelineRequest(
-        game_id=request.game_id,
-        description=description,
-        user_id=request.user_id,
-        platform=request.platform,
-        timeout_s=_resolve_timeout_s(request.timeout_s),
-        task_id=request.task_id,
-    )
-
-
-def _adapt_v2_iterate_request(request: IterateV2Request) -> IterateRequest:
-    feedback = request.iteration_intent.feedback.strip()
-    if not feedback:
-        raise HTTPException(status_code=400, detail="iteration_intent.feedback is required")
-
-    return IterateRequest(
-        game_id=request.game_id,
-        feedback=feedback,
-        user_id=request.user_id,
-        conversation=request.iteration_intent.conversation,
-        current_code=request.current_code,
-        timeout_s=_resolve_timeout_s(request.timeout_s),
-        task_id=request.task_id,
     )
 
 
@@ -1454,6 +1423,31 @@ async def analyze_dialogue_turn(request: AnalyzeDialogueTurnRequest) -> AnalyzeD
     except Exception as e:
         logger.exception("Dialogue analyze-turn error")
         raise HTTPException(status_code=500, detail=f"Dialogue analyze-turn error: {str(e)}")
+
+
+@router.post("/dialogue/analyze-turn/stream")
+async def analyze_dialogue_turn_stream(request: AnalyzeDialogueTurnRequest) -> StreamingResponse:
+    async def event_stream():
+        try:
+            async for item in _dialogue_engine.analyze_turn_stream(request):
+                event_name = str(item.get("event") or "message")
+                payload = item.get("data")
+                yield f"event: {event_name}\n"
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        except Exception as exc:
+            logger.exception("Dialogue analyze-turn stream error")
+            yield "event: error\n"
+            yield f"data: {json.dumps({'message': f'Dialogue analyze-turn stream error: {str(exc)}'}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.post("/dialogue/draft-plan-from-input", response_model=DraftPlanFromInputResponse)
