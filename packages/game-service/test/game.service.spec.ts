@@ -29,6 +29,7 @@ describe('GameService', () => {
   let wsGateway: any;
   let generationTaskService: any;
   let generationQueueService: any;
+  let ensureCreateSourceSpecSpy: jest.SpyInstance;
 
   const mockAsyncSuccess = (upstreamTaskId: string, result: Record<string, unknown>) => {
     mockedAxios.post.mockResolvedValueOnce({
@@ -266,6 +267,9 @@ describe('GameService', () => {
       generationTaskService,
       generationQueueService,
     );
+    ensureCreateSourceSpecSpy = jest
+      .spyOn(service as any, 'ensureCreateSourceSpec')
+      .mockImplementation(async ({ sourceSpec }: any) => sourceSpec ?? null);
   });
 
   afterEach(() => {
@@ -898,6 +902,73 @@ describe('GameService', () => {
     executePipelineTaskSpy.mockRestore();
   });
 
+  it('persists formal intent-build outputs when create requests already include a frozen source spec', async () => {
+    generationQueueService.enqueueJob.mockResolvedValue(true);
+
+    prisma.userSubscription.updateMany.mockResolvedValue({ count: 0 });
+    prisma.userQuota.upsert.mockResolvedValue({
+      userId: 'user-session-create',
+      totalFreeQuota: 5,
+      usedFreeQuota: 0,
+    });
+    prisma.userSubscription.findFirst.mockResolvedValue(null);
+    prisma.userQuota.update.mockResolvedValue({
+      userId: 'user-session-create',
+      totalFreeQuota: 5,
+      usedFreeQuota: 1,
+    });
+    prisma.game.create.mockResolvedValue({ id: 'game-session-create' });
+
+    await service.create('user-session-create', {
+      title: 'Session Runner',
+      description: 'make a runner from a structured session',
+      creationSessionId: 'session-structured-1',
+      sourceSpec: {
+        game_type: 'casual',
+        generation_tier: 'showcase',
+        intent_summary: 'A structured runner generated from the creation session.',
+      },
+      generationTier: 'showcase',
+    } as any);
+
+    expect(generationTaskService.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({
+        creationSessionId: 'session-structured-1',
+        sourceSpec: expect.objectContaining({
+          game_type: 'casual',
+        }),
+        intentBuild: expect.objectContaining({
+          brief: expect.any(String),
+          frozenSpec: expect.objectContaining({
+            game_type: 'casual',
+          }),
+          intentFingerprint: expect.any(String),
+          specFingerprint: expect.any(String),
+        }),
+      }),
+    }));
+    expect(generationTaskService.createArtifact).toHaveBeenCalledWith(expect.objectContaining({
+      artifactType: 'intent_build',
+      taskId: expect.any(String),
+      payload: expect.objectContaining({
+        frozenSpec: expect.objectContaining({
+          game_type: 'casual',
+        }),
+        specFingerprint: expect.any(String),
+      }),
+      metadata: expect.objectContaining({
+        source: 'creation_session',
+      }),
+    }));
+    expect(generationTaskService.createArtifact).toHaveBeenCalledWith(expect.objectContaining({
+      artifactType: 'source_spec',
+      metadata: expect.objectContaining({
+        intentFingerprint: expect.any(String),
+        specFingerprint: expect.any(String),
+      }),
+    }));
+  });
+
   it('passes the requested landscape orientation into v2 creation tasks', async () => {
     (configService.get as jest.Mock).mockImplementation((key: string, defaultValue?: string) => {
       const values: Record<string, string> = {
@@ -1349,6 +1420,296 @@ describe('GameService', () => {
         timeout: 30000,
       }),
     );
+  });
+
+  it('builds and persists a zero-question source spec before dispatching v2 create tasks', async () => {
+    ensureCreateSourceSpecSpy.mockRestore();
+    prisma.generationTask.findUnique.mockImplementation(({ select }: any) => {
+      if (select?.metadata) {
+        return Promise.resolve({
+          metadata: {
+            description: 'make a runner',
+          },
+        });
+      }
+      if (select?.status) {
+        return Promise.resolve({
+          status: 'running',
+        });
+      }
+      return Promise.resolve(null);
+    });
+    prisma.generationTask.update.mockResolvedValue({});
+    prisma.game.findUnique.mockResolvedValue({
+      title: 'Game zero-spec',
+    });
+    prisma.game.update.mockResolvedValue({});
+    bundleService.getBundle.mockResolvedValue(null);
+    bundleService.saveBundle.mockResolvedValue(undefined);
+    mockedAxios.post
+      .mockResolvedValueOnce({
+        data: {
+          slots: {
+            game_type: 'casual',
+            core_mechanic: 'lane switching',
+            theme: 'subway escape',
+            input_method: 'swipe',
+            win_condition: 'reach extraction',
+            difficulty: 'medium',
+          },
+          missing_required: [],
+          slot_fill_pct: 1,
+          ready_to_generate: true,
+        },
+      } as any)
+      .mockResolvedValueOnce({
+        data: {
+          spec: {
+            game_type: 'casual',
+            generation_tier: 'standard',
+            intent_summary: 'A subway escape runner with lane switching.',
+          },
+          missing_required: [],
+          slot_fill_pct: 1,
+        },
+      } as any);
+    mockAsyncSuccess('upstream-v2-zero-spec', {
+      html_code: '<!DOCTYPE html><html><head><title>Zero Spec</title></head><body></body></html>',
+      strategy: 'llm',
+      qa_passed: true,
+      qa_retries: 0,
+      game_spec: { game_type: 'casual' },
+      generation_time_ms: 1000,
+      code_size_bytes: 88,
+      quality_score: 90,
+      quality_breakdown: {},
+    });
+
+    await (service as any).executePipelineTask(
+      'game-v2-zero-spec',
+      'user-v2-zero-spec',
+      'make a runner',
+      900,
+      'task-v2-zero-spec',
+      'cn_shanghai',
+      {
+        pipelineVersion: 'v2',
+        title: '  Zero Spec Runner  ',
+        orientation: 'landscape',
+        access: {
+          canPlay: true,
+          requireSubscription: false,
+          quotaRemaining: 4,
+          accessGrantSource: GameAccessGrantSource.free_quota,
+          accessGrantSubscriptionId: null,
+        },
+      },
+    );
+
+    expect(mockedAxios.post).toHaveBeenNthCalledWith(
+      1,
+      'http://ai-engine.test/api/v1/ai/dialogue/analyze-turn',
+      expect.objectContaining({
+        user_id: 'user-v2-zero-spec',
+        title: 'Zero Spec Runner',
+        entry_mode: 'create',
+        generation_tier: 'standard',
+        initial_prompt: 'make a runner',
+      }),
+      expect.objectContaining({ timeout: expect.any(Number) }),
+    );
+    expect(mockedAxios.post).toHaveBeenNthCalledWith(
+      2,
+      'http://ai-engine.test/api/v1/ai/dialogue/spec-from-slots',
+      expect.objectContaining({
+        title: 'Zero Spec Runner',
+        source_description: 'make a runner',
+        generation_tier: 'standard',
+        skipped_slots: [],
+        variation_seed: expect.any(String),
+      }),
+      expect.objectContaining({ timeout: expect.any(Number) }),
+    );
+    expect(mockedAxios.post).toHaveBeenNthCalledWith(
+      3,
+      'http://ai-engine.test/api/v1/ai/pipeline/v2/run/async',
+      expect.objectContaining({
+        game_id: 'game-v2-zero-spec',
+        source_spec: expect.objectContaining({
+          game_type: 'casual',
+          generation_tier: 'standard',
+        }),
+      }),
+      expect.objectContaining({ timeout: 30000 }),
+    );
+    expect(prisma.generationTask.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'task-v2-zero-spec' },
+      data: expect.objectContaining({
+        metadata: expect.objectContaining({
+          sourceSpec: expect.objectContaining({
+            game_type: 'casual',
+          }),
+          intentBuild: expect.objectContaining({
+            brief: expect.any(String),
+            frozenSpec: expect.objectContaining({
+              game_type: 'casual',
+            }),
+            intentFingerprint: expect.any(String),
+            specFingerprint: expect.any(String),
+          }),
+          sourceSpecBuild: expect.objectContaining({
+            source: 'zero_question',
+            variationSeed: expect.any(String),
+            readyToGenerate: true,
+          }),
+        }),
+      }),
+    }));
+    expect(generationTaskService.createArtifact).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'task-v2-zero-spec',
+      gameId: 'game-v2-zero-spec',
+      userId: 'user-v2-zero-spec',
+      artifactType: 'source_spec',
+      contentType: 'application/json',
+      payload: expect.objectContaining({
+        game_type: 'casual',
+      }),
+    }));
+    expect(generationTaskService.createArtifact).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'task-v2-zero-spec',
+      artifactType: 'intent_build',
+      payload: expect.objectContaining({
+        brief: expect.any(String),
+        frozenSpec: expect.objectContaining({
+          game_type: 'casual',
+        }),
+        intentFingerprint: expect.any(String),
+        specFingerprint: expect.any(String),
+      }),
+    }));
+  });
+
+  it('fails v2 create tasks when zero-question source spec compilation remains incomplete', async () => {
+    ensureCreateSourceSpecSpy.mockRestore();
+    prisma.generationTask.findUnique.mockImplementation(({ select }: any) => {
+      if (select?.status) {
+        return Promise.resolve({
+          status: 'running',
+        });
+      }
+      return Promise.resolve(null);
+    });
+    prisma.game.findUnique.mockResolvedValue({
+      id: 'game-v2-incomplete-spec',
+      authorId: 'user-v2-incomplete-spec',
+      status: 'generating',
+      accessGrantSource: GameAccessGrantSource.none,
+      accessGrantSubscriptionId: null,
+    });
+    prisma.game.update.mockResolvedValue({});
+    mockedAxios.post
+      .mockResolvedValueOnce({
+        data: {
+          slots: {
+            game_type: 'casual',
+            theme: 'subway escape',
+          },
+          missing_required: ['win_condition'],
+          slot_fill_pct: 0.5,
+          ready_to_generate: false,
+        },
+      } as any)
+      .mockResolvedValueOnce({
+        data: {
+          spec: {
+            game_type: 'casual',
+          },
+          missing_required: ['win_condition'],
+          slot_fill_pct: 0.5,
+        },
+      } as any);
+
+    await (service as any).executePipelineTask(
+      'game-v2-incomplete-spec',
+      'user-v2-incomplete-spec',
+      'make a runner with no win condition',
+      900,
+      'task-v2-incomplete-spec',
+      'cn_shanghai',
+      {
+        pipelineVersion: 'v2',
+      },
+    );
+
+    expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+    expect(mockedAxios.get).not.toHaveBeenCalled();
+    expect(generationTaskService.markFailed).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'task-v2-incomplete-spec',
+      failedStage: 'spec_build',
+      failureFamily: 'source_spec_incomplete',
+    }));
+  });
+
+  it('surfaces nested spec-build validation errors on v2 create tasks', async () => {
+    ensureCreateSourceSpecSpy.mockRestore();
+    prisma.generationTask.findUnique.mockImplementation(({ select }: any) => {
+      if (select?.status) {
+        return Promise.resolve({
+          status: 'running',
+        });
+      }
+      return Promise.resolve(null);
+    });
+    prisma.game.findUnique.mockResolvedValue({
+      id: 'game-v2-spec-validation',
+      authorId: 'user-v2-spec-validation',
+      status: 'generating',
+      accessGrantSource: GameAccessGrantSource.none,
+      accessGrantSubscriptionId: null,
+    });
+    prisma.game.update.mockResolvedValue({});
+    mockedAxios.post
+      .mockResolvedValueOnce({
+        data: {
+          slots: {
+            game_type: 'casual',
+          },
+          missing_required: [],
+          slot_fill_pct: 1,
+          ready_to_generate: true,
+        },
+      } as any)
+      .mockRejectedValueOnce({
+        response: {
+          data: {
+            detail: [
+              {
+                loc: ['body', 'slots', 'core_mechanic'],
+                msg: 'Input should be a valid string',
+              },
+            ],
+          },
+        },
+      });
+
+    await (service as any).executePipelineTask(
+      'game-v2-spec-validation',
+      'user-v2-spec-validation',
+      'make a runner',
+      900,
+      'task-v2-spec-validation',
+      'cn_shanghai',
+      {
+        pipelineVersion: 'v2',
+      },
+    );
+
+    expect(generationTaskService.markFailed).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'task-v2-spec-validation',
+      failedStage: 'spec_build',
+      failureFamily: 'source_spec_compile',
+      errorMessage: 'Input should be a valid string',
+    }));
   });
 
   it('persists upstream primary artifact ids on successful v2 tasks', async () => {

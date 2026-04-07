@@ -389,6 +389,24 @@ class QACheckError(BaseModel):
     message: str
     severity: str = "error"
     line: Optional[int] = None
+    family: Optional[str] = None
+    blocking: Optional[bool] = None
+    repair_hint: Optional[str] = None
+    location: Optional["QAIssueLocation"] = None
+
+
+class QAIssueLocation(BaseModel):
+    line: Optional[int] = None
+    column: Optional[int] = None
+    section: Optional[str] = None
+    symbol: Optional[str] = None
+
+
+class QAIssueList(BaseModel):
+    issues: List[QACheckError] = Field(default_factory=list)
+    blocking_count: int = 0
+    warning_count: int = 0
+    families: List[str] = Field(default_factory=list)
 
 
 class QACheckResponse(BaseModel):
@@ -396,6 +414,7 @@ class QACheckResponse(BaseModel):
     errors: List[QACheckError] = Field(default_factory=list)
     warnings: List[QACheckError] = Field(default_factory=list)
     validation_summary: Dict[str, bool] = Field(default_factory=dict)
+    issue_list: QAIssueList = Field(default_factory=QAIssueList)
 
 
 class QAResult(BaseModel):
@@ -404,6 +423,7 @@ class QAResult(BaseModel):
     retries: int = 0
     last_errors: List[QACheckError] = Field(default_factory=list)
     needs_regeneration: bool = False
+    issue_list: QAIssueList = Field(default_factory=QAIssueList)
 
 
 # ---------------------------------------------------------------------------

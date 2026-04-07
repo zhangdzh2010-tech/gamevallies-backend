@@ -15,7 +15,6 @@ from ..api.models import (
     GameSpec,
     GenerateCodeResult,
     IterationType,
-    SourceBundleContext,
 )
 from ..config.settings import settings
 from ..config.timeout_store import get_int as get_timeout_int
@@ -32,11 +31,7 @@ from .section_patch import (
     build_patch_protocol,
     build_section_context,
     ensure_structured_section_markers,
-    extract_script_content as extract_patch_script_content,
-    extract_style_content as extract_patch_style_content,
     parse_patch_response,
-    replace_script_content as patch_replace_script_content,
-    replace_style_content as patch_replace_style_content,
     validate_patch_candidate,
 )
 from .visual_pack_catalog import get_visual_pack, visual_pack_direction_lines
@@ -631,7 +626,7 @@ class CodeGenerator:
         self,
         entities: List[Any],
         *,
-        max_items: int = 8,
+        max_items: int = 6,
     ) -> str:
         if not entities:
             return "  - none"
@@ -769,7 +764,6 @@ class CodeGenerator:
 
     def _build_design_program_block(self, spec: GameSpec, gdd: GDD) -> str:
         lines: List[str] = []
-        generation_tier = self._resolve_generation_tier(spec)
         defaultish_fields = (
             ("Session length", spec.session_length, "short_bursts"),
             ("Progression shape", spec.progression_shape, "score_chase"),
@@ -817,21 +811,11 @@ class CodeGenerator:
 
         if not lines:
             return ""
-        header = (
-            "DESIGN PROGRAM (HIGH PRIORITY):"
-            if generation_tier == "safe"
-            else "DESIGN PROGRAM (CREATIVE DIRECTION):"
-        )
-        closing_line = (
-            "- Preserve this design program unless a requirement directly conflicts with it."
-            if generation_tier == "safe"
-            else "- Use this as preferred direction, but choose a stronger interpretation when it better serves the brief and runtime clarity."
-        )
         return "\n".join(
             [
-                header,
+                "DESIGN PROGRAM (HIGH PRIORITY):",
                 *lines,
-                closing_line,
+                "- Preserve this design program unless a requirement directly conflicts with it.",
             ]
         )
 
@@ -962,7 +946,7 @@ class CodeGenerator:
             ])
         elif generation_tier == "showcase":
             lines.extend([
-                "- Allow a richer presentation layer, a stronger HUD, and 3-5 linked subsystems as long as they all plug into the same loop.",
+                "- Allow a richer presentation layer, a stronger HUD, and 2-3 linked subsystems as long as they all plug into the same loop.",
                 "- Favor one signature mechanic plus one support system such as combos, waves, rescue targets, route goals, risk-reward pickups, or finale beats.",
                 "- Showcase briefs may use 5-8 active entities or families when they stay legible and share the same core loop.",
                 "- Spend budget on clarity, juice, pacing, progression, and memorable payoff once boot, input, restart, and visible feedback are secure.",
@@ -1019,36 +1003,6 @@ class CodeGenerator:
         if design_program_block.strip() and generation_tier != "safe":
             return False
         return len((request_text or "").strip()) <= 80 or generation_tier == "safe"
-
-    @staticmethod
-    def _build_source_bundle_context_block(source_bundle_context: Optional[SourceBundleContext]) -> str:
-        if not source_bundle_context:
-            return ""
-
-        lines = ["HISTORICAL GAME CONTEXT:"]
-        if source_bundle_context.title:
-            lines.append(f"- Existing title: {source_bundle_context.title}")
-        if source_bundle_context.latest_bundle_version is not None:
-            lines.append(f"- Latest bundle version: {source_bundle_context.latest_bundle_version}")
-        if source_bundle_context.latest_game_type:
-            lines.append(f"- Current game type: {source_bundle_context.latest_game_type}")
-        if source_bundle_context.latest_feedback:
-            lines.append(f"- Latest user feedback: {source_bundle_context.latest_feedback}")
-        if source_bundle_context.latest_iteration_type:
-            lines.append(f"- Latest iteration type: {source_bundle_context.latest_iteration_type}")
-        if source_bundle_context.summary:
-            lines.append(f"- Summary: {source_bundle_context.summary}")
-        for revision in (source_bundle_context.recent_revisions or [])[:4]:
-            revision_bits = [
-                f"v{revision.version}" if revision.version is not None else "",
-                revision.feedback or "",
-                revision.iteration_type or "",
-                revision.summary or "",
-            ]
-            compact = " | ".join(bit for bit in revision_bits if bit)
-            if compact:
-                lines.append(f"- Recent revision: {compact}")
-        return "\n".join(lines)
 
     @staticmethod
     def _build_ui_copy_examples(gdd: GDD, ui_language: str) -> str:
@@ -1130,24 +1084,6 @@ class CodeGenerator:
         for source, target in replacements:
             updated = updated.replace(source, target)
         return updated
-
-    def _build_iteration_mobile_layout_guardrails(
-        self,
-        runtime_contract: Optional[GameRuntimeContract] = None,
-    ) -> str:
-        orientation = self._resolve_layout_orientation(runtime_contract)
-        reference_label = self._layout_reference_label(orientation)
-        prompt = require_prompt("prompt.iteration_mobile_layout_guardrails").format(
-            reference_orientation=reference_label,
-            orientation_label=reference_label,
-        )
-        prompt = self._rewrite_layout_prompt_for_orientation(prompt, orientation)
-        supplement = (
-            "MOBILE LAYOUT CHECKLIST\n"
-            f"- Preserve {reference_label} sizing during iteration and keep resize logic based on both viewport dimensions.\n"
-            "- Recompute scaleX/scaleY, then derive uiScale from Math.min(scaleX, scaleY) or an equivalent short-edge fit."
-        )
-        return "\n".join([prompt, supplement])
 
     @staticmethod
     def _format_state_flow(state_machine: Dict[str, Any]) -> str:
@@ -1463,7 +1399,7 @@ class CodeGenerator:
         *,
         fallback_speed: float,
         fallback_spawn_interval: int,
-        max_entities: int = 8,
+        max_entities: int = 3,
     ) -> str:
         if not entities:
             return "  - none"
@@ -1521,7 +1457,6 @@ class CodeGenerator:
         runtime_profile: Optional[str] = None,
         prompt_bundle_snapshot: Optional[Dict[str, Any]] = None,
         game_spec: Optional[GameSpec] = None,
-        source_bundle_context: Optional[SourceBundleContext] = None,
     ) -> Tuple[str, IterationType]:
         if self.llm_mode != "real" or not self._client.is_enabled():
             raise RuntimeError("Real LLM mode is required for game iteration")
@@ -1542,7 +1477,6 @@ class CodeGenerator:
             runtime_profile=runtime_profile,
             prompt_bundle_snapshot=prompt_bundle_snapshot,
             game_spec=game_spec,
-            source_bundle_context=source_bundle_context,
         )
         return ensure_structured_section_markers(updated), iter_type
 
@@ -1660,7 +1594,6 @@ class CodeGenerator:
         runtime_profile: Optional[str] = None,
         prompt_bundle_snapshot: Optional[Dict[str, Any]] = None,
         game_spec: Optional[GameSpec] = None,
-        source_bundle_context: Optional[SourceBundleContext] = None,
     ) -> str:
         history_text = "\n".join(
             f"{item.get('role', 'user')}: {item.get('content', '')}"
@@ -1889,28 +1822,6 @@ def _extract_html(text: str) -> str:
     if match:
         text = text[match.start():]
     return text.strip()
-
-
-def _extract_script_content(html: str) -> Optional[str]:
-    """Extract the content of the last (main) inline <script> block."""
-    return extract_patch_script_content(html)
-
-
-def _extract_style_content(html: str) -> Optional[str]:
-    """Extract the content of the first inline <style> block."""
-    return extract_patch_style_content(html)
-
-
-def _replace_script_content(html: str, new_script: str) -> str:
-    """Replace the content of the last inline <script> block."""
-    return patch_replace_script_content(html, new_script)
-
-
-def _replace_style_content(html: str, new_style: str) -> str:
-    """Replace the content of the first inline <style> block."""
-    return patch_replace_style_content(html, new_style)
-
-
 _STYLE_FEEDBACK_KEYWORDS = (
     "color", "colour", "font", "background", "border",
     "css", "dark mode", "light mode",

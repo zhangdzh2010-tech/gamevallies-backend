@@ -1451,6 +1451,26 @@ def test_run_with_auto_fix_breaks_after_repeated_single_issue():
     assert mock_repair.await_count == 2
 
 
+def test_check_populates_issue_list_with_family_blocking_and_repair_hint():
+    pipeline = QAPipeline()
+    failed = pipeline.check(VALID_GAME.replace(
+        "canvas.addEventListener('touchstart', function(e) {\n    if (game.gameOver) restart();\n});",
+        "// no input",
+    ))
+
+    assert failed.passed is False
+    assert failed.issue_list.issues
+    input_issue = next(
+        issue
+        for issue in failed.issue_list.issues
+        if issue.family == "input_contract"
+    )
+    assert input_issue.blocking is True
+    assert "touch/pointer handlers" in input_issue.repair_hint
+    assert failed.issue_list.blocking_count >= 1
+    assert "input_contract" in failed.issue_list.families
+
+
 def test_repair_code_does_not_fallback_to_simplified_rewrite_when_syntax_fix_stays_broken():
     pipeline = QAPipeline()
     broken_code = VALID_GAME.replace("game.score += 1;", "if (true) {")

@@ -470,11 +470,12 @@ export class AdminController {
     @Query('limit') limit?: string,
     @Query('search') search?: string,
     @Query('role') role?: string,
+    @Query('authProvider') authProvider?: string,
   ) {
     checkAdminToken(token);
     const p = Math.max(parseInt(page || '1', 10), 1);
     const l = Math.min(Math.max(parseInt(limit || '20', 10), 1), 100);
-    return ok(await this.adminService.listUsers(p, l, search, role));
+    return ok(await this.adminService.listUsers(p, l, search, role, authProvider));
   }
 
   @Get('admin/users/:id')
@@ -493,6 +494,18 @@ export class AdminController {
   async updateUser(@Headers('x-admin-token') token: string, @Param('id') id: string, @Body() body: any) {
     checkAdminToken(token);
     return ok(await this.adminService.updateUser(id, body), 'User updated');
+  }
+
+  @Post('admin/users/batch-update')
+  async batchUpdateUsers(@Headers('x-admin-token') token: string, @Body() body: any) {
+    checkAdminToken(token);
+    return ok(await this.adminService.batchUpdateUsers(body?.ids, body), 'Users updated');
+  }
+
+  @Post('admin/users/batch-delete')
+  async batchDeleteUsers(@Headers('x-admin-token') token: string, @Body() body: any) {
+    checkAdminToken(token);
+    return ok(await this.adminService.batchDeleteUsers(body?.ids), 'Users deleted');
   }
 
   @Delete('admin/users/:id')
