@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
+import promptCatalog from './catalogs/prompt-catalog.json';
 import promptBundleCatalog from './catalogs/prompt-bundle-catalog.json';
 import runtimeProfileCatalog from './catalogs/runtime-profile-catalog.json';
 import {
@@ -589,6 +590,10 @@ const DEFAULT_PROMPT_BUNDLES = Array.isArray(promptBundleCatalog)
   ? promptBundleCatalog
   : [];
 
+const DEFAULT_PROMPT_CATALOG = Array.isArray(promptCatalog)
+  ? promptCatalog
+  : [];
+
 const DEFAULT_RUNTIME_PROFILE_CATALOG = Array.isArray(runtimeProfileCatalog)
   ? runtimeProfileCatalog
   : [];
@@ -947,6 +952,18 @@ export class GameSchemaBootstrapService implements OnModuleInit {
           step.stageLabel,
           step.displayName,
           step.description,
+        );
+      }
+
+      for (const prompt of DEFAULT_PROMPT_CATALOG) {
+        await this.prisma.$executeRawUnsafe(
+          `INSERT IGNORE INTO system_configs (
+             id, config_key, config_value, description, category
+           ) VALUES (?, ?, ?, ?, 'prompt')`,
+          randomUUID(),
+          prompt.key,
+          prompt.value,
+          prompt.description,
         );
       }
 

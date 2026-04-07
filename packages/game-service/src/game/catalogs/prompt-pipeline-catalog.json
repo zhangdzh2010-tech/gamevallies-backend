@@ -1,0 +1,360 @@
+{
+  "steps": [
+    {
+      "id": "step1_intent_freeze",
+      "stepNumber": 1,
+      "tag": "Step 1",
+      "title": "专家访谈与意图冻结",
+      "description": "多轮对话、slot 提取、brief / frozen spec 的统一入口。",
+      "color": "#7c3aed",
+      "bg": "#f5f3ff",
+      "border": "#ddd6fe",
+      "promptKeys": [
+        "prompt.dialogue_system",
+        "prompt.dialogue_reply_system",
+        "prompt.dialogue_reply_user_template_zh",
+        "prompt.dialogue_reply_user_template_en",
+        "prompt.slot_extraction_system",
+        "prompt.slot_output_contract",
+        "prompt.slot_json_repair_system",
+        "prompt.slot_json_repair_user_template",
+        "prompt.intent_parse_system"
+      ],
+      "support": []
+    },
+    {
+      "id": "step2_spec_contract",
+      "stepNumber": 2,
+      "tag": "Step 2",
+      "title": "Spec 编排与运行时约束",
+      "description": "把意图压成结构化 spec、runtime contract 和 few-shot 约束。",
+      "color": "#0f766e",
+      "bg": "#ecfeff",
+      "border": "#99f6e4",
+      "promptKeys": [
+        "prompt.intent_detail_template",
+        "prompt.runtime_contract_summary",
+        "prompt.mobile_layout_guardrails",
+        "prompt.iteration_mobile_layout_guardrails",
+        "prompt.iteration_spec_context_template",
+        "bundle.product.intent_parse",
+        "bundle.runtime.profile.casual_arcade",
+        "bundle.runtime.profile.casual_lane",
+        "bundle.runtime.profile.puzzle_grid",
+        "bundle.runtime.profile.casual_action",
+        "bundle.runtime.profile.tap_challenge"
+      ],
+      "support": [
+        {
+          "kind": "runtime_profiles",
+          "title": "Runtime Profiles",
+          "description": "few-shot prompt 和 contract schema 的 live catalog。"
+        }
+      ]
+    },
+    {
+      "id": "step3_code_synthesis",
+      "stepNumber": 3,
+      "tag": "Step 3",
+      "title": "代码合成",
+      "description": "GDD、request context、bundle policy 一起驱动代码生成。",
+      "color": "#2563eb",
+      "bg": "#eff6ff",
+      "border": "#bfdbfe",
+      "promptKeys": [
+        "prompt.game_design_template",
+        "prompt.code_gen_system",
+        "prompt.platform_standard",
+        "prompt.generate_request_context_template",
+        "prompt.generate_alignment_reminder",
+        "bundle.runtime.locked_contract",
+        "bundle.product.policy",
+        "bundle.product.logic_generate"
+      ],
+      "support": [
+        {
+          "kind": "prompt_bundle_policy",
+          "title": "Live Prompt Bundle",
+          "description": "product policy / locked contract override / profile overrides。"
+        }
+      ]
+    },
+    {
+      "id": "step4_issue_repair",
+      "stepNumber": 4,
+      "tag": "Step 4",
+      "title": "IssueList 与有限修复",
+      "description": "QA issue family、review 和 targeted repair 的统一层。",
+      "color": "#d97706",
+      "bg": "#fffbeb",
+      "border": "#fde68a",
+      "promptKeys": [
+        "prompt.code_review_system",
+        "prompt.code_review_template",
+        "prompt.qa_runtime_contract_block",
+        "prompt.qa_instruction_input_handlers",
+        "prompt.qa_instruction_visible_feedback",
+        "prompt.qa_instruction_terminal_state",
+        "prompt.qa_instruction_storage",
+        "prompt.qa_instruction_blank_screen",
+        "prompt.qa_instruction_runtime_js_error",
+        "prompt.qa_instruction_mobile_layout",
+        "prompt.qa_instruction_forbidden_api",
+        "prompt.qa_instruction_generic",
+        "prompt.qa_fix",
+        "prompt.qa_fix_fast",
+        "bundle.repair.input_contract",
+        "bundle.repair.syntax_structural",
+        "bundle.repair.terminal_state",
+        "bundle.repair.mobile_layout",
+        "bundle.repair.forbidden_api",
+        "bundle.repair.runtime_startup",
+        "bundle.repair.generic"
+      ],
+      "support": [
+        {
+          "kind": "prompt_bundle_repair",
+          "title": "Live Repair Playbook",
+          "description": "active prompt bundle 的 repair playbook live override。"
+        }
+      ]
+    },
+    {
+      "id": "step5_finalize",
+      "stepNumber": 5,
+      "tag": "Step 5",
+      "title": "Finalizer 与产物固化",
+      "description": "当前 Step 5 主要是 deterministic finalize，没有独立 prompt 层。",
+      "color": "#e11d48",
+      "bg": "#fff1f2",
+      "border": "#fecdd3",
+      "promptKeys": [],
+      "support": [
+        {
+          "kind": "deterministic_note",
+          "title": "Deterministic Finalizer",
+          "description": "bundle / artifact / task finalize 目前不走独立 LLM prompt。"
+        }
+      ]
+    }
+  ],
+  "extras": [
+    {
+      "id": "extra_iterate",
+      "tag": "附加",
+      "title": "迭代链路",
+      "description": "不属于核心五步 create 主链，但仍由后台统一管理。",
+      "color": "#7c2d12",
+      "bg": "#fff7ed",
+      "border": "#fdba74",
+      "promptKeys": [
+        "prompt.iterate_classify",
+        "prompt.param_adjust",
+        "prompt.element_change",
+        "prompt.mechanic_change"
+      ]
+    },
+    {
+      "id": "extra_tools",
+      "tag": "附加",
+      "title": "辅助工具",
+      "description": "不直接属于主链的 utility prompt。",
+      "color": "#475569",
+      "bg": "#f8fafc",
+      "border": "#cbd5e1",
+      "promptKeys": [
+        "prompt.expand_prompt_system"
+      ]
+    }
+  ],
+  "itemMeta": {
+    "prompt.dialogue_system": {
+      "displayName": "对话骨架",
+      "variables": ["{slot_summary}", "{missing_slots}"]
+    },
+    "prompt.dialogue_reply_system": {
+      "displayName": "专家回复系统层",
+      "variables": ["{base_prompt}"]
+    },
+    "prompt.dialogue_reply_user_template_zh": {
+      "displayName": "中文专家回复模板",
+      "variables": ["{initial_idea}", "{latest_user_message}", "{recent_conversation}", "{inferred_direction}", "{draft_summary}", "{current_question}", "{next_best_question_reason}", "{ready_to_generate}", "{safe_fallback_reply}"]
+    },
+    "prompt.dialogue_reply_user_template_en": {
+      "displayName": "英文专家回复模板",
+      "variables": ["{initial_idea}", "{latest_user_message}", "{recent_conversation}", "{inferred_direction}", "{draft_summary}", "{current_question}", "{next_best_question_reason}", "{ready_to_generate}", "{safe_fallback_reply}"]
+    },
+    "prompt.slot_extraction_system": {
+      "displayName": "多轮 slot 抽取"
+    },
+    "prompt.slot_output_contract": {
+      "displayName": "slot 输出契约",
+      "variables": ["{slot_json_schema}"]
+    },
+    "prompt.slot_json_repair_system": {
+      "displayName": "slot JSON 修复系统层"
+    },
+    "prompt.slot_json_repair_user_template": {
+      "displayName": "slot JSON 修复模板",
+      "variables": ["{source_text}", "{raw_parser_output}"]
+    },
+    "prompt.intent_parse_system": {
+      "displayName": "单轮 intent 解析"
+    },
+    "prompt.intent_detail_template": {
+      "displayName": "意图细节块",
+      "variables": ["{core_mechanic}", "{ui_language}", "{theme}", "{win_condition}", "{reference_line}", "{special_rules_block}"]
+    },
+    "prompt.runtime_contract_summary": {
+      "displayName": "运行时约束摘要",
+      "variables": ["{runtime_profile}", "{contract_version}", "{bundle_id}", "{layer_keys}", "{required_states}", "{input_modes}", "{gestures}", "{forbidden_apis}", "{orientation}", "{ui_scale_mode}", "{hud_min}", "{hud_max}", "{title_min}", "{title_max}"]
+    },
+    "prompt.mobile_layout_guardrails": {
+      "displayName": "生成态移动布局约束",
+      "variables": ["{canvas_w}", "{canvas_h}", "{hud_font}"]
+    },
+    "prompt.iteration_mobile_layout_guardrails": {
+      "displayName": "迭代态移动布局约束"
+    },
+    "prompt.iteration_spec_context_template": {
+      "displayName": "迭代 spec 上下文",
+      "variables": ["{current_summary}", "{source_spec_summary}", "{source_bundle_context}", "{status}", "{visibility}", "{feedback}", "{conversation_text}"]
+    },
+    "bundle.product.intent_parse": {
+      "displayName": "Bundle · Intent Parse Policy"
+    },
+    "bundle.runtime.profile.casual_arcade": {
+      "displayName": "Bundle · Runtime Profile Fallback / casual_arcade"
+    },
+    "bundle.runtime.profile.casual_lane": {
+      "displayName": "Bundle · Runtime Profile Fallback / casual_lane"
+    },
+    "bundle.runtime.profile.puzzle_grid": {
+      "displayName": "Bundle · Runtime Profile Fallback / puzzle_grid"
+    },
+    "bundle.runtime.profile.casual_action": {
+      "displayName": "Bundle · Runtime Profile Fallback / casual_action"
+    },
+    "bundle.runtime.profile.tap_challenge": {
+      "displayName": "Bundle · Runtime Profile Fallback / tap_challenge"
+    },
+    "prompt.game_design_template": {
+      "displayName": "GDD 模板"
+    },
+    "prompt.code_gen_system": {
+      "displayName": "代码生成系统层"
+    },
+    "prompt.platform_standard": {
+      "displayName": "平台标准"
+    },
+    "prompt.generate_request_context_template": {
+      "displayName": "原始请求上下文",
+      "variables": ["{request_text}"]
+    },
+    "prompt.generate_alignment_reminder": {
+      "displayName": "生成对齐提醒"
+    },
+    "bundle.runtime.locked_contract": {
+      "displayName": "Bundle · Locked Contract"
+    },
+    "bundle.product.policy": {
+      "displayName": "Bundle · Product Policy"
+    },
+    "bundle.product.logic_generate": {
+      "displayName": "Bundle · Logic Generate Policy"
+    },
+    "prompt.code_review_system": {
+      "displayName": "语义 Review 系统层"
+    },
+    "prompt.code_review_template": {
+      "displayName": "语义 Review 模板",
+      "variables": ["{code_preview}"]
+    },
+    "prompt.qa_runtime_contract_block": {
+      "displayName": "QA 运行时约束块",
+      "variables": ["{contract_version}", "{runtime_profile}", "{required_states}", "{input_modes}", "{forbidden_apis}"]
+    },
+    "prompt.qa_instruction_input_handlers": {
+      "displayName": "QA Checklist · Input Handlers"
+    },
+    "prompt.qa_instruction_visible_feedback": {
+      "displayName": "QA Checklist · Visible Feedback"
+    },
+    "prompt.qa_instruction_terminal_state": {
+      "displayName": "QA Checklist · Terminal State"
+    },
+    "prompt.qa_instruction_storage": {
+      "displayName": "QA Checklist · Storage"
+    },
+    "prompt.qa_instruction_blank_screen": {
+      "displayName": "QA Checklist · Blank Screen"
+    },
+    "prompt.qa_instruction_runtime_js_error": {
+      "displayName": "QA Checklist · Runtime JS Error"
+    },
+    "prompt.qa_instruction_mobile_layout": {
+      "displayName": "QA Checklist · Mobile Layout"
+    },
+    "prompt.qa_instruction_forbidden_api": {
+      "displayName": "QA Checklist · Forbidden API"
+    },
+    "prompt.qa_instruction_generic": {
+      "displayName": "QA Checklist · Generic"
+    },
+    "prompt.qa_fix": {
+      "displayName": "全量 QA 修复",
+      "variables": ["{game_type}", "{runtime_contract_block}", "{error_list}", "{code}"]
+    },
+    "prompt.qa_fix_fast": {
+      "displayName": "定向 QA 修复",
+      "variables": ["{game_type}", "{runtime_contract_block}", "{error_list}", "{targeted_instructions}", "{code}"]
+    },
+    "bundle.repair.input_contract": {
+      "displayName": "Bundle Repair · Input Contract",
+      "variables": ["{targeted_instructions}", "{runtime_contract_block}", "{error_list}", "{code}"]
+    },
+    "bundle.repair.syntax_structural": {
+      "displayName": "Bundle Repair · Syntax / Structural",
+      "variables": ["{targeted_instructions}", "{runtime_contract_block}", "{error_list}", "{code}"]
+    },
+    "bundle.repair.terminal_state": {
+      "displayName": "Bundle Repair · Terminal State",
+      "variables": ["{targeted_instructions}", "{runtime_contract_block}", "{error_list}", "{code}"]
+    },
+    "bundle.repair.mobile_layout": {
+      "displayName": "Bundle Repair · Mobile Layout",
+      "variables": ["{targeted_instructions}", "{runtime_contract_block}", "{error_list}", "{code}"]
+    },
+    "bundle.repair.forbidden_api": {
+      "displayName": "Bundle Repair · Forbidden API",
+      "variables": ["{targeted_instructions}", "{runtime_contract_block}", "{error_list}", "{code}"]
+    },
+    "bundle.repair.runtime_startup": {
+      "displayName": "Bundle Repair · Runtime Startup",
+      "variables": ["{targeted_instructions}", "{runtime_contract_block}", "{error_list}", "{code}"]
+    },
+    "bundle.repair.generic": {
+      "displayName": "Bundle Repair · Generic",
+      "variables": ["{targeted_instructions}", "{runtime_contract_block}", "{error_list}", "{code}"]
+    },
+    "prompt.iterate_classify": {
+      "displayName": "迭代反馈分类",
+      "variables": ["{feedback}"]
+    },
+    "prompt.param_adjust": {
+      "displayName": "参数调整",
+      "variables": ["{feedback}", "{code}"]
+    },
+    "prompt.element_change": {
+      "displayName": "元素调整",
+      "variables": ["{feedback}", "{code}"]
+    },
+    "prompt.mechanic_change": {
+      "displayName": "机制改动",
+      "variables": ["{history}", "{feedback}", "{code}"]
+    },
+    "prompt.expand_prompt_system": {
+      "displayName": "短描述扩写工具"
+    }
+  }
+}

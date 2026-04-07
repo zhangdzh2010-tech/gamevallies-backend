@@ -6,24 +6,35 @@ import sys
 import unittest
 from unittest.mock import AsyncMock, patch
 
+from fastapi.testclient import TestClient
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.api.models import (
     AnalyzeDialogueTurnRequest,
+    AnalyzeDialogueTurnResponse,
     ChatRequest,
     ConversationMessage,
     DraftPlanFromInputRequest,
+    DialogueQuestion,
+    PlanDraft,
     SpecFromSlotsRequest,
+    SlotState,
 )
+from src.api.endpoints import generate as generate_api
 from src.engine.dialogue_engine import (
     DialogueEngine,
     FAST_DIALOGUE_SLOT_OVERALL_TIMEOUT_S,
     FAST_DIALOGUE_SLOT_REQUEST_TIMEOUT_S,
+    _build_dialogue_reply_system_prompt_from_catalog,
+    _build_dialogue_reply_user_prompt_from_catalog,
     _infer_game_type_from_sparse_context,
     _infer_slots_from_text,
+    _infer_theme_from_context,
     _normalize_slot_payload,
     _safe_parse_json,
 )
+from src.main import app
 from src.services.llm_client import LLMResponseTruncatedError
 
 DIALOGUE_TEST_PROMPTS = {
@@ -39,6 +50,22 @@ DIALOGUE_TEST_PROMPTS = {
         "Source user request:\n{source_text}\n\n"
         "Raw parser output:\n{raw_parser_output}\n\n"
         "Normalize the raw parser output into the required JSON object now."
+    ),
+    "prompt.dialogue_reply_system": (
+        "{base_prompt}\n\n"
+        "DIALOGUE_REPLY_STYLE_FROM_DB"
+    ),
+    "prompt.dialogue_reply_user_template_zh": (
+        "ZH_TEMPLATE_FROM_DB\n"
+        "Initial idea: {initial_idea}\n"
+        "Latest user message: {latest_user_message}\n"
+        "Safe fallback wording: {safe_fallback_reply}"
+    ),
+    "prompt.dialogue_reply_user_template_en": (
+        "EN_TEMPLATE_FROM_DB\n"
+        "Initial idea: {initial_idea}\n"
+        "Latest user message: {latest_user_message}\n"
+        "Safe fallback wording: {safe_fallback_reply}"
     ),
 }
 
@@ -82,7 +109,7 @@ class TestDialogueEngine(unittest.TestCase):
         self.assertGreater(response.confidence_by_slot["core_mechanic"], 0.6)
         self.assertIsNotNone(response.plan_draft)
         self.assertTrue(response.plan_draft.summary)
-        self.assertIn("最关键的信息", response.reply)
+        self.assertIn("最重要的问题", response.reply)
 
     def test_draft_plan_from_input_returns_plan_and_confidence_metadata(self):
         engine = DialogueEngine()
@@ -178,6 +205,98 @@ class TestDialogueEngine(unittest.TestCase):
         self.assertIsNotNone(response.current_question)
         self.assertEqual(response.current_question.slot_key, "win_condition")
         self.assertTrue(response.ready_to_generate)
+
+    def test_infer_slots_from_reference_game_applies_reference_defaults(self):
+        inferred = _infer_slots_from_text("帮我创建一个类似羊了个羊的游戏")
+
+        self.assertEqual(inferred["reference_game"], "羊了个羊")
+        self.assertEqual(inferred["game_type"], "puzzle")
+        self.assertEqual(inferred["input_method"], "tap")
+        self.assertIn("三消", inferred["core_mechanic"])
+
+    def test_infer_theme_from_context_ignores_single_character_false_positive_markers(self):
+        self.assertNotEqual(_infer_theme_from_context("做一个接水果游戏"), "ocean")
+
+    def test_analyze_turn_reference_meta_question_acknowledges_reference_without_echoing_bad_slot_text(self):
+        engine = DialogueEngine()
+
+        with patch.object(engine._client, "is_enabled", return_value=True), patch.object(
+            engine,
+            "_extract_slots_from_conversation",
+            new=AsyncMock(),
+        ) as mock_extract:
+            response = asyncio.run(
+                engine.analyze_turn(
+                    AnalyzeDialogueTurnRequest(
+                        session_id="creation-ref-1",
+                        user_id="user-ref-1",
+                        conversation=[
+                            ConversationMessage(role="user", content="帮我创建一个类似羊了个羊的游戏", kind="prompt"),
+                            ConversationMessage(role="assistant", content="这一局里玩家怎样才算过关？", kind="question"),
+                            ConversationMessage(role="user", content="羊了个羊的游戏你了解吗", kind="answer"),
+                        ],
+                        initial_prompt="帮我创建一个类似羊了个羊的游戏",
+                        answered_slot_key="win_condition",
+                        answered_slot_prompt="这一局里玩家怎样才算过关？",
+                        latest_user_answer="羊了个羊的游戏你了解吗",
+                    )
+                )
+            )
+
+        mock_extract.assert_not_called()
+        self.assertEqual(response.slots.reference_game, "羊了个羊")
+        self.assertNotEqual(response.slots.win_condition, "羊了个羊的游戏你了解吗")
+        self.assertIn("羊了个羊", response.reply)
+        self.assertIn("了解", response.reply)
+        self.assertIsNotNone(response.current_question)
+        self.assertEqual(response.current_question.slot_key, "theme")
+        self.assertIn("羊了个羊", response.current_question.prompt)
+
+    def test_analyze_turn_stream_emits_reply_deltas_and_final_result(self):
+        engine = DialogueEngine()
+
+        async def fake_extract_slots(session, *, source_text, title=None):
+            session.slots.game_type = "funny"
+            session.slots.core_mechanic = "tap to hide"
+            session.slots.input_method = "tap"
+            return ["game_type", "core_mechanic", "input_method"]
+
+        async def fake_stream_reply(*, req, analysis):
+            yield "了解，"
+            yield "我先按办公室摸鱼喜剧来理解。"
+
+        async def collect_events():
+            items = []
+            async for item in engine.analyze_turn_stream(
+                AnalyzeDialogueTurnRequest(
+                    session_id="creation-stream-1",
+                    user_id="user-stream-1",
+                    conversation=[
+                        ConversationMessage(role="user", content="做一个办公室摸鱼游戏"),
+                    ],
+                    initial_prompt="做一个办公室摸鱼游戏",
+                )
+            ):
+                items.append(item)
+            return items
+
+        with patch.object(engine._client, "is_enabled", return_value=True), patch.object(
+            engine,
+            "_extract_slots_from_conversation",
+            new=AsyncMock(side_effect=fake_extract_slots),
+        ), patch.object(
+            engine,
+            "_stream_analyze_turn_reply",
+            new=fake_stream_reply,
+        ):
+            events = asyncio.run(collect_events())
+
+        self.assertGreaterEqual(len(events), 4)
+        self.assertEqual(events[0]["event"], "assistant.reply.delta")
+        self.assertEqual(events[1]["event"], "assistant.reply.delta")
+        self.assertEqual(events[-2]["event"], "assistant.reply.done")
+        self.assertEqual(events[-1]["event"], "analysis.result")
+        self.assertIn("办公室摸鱼喜剧", events[-2]["data"]["message"])
 
     def test_spec_from_slots_preserves_tier_and_uses_preferred_game_type_fallback(self):
         engine = DialogueEngine()
@@ -340,6 +459,61 @@ class TestDialogueEngine(unittest.TestCase):
         self.assertFalse(mock_complete.await_args_list[0].kwargs["prefer_fast"])
         self.assertEqual(mock_complete.await_args_list[1].kwargs["step_key"], "dialogue.reply")
         self.assertTrue(mock_complete.await_args_list[1].kwargs["prefer_fast"])
+        self.assertIn("DIALOGUE_REPLY_PROMPT_FROM_DB", mock_complete.await_args_list[1].kwargs["system"])
+
+    def test_dialogue_reply_catalog_helpers_build_config_driven_prompts(self):
+        analysis = AnalyzeDialogueTurnResponse(
+            reply="鍏堟寜鍔ㄧ墿鍥€冭劚璺戦叿杩欎釜鏂瑰悜鏀跺彛銆?",
+            slots=SlotState(
+                game_type="casual",
+                core_mechanic="swipe to dodge",
+                theme="zoo escape",
+                input_method="swipe",
+                win_condition="rescue all animals",
+                difficulty="easy",
+                reference_game="Temple Run",
+            ),
+            missing_required=[],
+            ready_to_generate=False,
+            current_question=DialogueQuestion(
+                slot_key="win_condition",
+                label="鑳滃埄鐩爣",
+                prompt="杩欏眬鐨勯€氬叧鐩爣鏄粈涔堬紵",
+            ),
+            next_best_question_reason="Need to lock the success beat.",
+            plan_draft=PlanDraft(
+                summary="鍔ㄧ墿鍥€冭劚",
+                interaction="婊戝姩韬查伩闅滅",
+                objective="鎶婂姩鐗╁甫鍑哄姩鐗╁洯",
+            ),
+        )
+        request = AnalyzeDialogueTurnRequest(
+            session_id="creation-catalog-1",
+            user_id="user-1",
+            conversation=[
+                ConversationMessage(role="user", content="鍋氫竴涓姩鐗╁洯閫冭劚璺戦叿娓告垙"),
+            ],
+            initial_prompt="鍋氫竴涓姩鐗╁洯閫冭劚璺戦叿娓告垙",
+            latest_user_answer="鍋氫竴涓姩鐗╁洯閫冭劚璺戦叿娓告垙",
+        )
+
+        def fake_get_prompt(key: str, default=None):
+            if key == "prompt.dialogue_system":
+                return "DIALOGUE_REPLY_PROMPT_FROM_DB\nCurrent slot fill state: {slot_summary}\nMissing required info: {missing_slots}"
+            return DIALOGUE_TEST_PROMPTS.get(key, default)
+
+        with patch("src.engine.dialogue_engine.require_prompt", side_effect=fake_get_prompt):
+            system_prompt = _build_dialogue_reply_system_prompt_from_catalog(analysis)
+            user_prompt = _build_dialogue_reply_user_prompt_from_catalog(
+                request=request,
+                analysis=analysis,
+                source_text=request.initial_prompt or "",
+            )
+
+        self.assertIn("DIALOGUE_REPLY_PROMPT_FROM_DB", system_prompt)
+        self.assertIn("DIALOGUE_REPLY_STYLE_FROM_DB", system_prompt)
+        self.assertIn("ZH_TEMPLATE_FROM_DB", user_prompt)
+        self.assertIn("Safe fallback wording:", user_prompt)
 
     def test_dialogue_slot_extract_fast_path_skips_truncation_retry_without_excerpt(self):
         engine = DialogueEngine()
@@ -540,6 +714,125 @@ class TestDialogueEngine(unittest.TestCase):
         kwargs = mock_complete.await_args.kwargs
         self.assertTrue(kwargs["allow_provider_fallback"])
         self.assertEqual(kwargs["max_tokens"], 640)
+
+    def test_analyze_turn_stream_falls_back_to_full_reply_after_partial_stream_failure(self):
+        engine = DialogueEngine()
+        fallback_reply = "鎴戝厛鎶婅繖灞€瀹氫箟鎴愬姙鍏鎽搁奔鍠滃墽銆傛渶鍚庡啀甯垜纭涓€涓嬬帺瀹舵€庝箞鎵嶇畻杩囧叧锛?"
+
+        async def fake_stream_reply(*, req, analysis):
+            yield "鍗婂彞"
+            raise RuntimeError("stream interrupted")
+
+        async def collect_events():
+            items = []
+            async for item in engine.analyze_turn_stream(
+                AnalyzeDialogueTurnRequest(
+                    session_id="creation-stream-fallback",
+                    user_id="user-stream-fallback",
+                    conversation=[
+                        ConversationMessage(role="user", content="鍋氫竴涓姙鍏鎽搁奔娓告垙"),
+                    ],
+                    initial_prompt="鍋氫竴涓姙鍏鎽搁奔娓告垙",
+                )
+            ):
+                items.append(item)
+            return items
+
+        fake_analysis = AnalyzeDialogueTurnResponse(
+            reply=fallback_reply,
+            slots=SlotState(
+                game_type="funny",
+                core_mechanic="tap to hide",
+                theme="office",
+                input_method="tap",
+                win_condition="survive the shift",
+                difficulty="medium",
+            ),
+            slots_updated=["game_type", "core_mechanic"],
+            missing_required=["win_condition"],
+            slot_fill_pct=0.83,
+            ready_to_generate=False,
+            current_question=DialogueQuestion(
+                slot_key="win_condition",
+                label="Win Condition",
+                prompt="鐜╁鎬庝箞鎵嶇畻杩囧叧锛?",
+                skippable=True,
+            ),
+            plan_draft=PlanDraft(
+                title="涓婄彮鎽搁奔",
+                summary="鍔炲叕瀹ゆ懜楸兼悶绗戝皬娓告垙",
+                concept="鍔炲叕瀹ゆ懜楸",
+                interaction="鐐瑰嚮鍒囨崲鎽搁奔鍔ㄤ綔",
+                objective="鎾戝埌涓嬪姙",
+                pacing="蹇妭濂?",
+                visual_direction="neon office",
+                signature_moment="鑰佹澘绐佺劧宸℃煡",
+            ),
+        )
+
+        with patch.object(engine, "analyze_turn", new=AsyncMock(return_value=fake_analysis)), patch.object(
+            engine,
+            "_stream_analyze_turn_reply",
+            new=fake_stream_reply,
+        ):
+            events = asyncio.run(collect_events())
+
+        self.assertEqual(events[0]["event"], "assistant.reply.delta")
+        self.assertEqual(events[0]["data"]["delta"], "鍗婂彞")
+        self.assertEqual(events[-2]["event"], "assistant.reply.done")
+        self.assertEqual(events[-2]["data"]["message"], fallback_reply)
+        self.assertEqual(events[-1]["event"], "analysis.result")
+        self.assertEqual(events[-1]["data"]["reply"], fallback_reply)
+
+    def test_dialogue_stream_endpoint_emits_sse_events(self):
+        async def fake_stream(_request):
+            yield {
+                "event": "assistant.reply.delta",
+                "data": {
+                    "delta": "浜嗚В锛?",
+                    "accumulated": "浜嗚В锛?",
+                    "kind": "question",
+                    "chunkIndex": 0,
+                    "done": False,
+                },
+            }
+            yield {
+                "event": "assistant.reply.done",
+                "data": {
+                    "message": "浜嗚В锛屾垜鍏堢‘璁や竴涓嬭儨鍒╂柟寮忋€?",
+                    "kind": "question",
+                },
+            }
+            yield {
+                "event": "analysis.result",
+                "data": {
+                    "reply": "浜嗚В锛屾垜鍏堢‘璁や竴涓嬭儨鍒╂柟寮忋€?",
+                    "slots": {
+                        "game_type": "funny",
+                    },
+                    "slots_updated": ["game_type"],
+                    "missing_required": ["win_condition"],
+                    "slot_fill_pct": 0.33,
+                    "ready_to_generate": False,
+                },
+            }
+
+        with patch.object(generate_api._dialogue_engine, "analyze_turn_stream", side_effect=fake_stream):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/v1/ai/dialogue/analyze-turn/stream",
+                    json={
+                        "session_id": "creation-stream-api",
+                        "user_id": "user-stream-api",
+                        "initial_prompt": "鍋氫竴涓姙鍏鎽搁奔娓告垙",
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/event-stream", response.headers.get("content-type", ""))
+        self.assertIn("event: assistant.reply.delta", response.text)
+        self.assertIn("event: assistant.reply.done", response.text)
+        self.assertIn("event: analysis.result", response.text)
 
 
 if __name__ == "__main__":

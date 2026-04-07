@@ -1,7 +1,46 @@
 import axios from 'axios';
+import { Readable } from 'stream';
 import { CreationSessionService } from '../src/game/creation-session.service';
 
 jest.mock('axios');
+
+function buildSseEvent(event: string, payload: unknown) {
+  return `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
+}
+
+function buildAnalyzeTurnStream(payload: Record<string, any>) {
+  const reply = String(payload.reply || '');
+  const kind = payload.current_question ? 'question' : 'summary';
+  const midpoint = Math.max(1, Math.floor(reply.length / 2));
+  const firstDelta = reply.slice(0, midpoint);
+  const secondDelta = reply.slice(midpoint);
+
+  const events = [
+    buildSseEvent('assistant.reply.delta', {
+      delta: firstDelta,
+      accumulated: firstDelta,
+      kind,
+      chunkIndex: 0,
+      done: false,
+    }),
+    ...(secondDelta
+      ? [buildSseEvent('assistant.reply.delta', {
+          delta: secondDelta,
+          accumulated: `${firstDelta}${secondDelta}`,
+          kind,
+          chunkIndex: 1,
+          done: false,
+        })]
+      : []),
+    buildSseEvent('assistant.reply.done', {
+      message: reply,
+      kind,
+    }),
+    buildSseEvent('analysis.result', payload),
+  ];
+
+  return Readable.from(events);
+}
 
 describe('CreationSessionService', () => {
   let service: CreationSessionService;
@@ -34,6 +73,10 @@ describe('CreationSessionService', () => {
     };
     realtimeService = {
       publishSnapshot: jest.fn(),
+      publishPhase: jest.fn(),
+      publishReply: jest.fn(),
+      publishReplyDelta: jest.fn(),
+      publishReplyDone: jest.fn(),
       publishError: jest.fn(),
     };
     service = new CreationSessionService(
@@ -71,7 +114,7 @@ describe('CreationSessionService', () => {
     }));
     // Phase 2: async _finalizeSessionInit will call analyzeTurn
     (axios.post as jest.Mock).mockResolvedValueOnce({
-      data: {
+      data: buildAnalyzeTurnStream({
         reply: '我先补一个最关键的信息：玩家怎么才能赢？',
         slots: {
           game_type: 'funny',
@@ -116,7 +159,7 @@ describe('CreationSessionService', () => {
           prompt: '玩家怎么才算赢？',
           skippable: true,
         },
-      },
+      }),
     });
     // For the WS push findUnique after CAS update
     repo.findUnique.mockResolvedValue({
@@ -192,7 +235,7 @@ describe('CreationSessionService', () => {
 
     // AI analysis was called in the background
     expect(axios.post).toHaveBeenCalledWith(
-      'https://ai-engine.example/api/v1/ai/dialogue/analyze-turn',
+      'https://ai-engine.example/api/v1/ai/dialogue/analyze-turn/stream',
       expect.objectContaining({
         session_id: 'session-1',
         user_id: 'user-1',
@@ -200,7 +243,7 @@ describe('CreationSessionService', () => {
         generation_tier: 'showcase',
         initial_prompt: '做一个办公室摸鱼游戏',
       }),
-      { timeout: 5000 },
+      { timeout: 5000, responseType: 'stream' },
     );
     // CAS update transitions from 'initializing' to 'ready'/'collecting'
     expect(repo.updateMany).toHaveBeenCalledWith(expect.objectContaining({
@@ -230,6 +273,19 @@ describe('CreationSessionService', () => {
         status: 'ready',
         readyToGenerate: true,
       }),
+    );
+    expect(realtimeService.publishPhase).toHaveBeenCalledWith(
+      'user-1',
+      'session-1',
+      'analyzing',
+      'analyzing_initial_brief',
+    );
+    expect(realtimeService.publishReplyDelta).toHaveBeenCalled();
+    expect(realtimeService.publishReplyDone).toHaveBeenCalledWith(
+      'user-1',
+      'session-1',
+      expect.stringContaining('玩家怎么才能赢'),
+      'question',
     );
   });
 
@@ -359,7 +415,7 @@ describe('CreationSessionService', () => {
       .mockResolvedValueOnce(updatedSession);
     repo.updateMany.mockResolvedValue({ count: 1 });
     (axios.post as jest.Mock).mockResolvedValueOnce({
-      data: {
+      data: buildAnalyzeTurnStream({
         reply: '我已经整理出一版可生成方案了。',
         slots: updatedSession.slotState,
         slots_updated: ['theme', 'win_condition', 'difficulty'],
@@ -367,7 +423,7 @@ describe('CreationSessionService', () => {
         slot_fill_pct: 1,
         ready_to_generate: true,
         current_question: null,
-      },
+      }),
     });
 
     const snapshot = await service.appendMessage('user-2', 'session-2', {
@@ -376,7 +432,7 @@ describe('CreationSessionService', () => {
     });
 
     expect(axios.post).toHaveBeenCalledWith(
-      'https://ai-engine.example/api/v1/ai/dialogue/analyze-turn',
+      'https://ai-engine.example/api/v1/ai/dialogue/analyze-turn/stream',
       expect.objectContaining({
         session_id: 'session-2',
         user_id: 'user-2',
@@ -385,7 +441,7 @@ describe('CreationSessionService', () => {
         answered_slot_prompt: '它发生在什么场景里？',
         latest_user_answer: '现代办公室，老板会突然巡查',
       }),
-      { timeout: 5000 },
+      { timeout: 5000, responseType: 'stream' },
     );
     expect(repo.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({
@@ -410,6 +466,19 @@ describe('CreationSessionService', () => {
       revision: 2,
       readyToGenerate: true,
     }));
+    expect(realtimeService.publishPhase).toHaveBeenCalledWith(
+      'user-2',
+      'session-2',
+      'analyzing',
+      'analyzing_user_answer',
+    );
+    expect(realtimeService.publishReplyDelta).toHaveBeenCalled();
+    expect(realtimeService.publishReplyDone).toHaveBeenCalledWith(
+      'user-2',
+      'session-2',
+      expect.stringContaining('可生成方案'),
+      'summary',
+    );
   });
 
   it('compiles slots into a source spec before generating the game', async () => {

@@ -562,6 +562,12 @@ export class AdminController {
     return ok(await this.adminService.initDefaultPrompts(), 'Prompts initialized');
   }
 
+  @Post('admin/configs/refresh-prompts')
+  async refreshPrompts(@Headers('x-admin-token') token: string) {
+    checkAdminToken(token);
+    return ok(await this.adminService.refreshPromptConfigs(), 'Prompt configs refreshed');
+  }
+
   @Post('admin/configs/init-timeouts')
   async initTimeouts(@Headers('x-admin-token') token: string) {
     checkAdminToken(token);
@@ -583,6 +589,17 @@ export class AdminController {
     return ok(await this.adminService.listPromptBundles(status));
   }
 
+  @Put('admin/prompt-bundles/:id/:version')
+  async updatePromptBundle(
+    @Headers('x-admin-token') token: string,
+    @Param('id') id: string,
+    @Param('version') version: string,
+    @Body() body: any,
+  ) {
+    checkAdminToken(token);
+    return ok(await this.adminService.updatePromptBundle(id, Number(version), body), 'Prompt bundle saved');
+  }
+
   @Get('admin/runtime-profiles')
   async listRuntimeProfiles(
     @Headers('x-admin-token') token: string,
@@ -590,6 +607,22 @@ export class AdminController {
   ) {
     checkAdminToken(token);
     return ok(await this.adminService.listRuntimeProfiles(enabledOnly === 'true'));
+  }
+
+  @Put('admin/runtime-profiles/:id')
+  async updateRuntimeProfile(
+    @Headers('x-admin-token') token: string,
+    @Param('id') id: string,
+    @Body() body: any,
+  ) {
+    checkAdminToken(token);
+    return ok(await this.adminService.updateRuntimeProfile(id, body), 'Runtime profile saved');
+  }
+
+  @Get('admin/prompt-pipeline')
+  async getPromptPipeline(@Headers('x-admin-token') token: string) {
+    checkAdminToken(token);
+    return ok(await this.adminService.getPromptPipeline());
   }
 
   @Post('admin/migrate')

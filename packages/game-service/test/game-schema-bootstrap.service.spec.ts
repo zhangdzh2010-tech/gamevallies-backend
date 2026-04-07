@@ -64,4 +64,20 @@ describe('GameSchemaBootstrapService', () => {
       }),
     );
   });
+
+  it('seeds the default prompt catalog into system configs during bootstrap', async () => {
+    await service.onModuleInit();
+
+    const promptInsertCall = prisma.$executeRawUnsafe.mock.calls.find(
+      ([sql, _id, key, value]: [string, string, string, string]) =>
+        typeof sql === 'string'
+        && sql.includes('system_configs')
+        && key === 'prompt.dialogue_reply_system'
+        && typeof value === 'string'
+        && value.includes('{base_prompt}'),
+    );
+
+    expect(promptInsertCall).toBeTruthy();
+    expect(promptInsertCall?.[0]).toContain('INSERT IGNORE INTO system_configs');
+  });
 });

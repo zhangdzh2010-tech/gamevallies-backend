@@ -10,6 +10,31 @@ type CreationSessionRealtimePayload =
       timestamp: number;
     }
   | {
+      type: 'assistant.phase';
+      sessionId: string;
+      phase: 'analyzing' | 'replying';
+      label: string;
+      details?: Record<string, unknown>;
+      timestamp: number;
+    }
+  | {
+      type: 'assistant.reply.delta';
+      sessionId: string;
+      delta: string;
+      accumulated: string;
+      kind: 'question' | 'summary';
+      chunkIndex: number;
+      done: boolean;
+      timestamp: number;
+    }
+  | {
+      type: 'assistant.reply.done';
+      sessionId: string;
+      message: string;
+      kind: 'question' | 'summary';
+      timestamp: number;
+    }
+  | {
       type: 'session.error';
       sessionId: string;
       error: string;
@@ -87,6 +112,94 @@ export class CreationSessionRealtimeService {
     });
   }
 
+  publishPhase(
+    userId: string,
+    sessionId: string,
+    phase: 'analyzing' | 'replying',
+    label: string,
+    details?: Record<string, unknown>,
+  ): void {
+    this.getStream(this.streamKey(userId, sessionId))?.next({
+      type: 'assistant.phase',
+      sessionId,
+      phase,
+      label,
+      details,
+      timestamp: Date.now(),
+    });
+  }
+
+  publishReply(
+    userId: string,
+    sessionId: string,
+    message: string,
+    kind: 'question' | 'summary' = 'question',
+  ): void {
+    const stream = this.getStream(this.streamKey(userId, sessionId));
+    const normalized = String(message || '').trim();
+    if (!stream || !normalized) {
+      return;
+    }
+
+    const chunks = this.chunkReply(normalized);
+    let accumulated = '';
+    chunks.forEach((delta, index) => {
+      accumulated += delta;
+      this.publishReplyDelta(
+        userId,
+        sessionId,
+        delta,
+        accumulated,
+        kind,
+        index,
+        index === chunks.length - 1,
+      );
+    });
+
+    this.publishReplyDone(
+      userId,
+      sessionId,
+      normalized,
+      kind,
+    );
+  }
+
+  publishReplyDelta(
+    userId: string,
+    sessionId: string,
+    delta: string,
+    accumulated: string,
+    kind: 'question' | 'summary' = 'question',
+    chunkIndex = 0,
+    done = false,
+  ): void {
+    this.getStream(this.streamKey(userId, sessionId))?.next({
+      type: 'assistant.reply.delta',
+      sessionId,
+      delta,
+      accumulated,
+      kind,
+      chunkIndex,
+      done,
+      timestamp: Date.now(),
+    });
+  }
+
+  publishReplyDone(
+    userId: string,
+    sessionId: string,
+    message: string,
+    kind: 'question' | 'summary' = 'question',
+  ): void {
+    this.getStream(this.streamKey(userId, sessionId))?.next({
+      type: 'assistant.reply.done',
+      sessionId,
+      message: String(message || '').trim(),
+      kind,
+      timestamp: Date.now(),
+    });
+  }
+
   publishError(
     userId: string,
     sessionId: string,
@@ -118,6 +231,33 @@ export class CreationSessionRealtimeService {
 
   private getStream(key: string): Subject<CreationSessionRealtimePayload> | undefined {
     return this.streams.get(key);
+  }
+
+  private chunkReply(message: string): string[] {
+    const normalized = String(message || '').trim();
+    if (!normalized) {
+      return [];
+    }
+
+    const sentenceChunks = normalized
+      .split(/(?<=[。！？!?\.])\s*/u)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const chunks = sentenceChunks.length ? sentenceChunks : [normalized];
+    const flattened: string[] = [];
+
+    for (const chunk of chunks) {
+      if (chunk.length <= 48) {
+        flattened.push(chunk);
+        continue;
+      }
+
+      for (let index = 0; index < chunk.length; index += 32) {
+        flattened.push(chunk.slice(index, index + 32));
+      }
+    }
+
+    return flattened.filter(Boolean);
   }
 
   private bumpSubscribers(key: string, delta: number): void {

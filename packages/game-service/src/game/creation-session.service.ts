@@ -256,10 +256,16 @@ export class CreationSessionService {
     regionHint?: string,
   ): Promise<void> {
     const repo = this.getRepo();
+    this.realtimeService.publishPhase(userId, sessionId, 'analyzing', 'analyzing_initial_brief');
 
     let analysis: AnalyzeTurnResponsePayload;
     try {
-      analysis = await this.analyzeTurn(analyzePayload, regionHint);
+      analysis = await this.analyzeTurnWithRealtime(analyzePayload, {
+        regionHint,
+        userId,
+        sessionId,
+        replyPhaseLabel: 'streaming_first_reply',
+      });
     } catch (error: any) {
       // AI analysis failed → mark session as abandoned with error info
       const initError = this.extractAiError(error, 'Creation session initialization failed');
@@ -428,7 +434,8 @@ export class CreationSessionService {
     const metadata = this.normalizeMetadata(session.metadata);
     const skippedSlots = this.normalizeStringList(session.skippedSlots);
     const currentQuestion = this.normalizeQuestion(session.currentQuestion);
-    const analysis = await this.analyzeTurn(
+    this.realtimeService.publishPhase(userId, session.id, 'analyzing', 'analyzing_user_answer');
+    const analysis = await this.analyzeTurnWithRealtime(
       this.buildAnalyzeTurnPayload({
         sessionId: session.id,
         userId,
@@ -442,7 +449,12 @@ export class CreationSessionService {
         answeredSlot: currentQuestion,
         latestUserAnswer: dto.content,
       }),
-      this.asOptionalString(metadata.regionHint),
+      {
+        regionHint: this.asOptionalString(metadata.regionHint),
+        userId,
+        sessionId: session.id,
+        replyPhaseLabel: 'streaming_followup_reply',
+      },
     );
 
     const nextQuestion = this.normalizeQuestion(analysis.current_question);
@@ -528,7 +540,8 @@ export class CreationSessionService {
       ...(currentQuestion?.slotKey ? [currentQuestion.slotKey] : []),
     ]);
     const conversation = this.normalizeConversation(session.conversation);
-    const analysis = await this.analyzeTurn(
+    this.realtimeService.publishPhase(userId, session.id, 'analyzing', 'skipping_question_and_reframing');
+    const analysis = await this.analyzeTurnWithRealtime(
       this.buildAnalyzeTurnPayload({
         sessionId: session.id,
         userId,
@@ -541,7 +554,12 @@ export class CreationSessionService {
         initialPrompt: session.initialPrompt,
         advanceOnly: true,
       }),
-      this.asOptionalString(metadata.regionHint),
+      {
+        regionHint: this.asOptionalString(metadata.regionHint),
+        userId,
+        sessionId: session.id,
+        replyPhaseLabel: 'streaming_followup_reply',
+      },
     );
     const normalizedPlanDraft = this.normalizePlanDraft(analysis.plan_draft);
     const normalizedQuestionStrategy = this.normalizeQuestionStrategy(analysis.question_strategy);
@@ -805,6 +823,182 @@ export class CreationSessionService {
       }
       throw new InternalServerErrorException(message);
     }
+  }
+
+  private async analyzeTurnWithRealtime(
+    payload: AnalyzeTurnRequestPayload,
+    options: {
+      regionHint?: string;
+      userId: string;
+      sessionId: string;
+      replyPhaseLabel: string;
+    },
+  ): Promise<AnalyzeTurnResponsePayload> {
+    const aiEngineUrl = await this.gameService.getAiEngineBaseUrl(options.regionHint);
+    const timeoutMs = await this.gameService.getExpandPromptRequestTimeoutMs();
+
+    try {
+      const response = await axios.post(
+        `${aiEngineUrl}/api/v1/ai/dialogue/analyze-turn/stream`,
+        payload,
+        {
+          timeout: timeoutMs,
+          responseType: 'stream',
+        },
+      );
+      return await this.consumeAnalyzeTurnStream(response.data, options);
+    } catch (error: any) {
+      const status = error?.response?.status;
+      if (status === 404 || status === 405) {
+        const fallback = await this.analyzeTurn(payload, options.regionHint);
+        this.realtimeService.publishPhase(
+          options.userId,
+          options.sessionId,
+          'replying',
+          options.replyPhaseLabel,
+        );
+        this.realtimeService.publishReply(
+          options.userId,
+          options.sessionId,
+          fallback.reply,
+          this.resolveRealtimeReplyKind(fallback),
+        );
+        return fallback;
+      }
+
+      const message = this.extractAiError(error, 'Creation session analyze-turn failed');
+      const isUpstreamFailure = error?.code === 'ECONNABORTED'
+        || error?.code === 'ECONNREFUSED'
+        || error?.code === 'ETIMEDOUT';
+      if (isUpstreamFailure) {
+        throw new ServiceUnavailableException(message);
+      }
+      if (status && status >= 400 && status < 500) {
+        throw new BadRequestException(message);
+      }
+      throw new InternalServerErrorException(message);
+    }
+  }
+
+  private async consumeAnalyzeTurnStream(
+    stream: any,
+    options: {
+      userId: string;
+      sessionId: string;
+      replyPhaseLabel: string;
+    },
+  ): Promise<AnalyzeTurnResponsePayload> {
+    let buffer = '';
+    let eventName = 'message';
+    let dataLines: string[] = [];
+    let finalResult: AnalyzeTurnResponsePayload | null = null;
+    let replyPhasePublished = false;
+    let chunkIndex = 0;
+    let accumulatedReply = '';
+
+    const ensureReplyPhase = () => {
+      if (replyPhasePublished) {
+        return;
+      }
+      replyPhasePublished = true;
+      this.realtimeService.publishPhase(
+        options.userId,
+        options.sessionId,
+        'replying',
+        options.replyPhaseLabel,
+      );
+    };
+
+    const dispatchEvent = (rawEventName: string, rawPayload: string) => {
+      const normalizedPayload = String(rawPayload || '').trim();
+      if (!normalizedPayload) {
+        return;
+      }
+      const payload = JSON.parse(normalizedPayload);
+      switch (rawEventName) {
+        case 'assistant.reply.delta': {
+          ensureReplyPhase();
+          const delta = String(payload?.delta || '');
+          accumulatedReply = String(payload?.accumulated || `${accumulatedReply}${delta}`);
+          this.realtimeService.publishReplyDelta(
+            options.userId,
+            options.sessionId,
+            delta,
+            accumulatedReply,
+            payload?.kind === 'summary' ? 'summary' : 'question',
+            Number(payload?.chunkIndex ?? chunkIndex),
+            Boolean(payload?.done),
+          );
+          chunkIndex += 1;
+          break;
+        }
+        case 'assistant.reply.done': {
+          ensureReplyPhase();
+          const message = String(payload?.message || accumulatedReply || '');
+          accumulatedReply = message;
+          this.realtimeService.publishReplyDone(
+            options.userId,
+            options.sessionId,
+            message,
+            payload?.kind === 'summary' ? 'summary' : 'question',
+          );
+          break;
+        }
+        case 'analysis.result':
+          finalResult = payload as AnalyzeTurnResponsePayload;
+          break;
+        case 'error':
+          throw new Error(
+            this.stringifyErrorDetail(payload?.message || payload?.detail || payload, 'Creation session analyze-turn failed'),
+          );
+        default:
+          break;
+      }
+    };
+
+    const flushEvent = () => {
+      if (!dataLines.length) {
+        eventName = 'message';
+        return;
+      }
+      const rawPayload = dataLines.join('\n');
+      dataLines = [];
+      const currentEvent = eventName || 'message';
+      eventName = 'message';
+      dispatchEvent(currentEvent, rawPayload);
+    };
+
+    for await (const chunk of stream) {
+      buffer += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      let newlineIndex = buffer.indexOf('\n');
+      while (newlineIndex >= 0) {
+        let line = buffer.slice(0, newlineIndex);
+        buffer = buffer.slice(newlineIndex + 1);
+        if (line.endsWith('\r')) {
+          line = line.slice(0, -1);
+        }
+        if (!line) {
+          flushEvent();
+        } else if (line.startsWith(':')) {
+          // heartbeat / comment
+        } else if (line.startsWith('event:')) {
+          eventName = line.slice(6).trim() || 'message';
+        } else if (line.startsWith('data:')) {
+          dataLines.push(line.slice(5).trimStart());
+        }
+        newlineIndex = buffer.indexOf('\n');
+      }
+    }
+
+    if (buffer.trim()) {
+      dataLines.push(buffer.trim());
+    }
+    flushEvent();
+
+    if (!finalResult) {
+      throw new Error('Creation session analyze-turn stream missing final result');
+    }
+    return finalResult;
   }
 
   private async specFromSlots(
@@ -1299,5 +1493,11 @@ export class CreationSessionService {
       return 'standard';
     }
     return undefined;
+  }
+
+  private resolveRealtimeReplyKind(
+    analysis: Pick<AnalyzeTurnResponsePayload, 'current_question' | 'ready_to_generate'>,
+  ): 'question' | 'summary' {
+    return analysis.current_question ? 'question' : 'summary';
   }
 }

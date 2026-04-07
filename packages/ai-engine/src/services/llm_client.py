@@ -12,7 +12,7 @@ import math
 import re
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 from urllib.parse import urlparse, urlunparse
 
 import httpx
@@ -1446,6 +1446,95 @@ class LLMClient:
                 requested_request_timeout_s = next_timeout_s
                 timeout_attempt += 1
 
+    async def stream_complete(
+        self,
+        *,
+        messages: List[Message],
+        max_tokens: Optional[int] = None,
+        system: Optional[str] = None,
+        model: Optional[str] = None,
+        step_key: str = "default",
+        stage: str = "llm",
+        prefer_fast: bool = False,
+        request_timeout_s: Optional[int] = None,
+        overall_timeout_s: Optional[int] = None,
+        response_size_hint: Optional[str] = None,
+        context_scope: str = "request",
+        compression_policy: Optional[str] = None,
+    ) -> AsyncIterator[str]:
+        if not self.is_enabled():
+            raise RuntimeError("Real LLM mode is not configured")
+
+        route = gateway.resolve(
+            step_key=step_key,
+            prefer_fast=prefer_fast,
+            model_override=model,
+        )
+        effective_route = _apply_request_timeout_override(route, request_timeout_s)
+        effective_max_tokens, requested_max_tokens, limit_source = _resolve_gateway_output_limit(
+            effective_route,
+            requested_max_tokens=max_tokens,
+            response_size_hint=response_size_hint,
+        )
+        effective_route.route_snapshot = {
+            **dict(getattr(effective_route, "route_snapshot", {}) or {}),
+            "requested_max_tokens": int(requested_max_tokens),
+            "effective_max_tokens": int(effective_max_tokens),
+            "provider_max_tokens": _coerce_optional_int(getattr(effective_route, "max_tokens", None)),
+            "provider_context_window": _coerce_optional_int(getattr(effective_route, "context_window", None)),
+            "limit_source": limit_source,
+            "response_size_hint": _normalize_response_size_hint(response_size_hint),
+            "context_scope": context_scope,
+            "compression_policy": compression_policy,
+            "reserved_output_tokens": int(effective_max_tokens),
+            "stream": True,
+            **(
+                {"overall_timeout_s": int(overall_timeout_s)}
+                if overall_timeout_s is not None
+                else {}
+            ),
+        }
+
+        admission = await self._prepare_prompt_admission(
+            route=effective_route,
+            system=system,
+            messages=messages,
+            step_key=step_key,
+            compression_policy=compression_policy,
+            context_scope=context_scope,
+            reserved_output_tokens=effective_max_tokens,
+            limit_source=limit_source,
+        )
+        effective_route.route_snapshot = {
+            **effective_route.route_snapshot,
+            "requested_input_tokens": admission.requested_input_tokens,
+            "estimated_input_tokens": admission.estimated_input_tokens,
+            "allowed_input_tokens": admission.allowed_input_tokens,
+            "reserved_output_tokens": admission.reserved_output_tokens,
+            "safety_margin_tokens": admission.safety_margin_tokens,
+            "strict_admission": admission.strict_admission,
+            "task_memory_injected": admission.task_memory_injected,
+            "task_memory_compact": admission.task_memory_compact,
+            "compression_summary": list(admission.compression_summary),
+            "prompt_fingerprint": admission.prompt_fingerprint,
+            "prompt_dedup_applied": admission.prompt_dedup_applied,
+            "prompt_dedup_base_input_tokens": admission.prompt_dedup_base_input_tokens,
+            "prompt_dedup_saved_tokens_estimate": admission.prompt_dedup_saved_tokens_estimate,
+            "prompt_dedup_removed_block_count": admission.prompt_dedup_removed_block_count,
+            "prompt_dedup_removed_blocks": list(admission.prompt_dedup_removed_blocks),
+            "prompt_dedup_summary": list(admission.prompt_dedup_summary),
+        }
+
+        async for delta in self._stream_with_route(
+            route=effective_route,
+            messages=admission.messages,
+            max_tokens=effective_max_tokens,
+            system=admission.system,
+            step_key=step_key,
+            stage=stage,
+        ):
+            yield delta
+
     async def _complete_with_route(
         self,
         *,
@@ -1656,6 +1745,166 @@ class LLMClient:
         finally:
             semaphore.release()
 
+    async def _stream_with_route(
+        self,
+        *,
+        route: Any,
+        messages: List[Message],
+        max_tokens: int,
+        system: Optional[str],
+        step_key: str,
+        stage: str,
+    ) -> AsyncIterator[str]:
+        semaphore = _llm_call_semaphore(_llm_max_concurrency())
+        queue_started = time.perf_counter()
+        await semaphore.acquire()
+        queue_wait_ms = int((time.perf_counter() - queue_started) * 1000)
+        started_at = time.time()
+        stop_event = asyncio.Event()
+        heartbeat_task: Optional[asyncio.Task[Any]] = None
+        emitted_chars = 0
+        try:
+            await self._emit_task_activity(
+                route=route,
+                stage=stage,
+                step_key=step_key,
+                state="started",
+                elapsed_ms=0,
+            )
+            heartbeat_task = asyncio.create_task(
+                self._heartbeat_loop(
+                    route=route,
+                    stage=stage,
+                    step_key=step_key,
+                    started_at=started_at,
+                    stop_event=stop_event,
+                )
+            )
+            route_snapshot = dict(route.route_snapshot or {})
+            if queue_wait_ms > 0:
+                route_snapshot["queue_wait_ms"] = queue_wait_ms
+            route.route_snapshot = route_snapshot
+
+            if route.provider_type != "openai_compatible":
+                raise RuntimeError(f"Streaming is not supported for provider type: {route.provider_type}")
+
+            usage_snapshot = LLMUsageSnapshot()
+            async for delta, usage_snapshot in self._stream_openai_compatible(
+                route=route,
+                messages=messages,
+                max_tokens=max_tokens,
+                system=system,
+            ):
+                emitted_chars += len(delta)
+                yield delta
+
+            latency_ms = int((time.time() - started_at) * 1000)
+            if heartbeat_task is not None:
+                await self._finish_heartbeat(stop_event=stop_event, heartbeat_task=heartbeat_task)
+            await self._emit_task_activity(
+                route=route,
+                stage=stage,
+                step_key=step_key,
+                state="completed",
+                elapsed_ms=latency_ms,
+            )
+            await gateway.emit_llm_call_log({
+                "stage": stage,
+                "stepKey": step_key,
+                "providerId": route.provider_id,
+                "providerName": route.provider_name,
+                "providerType": route.provider_type,
+                "region": route.region,
+                "model": route.model,
+                "requestTimeoutS": route.request_timeout_s,
+                "connectTimeoutS": route.connect_timeout_s,
+                "latencyMs": latency_ms,
+                "success": True,
+                "inputTokens": usage_snapshot.input_tokens,
+                "outputTokens": usage_snapshot.output_tokens,
+                "totalTokens": usage_snapshot.total_tokens,
+                "configVersion": route.config_version,
+                "routeSnapshot": {
+                    **route_snapshot,
+                    "streamed_output_chars": emitted_chars,
+                },
+                "outputClass": route.route_snapshot.get("output_class_for_step", ""),
+                "isPrimaryProvider": route.route_snapshot.get("is_primary_provider", True),
+                "failoverReason": route.route_snapshot.get("failover_reason"),
+                "providerVerified": route.route_snapshot.get("provider_verified"),
+            })
+        except Exception as exc:
+            http_status = None
+            upstream_request_id = None
+            error_body_excerpt = None
+            input_tokens = None
+            output_tokens = None
+            total_tokens = None
+
+            if isinstance(exc, httpx.HTTPStatusError):
+                http_status = exc.response.status_code
+                upstream_request_id = _response_request_id(exc.response.headers)
+                error_body_excerpt = exc.response.text[:1000]
+            elif isinstance(exc, LLMResponseTruncatedError):
+                upstream_request_id = exc.upstream_request_id
+                error_body_excerpt = exc.response_excerpt
+                input_tokens = exc.input_tokens
+                output_tokens = exc.output_tokens
+                total_tokens = exc.total_tokens
+            elif isinstance(exc, OpenAICompatibleResponseParseError):
+                upstream_request_id = exc.upstream_request_id
+                error_body_excerpt = exc.response_excerpt
+                input_tokens = exc.input_tokens
+                output_tokens = exc.output_tokens
+                total_tokens = exc.total_tokens
+            elif isinstance(exc, httpx.RequestError):
+                error_body_excerpt = str(exc)
+
+            latency_ms = int((time.time() - started_at) * 1000)
+            if heartbeat_task is not None:
+                await self._finish_heartbeat(stop_event=stop_event, heartbeat_task=heartbeat_task)
+            await self._emit_task_activity(
+                route=route,
+                stage=stage,
+                step_key=step_key,
+                state="failed",
+                elapsed_ms=latency_ms,
+                error_message=str(exc),
+            )
+            await gateway.emit_llm_call_log({
+                "stage": stage,
+                "stepKey": step_key,
+                "providerId": route.provider_id,
+                "providerName": route.provider_name,
+                "providerType": route.provider_type,
+                "region": route.region,
+                "model": route.model,
+                "requestTimeoutS": route.request_timeout_s,
+                "connectTimeoutS": route.connect_timeout_s,
+                "latencyMs": latency_ms,
+                "httpStatus": http_status,
+                "success": False,
+                "upstreamRequestId": upstream_request_id,
+                "errorCode": exc.__class__.__name__,
+                "errorMessage": str(exc),
+                "errorBodyExcerpt": error_body_excerpt,
+                "inputTokens": input_tokens,
+                "outputTokens": output_tokens,
+                "totalTokens": total_tokens,
+                "configVersion": route.config_version,
+                "routeSnapshot": {
+                    **dict(route.route_snapshot or {}),
+                    "streamed_output_chars": emitted_chars,
+                },
+                "outputClass": route.route_snapshot.get("output_class_for_step", ""),
+                "isPrimaryProvider": route.route_snapshot.get("is_primary_provider", True),
+                "failoverReason": route.route_snapshot.get("failover_reason"),
+                "providerVerified": route.route_snapshot.get("provider_verified"),
+            })
+            raise
+        finally:
+            semaphore.release()
+
     async def _finish_heartbeat(
         self,
         *,
@@ -1842,3 +2091,139 @@ class LLMClient:
             )
 
         return LLMCompletionResult(text=text, usage=usage_snapshot)
+
+    async def _stream_openai_compatible(
+        self,
+        *,
+        route: Any,
+        messages: List[Message],
+        max_tokens: int,
+        system: Optional[str],
+    ) -> AsyncIterator[tuple[str, LLMUsageSnapshot]]:
+        payload_messages: List[Message] = []
+        if system:
+            payload_messages.append({"role": "system", "content": system})
+        payload_messages.extend(messages)
+
+        payload = {
+            "model": route.model,
+            "messages": payload_messages,
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+        headers = {
+            "Authorization": f"Bearer {route.api_key}",
+            "Content-Type": "application/json",
+        }
+        url = _build_openai_compatible_chat_url(route.base_url)
+        client = _llm_http_client()
+
+        async with client.stream(
+            "POST",
+            url,
+            headers=headers,
+            json=payload,
+            timeout=httpx.Timeout(route.request_timeout_s, connect=route.connect_timeout_s),
+        ) as response:
+            response.raise_for_status()
+            upstream_request_id = _response_request_id(response.headers)
+            accumulated = ""
+            finish_reason = ""
+            usage_snapshot = LLMUsageSnapshot()
+            event_name = "message"
+            data_lines: list[str] = []
+
+            async def _flush_event() -> AsyncIterator[tuple[str, LLMUsageSnapshot]]:
+                nonlocal event_name, data_lines, accumulated, finish_reason, usage_snapshot
+                if not data_lines:
+                    event_name = "message"
+                    return
+                raw_data = "\n".join(data_lines).strip()
+                data_lines = []
+                event_name = "message"
+                if not raw_data or raw_data == "[DONE]":
+                    return
+                try:
+                    data = json.loads(raw_data)
+                except ValueError as exc:
+                    raise OpenAICompatibleResponseParseError(
+                        "OpenAI-compatible stream returned invalid JSON",
+                        response_excerpt=raw_data[:1000] or None,
+                        upstream_request_id=upstream_request_id,
+                    ) from exc
+
+                chunk_usage = _extract_openai_usage(data)
+                if chunk_usage.input_tokens is not None:
+                    usage_snapshot.input_tokens = chunk_usage.input_tokens
+                if chunk_usage.output_tokens is not None:
+                    usage_snapshot.output_tokens = chunk_usage.output_tokens
+                if chunk_usage.total_tokens is not None:
+                    usage_snapshot.total_tokens = chunk_usage.total_tokens
+                if chunk_usage.raw:
+                    usage_snapshot.raw = chunk_usage.raw
+
+                try:
+                    choice = data["choices"][0]
+                except (KeyError, IndexError, TypeError) as exc:
+                    raise OpenAICompatibleResponseParseError(
+                        "Unexpected OpenAI-compatible stream payload",
+                        response_excerpt=raw_data[:1000] or None,
+                        upstream_request_id=upstream_request_id,
+                        input_tokens=usage_snapshot.input_tokens,
+                        output_tokens=usage_snapshot.output_tokens,
+                        total_tokens=usage_snapshot.total_tokens,
+                    ) from exc
+
+                delta_text = _extract_openai_choice_text(choice)
+                finish_reason = str(choice.get("finish_reason") or finish_reason or "").strip().lower()
+                if delta_text:
+                    accumulated += delta_text
+                    yield delta_text, usage_snapshot
+
+            async for raw_line in response.aiter_lines():
+                line = raw_line.rstrip("\r")
+                if not line:
+                    async for event in _flush_event():
+                        yield event
+                    continue
+                if line.startswith(":"):
+                    continue
+                if line.startswith("event:"):
+                    event_name = line[6:].strip() or "message"
+                    continue
+                if line.startswith("data:"):
+                    data_lines.append(line[5:].lstrip())
+                    continue
+                if event_name == "message":
+                    data_lines.append(line)
+
+            async for event in _flush_event():
+                yield event
+
+            rendered = accumulated.strip()
+            if finish_reason in {"length", "max_tokens"}:
+                if _looks_like_complete_html_document(rendered):
+                    logger.warning(
+                        "OpenAI-compatible stream reported %s but returned a complete HTML document; accepting response",
+                        finish_reason,
+                    )
+                    return
+                excerpt = rendered[:1000] or None
+                raise LLMResponseTruncatedError(
+                    "OpenAI-compatible streaming response hit the output length limit and may be truncated",
+                    response_excerpt=excerpt,
+                    upstream_request_id=upstream_request_id,
+                    stop_reason=finish_reason,
+                    input_tokens=usage_snapshot.input_tokens,
+                    output_tokens=usage_snapshot.output_tokens,
+                    total_tokens=usage_snapshot.total_tokens,
+                )
+            if not rendered:
+                raise EmptyOpenAICompatibleTextError(
+                    "OpenAI-compatible streaming response contained no usable text",
+                    response_excerpt=None,
+                    upstream_request_id=upstream_request_id,
+                    input_tokens=usage_snapshot.input_tokens,
+                    output_tokens=usage_snapshot.output_tokens,
+                    total_tokens=usage_snapshot.total_tokens,
+                )
