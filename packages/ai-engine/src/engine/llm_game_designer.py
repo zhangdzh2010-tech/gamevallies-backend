@@ -107,9 +107,8 @@ class LLMGameDesigner:
             logger.debug("LLM not enabled – skipping design pass")
             return self._as_enriched(gdd)
 
-        prompt = self._build_prompt(spec, gdd)
-
         try:
+            prompt = self._build_prompt(spec, gdd)
             system = self._get_system_prompt()
             token_budget = settings.LLM_DESIGN_PASS_MAX_TOKENS
             raw = await self._client.complete_with_truncation_retry(
@@ -141,10 +140,11 @@ class LLMGameDesigner:
             f"{e.name}({e.role})" for e in (spec.entities or [])
         ) or "none"
         special_rules_str = "; ".join(spec.special_rules or []) or "none"
+        primary_mechanic = spec.core_mechanics[0] if spec.core_mechanics else None
         core_mechanic = (
-            spec.core_mechanics[0].name
-            if spec.core_mechanics
-            else spec.game_type
+            getattr(primary_mechanic, "type", None)
+            or getattr(primary_mechanic, "name", None)
+            or spec.game_type
         )
         state_machine_str = json.dumps(gdd.state_machine) if gdd.state_machine else "{}"
 
