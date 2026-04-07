@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib import parse, request
 
 from run_live_creation_session_full_flow_e2e import (
     DEFAULT_CASES as DEFAULT_SESSION_CASES,
@@ -299,6 +300,131 @@ def wait_for_session_interactive(
     }
 
 
+def wait_for_session_interactive_sse(
+    base_url: str,
+    session_id: str,
+    bearer_headers: dict[str, str],
+    *,
+    wait_s: int,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    deadline = started + wait_s
+    history: list[dict[str, Any]] = []
+    latest_snapshot: dict[str, Any] = {}
+    event_name = "message"
+    data_lines: list[str] = []
+    auth_mode = "bearer_header"
+    stream_url = f"{base_url}/api/v1/games/creation-sessions/{session_id}/events"
+    auth_header = str(bearer_headers.get("Authorization") or "")
+
+    if auth_header.startswith("Bearer "):
+        auth_mode = "query_token"
+        stream_url = (
+            f"{stream_url}?{parse.urlencode({'token': auth_header[len('Bearer '):].strip()})}"
+        )
+
+    req = request.Request(stream_url, method="GET")
+    if auth_mode == "bearer_header":
+        for key, value in bearer_headers.items():
+            req.add_header(key, value)
+    req.add_header("Accept", "text/event-stream")
+    req.add_header("Cache-Control", "no-cache")
+
+    def flush_event() -> dict[str, Any] | None:
+        nonlocal event_name, data_lines, latest_snapshot
+        if not data_lines:
+            event_name = "message"
+            return None
+        payload_text = "\n".join(data_lines)
+        data_lines = []
+        parsed: dict[str, Any]
+        try:
+            parsed = json.loads(payload_text) if payload_text else {}
+        except json.JSONDecodeError:
+            parsed = {"raw": payload_text}
+
+        elapsed_s = round(time.perf_counter() - started, 3)
+        session_payload = parsed.get("session") if isinstance(parsed, dict) else None
+        latest_snapshot = session_payload if isinstance(session_payload, dict) else latest_snapshot
+        current_question = latest_snapshot.get("currentQuestion") if isinstance(latest_snapshot, dict) else None
+        history.append(
+            {
+                "elapsedS": elapsed_s,
+                "event": event_name,
+                "status": latest_snapshot.get("status") if isinstance(latest_snapshot, dict) else None,
+                "revision": latest_snapshot.get("revision") if isinstance(latest_snapshot, dict) else None,
+                "readyToGenerate": bool(latest_snapshot.get("readyToGenerate")) if isinstance(latest_snapshot, dict) else False,
+                "slotFillPct": latest_snapshot.get("slotFillPct") if isinstance(latest_snapshot, dict) else None,
+                "error": parsed.get("error") if isinstance(parsed, dict) else None,
+                "currentQuestion": current_question.get("slotKey") if isinstance(current_question, dict) else None,
+            }
+        )
+
+        result: dict[str, Any] | None = None
+        if event_name in {"session.bootstrap", "session.updated"} and isinstance(latest_snapshot, dict):
+            if latest_snapshot.get("readyToGenerate") or current_question:
+                result = {
+                    "snapshot": latest_snapshot,
+                    "events": history,
+                    "authMode": auth_mode,
+                    "timedOutLocally": False,
+                    "interactiveElapsedS": elapsed_s,
+                }
+            elif str(latest_snapshot.get("status") or "").lower() in {"abandoned", "completed"}:
+                result = {
+                    "snapshot": latest_snapshot,
+                    "events": history,
+                    "authMode": auth_mode,
+                    "timedOutLocally": False,
+                    "interactiveElapsedS": None,
+                }
+        elif event_name == "session.error":
+            latest_snapshot = {
+                "status": "abandoned",
+                "initError": parsed.get("error") if isinstance(parsed, dict) else "session_error",
+            }
+            result = {
+                "snapshot": latest_snapshot,
+                "events": history,
+                "authMode": auth_mode,
+                "timedOutLocally": False,
+                "interactiveElapsedS": None,
+            }
+
+        event_name = "message"
+        return result
+
+    with request.urlopen(req, timeout=max(wait_s + 5, 10)) as resp:
+        while time.perf_counter() < deadline:
+            raw_line = resp.readline()
+            if not raw_line:
+                break
+            line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+            if not line:
+                flushed = flush_event()
+                if flushed is not None:
+                    return flushed
+                continue
+            if line.startswith(":"):
+                continue
+            if line.startswith("event:"):
+                event_name = line[len("event:") :].strip() or "message"
+                continue
+            if line.startswith("data:"):
+                data_lines.append(line[len("data:") :].lstrip())
+
+    flushed = flush_event()
+    if flushed is not None:
+        return flushed
+    return {
+        "snapshot": latest_snapshot,
+        "events": history,
+        "authMode": auth_mode,
+        "timedOutLocally": True,
+        "interactiveElapsedS": None,
+    }
+
+
 def answer_session_questions(
     base_url: str,
     session_id: str,
@@ -497,6 +623,7 @@ def run_session_generate_worker(
     session_wait_s: int,
     session_turns: int,
     session_poll_interval_s: float,
+    session_observer: str,
     target_interactive_s: float,
     stagger_ms: int,
     diagnostics_mode: str,
@@ -527,13 +654,21 @@ def run_session_generate_worker(
             raise RuntimeError(f"Creation session did not return id: {create_response}")
 
         session_post_elapsed_ms = round((time.perf_counter() - session_started) * 1000, 1)
-        interactive = wait_for_session_interactive(
-            base_url,
-            session_id,
-            user_context["headers"],
-            wait_s=session_wait_s,
-            poll_interval_s=session_poll_interval_s,
-        )
+        if session_observer == "sse":
+            interactive = wait_for_session_interactive_sse(
+                base_url,
+                session_id,
+                user_context["headers"],
+                wait_s=session_wait_s,
+            )
+        else:
+            interactive = wait_for_session_interactive(
+                base_url,
+                session_id,
+                user_context["headers"],
+                wait_s=session_wait_s,
+                poll_interval_s=session_poll_interval_s,
+            )
         interactive_snapshot = interactive.get("snapshot") or {}
         interactive_elapsed_s = interactive.get("interactiveElapsedS")
 
@@ -547,6 +682,7 @@ def run_session_generate_worker(
             "caseName": case["name"],
             "startedAt": started_at,
             "sessionId": session_id,
+            "sessionObserver": session_observer,
             "sessionPostLatencyMs": session_post_elapsed_ms,
             "sessionStatus": interactive_snapshot.get("status") or create_snapshot.get("status"),
             "interactiveElapsedS": interactive_elapsed_s,
@@ -556,6 +692,7 @@ def run_session_generate_worker(
             ),
             "sessionTimedOutLocally": bool(interactive.get("timedOutLocally")),
             "sessionPolls": interactive.get("polls") or [],
+            "sessionEvents": interactive.get("events") or [],
             "sessionInitError": interactive_snapshot.get("initError"),
         }
 
@@ -751,6 +888,9 @@ def build_summary(results: list[dict[str, Any]], *, flow: str) -> dict[str, Any]
         "userSourceCounts": dict(
             Counter(str(item.get("userSource") or "unknown") for item in results)
         ),
+        "sessionObserverCounts": dict(
+            Counter(str(item.get("sessionObserver") or "unknown") for item in results if item.get("sessionObserver"))
+        ),
     }
 
     if flow == "session_generate":
@@ -782,6 +922,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--session-wait-s", type=int, default=20)
     parser.add_argument("--session-turns", type=int, default=3)
     parser.add_argument("--session-poll-interval-s", type=float, default=1.0)
+    parser.add_argument("--session-observer", choices=["poll", "sse"], default="poll")
     parser.add_argument("--target-interactive-s", type=float, default=5.0)
     parser.add_argument("--skip-allowance-check", action="store_true")
     parser.add_argument("--min-remaining-quota", type=int, default=1)
@@ -902,6 +1043,7 @@ def main(argv: list[str]) -> int:
                     session_wait_s=args.session_wait_s,
                     session_turns=args.session_turns,
                     session_poll_interval_s=args.session_poll_interval_s,
+                    session_observer=args.session_observer,
                     target_interactive_s=args.target_interactive_s,
                     stagger_ms=args.stagger_ms,
                     diagnostics_mode=args.diagnostics,

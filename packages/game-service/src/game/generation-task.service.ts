@@ -7,6 +7,7 @@ import {
 } from '@prisma/client';
 import { createHash, randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
+import { normalizeIntentBuildSnapshot } from './intent-build.util';
 
 type JsonMap = Record<string, unknown>;
 
@@ -736,6 +737,10 @@ export class GenerationTaskService {
 
   toTaskSummary(task: any) {
     const displayStage = this.getDisplayStage(task);
+    const metadata = task?.metadata && typeof task.metadata === 'object' && !Array.isArray(task.metadata)
+      ? task.metadata as JsonMap
+      : {};
+    const intentBuild = normalizeIntentBuildSnapshot(metadata.intentBuild);
 
     return {
       taskId: task.id,
@@ -774,6 +779,7 @@ export class GenerationTaskService {
       gatewayConfigVersion: task.gatewayConfigVersion,
       routeSnapshot: task.routeSnapshot,
       resultSummary: task.resultSummary,
+      intentBuild,
       startedAt: task.startedAt,
       completedAt: task.completedAt,
       createdAt: task.createdAt,

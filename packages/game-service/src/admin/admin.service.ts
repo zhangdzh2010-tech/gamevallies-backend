@@ -4,9 +4,12 @@ import { PrismaService } from '../prisma/prisma.service';
 import {
   GameStatus,
   GenerationTaskStatus,
+  InteractionAction,
+  InteractionTargetType,
   Prisma,
   SubscriptionOrderStatus,
   SubscriptionPeriod,
+  UserRole,
   UserSubscriptionStatus,
 } from '@prisma/client';
 import { randomUUID } from 'crypto';
@@ -16,6 +19,7 @@ import { GameService } from '../game/game.service';
 import promptCatalog from '../game/catalogs/prompt-catalog.json';
 import { TIMEOUT_CONFIG_CATALOG, TIMEOUT_CONFIG_CATALOG_BY_KEY } from '../game/catalogs/timeout-catalog';
 import { normalizeGameType } from '../game/game-type-catalog';
+import { normalizeIntentBuildSnapshot } from '../game/intent-build.util';
 
 interface LegacyPreviewBackfillOptions {
   limit?: number;
@@ -182,6 +186,18 @@ export class AdminService {
     return Array.from(new Set(normalized));
   }
 
+  private normalizeUserIds(ids: unknown): string[] {
+    const rawItems = Array.isArray(ids)
+      ? ids
+      : typeof ids === 'string'
+        ? ids.split(',')
+        : [];
+    const normalized = rawItems
+      .map((item) => (typeof item === 'string' ? item.trim() : String(item || '').trim()))
+      .filter(Boolean);
+    return Array.from(new Set(normalized));
+  }
+
   private normalizeManualCoverUrl(rawValue: unknown): string | null {
     if (typeof rawValue !== 'string' || !rawValue.trim()) {
       return null;
@@ -286,6 +302,256 @@ export class AdminService {
       return status;
     }
     throw new BadRequestException('status must be published or draft');
+  }
+
+  private validateUserRole(role: string): UserRole {
+    if (role === 'user' || role === 'creator' || role === 'moderator' || role === 'admin') {
+      return role;
+    }
+    throw new BadRequestException('role must be one of user, creator, moderator, admin');
+  }
+
+  private normalizeUserAuthProvider(value?: string | null): 'all' | 'email' | 'phone' | 'wechat' {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!normalized || normalized === 'all') {
+      return 'all';
+    }
+    if (normalized === 'email' || normalized === 'phone' || normalized === 'wechat') {
+      return normalized;
+    }
+    throw new BadRequestException('authProvider must be one of all, email, phone, wechat');
+  }
+
+  private async recalculateForkDepths(
+    tx: Prisma.TransactionClient,
+    rootGameIds: string[],
+  ) {
+    let currentParentIds = Array.from(new Set(rootGameIds.filter(Boolean)));
+    let nextDepth = 1;
+
+    while (currentParentIds.length) {
+      const childGames = await tx.game.findMany({
+        where: { forkedFrom: { in: currentParentIds } },
+        select: { id: true },
+      });
+      if (!childGames.length) {
+        return;
+      }
+
+      const childIds = childGames.map((item) => item.id);
+      await tx.game.updateMany({
+        where: { id: { in: childIds } },
+        data: { forkDepth: nextDepth },
+      });
+
+      currentParentIds = childIds;
+      nextDepth += 1;
+    }
+  }
+
+  private async deleteUsersByIds(userIds: string[]) {
+    const normalizedIds = this.normalizeUserIds(userIds);
+    if (!normalizedIds.length) {
+      throw new BadRequestException('ids must be a non-empty array');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const existingUsers = await tx.user.findMany({
+        where: { id: { in: normalizedIds } },
+        select: { id: true },
+      });
+      if (existingUsers.length !== normalizedIds.length) {
+        const existingSet = new Set(existingUsers.map((item) => item.id));
+        const missingIds = normalizedIds.filter((id) => !existingSet.has(id));
+        throw new NotFoundException(`User not found: ${missingIds.join(', ')}`);
+      }
+
+      const authoredGames = await tx.game.findMany({
+        where: { authorId: { in: normalizedIds } },
+        select: { id: true, forkedFrom: true },
+      });
+      const authoredGameIds = authoredGames.map((item) => item.id);
+      const forkParentIds = Array.from(new Set(
+        authoredGames
+          .map((item) => item.forkedFrom)
+          .filter((value): value is string => Boolean(value) && !authoredGameIds.includes(value as string)),
+      ));
+
+      const affectedFollowRelations = await tx.userFollow.findMany({
+        where: {
+          OR: [
+            { followerId: { in: normalizedIds } },
+            { followingId: { in: normalizedIds } },
+          ],
+        },
+        select: {
+          followerId: true,
+          followingId: true,
+        },
+      });
+      const affectedUserIdsToRecount = Array.from(new Set(
+        affectedFollowRelations.flatMap((relation) => [relation.followerId, relation.followingId]),
+      )).filter((id) => !normalizedIds.includes(id));
+
+      const likedGameInteractions = await tx.socialInteraction.findMany({
+        where: {
+          userId: { in: normalizedIds },
+          targetType: InteractionTargetType.game,
+          action: InteractionAction.like,
+        },
+        select: { targetId: true },
+      });
+      const likedGameIdsToRecount = Array.from(new Set(
+        likedGameInteractions
+          .map((item) => item.targetId)
+          .filter((id) => !authoredGameIds.includes(id)),
+      ));
+
+      const commentsToDelete = await tx.comment.findMany({
+        where: {
+          OR: [
+            { userId: { in: normalizedIds } },
+            ...(authoredGameIds.length ? [{ gameId: { in: authoredGameIds } }] : []),
+          ],
+        },
+        select: { id: true, gameId: true },
+      });
+      const commentIds = commentsToDelete.map((item) => item.id);
+      const commentGameIdsToRecount = Array.from(new Set(
+        commentsToDelete
+          .map((item) => item.gameId)
+          .filter((id) => !authoredGameIds.includes(id)),
+      ));
+
+      if (commentIds.length) {
+        await tx.comment.updateMany({
+          where: { parentId: { in: commentIds } },
+          data: { parentId: null },
+        });
+      }
+
+      const interactionTargets: Prisma.SocialInteractionWhereInput[] = [
+        { userId: { in: normalizedIds } },
+        { targetType: InteractionTargetType.user, targetId: { in: normalizedIds } },
+      ];
+      if (authoredGameIds.length) {
+        interactionTargets.push({ targetType: InteractionTargetType.game, targetId: { in: authoredGameIds } });
+      }
+      if (commentIds.length) {
+        interactionTargets.push({ targetType: InteractionTargetType.comment, targetId: { in: commentIds } });
+      }
+
+      await tx.socialInteraction.deleteMany({
+        where: { OR: interactionTargets },
+      });
+
+      await tx.notification.deleteMany({
+        where: {
+          OR: [
+            { userId: { in: normalizedIds } },
+            { actorId: { in: normalizedIds } },
+            { targetId: { in: normalizedIds } },
+            ...(authoredGameIds.length ? [{ targetId: { in: authoredGameIds } }] : []),
+            ...(commentIds.length ? [{ targetId: { in: commentIds } }] : []),
+          ],
+        },
+      });
+
+      await tx.creatorEarning.deleteMany({
+        where: {
+          OR: [
+            { creatorId: { in: normalizedIds } },
+            ...(authoredGameIds.length ? [{ gameId: { in: authoredGameIds } }] : []),
+          ],
+        },
+      });
+
+      if (commentIds.length) {
+        await tx.comment.deleteMany({
+          where: { id: { in: commentIds } },
+        });
+      }
+
+      if (authoredGameIds.length) {
+        const survivingForkRoots = await tx.game.findMany({
+          where: {
+            forkedFrom: { in: authoredGameIds },
+            id: { notIn: authoredGameIds },
+          },
+          select: { id: true },
+        });
+
+        await tx.game.updateMany({
+          where: {
+            forkedFrom: { in: authoredGameIds },
+            id: { notIn: authoredGameIds },
+          },
+          data: { forkedFrom: null, forkDepth: 0 },
+        });
+
+        await this.recalculateForkDepths(
+          tx,
+          survivingForkRoots.map((item) => item.id),
+        );
+
+        await tx.game.deleteMany({
+          where: { id: { in: authoredGameIds } },
+        });
+      }
+
+      await tx.user.deleteMany({
+        where: { id: { in: normalizedIds } },
+      });
+
+      await Promise.all(affectedUserIdsToRecount.map(async (userId) => {
+        const [followerCount, followingCount] = await Promise.all([
+          tx.userFollow.count({ where: { followingId: userId } }),
+          tx.userFollow.count({ where: { followerId: userId } }),
+        ]);
+        await tx.user.update({
+          where: { id: userId },
+          data: {
+            followerCount,
+            followingCount,
+          },
+        });
+      }));
+
+      await Promise.all(commentGameIdsToRecount.map(async (gameId) => {
+        const commentCount = await tx.comment.count({ where: { gameId } });
+        await tx.game.update({
+          where: { id: gameId },
+          data: { commentCount },
+        });
+      }));
+
+      await Promise.all(forkParentIds.map(async (gameId) => {
+        const forkCount = await tx.game.count({ where: { forkedFrom: gameId } });
+        await tx.game.update({
+          where: { id: gameId },
+          data: { forkCount },
+        });
+      }));
+
+      await Promise.all(likedGameIdsToRecount.map(async (gameId) => {
+        const likeCount = await tx.socialInteraction.count({
+          where: {
+            targetType: InteractionTargetType.game,
+            targetId: gameId,
+            action: InteractionAction.like,
+          },
+        });
+        await tx.game.update({
+          where: { id: gameId },
+          data: { likeCount },
+        });
+      }));
+
+      return {
+        deleted: existingUsers.length,
+        ids: normalizedIds,
+      };
+    });
   }
 
   private normalizeExecutionRegion(rawValue?: string | null): string {
@@ -1927,17 +2193,22 @@ export class AdminService {
 
   // ===================== User Management =====================
 
-  async listUsers(page: number, limit: number, search?: string, role?: string) {
+  async listUsers(page: number, limit: number, search?: string, role?: string, authProvider?: string) {
     const where: Prisma.UserWhereInput = {};
     if (search) {
       where.OR = [
         { username: { contains: search } },
         { displayName: { contains: search } },
         { email: { contains: search } },
+        { phone: { contains: search } },
       ];
     }
     if (role && role !== 'all') {
       where.role = role as any;
+    }
+    const providerFilter = this.normalizeUserAuthProvider(authProvider);
+    if (providerFilter !== 'all') {
+      where.authProvider = providerFilter;
     }
 
     const [users, total] = await Promise.all([
@@ -1992,14 +2263,66 @@ export class AdminService {
     return this.getUser(id);
   }
 
+  async batchUpdateUsers(ids: unknown, data: any) {
+    const normalizedIds = this.normalizeUserIds(ids);
+    if (!normalizedIds.length) {
+      throw new BadRequestException('ids must be a non-empty array');
+    }
+
+    const update: Prisma.UserUpdateManyMutationInput = {};
+    if (data?.role !== undefined) {
+      update.role = this.validateUserRole(String(data.role));
+    }
+    if (data?.isPro !== undefined) {
+      if (typeof data.isPro === 'boolean') {
+        update.isPro = data.isPro;
+      } else if (String(data.isPro).toLowerCase() === 'true') {
+        update.isPro = true;
+      } else if (String(data.isPro).toLowerCase() === 'false') {
+        update.isPro = false;
+      } else {
+        throw new BadRequestException('isPro must be a boolean');
+      }
+    }
+
+    if (!Object.keys(update).length) {
+      throw new BadRequestException('At least one updatable field is required');
+    }
+
+    await this.prisma.user.updateMany({
+      where: { id: { in: normalizedIds } },
+      data: update,
+    });
+
+    const items = await this.prisma.user.findMany({
+      where: { id: { in: normalizedIds } },
+      select: {
+        id: true, username: true, displayName: true, email: true, phone: true,
+        role: true, isPro: true, bio: true, avatarUrl: true, authProvider: true,
+        followerCount: true, followingCount: true, gameCount: true, totalPlays: true,
+        createdAt: true, updatedAt: true,
+      },
+    });
+
+    return {
+      updated: items.length,
+      ids: normalizedIds,
+      items,
+    };
+  }
+
+  async batchDeleteUsers(ids: unknown) {
+    const normalizedIds = this.normalizeUserIds(ids);
+    return this.deleteUsersByIds(normalizedIds);
+  }
+
   async deleteUser(id: string) {
-    const user = await this.prisma.user.findUnique({ where: { id } });
-    if (!user) throw new NotFoundException('User not found');
-    // Delete related data
-    await this.prisma.gameBundle.deleteMany({ where: { game: { authorId: id } } });
-    await this.prisma.game.deleteMany({ where: { authorId: id } });
-    await this.prisma.user.delete({ where: { id } });
-    return { deleted: true };
+    const result = await this.deleteUsersByIds([id]);
+    return {
+      deleted: true,
+      count: result.deleted,
+      ids: result.ids,
+    };
   }
 
   async resetUserPassword(id: string, newPassword: string) {
@@ -2231,6 +2554,10 @@ export class AdminService {
       : {};
   }
 
+  private asPlainArray(value: unknown): unknown[] {
+    return Array.isArray(value) ? value : [];
+  }
+
   private pickFirstString(...values: unknown[]): string | null {
     for (const value of values) {
       if (typeof value === 'string' && value.trim()) {
@@ -2256,6 +2583,222 @@ export class AdminService {
       }
     }
     return null;
+  }
+
+  private pickFirstObject(...values: unknown[]): Record<string, unknown> | null {
+    for (const value of values) {
+      const record = this.asPlainObject(value);
+      if (Object.keys(record).length > 0) {
+        return record;
+      }
+    }
+    return null;
+  }
+
+  private normalizeIssueItem(
+    value: unknown,
+    fallbackSeverity: 'error' | 'warning',
+  ): Record<string, unknown> | null {
+    if (typeof value === 'string' && value.trim()) {
+      return {
+        message: value.trim(),
+        severity: fallbackSeverity,
+        family: 'generic',
+        blocking: fallbackSeverity !== 'warning',
+      };
+    }
+
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+
+    const record = value as Record<string, unknown>;
+    const message = this.pickFirstString(record.message, record.reason, record.title);
+    if (!message) {
+      return null;
+    }
+
+    const severity = this.pickFirstString(record.severity, fallbackSeverity) || fallbackSeverity;
+    const family = this.pickFirstString(record.family, record.type) || 'generic';
+    const repairHint = this.pickFirstString(
+      record.repairHint,
+      record.repair_hint,
+      record.hint,
+    );
+    const location = this.asPlainObject(record.location);
+
+    return {
+      message,
+      severity,
+      family,
+      blocking: typeof record.blocking === 'boolean' ? record.blocking : severity !== 'warning',
+      ...(repairHint ? { repairHint } : {}),
+      ...(Object.keys(location).length > 0 ? { location } : {}),
+    };
+  }
+
+  private summarizeIssueItems(items: Record<string, unknown>[]): Record<string, unknown> | null {
+    if (!items.length) {
+      return null;
+    }
+
+    const warningCount = items.filter((item) => String(item.severity || '').toLowerCase() === 'warning').length;
+    const errorCount = items.length - warningCount;
+    const blockingCount = items.filter((item) => item.blocking !== false).length;
+
+    return {
+      items,
+      errorCount,
+      warningCount,
+      blockingCount,
+    };
+  }
+
+  private buildIssueListFromArrays(errorsValue: unknown, warningsValue: unknown): Record<string, unknown> | null {
+    const items = [
+      ...this.asPlainArray(errorsValue)
+        .map((item) => this.normalizeIssueItem(item, 'error'))
+        .filter((item): item is Record<string, unknown> => Boolean(item)),
+      ...this.asPlainArray(warningsValue)
+        .map((item) => this.normalizeIssueItem(item, 'warning'))
+        .filter((item): item is Record<string, unknown> => Boolean(item)),
+    ];
+
+    return this.summarizeIssueItems(items);
+  }
+
+  private normalizeIssueList(value: unknown): Record<string, unknown> | null {
+    const record = this.asPlainObject(value);
+    if (!Object.keys(record).length) {
+      return null;
+    }
+
+    const normalizedItems = this.asPlainArray(record.items)
+      .map((item) => this.normalizeIssueItem(item, 'error'))
+      .filter((item): item is Record<string, unknown> => Boolean(item));
+
+    if (normalizedItems.length > 0) {
+      const fallbackSummary = this.summarizeIssueItems(normalizedItems) || {
+        items: normalizedItems,
+        errorCount: 0,
+        warningCount: 0,
+        blockingCount: 0,
+      };
+      return {
+        items: normalizedItems,
+        errorCount: this.pickFirstNumber(record.errorCount, record.error_count) ?? fallbackSummary.errorCount,
+        warningCount: this.pickFirstNumber(record.warningCount, record.warning_count) ?? fallbackSummary.warningCount,
+        blockingCount: this.pickFirstNumber(record.blockingCount, record.blocking_count) ?? fallbackSummary.blockingCount,
+      };
+    }
+
+    return this.buildIssueListFromArrays(record.errors, record.warnings);
+  }
+
+  private mergeIssueLists(
+    issueLists: Array<Record<string, unknown> | null | undefined>,
+  ): Record<string, unknown> | null {
+    const seen = new Set<string>();
+    const mergedItems: Record<string, unknown>[] = [];
+
+    for (const issueList of issueLists) {
+      const normalizedIssueList = this.normalizeIssueList(issueList);
+      if (!normalizedIssueList) {
+        continue;
+      }
+      for (const item of this.asPlainArray(normalizedIssueList.items)) {
+        const normalizedItem = this.normalizeIssueItem(item, 'error');
+        if (!normalizedItem) {
+          continue;
+        }
+        const key = JSON.stringify({
+          message: normalizedItem.message ?? '',
+          severity: normalizedItem.severity ?? '',
+          family: normalizedItem.family ?? '',
+          blocking: normalizedItem.blocking !== false,
+          repairHint: normalizedItem.repairHint ?? '',
+          location: this.asPlainObject(normalizedItem.location),
+        });
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        mergedItems.push(normalizedItem);
+      }
+    }
+
+    return this.summarizeIssueItems(mergedItems);
+  }
+
+  private extractIssueListFromReport(reportValue: unknown): Record<string, unknown> | null {
+    const report = this.asPlainObject(reportValue);
+    if (!Object.keys(report).length) {
+      return null;
+    }
+
+    return this.normalizeIssueList(report.issueList ?? report.issue_list)
+      || this.buildIssueListFromArrays(report.errors, report.warnings);
+  }
+
+  private buildQaArtifactSummary(artifact: any) {
+    const report = this.asPlainObject(artifact?.payloadJson);
+    return {
+      id: artifact.id,
+      artifactType: artifact.artifactType,
+      createdAt: artifact.createdAt,
+      report,
+      issueList: this.extractIssueListFromReport(report),
+    };
+  }
+
+  private buildTaskDiagnostics(task: any, sourceBundle?: any, qaArtifacts: any[] = []) {
+    const summary = this.asPlainObject(task?.resultSummary);
+    const metadata = this.asPlainObject(task?.metadata);
+    const bundleMeta = this.asPlainObject(sourceBundle?.metadata);
+    const intentBuild = normalizeIntentBuildSnapshot(metadata.intentBuild);
+    const runtimeQaReport = this.pickFirstObject(summary.runtimeQaReport, bundleMeta.runtimeQaReport);
+    const qaWarnings = this.asPlainArray(summary.qaWarnings);
+    const qaArtifactSummaries = qaArtifacts.map((artifact) => this.buildQaArtifactSummary(artifact));
+    const issueList = this.mergeIssueLists([
+      this.extractIssueListFromReport(summary),
+      ...qaArtifactSummaries.map((artifact) => artifact.issueList),
+    ]);
+
+    return {
+      intentBuild,
+      generationTier: this.pickFirstString(
+        summary.generationTier,
+        summary.generation_tier,
+        metadata.generationTier,
+        metadata.generation_tier,
+        bundleMeta.generationTier,
+        bundleMeta.generation_tier,
+      ),
+      qaWarnings,
+      runtimeQaReport,
+      runtimeQaUnavailable: this.pickFirstBoolean(
+        summary.runtimeQaUnavailable,
+        bundleMeta.runtimeQaUnavailable,
+        runtimeQaReport?.unavailableKind ? true : null,
+      ),
+      runtimeQaUnavailableKind: this.pickFirstString(
+        summary.runtimeQaUnavailableKind,
+        bundleMeta.runtimeQaUnavailableKind,
+        runtimeQaReport?.unavailableKind,
+      ),
+      runtimeQaUnavailablePhase: this.pickFirstString(
+        summary.runtimeQaUnavailablePhase,
+        bundleMeta.runtimeQaUnavailablePhase,
+        runtimeQaReport?.unavailablePhase,
+      ),
+      runtimeQaUnavailableReason: this.pickFirstString(
+        summary.runtimeQaUnavailableReason,
+        bundleMeta.runtimeQaUnavailableReason,
+        runtimeQaReport?.unavailableReason,
+      ),
+      issueList,
+      qaArtifacts: qaArtifactSummaries,
+    };
   }
 
   private deriveGenerationLogStatus(
@@ -2292,7 +2835,9 @@ export class AdminService {
     const bundle = game.bundles?.[0] || null;
     const task = game.generationTasks?.[0] || null;
     const summary = this.asPlainObject(task?.resultSummary);
+    const taskMetadata = this.asPlainObject(task?.metadata);
     const bundleMeta = this.asPlainObject(bundle?.metadata);
+    const diagnostics = this.buildTaskDiagnostics(task, bundle);
     const previewUrls = this.gameService.buildAdminPreviewUrls(game.id);
     const taskHasError = task
       && (
@@ -2322,9 +2867,17 @@ export class AdminService {
       updatedAt: task?.updatedAt || game.updatedAt,
       author: game.author,
       strategy: this.pickFirstString(summary.strategy, bundleMeta.strategy),
+      generationTier: diagnostics.generationTier,
       qaPassed: this.pickFirstBoolean(summary.qaPassed, bundleMeta.qaPassed),
       qaRetries: this.pickFirstNumber(summary.qaRetries, bundleMeta.qaRetries),
       iterationRetries: this.pickFirstNumber(summary.iterationRetries, bundleMeta.iterationRetries),
+      qaWarningCount: diagnostics.qaWarnings.length,
+      runtimeQaUnavailable: diagnostics.runtimeQaUnavailable,
+      runtimeQaUnavailableKind: diagnostics.runtimeQaUnavailableKind,
+      runtimeQaUnavailableReason: diagnostics.runtimeQaUnavailableReason,
+      intentBrief: diagnostics.intentBuild?.brief || null,
+      intentFingerprint: diagnostics.intentBuild?.intentFingerprint || null,
+      specFingerprint: diagnostics.intentBuild?.specFingerprint || null,
       genTimeMs: this.pickFirstNumber(
         summary.generationTimeMs,
         summary.genTimeMs,
@@ -2432,6 +2985,7 @@ export class AdminService {
               errorMessage: true,
               retryCount: true,
               resultSummary: true,
+              metadata: true,
               previewUrl: true,
               createdAt: true,
               updatedAt: true,
@@ -2546,7 +3100,25 @@ export class AdminService {
       throw new NotFoundException('Generation task not found');
     }
 
-    const reconciled = await this.gameService.reconcileGenerationTask(task);
+    const [reconciled, qaArtifacts] = await Promise.all([
+      this.gameService.reconcileGenerationTask(task),
+      this.prisma.generationArtifact.findMany({
+        where: {
+          taskId,
+          artifactType: {
+            in: ['contract_qa_report', 'runtime_qa_report'],
+          },
+        },
+        select: {
+          id: true,
+          artifactType: true,
+          payloadJson: true,
+          createdAt: true,
+        },
+        orderBy: [{ createdAt: 'desc' }],
+        take: 8,
+      }).catch(() => []),
+    ]);
     if (reconciled && (
       reconciled.status !== task.status
       || reconciled.progressStage !== task.progressStage
@@ -2596,10 +3168,12 @@ export class AdminService {
       });
       if (refreshed) {
         const mergedGame = refreshed.game;
+        const diagnostics = this.buildTaskDiagnostics(refreshed, mergedGame?.bundles?.[0] || null, qaArtifacts);
         return {
           ...refreshed,
           inputPrompt: mergedGame?.description || null,
           sourceBundle: mergedGame?.bundles?.[0] || null,
+          ...diagnostics,
           ...this.gameService.buildAdminPreviewUrls(refreshed.gameId),
         };
       }
@@ -2610,6 +3184,11 @@ export class AdminService {
       ...(task.game || {}),
       ...(reconciled?.game || {}),
     } as any;
+    const diagnostics = this.buildTaskDiagnostics(
+      { ...task, ...(reconciled || {}) },
+      mergedGame?.bundles?.[0] || null,
+      qaArtifacts,
+    );
 
     return {
       ...task,
@@ -2620,6 +3199,7 @@ export class AdminService {
       llmCallLogs: task.llmCallLogs,
       inputPrompt: mergedGame?.description || null,
       sourceBundle: mergedGame?.bundles?.[0] || null,
+      ...diagnostics,
       ...(gameId ? this.gameService.buildAdminPreviewUrls(gameId) : {}),
     };
   }

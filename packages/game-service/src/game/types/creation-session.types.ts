@@ -1,4 +1,5 @@
 import { CreateGameGenerationTier, CreateGameOrientation } from '../dto/create-game.dto';
+import { IntentBuildSnapshot } from '../intent-build.util';
 import {
   CreationSessionEntryMode,
   CreationSessionStatus,
@@ -48,6 +49,7 @@ export interface CreationSessionQuestionStrategy {
 
 export interface CreationSessionSnapshot {
   id: string;
+  streamPath: string;
   status: CreationSessionStatus;
   entryMode: CreationSessionEntryMode;
   initialPrompt: string;
@@ -69,5 +71,6 @@ export interface CreationSessionSnapshot {
   planDraft: CreationSessionPlanDraft | null;
   confidenceSummary: CreationSessionConfidenceSummary | null;
   questionStrategy: CreationSessionQuestionStrategy | null;
+  intentBuild: IntentBuildSnapshot | null;
   metadata: Record<string, unknown> | null;
 }

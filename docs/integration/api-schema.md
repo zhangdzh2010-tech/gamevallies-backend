@@ -854,7 +854,8 @@ Creation Session 是渐进式游戏创作流程，AI 逐步收集信息后再生
 
 - 创建时自动 abandon 同一用户的旧 active session。
 - 返回的 snapshot 中 `currentQuestion=null`，需等待状态变为 `collecting` 后才会有问题。
-- 前端应在 `initializing` 期间展示加载动画，通过 WebSocket `session:updated` 或轮询 `GET /creation-sessions/:id` 等待状态变化。
+- 返回的 snapshot 中包含 `streamPath`，前端可据此拼接 SSE 订阅地址。
+- 前端应在 `initializing` 期间展示加载动画，优先订阅 `GET /creation-sessions/:id/events` 的 SSE 流等待状态变化；未接入 SSE 时可继续用 WebSocket `session:updated` 或轮询 `GET /creation-sessions/:id` 兜底。
 
 ### GET `/api/v1/games/creation-sessions/active`
 
@@ -883,6 +884,61 @@ Creation Session 是渐进式游戏创作流程，AI 逐步收集信息后再生
 ```
 
 错误：`404` 会话不存在或不属于当前用户。
+
+### GET `/api/v1/games/creation-sessions/:sessionId/events`
+
+订阅指定创作会话的 SSE 事件流，用于更快感知初始化完成、追问变更和异常终态。
+
+请求头：
+
+```http
+Accept: text/event-stream
+Cache-Control: no-cache
+Authorization: Bearer <JWT>
+```
+
+浏览器 `EventSource` 场景：
+
+- 由于浏览器原生 `EventSource` 不能发送 `Authorization` 请求头，可改为在 URL 上追加 `?token=<JWT>`。
+- `Authorization` 头和 `token` query 二选一即可；`token` query 仅在 `GET + text/event-stream` 的 SSE 请求中生效。
+
+响应：
+
+- `200 OK`
+- `Content-Type: text/event-stream`
+
+事件类型：
+
+- `session.bootstrap`：建立连接后立即返回一次当前快照
+- `session.updated`：会话状态、问题、revision 发生变化时推送
+- `session.error`：初始化失败或超时后推送
+- `heartbeat`：15 秒一次保活事件
+
+`session.bootstrap` / `session.updated` 数据示例：
+
+```json
+{
+  "type": "session.bootstrap",
+  "sessionId": "string",
+  "session": "CreationSessionSnapshot",
+  "timestamp": 0
+}
+```
+
+`session.error` 数据示例：
+
+```json
+{
+  "type": "session.error",
+  "sessionId": "string",
+  "error": "string",
+  "details": {
+    "reason": "init_failed | init_timeout",
+    "stage": "string"
+  },
+  "timestamp": 0
+}
+```
 
 ### POST `/api/v1/games/creation-sessions/:sessionId/messages`
 
@@ -1309,7 +1365,7 @@ io('http://localhost:3002/ws', {
 }
 ```
 
-说明：前端收到后应直接替换本地 session 缓存。如果前端未接入 WebSocket，可通过轮询 `GET /creation-sessions/:id` 兜底。
+说明：前端收到后应直接替换本地 session 缓存。新接入建议优先使用 `GET /creation-sessions/:id/events` 的 SSE；WebSocket `session:updated` 和轮询 `GET /creation-sessions/:id` 保留为兼容兜底方案。
 
 #### `session:error`
 

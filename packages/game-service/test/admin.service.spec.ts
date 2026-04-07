@@ -32,6 +32,7 @@ describe('AdminService', () => {
       },
       generationArtifact: {
         create: jest.fn(),
+        findMany: jest.fn(),
       },
       user: {
         findUnique: jest.fn(),
@@ -710,6 +711,7 @@ describe('AdminService', () => {
               qaRetries: 8,
               genTimeMs: 8000,
               qualityScore: 0.42,
+              generationTier: 'standard',
             },
             generationMeta: null,
             codeSizeBytes: 2048,
@@ -725,14 +727,26 @@ describe('AdminService', () => {
             retryCount: 1,
             resultSummary: {
               strategy: 'task-first',
+              generationTier: 'showcase',
               qaPassed: true,
               qaRetries: 2,
               iterationRetries: 1,
+              qaWarnings: [{ type: 'runtime_qa_unavailable', severity: 'warning' }],
+              runtimeQaUnavailable: true,
+              runtimeQaUnavailableKind: 'timeout',
+              runtimeQaUnavailableReason: 'runtime QA timed out',
               generationTimeMs: 3456,
               codeSizeBytes: 4096,
               qualityScore: 0.91,
               version: 3,
               gameType: 'runner',
+            },
+            metadata: {
+              intentBuild: {
+                brief: 'Title: Speed Run',
+                intentFingerprint: 'intent-123',
+                specFingerprint: 'spec-456',
+              },
             },
             previewUrl: 'https://old-preview.example.com',
             createdAt: taskCreatedAt,
@@ -777,6 +791,7 @@ describe('AdminService', () => {
             errorMessage: 'QA failed in latest task',
             retryCount: 3,
             resultSummary: {},
+            metadata: {},
             previewUrl: null,
             createdAt: new Date('2026-03-25T02:00:00.000Z'),
             updatedAt: new Date('2026-03-25T02:03:00.000Z'),
@@ -837,9 +852,17 @@ describe('AdminService', () => {
       retryCount: 1,
       gameType: 'casual',
       strategy: 'task-first',
+      generationTier: 'showcase',
       qaPassed: true,
       qaRetries: 2,
       iterationRetries: 1,
+      qaWarningCount: 1,
+      runtimeQaUnavailable: true,
+      runtimeQaUnavailableKind: 'timeout',
+      runtimeQaUnavailableReason: 'runtime QA timed out',
+      intentBrief: 'Title: Speed Run',
+      intentFingerprint: 'intent-123',
+      specFingerprint: 'spec-456',
       genTimeMs: 3456,
       codeSizeBytes: 4096,
       qualityScore: 0.91,
@@ -952,6 +975,40 @@ describe('AdminService', () => {
   });
 
   it('returns task-centered generation detail payload with prompt and latest source bundle', async () => {
+    prisma.generationArtifact.findMany.mockResolvedValue([
+      {
+        id: 'artifact-runtime',
+        artifactType: 'runtime_qa_report',
+        payloadJson: {
+          passed: false,
+          warnings: [
+            {
+              message: 'Sprite overdraw is high',
+              severity: 'warning',
+              family: 'render_perf',
+              blocking: false,
+            },
+          ],
+        },
+        createdAt: new Date('2026-03-25T01:10:00.000Z'),
+      },
+      {
+        id: 'artifact-contract',
+        artifactType: 'contract_qa_report',
+        payloadJson: {
+          passed: false,
+          errors: [
+            {
+              message: 'Canvas must render at startup',
+              severity: 'error',
+              family: 'runtime_startup',
+              blocking: true,
+            },
+          ],
+        },
+        createdAt: new Date('2026-03-25T01:09:00.000Z'),
+      },
+    ]);
     prisma.generationTask.findUnique.mockResolvedValue({
       id: 'task-1',
       gameId: 'game-1',
@@ -960,6 +1017,27 @@ describe('AdminService', () => {
       status: 'succeeded',
       progressStage: 'completed',
       failedStage: null,
+      metadata: {
+        generationTier: 'showcase',
+        intentBuild: {
+          brief: 'Title: Runner',
+          frozenSpec: { goal: 'jump over obstacles' },
+          intentFingerprint: 'intent-xyz',
+          specFingerprint: 'spec-xyz',
+        },
+      },
+      resultSummary: {
+        generationTier: 'showcase',
+        runtimeQaUnavailable: true,
+        runtimeQaUnavailableKind: 'timeout',
+        runtimeQaUnavailableReason: 'runtime QA timed out',
+        runtimeQaReport: {
+          ran: false,
+          unavailableKind: 'timeout',
+          unavailableReason: 'runtime QA timed out',
+        },
+        qaWarnings: [{ type: 'runtime_qa_unavailable', severity: 'warning' }],
+      },
       game: {
         id: 'game-1',
         title: 'Task Game',
@@ -977,7 +1055,7 @@ describe('AdminService', () => {
             htmlCode: '<html><body>runner</body></html>',
             cssCode: 'body { color: red; }',
             jsCode: 'console.log(\"runner\")',
-            metadata: { qaPassed: true },
+            metadata: { qaPassed: true, generationTier: 'showcase' },
             generationMeta: { strategy: 'llm' },
             codeSizeBytes: 1234,
             createdAt: new Date('2026-03-25T01:08:00.000Z'),
@@ -998,6 +1076,27 @@ describe('AdminService', () => {
       status: 'succeeded',
       progressStage: 'completed',
       failedStage: null,
+      metadata: {
+        generationTier: 'showcase',
+        intentBuild: {
+          brief: 'Title: Runner',
+          frozenSpec: { goal: 'jump over obstacles' },
+          intentFingerprint: 'intent-xyz',
+          specFingerprint: 'spec-xyz',
+        },
+      },
+      resultSummary: {
+        generationTier: 'showcase',
+        runtimeQaUnavailable: true,
+        runtimeQaUnavailableKind: 'timeout',
+        runtimeQaUnavailableReason: 'runtime QA timed out',
+        runtimeQaReport: {
+          ran: false,
+          unavailableKind: 'timeout',
+          unavailableReason: 'runtime QA timed out',
+        },
+        qaWarnings: [{ type: 'runtime_qa_unavailable', severity: 'warning' }],
+      },
     });
 
     const result = await service.getGenerationTask('task-1');
@@ -1016,9 +1115,65 @@ describe('AdminService', () => {
         }),
       }),
     }));
+    expect(prisma.generationArtifact.findMany).toHaveBeenCalledWith({
+      where: {
+        taskId: 'task-1',
+        artifactType: {
+          in: ['contract_qa_report', 'runtime_qa_report'],
+        },
+      },
+      select: {
+        id: true,
+        artifactType: true,
+        payloadJson: true,
+        createdAt: true,
+      },
+      orderBy: [{ createdAt: 'desc' }],
+      take: 8,
+    });
     expect(result).toEqual(expect.objectContaining({
       id: 'task-1',
       inputPrompt: 'build a runner game',
+      generationTier: 'showcase',
+      runtimeQaUnavailable: true,
+      runtimeQaUnavailableKind: 'timeout',
+      runtimeQaUnavailableReason: 'runtime QA timed out',
+      qaWarnings: [{ type: 'runtime_qa_unavailable', severity: 'warning' }],
+      intentBuild: expect.objectContaining({
+        brief: 'Title: Runner',
+        intentFingerprint: 'intent-xyz',
+        specFingerprint: 'spec-xyz',
+      }),
+      issueList: expect.objectContaining({
+        errorCount: 1,
+        warningCount: 1,
+        blockingCount: 1,
+        items: expect.arrayContaining([
+          expect.objectContaining({
+            message: 'Canvas must render at startup',
+            family: 'runtime_startup',
+          }),
+          expect.objectContaining({
+            message: 'Sprite overdraw is high',
+            family: 'render_perf',
+            severity: 'warning',
+          }),
+        ]),
+      }),
+      qaArtifacts: expect.arrayContaining([
+        expect.objectContaining({
+          artifactType: 'contract_qa_report',
+          issueList: expect.objectContaining({
+            errorCount: 1,
+          }),
+        }),
+        expect.objectContaining({
+          artifactType: 'runtime_qa_report',
+          issueList: expect.objectContaining({
+            warningCount: 1,
+          }),
+        }),
+      ]),
       sourceBundle: expect.objectContaining({
         id: 'bundle-1',
         version: 1,

@@ -15,7 +15,6 @@ from ..api.models import (
     GameSpec,
     GenerateCodeResult,
     IterationType,
-    SourceBundleContext,
 )
 from ..config.settings import settings
 from ..config.timeout_store import get_int as get_timeout_int
@@ -32,11 +31,7 @@ from .section_patch import (
     build_patch_protocol,
     build_section_context,
     ensure_structured_section_markers,
-    extract_script_content as extract_patch_script_content,
-    extract_style_content as extract_patch_style_content,
     parse_patch_response,
-    replace_script_content as patch_replace_script_content,
-    replace_style_content as patch_replace_style_content,
     validate_patch_candidate,
 )
 from .visual_pack_catalog import get_visual_pack, visual_pack_direction_lines
@@ -159,13 +154,13 @@ class CodeGenerator:
             )
 
         if generation_tier == "safe":
-            if special_rules_count >= 3 or entity_count >= 5 or game_type in ("educational",):
+            if special_rules_count >= 4 or entity_count >= 6 or game_type in ("educational",):
                 return max(1024, settings.LLM_GENERATION_TOKEN_BUDGET_STANDARD)
-            if special_rules_count == 0 and entity_count <= 2 and game_type in ("casual", "funny"):
+            if special_rules_count <= 1 and entity_count <= 3 and game_type in ("casual", "funny"):
                 return max(1024, settings.LLM_GENERATION_TOKEN_BUDGET_SIMPLE)
             return max(1024, settings.LLM_GENERATION_TOKEN_BUDGET_STANDARD)
 
-        if special_rules_count >= 3 or entity_count >= 5 or game_type in ("educational",):
+        if special_rules_count >= 4 or entity_count >= 6 or game_type in ("educational",):
             return max(1024, settings.LLM_GENERATION_TOKEN_BUDGET_COMPLEX)
         return max(1024, settings.LLM_GENERATION_TOKEN_BUDGET_STANDARD)
 
@@ -181,6 +176,79 @@ class CodeGenerator:
         if token_budget <= settings.LLM_GENERATION_TOKEN_BUDGET_SIMPLE:
             return "medium"
         return "large"
+
+    @staticmethod
+    def _is_prompt_bullet_line(line: str) -> bool:
+        stripped = line.strip()
+        return stripped.startswith("- ") or stripped.startswith("* ")
+
+    @classmethod
+    def _compact_prompt_section(
+        cls,
+        text: str,
+        *,
+        seen_bullets: Optional[set[str]] = None,
+    ) -> str:
+        lines = text.splitlines()
+        compacted: List[str] = []
+        pending_blank = False
+        in_code_fence = False
+
+        for raw_line in lines:
+            line = raw_line.rstrip()
+            stripped = line.strip()
+            if not stripped:
+                pending_blank = bool(compacted)
+                continue
+            if stripped.startswith("```"):
+                if pending_blank and compacted and compacted[-1] != "":
+                    compacted.append("")
+                pending_blank = False
+                compacted.append(line)
+                in_code_fence = not in_code_fence
+                continue
+            if pending_blank and compacted and compacted[-1] != "":
+                compacted.append("")
+            pending_blank = False
+
+            if not in_code_fence and seen_bullets is not None and cls._is_prompt_bullet_line(line):
+                normalized_bullet = re.sub(r"\s+", " ", stripped).lower()
+                if normalized_bullet in seen_bullets:
+                    continue
+                seen_bullets.add(normalized_bullet)
+            compacted.append(line)
+
+        while compacted and not compacted[0].strip():
+            compacted.pop(0)
+        while compacted and not compacted[-1].strip():
+            compacted.pop()
+        return "\n".join(compacted)
+
+    @classmethod
+    def _compose_prompt_sections(
+        cls,
+        sections: List[str],
+        *,
+        dedupe_bullets: bool = True,
+    ) -> str:
+        seen_sections: set[str] = set()
+        seen_bullets: Optional[set[str]] = set() if dedupe_bullets else None
+        composed: List[str] = []
+
+        for section in sections:
+            normalized = (section or "").strip()
+            if not normalized:
+                continue
+            if normalized in seen_sections:
+                continue
+            seen_sections.add(normalized)
+            compacted = cls._compact_prompt_section(
+                normalized,
+                seen_bullets=seen_bullets,
+            )
+            if compacted:
+                composed.append(compacted)
+        return "\n\n".join(composed)
 
     async def generate(
         self,
@@ -243,20 +311,25 @@ class CodeGenerator:
         visual_pack_block = self._build_visual_pack_block(spec)
         implementation_budget = self._build_implementation_budget_block(spec, request_text)
         design_program_block = self._build_design_program_block(spec, gdd)
+        mechanic_diversity_block = self._build_mechanic_diversity_block(
+            spec,
+            request_text,
+            runtime_profile,
+        )
         critical_intent_block = self._build_critical_intent_block(
             spec,
             request_text,
             runtime_profile=runtime_profile,
         )
         enriched_block = self._build_enriched_design_block(gdd)
-        full_prompt = "\n\n".join(
-            part
-            for part in [
+        full_prompt = self._compose_prompt_sections(
+            [
                 logic_generate_policy,
                 generation_tier_block,
                 visual_pack_block,
                 profile_few_shot,
                 structured_design,
+                mechanic_diversity_block,
                 design_program_block,
                 critical_intent_block,
                 self._build_ui_language_block(spec.ui_language),
@@ -264,11 +337,9 @@ class CodeGenerator:
                 implementation_budget,
                 self._build_mobile_layout_guardrails(gdd, runtime_contract),
                 require_prompt("prompt.platform_standard"),
-            ]
-            if part
+                enriched_block,
+            ],
         )
-        if enriched_block:
-            full_prompt += "\n\n" + enriched_block
 
         skeleton = self.template_cache.get_skeleton(spec, runtime_profile or "")
         if self._should_include_reference_skeleton(
@@ -278,10 +349,13 @@ class CodeGenerator:
             design_program_block=design_program_block,
             enriched_block=enriched_block,
         ):
-            full_prompt = (
-                "REFERENCE SKELETON (follow this HTML structure, replace game-specific content):\n"
-                f"```html\n{skeleton}\n```\n\n"
-                + full_prompt
+            full_prompt = self._compose_prompt_sections(
+                [
+                    "REFERENCE SKELETON (follow this HTML structure, replace game-specific content):\n"
+                    f"```html\n{skeleton}\n```",
+                    full_prompt,
+                ],
+                dedupe_bullets=False,
             )
 
         try:
@@ -819,7 +893,7 @@ class CodeGenerator:
             rule for rule in (spec.special_rules or [])
             if "distinctive gameplay loop" in rule.lower() or "avoid the stock" in rule.lower()
         ]
-        if generation_tier != "showcase" and not diversity_rules:
+        if generation_tier == "safe" and not diversity_rules:
             return ""
         prompt_lines = [
             "MECHANIC DIVERSITY GOAL:",
@@ -859,7 +933,7 @@ class CodeGenerator:
         intent_summary = spec.intent_summary if spec else ""
         generation_tier = cls._resolve_generation_tier(spec)
         lines = [
-            "IMPLEMENTATION BUDGET (NON-NEGOTIABLE):",
+            "IMPLEMENTATION SHAPE:",
             "- Use one canvas and one primary requestAnimationFrame loop.",
             "- Keep the whole experience coherent inside one HTML file and one shared state model.",
             "- Reuse the same controls and state machine across the whole experience instead of creating disconnected subsystems.",
@@ -868,24 +942,26 @@ class CodeGenerator:
             lines.extend([
                 "- Keep one main HUD and at most one overlay screen for ready/game-over or level-complete states.",
                 "- Avoid scene managers, dialogue trees, worksheet generators, inventories, or parallel mini-games unless absolutely required for the core mechanic.",
-                "- Prefer the smallest complete mechanic that satisfies the request and runtime contract before adding optional polish.",
+                "- Choose the most engaging compact mechanic that satisfies the request and runtime contract before layering extra polish.",
             ])
         elif generation_tier == "showcase":
             lines.extend([
                 "- Allow a richer presentation layer, a stronger HUD, and 2-3 linked subsystems as long as they all plug into the same loop.",
                 "- Favor one signature mechanic plus one support system such as combos, waves, rescue targets, route goals, risk-reward pickups, or finale beats.",
-                "- Spend budget on clarity, juice, pacing, and progression once boot, input, restart, and visible feedback are secure.",
+                "- Showcase briefs may use 5-8 active entities or families when they stay legible and share the same core loop.",
+                "- Spend budget on clarity, juice, pacing, progression, and memorable payoff once boot, input, restart, and visible feedback are secure.",
             ])
         else:
             lines.extend([
-                "- Allow one stronger support subsystem and a more expressive HUD if they improve the brief.",
+                "- Allow 2-4 supporting subsystems and a more expressive HUD when they improve the brief.",
+                "- Standard briefs may use roughly 4-6 active entities or families when they reinforce the same mechanic.",
                 "- Build beyond the minimal safe demo when the brief supports it, while keeping the loop readable and QA-friendly.",
             ])
 
         if game_type == "casual":
             lines.extend([
                 "- Keep the round structure readable and avoid spawning multiple unrelated subsystems.",
-                "- Use one main action loop, but supporting pickups, rescue targets, combo chains, or chase goals are allowed when they share the same controls.",
+                "- Use one main action loop, but supporting pickups, rescue targets, combo chains, chase goals, or escort targets are allowed when they share the same controls.",
             ])
         if game_type in {"puzzle", "educational"}:
             lines.extend([
@@ -927,36 +1003,6 @@ class CodeGenerator:
         if design_program_block.strip() and generation_tier != "safe":
             return False
         return len((request_text or "").strip()) <= 80 or generation_tier == "safe"
-
-    @staticmethod
-    def _build_source_bundle_context_block(source_bundle_context: Optional[SourceBundleContext]) -> str:
-        if not source_bundle_context:
-            return ""
-
-        lines = ["HISTORICAL GAME CONTEXT:"]
-        if source_bundle_context.title:
-            lines.append(f"- Existing title: {source_bundle_context.title}")
-        if source_bundle_context.latest_bundle_version is not None:
-            lines.append(f"- Latest bundle version: {source_bundle_context.latest_bundle_version}")
-        if source_bundle_context.latest_game_type:
-            lines.append(f"- Current game type: {source_bundle_context.latest_game_type}")
-        if source_bundle_context.latest_feedback:
-            lines.append(f"- Latest user feedback: {source_bundle_context.latest_feedback}")
-        if source_bundle_context.latest_iteration_type:
-            lines.append(f"- Latest iteration type: {source_bundle_context.latest_iteration_type}")
-        if source_bundle_context.summary:
-            lines.append(f"- Summary: {source_bundle_context.summary}")
-        for revision in (source_bundle_context.recent_revisions or [])[:4]:
-            revision_bits = [
-                f"v{revision.version}" if revision.version is not None else "",
-                revision.feedback or "",
-                revision.iteration_type or "",
-                revision.summary or "",
-            ]
-            compact = " | ".join(bit for bit in revision_bits if bit)
-            if compact:
-                lines.append(f"- Recent revision: {compact}")
-        return "\n".join(lines)
 
     @staticmethod
     def _build_ui_copy_examples(gdd: GDD, ui_language: str) -> str:
@@ -1039,24 +1085,6 @@ class CodeGenerator:
             updated = updated.replace(source, target)
         return updated
 
-    def _build_iteration_mobile_layout_guardrails(
-        self,
-        runtime_contract: Optional[GameRuntimeContract] = None,
-    ) -> str:
-        orientation = self._resolve_layout_orientation(runtime_contract)
-        reference_label = self._layout_reference_label(orientation)
-        prompt = require_prompt("prompt.iteration_mobile_layout_guardrails").format(
-            reference_orientation=reference_label,
-            orientation_label=reference_label,
-        )
-        prompt = self._rewrite_layout_prompt_for_orientation(prompt, orientation)
-        supplement = (
-            "MOBILE LAYOUT CHECKLIST\n"
-            f"- Preserve {reference_label} sizing during iteration and keep resize logic based on both viewport dimensions.\n"
-            "- Recompute scaleX/scaleY, then derive uiScale from Math.min(scaleX, scaleY) or an equivalent short-edge fit."
-        )
-        return "\n".join([prompt, supplement])
-
     @staticmethod
     def _format_state_flow(state_machine: Dict[str, Any]) -> str:
         states = state_machine.get("states") if isinstance(state_machine, dict) else None
@@ -1133,7 +1161,7 @@ class CodeGenerator:
         )
 
         lines = [
-            "RUNTIME CONTRACT (NON-NEGOTIABLE):",
+            "RUNTIME CONTRACT (MUST STAY FUNCTIONAL):",
             f"- Runtime profile: {profile_value} (contract v{contract_version})",
             (
                 "- Core state flow must support "
@@ -1331,24 +1359,16 @@ class CodeGenerator:
         prompt_bundle_snapshot: Optional[Dict[str, Any]],
         spec: Optional[GameSpec] = None,
     ) -> str:
-        sections = [
-            self._resolved_bundle_prompt(prompt_bundle_snapshot, "locked_contract"),
-            self._resolved_bundle_prompt(prompt_bundle_snapshot, "product_policy"),
-            self._rewrite_system_prompt_for_generation_tier(
-                require_prompt("prompt.code_gen_system"),
-                spec=spec,
-            ),
-        ]
-
-        deduped: List[str] = []
-        seen: set[str] = set()
-        for section in sections:
-            normalized = (section or "").strip()
-            if not normalized or normalized in seen:
-                continue
-            seen.add(normalized)
-            deduped.append(normalized)
-        return "\n\n".join(deduped)
+        return self._compose_prompt_sections(
+            [
+                self._resolved_bundle_prompt(prompt_bundle_snapshot, "locked_contract"),
+                self._resolved_bundle_prompt(prompt_bundle_snapshot, "product_policy"),
+                self._rewrite_system_prompt_for_generation_tier(
+                    require_prompt("prompt.code_gen_system"),
+                    spec=spec,
+                ),
+            ],
+        )
 
     @staticmethod
     def _palette_value(palette: List[str], index: int, fallback: str) -> str:
@@ -1362,10 +1382,10 @@ class CodeGenerator:
         if shape_key == "triangle":
             return "Canvas path triangle with filled color and subtle outline"
         if shape_key in {"square", "rectangle"}:
-            return "Filled rounded rectangle drawn with Canvas 2D primitives"
+            return "Filled rounded rectangle drawn with inline canvas primitives"
         if shape_key == "diamond":
             return "Rotated square diamond drawn with Canvas path commands"
-        return "Filled circle or simple geometric sprite drawn with Canvas 2D primitives"
+        return "Filled circle or simple geometric sprite drawn with inline canvas primitives"
 
     @staticmethod
     def _derive_player_init_pos(game_type: str, canvas_w: int, canvas_h: int) -> str:
@@ -1437,7 +1457,6 @@ class CodeGenerator:
         runtime_profile: Optional[str] = None,
         prompt_bundle_snapshot: Optional[Dict[str, Any]] = None,
         game_spec: Optional[GameSpec] = None,
-        source_bundle_context: Optional[SourceBundleContext] = None,
     ) -> Tuple[str, IterationType]:
         if self.llm_mode != "real" or not self._client.is_enabled():
             raise RuntimeError("Real LLM mode is required for game iteration")
@@ -1458,7 +1477,6 @@ class CodeGenerator:
             runtime_profile=runtime_profile,
             prompt_bundle_snapshot=prompt_bundle_snapshot,
             game_spec=game_spec,
-            source_bundle_context=source_bundle_context,
         )
         return ensure_structured_section_markers(updated), iter_type
 
@@ -1576,7 +1594,6 @@ class CodeGenerator:
         runtime_profile: Optional[str] = None,
         prompt_bundle_snapshot: Optional[Dict[str, Any]] = None,
         game_spec: Optional[GameSpec] = None,
-        source_bundle_context: Optional[SourceBundleContext] = None,
     ) -> str:
         history_text = "\n".join(
             f"{item.get('role', 'user')}: {item.get('content', '')}"
@@ -1805,28 +1822,6 @@ def _extract_html(text: str) -> str:
     if match:
         text = text[match.start():]
     return text.strip()
-
-
-def _extract_script_content(html: str) -> Optional[str]:
-    """Extract the content of the last (main) inline <script> block."""
-    return extract_patch_script_content(html)
-
-
-def _extract_style_content(html: str) -> Optional[str]:
-    """Extract the content of the first inline <style> block."""
-    return extract_patch_style_content(html)
-
-
-def _replace_script_content(html: str, new_script: str) -> str:
-    """Replace the content of the last inline <script> block."""
-    return patch_replace_script_content(html, new_script)
-
-
-def _replace_style_content(html: str, new_style: str) -> str:
-    """Replace the content of the first inline <style> block."""
-    return patch_replace_style_content(html, new_style)
-
-
 _STYLE_FEEDBACK_KEYWORDS = (
     "color", "colour", "font", "background", "border",
     "css", "dark mode", "light mode",

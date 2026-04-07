@@ -10,6 +10,7 @@ import json
 import logging
 import math
 import re
+import threading
 import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse, urlunparse
@@ -19,6 +20,7 @@ import httpx
 from ..config.settings import settings
 from ..config.timeout_store import get_int as get_timeout_int
 from .llm_gateway import gateway, get_request_context
+from .prompt_dedup import build_prompt_fingerprint, deep_dedupe_prompt
 from .task_memory import task_memory
 
 logger = logging.getLogger(__name__)
@@ -93,12 +95,20 @@ class LLMContextWindowExceededError(ValueError):
         allowed_input_tokens: int,
         context_window: Optional[int],
         compression_summary: Optional[list[str]] = None,
+        prompt_fingerprint: Optional[str] = None,
+        prompt_dedup_summary: Optional[list[str]] = None,
+        prompt_dedup_saved_tokens_estimate: Optional[int] = None,
+        prompt_dedup_removed_block_count: Optional[int] = None,
     ) -> None:
         super().__init__(message)
         self.estimated_input_tokens = estimated_input_tokens
         self.allowed_input_tokens = allowed_input_tokens
         self.context_window = context_window
         self.compression_summary = list(compression_summary or [])
+        self.prompt_fingerprint = prompt_fingerprint
+        self.prompt_dedup_summary = list(prompt_dedup_summary or [])
+        self.prompt_dedup_saved_tokens_estimate = prompt_dedup_saved_tokens_estimate
+        self.prompt_dedup_removed_block_count = prompt_dedup_removed_block_count
 
 
 class LLMProviderCapacityError(ValueError):
@@ -132,6 +142,13 @@ class PromptAdmissionResult:
     compression_summary: list[str] = field(default_factory=list)
     strict_admission: bool = False
     limit_source: str = "caller_fallback"
+    prompt_fingerprint: str = ""
+    prompt_dedup_applied: bool = False
+    prompt_dedup_base_input_tokens: int = 0
+    prompt_dedup_saved_tokens_estimate: int = 0
+    prompt_dedup_removed_block_count: int = 0
+    prompt_dedup_removed_blocks: List[Dict[str, Any]] = field(default_factory=list)
+    prompt_dedup_summary: list[str] = field(default_factory=list)
 
 
 def _build_openai_compatible_chat_url(base_url: str) -> str:
@@ -376,6 +393,64 @@ def _is_retryable_provider_error(exc: Exception) -> bool:
     return False
 
 
+_LLM_HTTP_CLIENTS: dict[asyncio.AbstractEventLoop, httpx.AsyncClient] = {}
+_LLM_HTTP_CLIENTS_LOCK = threading.Lock()
+_LLM_CALL_SEMAPHORES: dict[asyncio.AbstractEventLoop, tuple[int, asyncio.Semaphore]] = {}
+_LLM_CALL_SEMAPHORES_LOCK = threading.Lock()
+
+
+def _llm_max_concurrency() -> int:
+    return max(get_timeout_int("timeout.ai_engine.llm.max_concurrency", 10, min_value=1), 1)
+
+
+def _llm_http_limits() -> httpx.Limits:
+    max_connections = max(
+        get_timeout_int("timeout.ai_engine.llm.http_max_connections", 100, min_value=1),
+        1,
+    )
+    max_keepalive_connections = max(
+        get_timeout_int(
+            "timeout.ai_engine.llm.http_max_keepalive_connections",
+            40,
+            min_value=1,
+        ),
+        1,
+    )
+    keepalive_expiry_s = max(
+        get_timeout_int("timeout.ai_engine.llm.http_keepalive_expiry_s", 30, min_value=1),
+        1,
+    )
+    return httpx.Limits(
+        max_connections=max_connections,
+        max_keepalive_connections=min(max_keepalive_connections, max_connections),
+        keepalive_expiry=float(keepalive_expiry_s),
+    )
+
+
+def _llm_http_client() -> httpx.AsyncClient:
+    loop = asyncio.get_running_loop()
+    with _LLM_HTTP_CLIENTS_LOCK:
+        client = _LLM_HTTP_CLIENTS.get(loop)
+        if client is not None and not client.is_closed:
+            return client
+        client = httpx.AsyncClient(limits=_llm_http_limits())
+        _LLM_HTTP_CLIENTS[loop] = client
+        return client
+
+
+def _llm_call_semaphore(max_concurrency: int) -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    with _LLM_CALL_SEMAPHORES_LOCK:
+        cached = _LLM_CALL_SEMAPHORES.get(loop)
+        if cached is not None:
+            cached_limit, semaphore = cached
+            if cached_limit == max_concurrency:
+                return semaphore
+        semaphore = asyncio.Semaphore(max_concurrency)
+        _LLM_CALL_SEMAPHORES[loop] = (max_concurrency, semaphore)
+        return semaphore
+
+
 # ── Output class taxonomy ──────────────────────────────────────────────
 VALID_OUTPUT_CLASSES = frozenset({
     "small_text", "small_json", "medium_structured", "large_patch", "full_document",
@@ -432,25 +507,6 @@ def _normalize_output_class(value: Optional[str]) -> str:
     legacy = _LEGACY_HINT_TO_OUTPUT_CLASS.get(normalized)
     if legacy:
         return legacy
-    return "medium_structured"
-
-
-def _resolve_output_class_for_step(step_key: str, explicit_hint: Optional[str] = None) -> str:
-    """Resolve the output class for a step, using explicit hint, DB catalog, or defaults."""
-    if explicit_hint:
-        resolved = _normalize_output_class(explicit_hint)
-        if resolved in VALID_OUTPUT_CLASSES:
-            return resolved
-    # Try step_key exact match, then parent walk
-    cls = STEP_OUTPUT_CLASS_DEFAULTS.get(step_key)
-    if cls:
-        return cls
-    parent = step_key
-    while "." in parent:
-        parent = parent.rsplit(".", 1)[0]
-        cls = STEP_OUTPUT_CLASS_DEFAULTS.get(parent)
-        if cls:
-            return cls
     return "medium_structured"
 
 
@@ -659,16 +715,6 @@ def _apply_request_timeout_override(route: Any, request_timeout_s: Optional[int]
         "request_timeout_override_s": overridden.request_timeout_s,
     }
     return overridden
-
-
-def _apply_route_max_tokens_limit(route: Any, requested_max_tokens: int) -> int:
-    provider_max_tokens = _coerce_optional_int(getattr(route, "max_tokens", None))
-    requested = max(1, int(requested_max_tokens))
-    if provider_max_tokens is None:
-        return requested
-    return max(1, min(requested, provider_max_tokens))
-
-
 def _resolve_gateway_output_limit(
     route: Any,
     *,
@@ -710,15 +756,6 @@ class LLMClient:
 
     def is_enabled(self) -> bool:
         return settings.LLM_MODE == "real" and gateway.has_enabled_provider()
-
-    def model_for(self, fast: bool = False) -> str:
-        if self.provider() == "openai_compatible":
-            if fast and settings.LLM_FAST_MODEL:
-                return settings.LLM_FAST_MODEL
-            return settings.LLM_MODEL
-        if fast:
-            return settings.CLAUDE_FAST_MODEL
-        return settings.CLAUDE_MODEL
 
     async def _emit_task_activity(
         self,
@@ -816,8 +853,37 @@ class LLMClient:
 
         task_memory_injected = False
         task_memory_compact = False
-        compression_summary: list[str] = []
         effective_system = base_system
+        prompt_dedup_applied = False
+        prompt_dedup_base_input_tokens = 0
+        prompt_dedup_saved_tokens_estimate = 0
+        prompt_dedup_removed_block_count = 0
+        prompt_dedup_removed_blocks: list[dict[str, Any]] = []
+        prompt_dedup_summary: list[str] = []
+
+        def _apply_prompt_dedup(
+            current_system: Optional[str],
+            current_messages: List[Message],
+        ) -> tuple[Optional[str], List[Message], int, int, str, bool, int, list[dict[str, Any]], list[str]]:
+            before_tokens = _estimate_messages_tokens(current_system, current_messages, tokenizer_family)
+            deduped = deep_dedupe_prompt(
+                system=current_system,
+                messages=current_messages,
+                compression_policy=compression_policy or "generic",
+            )
+            after_tokens = _estimate_messages_tokens(deduped.system, deduped.messages, tokenizer_family)
+            return (
+                deduped.system,
+                deduped.messages,
+                before_tokens,
+                after_tokens,
+                max(0, before_tokens - after_tokens),
+                deduped.metrics.prompt_fingerprint,
+                deduped.metrics.applied,
+                deduped.metrics.removed_block_count,
+                list(deduped.metrics.removed_blocks),
+                list(deduped.metrics.summary),
+            )
 
         context = get_request_context()
         task_id = context.get("task_id")
@@ -832,25 +898,46 @@ class LLMClient:
                 task_memory_injected = True
                 effective_system = "\n\n".join(part for part in [base_system, memory_block] if part).strip() or None
 
-        requested_input_tokens = _estimate_messages_tokens(effective_system, admitted_messages, tokenizer_family)
+        (
+            effective_system,
+            admitted_messages,
+            requested_input_tokens,
+            deduped_input_tokens,
+            prompt_dedup_saved_tokens_estimate,
+            prompt_fingerprint,
+            prompt_dedup_applied,
+            prompt_dedup_removed_block_count,
+            prompt_dedup_removed_blocks,
+            prompt_dedup_summary,
+        ) = _apply_prompt_dedup(effective_system, admitted_messages)
+        prompt_dedup_base_input_tokens = requested_input_tokens
+        compression_summary: list[str] = list(prompt_dedup_summary)
+
         if not strict_admission:
             return PromptAdmissionResult(
                 system=effective_system,
                 messages=admitted_messages,
-                estimated_input_tokens=requested_input_tokens,
+                estimated_input_tokens=deduped_input_tokens,
                 requested_input_tokens=requested_input_tokens,
                 allowed_input_tokens=None,
                 reserved_output_tokens=reserved_output_tokens,
                 safety_margin_tokens=safety_margin_tokens,
                 task_memory_injected=task_memory_injected,
                 task_memory_compact=task_memory_compact,
-                compression_summary=[],
+                compression_summary=compression_summary,
                 strict_admission=False,
                 limit_source=limit_source,
+                prompt_fingerprint=prompt_fingerprint,
+                prompt_dedup_applied=prompt_dedup_applied,
+                prompt_dedup_base_input_tokens=prompt_dedup_base_input_tokens,
+                prompt_dedup_saved_tokens_estimate=prompt_dedup_saved_tokens_estimate,
+                prompt_dedup_removed_block_count=prompt_dedup_removed_block_count,
+                prompt_dedup_removed_blocks=prompt_dedup_removed_blocks,
+                prompt_dedup_summary=prompt_dedup_summary,
             )
 
         allowed_input_tokens = max(512, context_window - reserved_output_tokens - safety_margin_tokens)
-        estimated_input_tokens = requested_input_tokens
+        estimated_input_tokens = deduped_input_tokens
         if estimated_input_tokens <= allowed_input_tokens:
             return PromptAdmissionResult(
                 system=effective_system,
@@ -862,9 +949,16 @@ class LLMClient:
                 safety_margin_tokens=safety_margin_tokens,
                 task_memory_injected=task_memory_injected,
                 task_memory_compact=task_memory_compact,
-                compression_summary=[],
+                compression_summary=compression_summary,
                 strict_admission=True,
                 limit_source=limit_source,
+                prompt_fingerprint=prompt_fingerprint,
+                prompt_dedup_applied=prompt_dedup_applied,
+                prompt_dedup_base_input_tokens=prompt_dedup_base_input_tokens,
+                prompt_dedup_saved_tokens_estimate=prompt_dedup_saved_tokens_estimate,
+                prompt_dedup_removed_block_count=prompt_dedup_removed_block_count,
+                prompt_dedup_removed_blocks=prompt_dedup_removed_blocks,
+                prompt_dedup_summary=prompt_dedup_summary,
             )
 
         if task_memory_injected and task_id:
@@ -876,11 +970,32 @@ class LLMClient:
             )
             if compact_memory:
                 compact_system = "\n\n".join(part for part in [base_system, compact_memory] if part).strip() or None
-                compact_tokens = _estimate_messages_tokens(compact_system, admitted_messages, tokenizer_family)
+                (
+                    deduped_compact_system,
+                    deduped_compact_messages,
+                    compact_before_tokens,
+                    compact_after_tokens,
+                    compact_saved_tokens,
+                    compact_prompt_fingerprint,
+                    compact_prompt_dedup_applied,
+                    compact_removed_block_count,
+                    compact_removed_blocks,
+                    compact_prompt_dedup_summary,
+                ) = _apply_prompt_dedup(compact_system, admitted_messages)
+                compact_tokens = compact_after_tokens
                 if compact_tokens < estimated_input_tokens:
-                    effective_system = compact_system
+                    effective_system = deduped_compact_system
+                    admitted_messages = deduped_compact_messages
                     estimated_input_tokens = compact_tokens
                     task_memory_compact = True
+                    prompt_dedup_base_input_tokens = compact_before_tokens
+                    prompt_dedup_saved_tokens_estimate = compact_saved_tokens
+                    prompt_fingerprint = compact_prompt_fingerprint
+                    prompt_dedup_applied = compact_prompt_dedup_applied
+                    prompt_dedup_removed_block_count = compact_removed_block_count
+                    prompt_dedup_removed_blocks = compact_removed_blocks
+                    prompt_dedup_summary = compact_prompt_dedup_summary
+                    compression_summary = list(prompt_dedup_summary)
                     compression_summary.append("compact_task_memory")
 
         while estimated_input_tokens > allowed_input_tokens and len(admitted_messages) > 1:
@@ -934,6 +1049,7 @@ class LLMClient:
                 estimated_input_tokens = _estimate_messages_tokens(effective_system, admitted_messages, tokenizer_family)
 
         if estimated_input_tokens > allowed_input_tokens:
+            prompt_fingerprint = build_prompt_fingerprint(effective_system, admitted_messages)
             raise LLMContextWindowExceededError(
                 (
                     f"Prompt for {step_key} exceeds provider context window after compression "
@@ -943,8 +1059,13 @@ class LLMClient:
                 allowed_input_tokens=allowed_input_tokens,
                 context_window=context_window,
                 compression_summary=compression_summary,
+                prompt_fingerprint=prompt_fingerprint,
+                prompt_dedup_summary=prompt_dedup_summary,
+                prompt_dedup_saved_tokens_estimate=prompt_dedup_saved_tokens_estimate,
+                prompt_dedup_removed_block_count=prompt_dedup_removed_block_count,
             )
 
+        prompt_fingerprint = build_prompt_fingerprint(effective_system, admitted_messages)
         return PromptAdmissionResult(
             system=effective_system,
             messages=admitted_messages,
@@ -958,6 +1079,13 @@ class LLMClient:
             compression_summary=compression_summary,
             strict_admission=True,
             limit_source=limit_source,
+            prompt_fingerprint=prompt_fingerprint,
+            prompt_dedup_applied=prompt_dedup_applied,
+            prompt_dedup_base_input_tokens=prompt_dedup_base_input_tokens,
+            prompt_dedup_saved_tokens_estimate=prompt_dedup_saved_tokens_estimate,
+            prompt_dedup_removed_block_count=prompt_dedup_removed_block_count,
+            prompt_dedup_removed_blocks=prompt_dedup_removed_blocks,
+            prompt_dedup_summary=prompt_dedup_summary,
         )
 
     async def complete(
@@ -1053,16 +1181,6 @@ class LLMClient:
                 requested_max_tokens=max_tokens,
                 response_size_hint=response_size_hint,
             )
-            admission = await self._prepare_prompt_admission(
-                route=route,
-                system=system,
-                messages=messages,
-                step_key=step_key,
-                compression_policy=compression_policy,
-                context_scope=context_scope,
-                reserved_output_tokens=effective_max_tokens,
-                limit_source=limit_source,
-            )
             route.route_snapshot = {
                 **dict(getattr(route, "route_snapshot", {}) or {}),
                 "attempt": attempt_index,
@@ -1076,6 +1194,60 @@ class LLMClient:
                 "response_size_hint": _normalize_response_size_hint(response_size_hint),
                 "context_scope": context_scope,
                 "compression_policy": compression_policy,
+                "reserved_output_tokens": int(effective_max_tokens),
+                **(
+                    {"overall_timeout_s": int(overall_timeout_s)}
+                    if overall_timeout_s is not None
+                    else {}
+                ),
+            }
+            try:
+                admission = await self._prepare_prompt_admission(
+                    route=route,
+                    system=system,
+                    messages=messages,
+                    step_key=step_key,
+                    compression_policy=compression_policy,
+                    context_scope=context_scope,
+                    reserved_output_tokens=effective_max_tokens,
+                    limit_source=limit_source,
+                )
+            except Exception as exc:
+                if isinstance(exc, LLMContextWindowExceededError):
+                    route.route_snapshot = {
+                        **route.route_snapshot,
+                        "estimated_input_tokens": exc.estimated_input_tokens,
+                        "allowed_input_tokens": exc.allowed_input_tokens,
+                        "strict_admission": True,
+                        "compression_summary": list(exc.compression_summary),
+                        "prompt_fingerprint": exc.prompt_fingerprint,
+                        "prompt_dedup_summary": list(exc.prompt_dedup_summary),
+                        "prompt_dedup_saved_tokens_estimate": exc.prompt_dedup_saved_tokens_estimate,
+                        "prompt_dedup_removed_block_count": exc.prompt_dedup_removed_block_count,
+                    }
+                await gateway.emit_llm_call_log({
+                    "stage": stage,
+                    "stepKey": step_key,
+                    "providerId": route.provider_id,
+                    "providerName": route.provider_name,
+                    "providerType": route.provider_type,
+                    "region": route.region,
+                    "model": route.model,
+                    "requestTimeoutS": route.request_timeout_s,
+                    "connectTimeoutS": route.connect_timeout_s,
+                    "success": False,
+                    "errorCode": exc.__class__.__name__,
+                    "errorMessage": str(exc),
+                    "configVersion": route.config_version,
+                    "routeSnapshot": route.route_snapshot,
+                    "outputClass": route.route_snapshot.get("output_class_for_step", ""),
+                    "isPrimaryProvider": route.route_snapshot.get("is_primary_provider", True),
+                    "failoverReason": route.route_snapshot.get("failover_reason"),
+                    "providerVerified": route.route_snapshot.get("provider_verified"),
+                })
+                raise
+            route.route_snapshot = {
+                **route.route_snapshot,
                 "requested_input_tokens": admission.requested_input_tokens,
                 "estimated_input_tokens": admission.estimated_input_tokens,
                 "allowed_input_tokens": admission.allowed_input_tokens,
@@ -1085,11 +1257,13 @@ class LLMClient:
                 "task_memory_injected": admission.task_memory_injected,
                 "task_memory_compact": admission.task_memory_compact,
                 "compression_summary": list(admission.compression_summary),
-                **(
-                    {"overall_timeout_s": int(overall_timeout_s)}
-                    if overall_timeout_s is not None
-                    else {}
-                ),
+                "prompt_fingerprint": admission.prompt_fingerprint,
+                "prompt_dedup_applied": admission.prompt_dedup_applied,
+                "prompt_dedup_base_input_tokens": admission.prompt_dedup_base_input_tokens,
+                "prompt_dedup_saved_tokens_estimate": admission.prompt_dedup_saved_tokens_estimate,
+                "prompt_dedup_removed_block_count": admission.prompt_dedup_removed_block_count,
+                "prompt_dedup_removed_blocks": list(admission.prompt_dedup_removed_blocks),
+                "prompt_dedup_summary": list(admission.prompt_dedup_summary),
             }
             try:
                 return await self._complete_with_route(
@@ -1282,28 +1456,34 @@ class LLMClient:
         step_key: str,
         stage: str,
     ) -> str:
+        semaphore = _llm_call_semaphore(_llm_max_concurrency())
+        queue_started = time.perf_counter()
+        await semaphore.acquire()
+        queue_wait_ms = int((time.perf_counter() - queue_started) * 1000)
         started_at = time.time()
         stop_event = asyncio.Event()
-        await self._emit_task_activity(
-            route=route,
-            stage=stage,
-            step_key=step_key,
-            state="started",
-            elapsed_ms=0,
-        )
-        heartbeat_task = asyncio.create_task(
-            self._heartbeat_loop(
+        heartbeat_task: Optional[asyncio.Task[Any]] = None
+        try:
+            await self._emit_task_activity(
                 route=route,
                 stage=stage,
                 step_key=step_key,
-                started_at=started_at,
-                stop_event=stop_event,
+                state="started",
+                elapsed_ms=0,
             )
-        )
-
-        try:
+            heartbeat_task = asyncio.create_task(
+                self._heartbeat_loop(
+                    route=route,
+                    stage=stage,
+                    step_key=step_key,
+                    started_at=started_at,
+                    stop_event=stop_event,
+                )
+            )
             effective_provider_type = route.provider_type
             route_snapshot = dict(route.route_snapshot or {})
+            if queue_wait_ms > 0:
+                route_snapshot["queue_wait_ms"] = queue_wait_ms
             completion_result: LLMCompletionResult
             if route.provider_type == "anthropic":
                 completion_result = _normalize_completion_result(await self._run_anthropic_with_timeout(
@@ -1340,7 +1520,8 @@ class LLMClient:
                 raise RuntimeError(f"Unsupported provider type: {route.provider_type}")
 
             latency_ms = int((time.time() - started_at) * 1000)
-            await self._finish_heartbeat(stop_event=stop_event, heartbeat_task=heartbeat_task)
+            if heartbeat_task is not None:
+                await self._finish_heartbeat(stop_event=stop_event, heartbeat_task=heartbeat_task)
             await self._emit_task_activity(
                 route=route,
                 stage=stage,
@@ -1377,7 +1558,8 @@ class LLMClient:
             return completion_result.text
         except asyncio.CancelledError:
             latency_ms = int((time.time() - started_at) * 1000)
-            await self._finish_heartbeat(stop_event=stop_event, heartbeat_task=heartbeat_task)
+            if heartbeat_task is not None:
+                await self._finish_heartbeat(stop_event=stop_event, heartbeat_task=heartbeat_task)
             await self._emit_task_activity(
                 route=route,
                 stage=stage,
@@ -1432,7 +1614,8 @@ class LLMClient:
                 error_body_excerpt = str(exc)
 
             latency_ms = int((time.time() - started_at) * 1000)
-            await self._finish_heartbeat(stop_event=stop_event, heartbeat_task=heartbeat_task)
+            if heartbeat_task is not None:
+                await self._finish_heartbeat(stop_event=stop_event, heartbeat_task=heartbeat_task)
             await self._emit_task_activity(
                 route=route,
                 stage=stage,
@@ -1470,6 +1653,8 @@ class LLMClient:
                 "providerVerified": route.route_snapshot.get("provider_verified"),
             })
             raise
+        finally:
+            semaphore.release()
 
     async def _finish_heartbeat(
         self,
@@ -1589,22 +1774,25 @@ class LLMClient:
         }
         url = _build_openai_compatible_chat_url(route.base_url)
 
-        async with httpx.AsyncClient(
+        client = _llm_http_client()
+        response = await client.post(
+            url,
+            headers=headers,
+            json=payload,
             timeout=httpx.Timeout(route.request_timeout_s, connect=route.connect_timeout_s),
-        ) as client:
-            response = await client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            upstream_request_id = _response_request_id(response.headers)
-            try:
-                data = response.json()
-            except ValueError as exc:
-                excerpt = (response.text or "")[:1000] or None
-                logger.error("OpenAI-compatible provider returned non-JSON payload: %s", excerpt)
-                raise OpenAICompatibleResponseParseError(
-                    "OpenAI-compatible response was not valid JSON",
-                    response_excerpt=excerpt,
-                    upstream_request_id=upstream_request_id,
-                ) from exc
+        )
+        response.raise_for_status()
+        upstream_request_id = _response_request_id(response.headers)
+        try:
+            data = response.json()
+        except ValueError as exc:
+            excerpt = (response.text or "")[:1000] or None
+            logger.error("OpenAI-compatible provider returned non-JSON payload: %s", excerpt)
+            raise OpenAICompatibleResponseParseError(
+                "OpenAI-compatible response was not valid JSON",
+                response_excerpt=excerpt,
+                upstream_request_id=upstream_request_id,
+            ) from exc
 
         try:
             choice = data["choices"][0]

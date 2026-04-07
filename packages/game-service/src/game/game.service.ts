@@ -11,7 +11,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import axios from 'axios';
 import {
   GameAccessGrantSource,
@@ -34,6 +34,11 @@ import {
   IterateGameDto,
 } from './dto';
 import { GenerationTaskService } from './generation-task.service';
+import { GenerationQueueService } from './generation-queue.service';
+import {
+  GENERATION_QUEUE_JOB_PIPELINE_ITERATE,
+  GENERATION_QUEUE_JOB_PIPELINE_RUN,
+} from './generation-queue.types';
 import {
   TIMEOUT_CONFIG_CATALOG,
   TIMEOUT_CONFIG_CATALOG_BY_KEY,
@@ -44,6 +49,10 @@ import {
   normalizeRuntimeProfileId,
   runtimeProfileLookupCandidates,
 } from './runtime-profile-ids';
+import {
+  buildIntentBuildSnapshot,
+  normalizeIntentBuildSnapshot,
+} from './intent-build.util';
 
 // Pipeline stage labels for WebSocket progress events
 const STAGE_LABELS: Record<string, string> = {
@@ -160,6 +169,19 @@ interface SourceBundleContextPayload {
   latest_iteration_type?: string | null;
   summary?: string | null;
   recent_revisions?: SourceBundleRevisionPayload[];
+}
+
+interface DirectIntentAnalyzeResponsePayload {
+  slots?: Record<string, unknown>;
+  missing_required?: string[];
+  slot_fill_pct?: number;
+  ready_to_generate?: boolean;
+}
+
+interface DirectIntentSpecResponsePayload {
+  spec?: Record<string, unknown> | null;
+  missing_required?: string[];
+  slot_fill_pct?: number;
 }
 
 interface CreateGameCommand extends CreateGameDto {
@@ -325,6 +347,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     private jwtService: JwtService,
     private wsGateway: GameWebSocketGateway,
     private generationTaskService: GenerationTaskService,
+    private generationQueueService: GenerationQueueService,
   ) {
     this.aiEngineUrl = this.configService.get<string>(
       'AI_ENGINE_URL',
@@ -332,15 +355,36 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  onModuleInit(): void {
-    void this.refreshTimeoutConfigCache().catch((error) => {
+  async onModuleInit(): Promise<void> {
+    await this.refreshTimeoutConfigCache().catch((error) => {
       this.logger.warn(`Failed to warm timeout config cache on init: ${error?.message || error}`);
     });
-    this.startActiveTaskSweep();
+    if (!this.timeoutConfigLoadedAt) {
+      await this.syncBackgroundExecutionMode().catch((error) => {
+        this.logger.warn(`Failed to initialize background execution mode on init: ${error?.message || error}`);
+      });
+    }
   }
 
   onModuleDestroy(): void {
     this.stopActiveTaskSweep();
+  }
+
+  private async syncBackgroundExecutionMode(): Promise<void> {
+    const queueReady = await this.generationQueueService.ensureOperational().catch((error) => {
+      this.logger.warn(`Failed to initialize generation queue: ${error?.message || error}`);
+      return false;
+    });
+    if (queueReady) {
+      this.stopActiveTaskSweep();
+      const scheduled = await this.generationQueueService.ensureActiveTaskSweepScheduler(
+        this.getActiveTaskSweepIntervalMs(),
+      );
+      if (scheduled) {
+        return;
+      }
+    }
+    this.startActiveTaskSweep();
   }
 
   private startActiveTaskSweep(): void {
@@ -364,12 +408,9 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   }
 
   private restartActiveTaskSweepIfNeeded(): void {
-    const nextIntervalMs = this.getActiveTaskSweepIntervalMs();
-    if (this.activeTaskSweepTimer && this.currentSweepIntervalMs === nextIntervalMs) {
-      return;
-    }
-    this.stopActiveTaskSweep();
-    this.startActiveTaskSweep();
+    void this.syncBackgroundExecutionMode().catch((error) => {
+      this.logger.warn(`Failed to resync active task sweep mode: ${error?.message || error}`);
+    });
   }
 
   public async refreshTimeoutConfigCache(): Promise<void> {
@@ -390,7 +431,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
 
         this.timeoutConfigCache = nextCache;
         this.timeoutConfigLoadedAt = Date.now();
-        this.restartActiveTaskSweepIfNeeded();
+        await this.syncBackgroundExecutionMode();
       })().finally(() => {
         this.timeoutConfigRefreshPromise = null;
       });
@@ -516,6 +557,44 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     ).trim();
 
     return normalized === 'ap_southeast_johor' ? normalized : 'cn_shanghai';
+  }
+
+  private normalizeOptionalString(value: unknown): string | undefined {
+    const normalized = String(value || '').trim();
+    return normalized || undefined;
+  }
+
+  private buildCreateIntentVariationSeed(params: {
+    userId: string;
+    description: string;
+    title?: string | null;
+    generationTier: GenerationTier;
+    entryMode?: string | null;
+  }): string {
+    const fingerprint = JSON.stringify({
+      userId: params.userId,
+      description: params.description.trim(),
+      title: this.normalizeOptionalString(params.title) || null,
+      generationTier: params.generationTier,
+      entryMode: this.normalizeOptionalString(params.entryMode) || 'create',
+    });
+    return createHash('sha256').update(fingerprint).digest('hex').slice(0, 24);
+  }
+
+  private buildCreateIntentBuild(params: {
+    title?: string | null;
+    description: string;
+    entryMode?: string | null;
+    generationTier: GenerationTier;
+    sourceSpec?: Record<string, unknown> | null;
+  }) {
+    return buildIntentBuildSnapshot({
+      title: this.normalizeOptionalString(params.title),
+      initialPrompt: params.description,
+      entryMode: this.normalizeOptionalString(params.entryMode) || 'create',
+      generationTier: params.generationTier,
+      sourceSpec: params.sourceSpec || null,
+    });
   }
 
   private parseConfigList(key: string): Set<string> {
@@ -683,7 +762,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       runtime_profile: profileId,
       metadata: {},
       canvas: {
-        requires_canvas_2d: renderContract.requiresCanvas2D ?? true,
+        requires_canvas_2d: renderContract.requiresCanvas2D ?? false,
+        allow_webgl: renderContract.allowWebgl ?? !(renderContract.requiresCanvas2D === true),
         must_render_within_ms: renderContract.mustRenderWithinMs ?? 1500,
         orientation: (schema.mobileLayoutContract as Record<string, unknown> | undefined)?.orientation ?? 'portrait_first',
         ui_scale_mode: (schema.mobileLayoutContract as Record<string, unknown> | undefined)?.uiScaleMode ?? 'short_edge',
@@ -1223,6 +1303,295 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         },
       };
     }
+
+  private async mergeGenerationTaskMetadata(
+    taskId: string,
+    patch: Record<string, unknown>,
+  ): Promise<void> {
+    const currentTask = await Promise.resolve(this.prisma.generationTask.findUnique({
+      where: { id: taskId },
+      select: { metadata: true },
+    })).catch(() => null);
+    const metadata = currentTask?.metadata && typeof currentTask.metadata === 'object' && !Array.isArray(currentTask.metadata)
+      ? { ...(currentTask.metadata as Record<string, unknown>) }
+      : {};
+
+    await Promise.resolve(this.prisma.generationTask.update({
+      where: { id: taskId },
+      data: {
+        metadata: {
+          ...metadata,
+          ...patch,
+        } as Prisma.InputJsonValue,
+      },
+    })).catch((error) => {
+      this.logger.warn(`Failed to update task metadata for ${taskId}: ${this.extractErrorMessage(error)}`);
+    });
+  }
+
+  private async analyzeCreateIntentTurn(params: {
+    userId: string;
+    description: string;
+    title?: string;
+    generationTier: GenerationTier;
+    entryMode?: string | null;
+    executionRegion?: string;
+  }): Promise<DirectIntentAnalyzeResponsePayload> {
+    const aiEngineUrl = await this.getAiEngineBaseUrl(params.executionRegion);
+    const timeoutMs = await this.getExpandPromptRequestTimeoutMs();
+    const response = await axios.post(
+      `${aiEngineUrl}/api/v1/ai/dialogue/analyze-turn`,
+      {
+        user_id: params.userId,
+        conversation: [
+          {
+            role: 'user',
+            content: params.description,
+            kind: 'prompt',
+          },
+        ],
+        current_slots: {},
+        skipped_slots: [],
+        entry_mode: this.normalizeOptionalString(params.entryMode) || 'create',
+        generation_tier: params.generationTier,
+        ...(params.title ? { title: params.title } : {}),
+        initial_prompt: params.description,
+      },
+      { timeout: timeoutMs },
+    );
+    return response.data || {};
+  }
+
+  private async buildCreateSpecFromPrompt(params: {
+    userId: string;
+    description: string;
+    title?: string;
+    generationTier: GenerationTier;
+    executionRegion?: string;
+    slots: Record<string, unknown>;
+    variationSeed: string;
+  }): Promise<DirectIntentSpecResponsePayload> {
+    const aiEngineUrl = await this.getAiEngineBaseUrl(params.executionRegion);
+    const timeoutMs = await this.getExpandPromptRequestTimeoutMs();
+    const response = await axios.post(
+      `${aiEngineUrl}/api/v1/ai/dialogue/spec-from-slots`,
+      {
+        slots: params.slots,
+        source_description: params.description,
+        ...(params.title ? { title: params.title } : {}),
+        generation_tier: params.generationTier,
+        skipped_slots: [],
+        variation_seed: params.variationSeed,
+      },
+      { timeout: timeoutMs },
+    );
+    return response.data || {};
+  }
+
+  private buildAiGatewayStageError(
+    error: unknown,
+    fallback: string,
+    failedStage: string,
+    failureFamily: string,
+  ): Error {
+    const wrapped = new Error(this.extractAiGatewayErrorMessage(error, fallback));
+    (wrapped as Error & { failedStage?: string; failureFamily?: string }).failedStage = failedStage;
+    (wrapped as Error & { failedStage?: string; failureFamily?: string }).failureFamily = failureFamily;
+    return wrapped;
+  }
+
+  private extractAiGatewayErrorMessage(error: unknown, fallback: string): string {
+    const raw = (error as any)?.response?.data?.detail
+      ?? (error as any)?.response?.data?.message
+      ?? (error as any)?.message
+      ?? fallback;
+    return this.stringifyAiGatewayErrorDetail(raw, fallback);
+  }
+
+  private stringifyAiGatewayErrorDetail(value: unknown, fallback: string): string {
+    if (value == null) {
+      return fallback;
+    }
+    if (typeof value === 'string') {
+      const normalized = value.trim();
+      return normalized || fallback;
+    }
+    if (Array.isArray(value)) {
+      const parts = value
+        .map((item) => this.stringifyAiGatewayErrorDetail(item, ''))
+        .map((item) => item.trim())
+        .filter(Boolean);
+      return parts.join('; ') || fallback;
+    }
+    if (typeof value === 'object') {
+      const record = value as Record<string, unknown>;
+      for (const candidate of [record.detail, record.message, record.msg, record.reason, record.error]) {
+        const rendered = this.stringifyAiGatewayErrorDetail(candidate, '');
+        if (rendered) {
+          return rendered;
+        }
+      }
+      const parts = Object.entries(record)
+        .map(([key, item]) => {
+          const rendered = this.stringifyAiGatewayErrorDetail(item, '');
+          return rendered ? `${key}=${rendered}` : '';
+        })
+        .filter(Boolean);
+      return parts.join(', ') || fallback;
+    }
+    const normalized = String(value).trim();
+    return normalized || fallback;
+  }
+
+  private async ensureCreateSourceSpec(params: {
+    gameId: string;
+    userId: string;
+    description: string;
+    taskId?: string;
+    executionRegion?: string;
+    title?: string;
+    generationTier: GenerationTier;
+    entryMode?: string | null;
+    sourceSpec?: Record<string, unknown> | null;
+  }): Promise<Record<string, unknown> | null> {
+    if (params.sourceSpec && Object.keys(params.sourceSpec).length > 0) {
+      return params.sourceSpec;
+    }
+
+    const variationSeed = this.buildCreateIntentVariationSeed({
+      userId: params.userId,
+      description: params.description,
+      title: params.title,
+      generationTier: params.generationTier,
+      entryMode: params.entryMode,
+    });
+
+    if (params.taskId) {
+      await Promise.resolve(this.generationTaskService.recordProgress({
+        taskId: params.taskId,
+        gameId: params.gameId,
+        userId: params.userId,
+        stage: 'spec_build',
+        percentage: 15,
+        message: 'Building structured source spec',
+        details: {
+          source: 'zero_question',
+        },
+      })).catch(() => undefined);
+    }
+
+    let analysis: DirectIntentAnalyzeResponsePayload;
+    try {
+      analysis = await this.analyzeCreateIntentTurn({
+        userId: params.userId,
+        description: params.description,
+        title: params.title,
+        generationTier: params.generationTier,
+        entryMode: params.entryMode,
+        executionRegion: params.executionRegion,
+      });
+    } catch (error) {
+      throw this.buildAiGatewayStageError(
+        error,
+        'Create intent analysis failed',
+        'spec_build',
+        'intent_analysis',
+      );
+    }
+
+    let specResponse: DirectIntentSpecResponsePayload;
+    try {
+      specResponse = await this.buildCreateSpecFromPrompt({
+        userId: params.userId,
+        description: params.description,
+        title: params.title,
+        generationTier: params.generationTier,
+        executionRegion: params.executionRegion,
+        slots: analysis.slots || {},
+        variationSeed,
+      });
+    } catch (error) {
+      throw this.buildAiGatewayStageError(
+        error,
+        'Create source spec compilation failed',
+        'spec_build',
+        'source_spec_compile',
+      );
+    }
+
+    const missingRequired = Array.isArray(specResponse.missing_required)
+      ? specResponse.missing_required
+      : [];
+    const compiledSpec = specResponse.spec && typeof specResponse.spec === 'object' && !Array.isArray(specResponse.spec)
+      ? specResponse.spec
+      : null;
+    if (!compiledSpec || missingRequired.length > 0) {
+      const details = missingRequired.length > 0
+        ? `missing: ${missingRequired.join(', ')}`
+        : 'spec payload missing';
+      const error = new Error(`Zero-question source spec is incomplete (${details})`);
+      (error as Error & { failedStage?: string; failureFamily?: string }).failedStage = 'spec_build';
+      (error as Error & { failedStage?: string; failureFamily?: string }).failureFamily = 'source_spec_incomplete';
+      throw error;
+    }
+
+    const intentBuild = this.buildCreateIntentBuild({
+      title: params.title,
+      description: params.description,
+      entryMode: params.entryMode,
+      generationTier: params.generationTier,
+      sourceSpec: compiledSpec,
+    });
+    if (params.taskId) {
+      await this.mergeGenerationTaskMetadata(params.taskId, {
+        sourceSpec: compiledSpec,
+        intentBuild,
+        sourceSpecBuild: {
+          source: 'zero_question',
+          variationSeed,
+          readyToGenerate: Boolean(analysis.ready_to_generate),
+          slotFillPct: Number(specResponse.slot_fill_pct ?? analysis.slot_fill_pct ?? 0) || 0,
+          missingRequired,
+          builtAt: new Date().toISOString(),
+        },
+      });
+      await Promise.resolve(this.generationTaskService.createArtifact({
+        taskId: params.taskId,
+        gameId: params.gameId,
+        userId: params.userId,
+        artifactType: 'source_spec',
+        contentType: 'application/json',
+        payload: compiledSpec,
+        metadata: {
+          source: 'zero_question',
+          variationSeed,
+          readyToGenerate: Boolean(analysis.ready_to_generate),
+          slotFillPct: Number(specResponse.slot_fill_pct ?? analysis.slot_fill_pct ?? 0) || 0,
+          missingRequired,
+          intentFingerprint: intentBuild.intentFingerprint,
+          specFingerprint: intentBuild.specFingerprint,
+        },
+      })).catch((error) => {
+        this.logger.warn(`Failed to persist source spec artifact for task ${params.taskId}: ${this.extractErrorMessage(error)}`);
+      });
+      await Promise.resolve(this.generationTaskService.createArtifact({
+        taskId: params.taskId,
+        gameId: params.gameId,
+        userId: params.userId,
+        artifactType: 'intent_build',
+        contentType: 'application/json',
+        payload: intentBuild,
+        metadata: {
+          source: 'zero_question',
+          variationSeed,
+        },
+      })).catch((error) => {
+        this.logger.warn(`Failed to persist intent build artifact for task ${params.taskId}: ${this.extractErrorMessage(error)}`);
+      });
+    }
+
+    return compiledSpec;
+  }
 
   private buildIterateV2Payload(params: {
     gameId: string;
@@ -1999,6 +2368,18 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     return /timed out|timeout|deadline exceeded|ECONNABORTED/i.test(message);
   }
 
+  private isTransientUpstreamSnapshotError(error: unknown): boolean {
+    if (this.isTimeoutError(error)) {
+      return true;
+    }
+    const status = Number((error as any)?.response?.status ?? 0);
+    if (status >= 500) {
+      return true;
+    }
+    const code = String((error as any)?.code || '').toUpperCase();
+    return ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN'].includes(code);
+  }
+
   private isFinalTaskStatus(status?: string | null): status is Exclude<EffectiveTaskStatus, 'queued' | 'running'> {
     return status === 'succeeded' || status === 'failed' || status === 'canceled' || status === 'timed_out';
   }
@@ -2303,6 +2684,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     await this.ensureTimeoutConfigCache();
     const deadlineMs = Date.now() + this.buildUpstreamTimeoutMs(params.timeoutS) + this.getUpstreamDeadlineGraceMs();
     let runningMarked = false;
+    let consecutiveSnapshotFailures = 0;
+    let lastSnapshotError: string | null = null;
 
     while (Date.now() <= deadlineMs) {
       if (params.taskId && params.gameId) {
@@ -2316,22 +2699,48 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         }
       }
 
-      const snapshot = await this.fetchUpstreamTaskSnapshot(params.aiEngineBaseUrl, params.upstreamTaskId);
-      if (snapshot) {
-        if (snapshot.status === 'running' && params.taskId && !runningMarked) {
-          runningMarked = await Promise.resolve(this.generationTaskService.markRunning(params.taskId))
-            .then(() => true)
-            .catch(() => false);
+      try {
+        const snapshot = await this.fetchUpstreamTaskSnapshot(params.aiEngineBaseUrl, params.upstreamTaskId);
+        consecutiveSnapshotFailures = 0;
+        lastSnapshotError = null;
+        if (snapshot) {
+          if (snapshot.status === 'running' && params.taskId && !runningMarked) {
+            runningMarked = await Promise.resolve(this.generationTaskService.markRunning(params.taskId))
+              .then(() => true)
+              .catch(() => false);
+          }
+          if (snapshot.status !== 'queued' && snapshot.status !== 'running') {
+            return snapshot;
+          }
         }
-        if (snapshot.status !== 'queued' && snapshot.status !== 'running') {
-          return snapshot;
+      } catch (error) {
+        const message = this.extractErrorMessage(error);
+        if (!this.isTransientUpstreamSnapshotError(error)) {
+          throw error;
+        }
+        consecutiveSnapshotFailures += 1;
+        lastSnapshotError = message;
+        if (params.taskId) {
+          const localTerminalSnapshot = await this.resolveDurableLocalTaskSnapshot(params.taskId);
+          if (localTerminalSnapshot) {
+            return localTerminalSnapshot;
+          }
+        }
+        if (consecutiveSnapshotFailures === 1 || consecutiveSnapshotFailures % 5 === 0) {
+          this.logger.warn(
+            `Transient upstream snapshot failure for ${params.upstreamTaskId} (${consecutiveSnapshotFailures}): ${message}`,
+          );
         }
       }
 
       await new Promise((resolve) => setTimeout(resolve, this.getUpstreamPollIntervalMs()));
     }
 
-    throw new Error(`Upstream AI task ${params.upstreamTaskId} timed out while waiting for completion`);
+    throw new Error(
+      lastSnapshotError
+        ? `Upstream AI task ${params.upstreamTaskId} timed out while waiting for completion (last snapshot error: ${lastSnapshotError})`
+        : `Upstream AI task ${params.upstreamTaskId} timed out while waiting for completion`,
+    );
   }
 
   private async getStoredFailureResponseData(taskId: string): Promise<Record<string, any> | null> {
@@ -2547,8 +2956,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           select: {
             id: true,
             title: true,
+            description: true,
             authorId: true,
+            gameType: true,
             status: true,
+            visibility: true,
             version: true,
             publishedAt: true,
             failedStage: true,
@@ -2559,6 +2971,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
             accessGrantSubscriptionId: true,
             canPlay: true,
             requireSubscription: true,
+            forkedFrom: true,
           },
         },
       },
@@ -3093,6 +3506,13 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       const requestedOrientation = this.normalizeRequestedOrientation(dto.orientation)
         ?? this.inferRequestedOrientationFromText(description, title);
       const requestedGenerationTier = this.normalizeRequestedGenerationTier(dto.generationTier) || 'standard';
+      const initialIntentBuild = this.buildCreateIntentBuild({
+        title,
+        description,
+        entryMode: dto.entryMode,
+        generationTier: requestedGenerationTier,
+        sourceSpec: dto.sourceSpec ?? null,
+      });
       const executionRegion = this.resolveExecutionRegion(dto.regionHint);
       const pipelineVersion = this.resolvePipelineVersion({
         entrypoint: 'create',
@@ -3186,6 +3606,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           contractVersion: runtimeContract?.version ?? null,
             metadata: {
               description,
+              title,
               region: executionRegion,
               pipelineVersion,
               orientation: requestedOrientation ?? null,
@@ -3193,6 +3614,15 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
               creationSessionId: dto.creationSessionId ?? null,
               entryMode: dto.entryMode ?? null,
               sourceGameId: dto.sourceGameId ?? null,
+              sourceSpec: dto.sourceSpec ?? null,
+              intentBuild: initialIntentBuild,
+              promptBundleSnapshot: promptBundleSnapshot ?? null,
+              runtimeContract: runtimeContract ?? null,
+              canPlay,
+              requireSubscription,
+              quotaRemaining,
+              accessGrantSource,
+              accessGrantSubscriptionId,
             },
             client: tx,
           });
@@ -3209,6 +3639,37 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         };
       });
 
+      if (initialIntentBuild.frozenSpec) {
+        await Promise.resolve(this.generationTaskService.createArtifact({
+          taskId: task.id,
+          gameId,
+          userId,
+          artifactType: 'intent_build',
+          contentType: 'application/json',
+          payload: initialIntentBuild,
+          metadata: {
+            source: dto.creationSessionId ? 'creation_session' : 'create_request',
+          },
+        })).catch((error) => {
+          this.logger.warn(`Failed to persist intent build artifact for task ${task.id}: ${this.extractErrorMessage(error)}`);
+        });
+        await Promise.resolve(this.generationTaskService.createArtifact({
+          taskId: task.id,
+          gameId,
+          userId,
+          artifactType: 'source_spec',
+          contentType: 'application/json',
+          payload: initialIntentBuild.frozenSpec,
+          metadata: {
+            source: dto.creationSessionId ? 'creation_session' : 'create_request',
+            intentFingerprint: initialIntentBuild.intentFingerprint,
+            specFingerprint: initialIntentBuild.specFingerprint,
+          },
+        })).catch((error) => {
+          this.logger.warn(`Failed to persist source spec artifact for task ${task.id}: ${this.extractErrorMessage(error)}`);
+        });
+      }
+
       this.emitProgress(userId, gameId, 'started', 0, {
         stage: 'started',
         attempt: 1,
@@ -3216,33 +3677,33 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       });
 
       // Run pipeline asynchronously – client subscribes to WebSocket for progress
-      setImmediate(() => {
-        void this.executePipelineTask(
+      const enqueued = await this.generationQueueService.enqueueJob(
+        GENERATION_QUEUE_JOB_PIPELINE_RUN,
+        task.id,
+      );
+      if (!enqueued) {
+        this.scheduleLocalPipelineExecution(
           gameId,
           userId,
           description,
           timeoutS,
           task.id,
           executionRegion,
-            {
-              pipelineVersion,
-              title,
-              orientation: requestedOrientation,
-              generationTier: requestedGenerationTier,
-              access,
-              sourceSpec: dto.sourceSpec ?? null,
-              creationSessionId: dto.creationSessionId ?? null,
-              entryMode: dto.entryMode ?? null,
-              sourceGameId: dto.sourceGameId ?? null,
-              promptBundleSnapshot,
-              runtimeContract,
-            },
-        ).catch((error) => {
-          this.logger.error(
-            `Background pipeline task crashed for game ${gameId}: ${this.extractErrorMessage(error)}`,
-          );
-        });
-      });
+          {
+            pipelineVersion,
+            title,
+            orientation: requestedOrientation,
+            generationTier: requestedGenerationTier,
+            access,
+            sourceSpec: dto.sourceSpec ?? null,
+            creationSessionId: dto.creationSessionId ?? null,
+            entryMode: dto.entryMode ?? null,
+            sourceGameId: dto.sourceGameId ?? null,
+            promptBundleSnapshot,
+            runtimeContract,
+          },
+        );
+      }
 
       const generationTask = this.withAuthorPreviewUrls(
         this.generationTaskService.toTaskSummary(task),
@@ -3264,6 +3725,205 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       this.logger.error(`Failed to create game: ${error.message}`);
       throw error;
     }
+  }
+
+  private scheduleLocalPipelineExecution(
+    gameId: string,
+    userId: string,
+    description: string,
+    timeoutS?: number,
+    taskId?: string,
+    executionRegion?: string,
+    options: CreateExecutionOptions = {},
+  ): void {
+    setImmediate(() => {
+      void this.executePipelineTask(
+        gameId,
+        userId,
+        description,
+        timeoutS,
+        taskId,
+        executionRegion,
+        options,
+      ).catch((error) => {
+        this.logger.error(
+          `Background pipeline task crashed for game ${gameId}: ${this.extractErrorMessage(error)}`,
+        );
+      });
+    });
+  }
+
+  private scheduleLocalIterationExecution(
+    gameId: string,
+    userId: string,
+    feedback: string,
+    nextVersion: number,
+    conversationHistory: Array<{ role: string; content: string }>,
+    currentCode: string,
+    timeoutS?: number,
+    taskId?: string,
+    executionRegion?: string,
+    options: IterateExecutionOptions = {},
+  ): void {
+    setImmediate(() => {
+      void this.executeIterationTask(
+        gameId,
+        userId,
+        feedback,
+        nextVersion,
+        conversationHistory,
+        currentCode,
+        timeoutS,
+        taskId,
+        executionRegion,
+        options,
+      ).catch((error) => {
+        this.logger.error(
+          `Background iteration task crashed for game ${gameId}: ${this.extractErrorMessage(error)}`,
+        );
+      });
+    });
+  }
+
+  private normalizeTaskMetadataRecord(metadata: unknown): Record<string, any> {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      return {};
+    }
+    return metadata as Record<string, any>;
+  }
+
+  private extractTaskMetadataObject<T = Record<string, unknown>>(
+    metadata: Record<string, any>,
+    key: string,
+  ): T | null {
+    const value = metadata[key];
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+    return value as T;
+  }
+
+  private async restoreQueuedIterationSourceCode(
+    taskId: string,
+    gameId: string,
+    metadata: Record<string, any>,
+  ): Promise<string> {
+    const sourceArtifact = await this.generationTaskService.findLatestArtifactForTask(
+      taskId,
+      'iteration_source_code',
+    ).catch(() => null);
+
+    const truncated = Boolean(
+      sourceArtifact?.metadata
+      && typeof sourceArtifact.metadata === 'object'
+      && !Array.isArray(sourceArtifact.metadata)
+      && (sourceArtifact.metadata as Record<string, unknown>).truncated,
+    );
+    if (!truncated && typeof sourceArtifact?.payloadText === 'string' && sourceArtifact.payloadText.trim()) {
+      return sourceArtifact.payloadText;
+    }
+
+    const bundleVersion = Number.parseInt(String(metadata.currentBundleVersion ?? ''), 10);
+    if (Number.isFinite(bundleVersion) && bundleVersion > 0) {
+      const sourceBundle = await this.bundleService.getBundle(gameId, bundleVersion).catch(() => null);
+      if (typeof sourceBundle?.htmlCode === 'string' && sourceBundle.htmlCode.trim()) {
+        return sourceBundle.htmlCode;
+      }
+    }
+
+    const latestBundle = await this.bundleService.getLatestBundle(gameId).catch(() => null);
+    return typeof latestBundle?.htmlCode === 'string' ? latestBundle.htmlCode : '';
+  }
+
+  async processQueuedPipelineRunTask(taskId: string): Promise<void> {
+    const task = await this.getTaskWithGame(taskId);
+    if (!task || this.isFinalTaskStatus(task.status)) {
+      return;
+    }
+    if (task.upstreamTaskId) {
+      await this.reconcileGenerationTask(task);
+      return;
+    }
+
+    const metadata = this.normalizeTaskMetadataRecord(task.metadata);
+    const access: AccessGrantDecision = {
+      canPlay: Boolean(metadata.canPlay ?? task.game?.canPlay ?? true),
+      requireSubscription: Boolean(metadata.requireSubscription ?? task.game?.requireSubscription ?? false),
+      quotaRemaining: Number(metadata.quotaRemaining ?? 0) || 0,
+      accessGrantSource: (metadata.accessGrantSource || task.game?.accessGrantSource || GameAccessGrantSource.none) as GameAccessGrantSource,
+      accessGrantSubscriptionId: (metadata.accessGrantSubscriptionId || task.game?.accessGrantSubscriptionId || null) as string | null,
+    };
+
+    await this.executePipelineTask(
+      task.gameId,
+      task.userId,
+      String(metadata.description || task.game?.description || ''),
+      task.timeoutS ?? undefined,
+      task.id,
+      task.region || undefined,
+      {
+        pipelineVersion: metadata.pipelineVersion === 'v1' ? 'v1' : 'v2',
+        title: String(metadata.title || task.game?.title || '').trim() || undefined,
+        orientation: this.normalizeRequestedOrientation(metadata.orientation),
+        generationTier: this.normalizeRequestedGenerationTier(metadata.generationTier) || 'standard',
+        access,
+        sourceSpec: this.extractTaskMetadataObject<Record<string, unknown>>(metadata, 'sourceSpec'),
+        creationSessionId: typeof metadata.creationSessionId === 'string' ? metadata.creationSessionId : null,
+        entryMode: typeof metadata.entryMode === 'string' ? metadata.entryMode : null,
+        sourceGameId: typeof metadata.sourceGameId === 'string' ? metadata.sourceGameId : null,
+        promptBundleSnapshot: this.extractTaskMetadataObject<PromptBundleSnapshotPayload>(metadata, 'promptBundleSnapshot'),
+        runtimeContract: this.extractTaskMetadataObject<RuntimeContractPayload>(metadata, 'runtimeContract'),
+      },
+    );
+  }
+
+  async processQueuedIterationTask(taskId: string): Promise<void> {
+    const task = await this.getTaskWithGame(taskId);
+    if (!task || this.isFinalTaskStatus(task.status)) {
+      return;
+    }
+    if (task.upstreamTaskId) {
+      await this.reconcileGenerationTask(task);
+      return;
+    }
+
+    const metadata = this.normalizeTaskMetadataRecord(task.metadata);
+    const currentCode = await this.restoreQueuedIterationSourceCode(task.id, task.gameId, metadata);
+    await this.executeIterationTask(
+      task.gameId,
+      task.userId,
+      String(metadata.feedback || ''),
+      task.version || 1,
+      this.normalizeConversationHistory(metadata.conversation),
+      currentCode,
+      task.timeoutS ?? undefined,
+      task.id,
+      task.region || undefined,
+      {
+        pipelineVersion: metadata.pipelineVersion === 'v1' ? 'v1' : 'v2',
+        promptBundleSnapshot: this.extractTaskMetadataObject<PromptBundleSnapshotPayload>(metadata, 'promptBundleSnapshot'),
+        runtimeContract: this.extractTaskMetadataObject<RuntimeContractPayload>(metadata, 'runtimeContract'),
+        orientation: this.normalizeRequestedOrientation(metadata.orientation),
+        generationTier: this.normalizeRequestedGenerationTier(metadata.generationTier) || 'standard',
+        game: task.game ? {
+          gameType: task.game.gameType ?? null,
+          status: task.game.status ?? null,
+          visibility: task.game.visibility ?? null,
+          version: task.game.version ?? null,
+          canPlay: task.game.canPlay ?? null,
+          requireSubscription: task.game.requireSubscription ?? null,
+          accessGrantSource: task.game.accessGrantSource ?? null,
+          accessGrantSubscriptionId: task.game.accessGrantSubscriptionId ?? null,
+          forkedFrom: task.game.forkedFrom ?? null,
+        } : undefined,
+        sourceSpec: this.extractTaskMetadataObject<Record<string, unknown>>(metadata, 'sourceSpec'),
+        sourceBundleContext: this.extractTaskMetadataObject<SourceBundleContextPayload>(metadata, 'sourceBundleContext'),
+      },
+    );
+  }
+
+  async processQueuedActiveTaskSweep(): Promise<void> {
+    await this.reconcileActiveTasksInBackground();
   }
 
   /**
@@ -4261,20 +4921,34 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       const aiEngineBaseUrls = await this.resolveAiEngineEndpointCandidates(executionRegion);
       const resolvedRegion = this.resolveExecutionRegion(executionRegion);
       const pipelineVersion = options.pipelineVersion === 'v1' ? 'v1' : 'v2';
-        const runtimeProfileHint = this.inferRuntimeProfileHint(
-          this.resolveRuntimeHintGameType(options.sourceSpec, null),
+      const normalizedTitle = this.normalizeOptionalString(options.title);
+      if (taskId) {
+        await this.generationTaskService.markRunning(taskId!);
+      }
+      const resolvedSourceSpec = pipelineVersion === 'v2'
+        ? await this.ensureCreateSourceSpec({
+          gameId,
+          userId,
           description,
-          options.title,
-        );
+          taskId,
+          executionRegion: resolvedRegion,
+          title: normalizedTitle,
+          generationTier,
+          entryMode: options.entryMode,
+          sourceSpec: options.sourceSpec,
+        })
+        : (options.sourceSpec ?? null);
+      const runtimeProfileHint = this.inferRuntimeProfileHint(
+        this.resolveRuntimeHintGameType(resolvedSourceSpec, null),
+        description,
+        normalizedTitle,
+      );
       const promptBundleSnapshot = pipelineVersion === 'v2'
         ? (options.promptBundleSnapshot ?? await this.buildPromptBundleSnapshot('create', runtimeProfileHint, generationTier))
         : null;
       const runtimeContract = pipelineVersion === 'v2'
         ? (options.runtimeContract ?? await this.buildDefaultRuntimeContract('create', runtimeProfileHint, options.orientation, generationTier))
         : null;
-      if (taskId) {
-        await this.generationTaskService.markRunning(taskId!);
-      }
 
       const handle = await this.requestUpstreamAsyncTask({
         aiEngineBaseUrls,
@@ -4293,7 +4967,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
               orientation: options.orientation,
               generationTier,
               access: options.access,
-              sourceSpec: options.sourceSpec,
+              sourceSpec: resolvedSourceSpec,
               creationSessionId: options.creationSessionId,
               entryMode: options.entryMode,
               sourceGameId: options.sourceGameId,
@@ -4642,7 +5316,9 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
 
     return {
       message: this.extractErrorMessage(error),
-      failedStage: undefined,
+      failedStage: typeof error?.failed_stage === 'string'
+        ? error.failed_stage
+        : (typeof error?.failedStage === 'string' ? error.failedStage : undefined),
       retryCount: 0,
       fallback: undefined,
       failureFamily: typeof error?.failure_family === 'string'
@@ -5484,16 +6160,44 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
             region: executionRegion,
             conversation: conversationHistory,
             baseStatus,
+            currentBundleVersion: bundle?.version ?? null,
             pipelineVersion,
             orientation: requestedOrientation ?? null,
             generationTier: requestedGenerationTier,
+            sourceSpec: sourceSpec ?? null,
+            sourceBundleContext: sourceBundleContext ?? null,
+            promptBundleSnapshot: promptBundleSnapshot ?? null,
+            runtimeContract: runtimeContract ?? null,
           },
           client: tx,
         });
       });
 
-      setImmediate(() => {
-        void this.executeIterationTask(
+      if (typeof bundle?.htmlCode === 'string' && bundle.htmlCode.trim()) {
+        await this.generationTaskService.createArtifact({
+          taskId: task.id,
+          gameId: id,
+          userId,
+          artifactType: 'iteration_source_code',
+          contentType: 'text/html',
+          payload: bundle.htmlCode,
+          metadata: {
+            bundleVersion: bundle.version ?? null,
+            source: 'iterate_request_snapshot',
+          },
+        }).catch((error) => {
+          this.logger.warn(
+            `Failed to persist iteration source snapshot for task ${task.id}: ${this.extractErrorMessage(error)}`,
+          );
+        });
+      }
+
+      const enqueued = await this.generationQueueService.enqueueJob(
+        GENERATION_QUEUE_JOB_PIPELINE_ITERATE,
+        task.id,
+      );
+      if (!enqueued) {
+        this.scheduleLocalIterationExecution(
           id,
           userId,
           dto.feedback,
@@ -5513,12 +6217,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
             sourceSpec,
             sourceBundleContext,
           },
-        ).catch((error) => {
-          this.logger.error(
-            `Background iteration task crashed for game ${id}: ${this.extractErrorMessage(error)}`,
-          );
-        });
-      });
+        );
+      }
 
       const generationTask = this.withAuthorPreviewUrls(
         this.generationTaskService.toTaskSummary(task),

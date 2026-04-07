@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -200,6 +201,61 @@ def get_active_session(base_url: str, bearer_headers: dict[str, str]) -> dict[st
     return (response or {}).get("data") or {}
 
 
+def wait_for_session_interactive(
+    base_url: str,
+    session_id: str,
+    bearer_headers: dict[str, str],
+    *,
+    wait_s: int = 20,
+    poll_interval_s: float = 1.0,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    deadline = started + wait_s
+    history: list[dict[str, Any]] = []
+    latest_snapshot: dict[str, Any] = {}
+
+    while time.perf_counter() < deadline:
+        latest_snapshot = get_session(base_url, session_id, bearer_headers)
+        current_question = latest_snapshot.get("currentQuestion")
+        elapsed_s = round(time.perf_counter() - started, 3)
+        history.append(
+            {
+                "elapsedS": elapsed_s,
+                "status": latest_snapshot.get("status"),
+                "revision": latest_snapshot.get("revision"),
+                "readyToGenerate": bool(latest_snapshot.get("readyToGenerate")),
+                "slotFillPct": latest_snapshot.get("slotFillPct"),
+                "initError": latest_snapshot.get("initError"),
+                "currentQuestion": current_question.get("slotKey") if isinstance(current_question, dict) else None,
+            }
+        )
+
+        if latest_snapshot.get("readyToGenerate") or current_question:
+            return {
+                "snapshot": latest_snapshot,
+                "polls": history,
+                "timedOutLocally": False,
+                "interactiveElapsedS": elapsed_s,
+            }
+
+        if str(latest_snapshot.get("status") or "").lower() in {"abandoned", "completed"}:
+            return {
+                "snapshot": latest_snapshot,
+                "polls": history,
+                "timedOutLocally": False,
+                "interactiveElapsedS": None,
+            }
+
+        time.sleep(poll_interval_s)
+
+    return {
+        "snapshot": latest_snapshot,
+        "polls": history,
+        "timedOutLocally": True,
+        "interactiveElapsedS": None,
+    }
+
+
 def answer_for_slot(case: dict[str, Any], slot_key: str | None, prompt: str | None = None) -> str | None:
     if not slot_key:
         return None
@@ -248,8 +304,18 @@ def collect_creation_session(
         raise RuntimeError(f"Creation session did not return id: {create_response}")
 
     active_snapshot = get_active_session(base_url, bearer_headers)
+    interactive_wait = wait_for_session_interactive(
+        base_url,
+        session_id,
+        bearer_headers,
+    )
     turns: list[dict[str, Any]] = []
-    latest_snapshot = snapshot
+    latest_snapshot = interactive_wait.get("snapshot") or snapshot
+
+    if interactive_wait.get("timedOutLocally"):
+        raise RuntimeError(
+            f"Creation session did not become interactive within timeout: {interactive_wait}"
+        )
 
     for turn_index in range(max_turns):
         current_question = latest_snapshot.get("currentQuestion") or {}
@@ -305,6 +371,7 @@ def collect_creation_session(
         "sessionId": session_id,
         "createResponse": create_response,
         "activeSnapshot": active_snapshot,
+        "interactiveWait": interactive_wait,
         "turns": turns,
         "snapshot": latest_snapshot,
     }

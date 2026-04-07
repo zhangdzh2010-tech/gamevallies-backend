@@ -275,7 +275,7 @@ class PlatformConstraints(BaseModel):
     max_code_size_kb: int = 300
     max_entities: int = 50
     input_mode: str = "touch_only"
-    render_api: str = "canvas2d"
+    render_api: str = "canvas2d_or_webgl"
     max_memory_mb: int = 100
     target_fps: int = 60
 
@@ -389,6 +389,24 @@ class QACheckError(BaseModel):
     message: str
     severity: str = "error"
     line: Optional[int] = None
+    family: Optional[str] = None
+    blocking: Optional[bool] = None
+    repair_hint: Optional[str] = None
+    location: Optional["QAIssueLocation"] = None
+
+
+class QAIssueLocation(BaseModel):
+    line: Optional[int] = None
+    column: Optional[int] = None
+    section: Optional[str] = None
+    symbol: Optional[str] = None
+
+
+class QAIssueList(BaseModel):
+    issues: List[QACheckError] = Field(default_factory=list)
+    blocking_count: int = 0
+    warning_count: int = 0
+    families: List[str] = Field(default_factory=list)
 
 
 class QACheckResponse(BaseModel):
@@ -396,6 +414,7 @@ class QACheckResponse(BaseModel):
     errors: List[QACheckError] = Field(default_factory=list)
     warnings: List[QACheckError] = Field(default_factory=list)
     validation_summary: Dict[str, bool] = Field(default_factory=dict)
+    issue_list: QAIssueList = Field(default_factory=QAIssueList)
 
 
 class QAResult(BaseModel):
@@ -404,6 +423,7 @@ class QAResult(BaseModel):
     retries: int = 0
     last_errors: List[QACheckError] = Field(default_factory=list)
     needs_regeneration: bool = False
+    issue_list: QAIssueList = Field(default_factory=QAIssueList)
 
 
 # ---------------------------------------------------------------------------
@@ -532,7 +552,8 @@ class FontClamp(BaseModel):
 
 
 class CanvasContract(BaseModel):
-    requires_canvas_2d: bool = True
+    requires_canvas_2d: bool = False
+    allow_webgl: bool = True
     must_render_within_ms: int = 1500
     orientation: str = "portrait_first"
     ui_scale_mode: str = "short_edge"
@@ -561,8 +582,6 @@ class MobileLayoutContract(BaseModel):
 
 class SafetyContract(BaseModel):
     forbidden_apis: List[str] = Field(default_factory=lambda: [
-        "localStorage",
-        "sessionStorage",
         "fetch",
         "XMLHttpRequest",
         "WebSocket",
