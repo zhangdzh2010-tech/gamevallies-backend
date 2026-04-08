@@ -1336,6 +1336,90 @@ def test_repair_code_short_circuits_with_touch_coordinate_guard_for_runtime_clie
     assert mock_complete.await_count == 0
 
 
+def test_repair_code_short_circuits_with_touch_coordinate_guard_for_direct_clientx_ternary():
+    pipeline = QAPipeline()
+    errors = [
+        QACheckError(
+            type="runtime_qa",
+            message="Runtime JS error: Cannot read properties of undefined (reading '0')",
+            severity="error",
+        ),
+        QACheckError(
+            type="runtime_qa",
+            message="Runtime JS error: Cannot read properties of undefined (reading 'clientX')",
+            severity="error",
+        ),
+    ]
+    code = (
+        "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas><script>"
+        "function getPos(e){ const clientX = e.touches ? e.touches[0].clientX : e.clientX; return clientX; }"
+        "</script></body></html>"
+    )
+
+    with patch.object(
+        pipeline._client,
+        "is_enabled",
+        return_value=True,
+    ), patch.object(
+        pipeline._client,
+        "complete",
+        new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
+    ) as mock_complete:
+        repaired = asyncio.run(
+            pipeline.repair_code(
+                code,
+                errors,
+                GameSpec(game_type="casual"),
+            )
+        )
+
+    assert "__playforgeResolveTouchPointInstalled" in repaired
+    assert "window.__playforgeResolveTouchPoint(e).clientX" in repaired
+    assert mock_complete.await_count == 0
+
+
+def test_repair_code_short_circuits_with_config_duplicate_declaration_cleanup():
+    pipeline = QAPipeline()
+    errors = [
+        QACheckError(
+            type="runtime_qa",
+            message="Runtime JS error: Identifier 'stormActive' has already been declared",
+            severity="error",
+        )
+    ]
+    code = (
+        "<!DOCTYPE html><html><body><script>"
+        "/* SECTION:CONFIG START */\n"
+        "let stormActive = false;\n"
+        "const STORM_INTERVAL = 30;\n"
+        "/* SECTION:CONFIG END */\n"
+        "let stormActive = false;\n"
+        "function boot(){ return stormActive ? STORM_INTERVAL : 0; }\n"
+        "</script></body></html>"
+    )
+
+    with patch.object(
+        pipeline._client,
+        "is_enabled",
+        return_value=True,
+    ), patch.object(
+        pipeline._client,
+        "complete",
+        new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
+    ) as mock_complete:
+        repaired = asyncio.run(
+            pipeline.repair_code(
+                code,
+                errors,
+                GameSpec(game_type="casual"),
+            )
+        )
+
+    assert repaired.count("let stormActive = false;") == 1
+    assert "const STORM_INTERVAL = 30;" in repaired
+    assert mock_complete.await_count == 0
+
+
 def test_repair_code_uses_bundle_prompt_for_syntax_structural_family():
     pipeline = QAPipeline()
     errors = [
