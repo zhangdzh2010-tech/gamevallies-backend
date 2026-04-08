@@ -1471,3 +1471,45 @@ def test_complete_with_truncation_retry_retries_timeout_with_longer_request_time
     assert second_timeout > first_timeout
     assert second_overall_timeout >= second_timeout
     assert first_overall_timeout == 180
+
+
+def test_complete_with_truncation_retry_retries_retryable_provider_errors_with_backoff():
+    client = LLMClient()
+    request = httpx.Request("POST", "https://ark.cn-beijing.volces.com/api/v1/chat/completions")
+    response = httpx.Response(
+        429,
+        request=request,
+        headers={"retry-after": "3"},
+        text='{"error":{"message":"rate limit"}}',
+    )
+    rate_limit_exc = httpx.HTTPStatusError("rate limited", request=request, response=response)
+
+    with patch.object(
+        client,
+        "complete",
+        new=AsyncMock(side_effect=[
+            rate_limit_exc,
+            "<!DOCTYPE html><html><body>ok</body></html>",
+        ]),
+    ) as mock_complete, patch.object(
+        llm_client_module.asyncio,
+        "sleep",
+        new=AsyncMock(),
+    ) as mock_sleep:
+        result = asyncio.run(
+            client.complete_with_truncation_retry(
+                messages=[{"role": "user", "content": "repair"}],
+                max_tokens=4096,
+                step_key="code_iterate.full",
+                stage="code_generating",
+                allow_provider_fallback=True,
+                provider_retry_attempts=1,
+                provider_retry_base_delay_s=2,
+                provider_retry_max_delay_s=8,
+            )
+        )
+
+    assert result == "<!DOCTYPE html><html><body>ok</body></html>"
+    assert mock_complete.await_count == 2
+    assert mock_sleep.await_count == 1
+    assert mock_sleep.await_args_list[0].args[0] == 3.0
