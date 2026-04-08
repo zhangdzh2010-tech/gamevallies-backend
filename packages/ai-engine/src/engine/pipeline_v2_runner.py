@@ -664,11 +664,19 @@ class V2PipelineRunner:
 
         base_spec = request.source_spec.model_copy(deep=True) if request.source_spec else None
         current_summary = self._summarize_current_code(request.current_code)
-        conversation_text = " ".join(
-            item.get("content", "")
-            for item in request.iteration_intent.conversation[-3:]
-            if isinstance(item, dict)
-        ).strip()
+        normalized_feedback = re.sub(r"\s+", " ", feedback).strip().lower()
+        conversation_lines = []
+        for item in request.iteration_intent.conversation[-4:]:
+            if not isinstance(item, dict):
+                continue
+            content = re.sub(r"\s+", " ", str(item.get("content", "") or "")).strip()
+            if not content:
+                continue
+            if content.lower() == normalized_feedback:
+                continue
+            role = str(item.get("role", "user") or "user").strip() or "user"
+            conversation_lines.append(f"{role}: {content}")
+        conversation_text = " | ".join(conversation_lines).strip()
         source_spec_summary = self._summarize_source_spec(base_spec)
         source_bundle_context_summary = self._summarize_source_bundle_context(request.source_bundle_context)
         spec_prompt = require_prompt("prompt.iteration_spec_context_template").format(
@@ -2063,7 +2071,6 @@ class V2PipelineRunner:
                 else ""
             ),
             f"game_type={source_bundle_context.latest_game_type}" if source_bundle_context.latest_game_type else "",
-            f"latest_feedback={source_bundle_context.latest_feedback}" if source_bundle_context.latest_feedback else "",
             (
                 f"latest_iteration_type={source_bundle_context.latest_iteration_type}"
                 if source_bundle_context.latest_iteration_type
@@ -2076,13 +2083,12 @@ class V2PipelineRunner:
                 item
                 for item in [
                     f"v{revision.version}" if revision.version is not None else "",
-                    revision.feedback or "",
                     revision.iteration_type or "",
                     revision.summary or "",
                 ]
                 if item
             )
-            for revision in (source_bundle_context.recent_revisions or [])[:4]
+            for revision in (source_bundle_context.recent_revisions or [])[:3]
         ]
         if revision_lines:
             segments.append("recent_revisions=" + " | ".join(line for line in revision_lines if line))

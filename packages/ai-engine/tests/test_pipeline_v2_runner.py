@@ -16,6 +16,7 @@ from src.api.models import (
     QACheckError,
     RunPipelineV2Request,
     SourceBundleContext,
+    SourceBundleRevision,
 )
 from src.engine.pipeline_v2_runner import V2PipelineRunner
 from src.engine.pipeline_orchestrator import PipelineExecutionError
@@ -201,6 +202,38 @@ def test_contract_qa_loop_passes_prompt_bundle_snapshot_to_repair_code():
     assert result.success is True
     kwargs = mock_repair.await_args.kwargs
     assert kwargs["prompt_bundle_snapshot"] == prompt_bundle_snapshot
+
+
+def test_source_bundle_context_summary_avoids_repeating_latest_feedback_text():
+    summary = V2PipelineRunner._summarize_source_bundle_context(
+        SourceBundleContext(
+            title="Office Runner",
+            latest_bundle_version=7,
+            latest_game_type="funny",
+            latest_feedback="make it faster",
+            latest_iteration_type="param_adjust",
+            summary="bright office chase",
+            recent_revisions=[
+                SourceBundleRevision(
+                    version=7,
+                    feedback="make it faster",
+                    iteration_type="param_adjust",
+                    summary="tightened movement speed",
+                ),
+                SourceBundleRevision(
+                    version=6,
+                    feedback="add coins",
+                    iteration_type="element_change",
+                    summary="added a coin lane",
+                ),
+            ],
+        )
+    )
+
+    assert "latest_feedback=" not in summary
+    assert "make it faster" not in summary
+    assert "tightened movement speed" in summary
+    assert "added a coin lane" in summary
 
 
 def test_contract_qa_loop_caps_targeted_repairs_to_one_round():

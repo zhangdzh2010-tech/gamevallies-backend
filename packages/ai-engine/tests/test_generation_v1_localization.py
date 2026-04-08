@@ -33,7 +33,6 @@ CODEGEN_PROMPTS = {
     "prompt.intent_detail_template": (
         "CRITICAL INTENT DETAILS:\n"
         "- Core mechanic: {core_mechanic}\n"
-        "- UI language: {ui_language}\n"
         "- Theme: {theme}\n"
         "- Win condition: {win_condition}\n"
         "{reference_line}\n"
@@ -48,19 +47,18 @@ CODEGEN_PROMPTS = {
     "prompt.generate_alignment_reminder": "Keep the UI language intact.",
     "prompt.code_gen_system": "Return HTML only.",
     "prompt.runtime_contract_summary": (
-        "RUNTIME CONTRACT (NON-NEGOTIABLE):\n"
-        "- Runtime profile: {runtime_profile}\n"
-        "- Contract version: {contract_version}\n"
+        "RUNTIME CONTRACT (MUST STAY FUNCTIONAL):\n"
+        "- Runtime profile: {runtime_profile} (contract v{contract_version})\n"
+        "- Core state flow must support {required_states} with a restart path back into active play.\n"
+        "- Input must work through {input_modes}; expected gestures: {gestures}.\n"
+        "- Forbidden APIs: {forbidden_apis}.\n"
+        "- Mobile layout: {orientation}, {ui_scale_mode} scaling, HUD {hud_min}-{hud_max}px, title {title_min}-{title_max}px.\n"
+        "- Platform target: mobile H5 browser / WebView with a single main canvas.\n"
+        "- Prevent accidental page scrolling during play and keep gameplay local with no external network or asset requests.\n"
+        "- Accepted terminal/completion state aliases: {terminal_state_aliases}\n"
         "- Prompt bundle: {bundle_id}\n"
         "- Prompt layers: {layer_keys}\n"
-        "- Required states: {required_states}\n"
-        "- Required input modes: {input_modes}\n"
-        "- Preferred gestures: {gestures}\n"
-        "- Forbidden APIs: {forbidden_apis}\n"
-        "- Orientation: {orientation}\n"
-        "- UI scale mode: {ui_scale_mode}\n"
-        "- HUD font clamp: {hud_min}-{hud_max}px\n"
-        "- Title font clamp: {title_min}-{title_max}px"
+        "- The final code must respect every contract rule explicitly, not implicitly."
     ),
 }
 
@@ -153,7 +151,10 @@ def test_code_generator_prompt_includes_ui_language_contract_and_examples():
 
     assert result == "<!DOCTYPE html><html><body></body></html>"
     prompt = mock_complete.await_args.kwargs["messages"][0]["content"]
-    assert "Visible UI language: zh-CN (Simplified Chinese)" in prompt
+    assert "UI Language: zh-CN" in prompt
+    assert "Visible UI Copy Examples:" in prompt
+    assert "Visible UI language: zh-CN (Simplified Chinese)" not in prompt
+    assert "- UI language: zh-CN (Simplified Chinese)" not in prompt
     assert "score=得分" in prompt
     assert "点击开始" in prompt
 

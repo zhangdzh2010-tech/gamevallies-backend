@@ -121,7 +121,7 @@ class LLMGameDesigner:
                 request_timeout_s=settings.LLM_DESIGN_PASS_TIMEOUT_S,
                 overall_timeout_s=settings.LLM_DESIGN_PASS_TIMEOUT_S,
                 response_size_hint="large",
-                context_scope="task",
+                context_scope="request",
                 compression_policy="design_enrich",
                 truncation_retry_attempts=1,
                 truncation_retry_increment=1024,

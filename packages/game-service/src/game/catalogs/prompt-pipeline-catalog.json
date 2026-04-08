@@ -35,7 +35,6 @@
         "prompt.intent_detail_template",
         "prompt.runtime_contract_summary",
         "prompt.mobile_layout_guardrails",
-        "prompt.iteration_mobile_layout_guardrails",
         "prompt.iteration_spec_context_template",
         "bundle.product.intent_parse",
         "bundle.runtime.profile.casual_arcade",
@@ -203,18 +202,15 @@
     },
     "prompt.intent_detail_template": {
       "displayName": "意图细节块",
-      "variables": ["{core_mechanic}", "{ui_language}", "{theme}", "{win_condition}", "{reference_line}", "{special_rules_block}"]
+      "variables": ["{core_mechanic}", "{theme}", "{win_condition}", "{reference_line}", "{special_rules_block}"]
     },
     "prompt.runtime_contract_summary": {
       "displayName": "运行时约束摘要",
-      "variables": ["{runtime_profile}", "{contract_version}", "{bundle_id}", "{layer_keys}", "{required_states}", "{input_modes}", "{gestures}", "{forbidden_apis}", "{orientation}", "{ui_scale_mode}", "{hud_min}", "{hud_max}", "{title_min}", "{title_max}"]
+      "variables": ["{runtime_profile}", "{contract_version}", "{bundle_id}", "{layer_keys}", "{required_states}", "{input_modes}", "{gestures}", "{forbidden_apis}", "{orientation}", "{ui_scale_mode}", "{hud_min}", "{hud_max}", "{title_min}", "{title_max}", "{terminal_state_aliases}"]
     },
     "prompt.mobile_layout_guardrails": {
       "displayName": "生成态移动布局约束",
-      "variables": ["{canvas_w}", "{canvas_h}", "{hud_font}"]
-    },
-    "prompt.iteration_mobile_layout_guardrails": {
-      "displayName": "迭代态移动布局约束"
+      "variables": ["{canvas_w}", "{canvas_h}", "{hud_font}", "{reference_orientation}"]
     },
     "prompt.iteration_spec_context_template": {
       "displayName": "迭代 spec 上下文",

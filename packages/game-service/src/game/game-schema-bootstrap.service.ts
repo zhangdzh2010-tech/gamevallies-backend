@@ -594,6 +594,10 @@ const DEFAULT_PROMPT_CATALOG = Array.isArray(promptCatalog)
   ? promptCatalog
   : [];
 
+const REMOVED_PROMPT_CONFIG_KEYS = [
+  'prompt.iteration_mobile_layout_guardrails',
+];
+
 const DEFAULT_RUNTIME_PROFILE_CATALOG = Array.isArray(runtimeProfileCatalog)
   ? runtimeProfileCatalog
   : [];
@@ -964,6 +968,16 @@ export class GameSchemaBootstrapService implements OnModuleInit {
           prompt.key,
           prompt.value,
           prompt.description,
+        );
+      }
+
+      if (REMOVED_PROMPT_CONFIG_KEYS.length) {
+        const placeholders = REMOVED_PROMPT_CONFIG_KEYS.map(() => '?').join(', ');
+        await this.prisma.$executeRawUnsafe(
+          `DELETE FROM system_configs
+           WHERE category = 'prompt'
+             AND config_key IN (${placeholders})`,
+          ...REMOVED_PROMPT_CONFIG_KEYS,
         );
       }
 

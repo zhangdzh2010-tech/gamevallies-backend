@@ -80,4 +80,17 @@ describe('GameSchemaBootstrapService', () => {
     expect(promptInsertCall).toBeTruthy();
     expect(promptInsertCall?.[0]).toContain('INSERT IGNORE INTO system_configs');
   });
+
+  it('prunes removed prompt keys during bootstrap', async () => {
+    await service.onModuleInit();
+
+    const promptDeleteCall = prisma.$executeRawUnsafe.mock.calls.find(
+      ([sql, ...params]: [string, ...string[]]) =>
+        typeof sql === 'string'
+        && sql.includes('DELETE FROM system_configs')
+        && params.includes('prompt.iteration_mobile_layout_guardrails'),
+    );
+
+    expect(promptDeleteCall).toBeTruthy();
+  });
 });

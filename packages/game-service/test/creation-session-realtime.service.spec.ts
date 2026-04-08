@@ -33,7 +33,7 @@ describe('CreationSessionRealtimeService', () => {
       confidenceSummary: null,
       questionStrategy: null,
       intentBuild: null,
-      metadata: {},
+      metadata: null,
     } as any;
 
     const events: any[] = [];
@@ -43,8 +43,8 @@ describe('CreationSessionRealtimeService', () => {
         events.push(event);
       });
 
-    service.publishPhase('user-1', 'session-1', 'analyzing', 'analyzing_initial_brief');
-    service.publishPhase('user-1', 'session-1', 'replying', 'streaming_first_reply');
+    service.publishPhase('user-1', 'session-1', 'analyzing', '正在梳理你的想法');
+    service.publishPhase('user-1', 'session-1', 'replying', '正在整理回复');
     service.publishReply(
       'user-1',
       'session-1',

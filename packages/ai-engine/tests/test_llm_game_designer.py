@@ -51,6 +51,29 @@ class TestLLMGameDesigner(unittest.TestCase):
         self.assertEqual(result.level_design, [])
         self.assertEqual(mock_complete.await_count, 0)
 
+    def test_design_uses_request_scoped_context(self):
+        designer = LLMGameDesigner()
+        spec = GameSpec(
+            game_type="runner",
+            core_mechanics=[CoreMechanic(type="lane_switch", input="swipe")],
+        )
+        gdd = GDD(
+            canvas=CanvasConfig(width=420, height=600),
+            numerics=NumericsConfig(),
+        )
+
+        with patch.object(designer._client, "is_enabled", return_value=True), patch.object(
+            designer._client,
+            "complete_with_truncation_retry",
+            new=AsyncMock(return_value="{}"),
+        ) as mock_complete, patch(
+            "src.engine.llm_game_designer.require_prompt",
+            return_value="SYSTEM_FROM_DB",
+        ):
+            asyncio.run(designer.design(spec, gdd))
+
+        self.assertEqual(mock_complete.await_args.kwargs["context_scope"], "request")
+
 
 if __name__ == "__main__":
     unittest.main()
