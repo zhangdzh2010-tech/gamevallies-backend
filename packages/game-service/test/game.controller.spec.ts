@@ -1,4 +1,5 @@
 import { GameController } from '../src/game/game.controller';
+import { Subject } from 'rxjs';
 
 describe('GameController', () => {
   let controller: GameController;
@@ -196,5 +197,84 @@ describe('GameController', () => {
         }),
       }),
     );
+  });
+
+  it('streams creation session events through a raw SSE response and keeps the connection reusable', async () => {
+    const stream = new Subject<any>();
+    const writes: string[] = [];
+    const requestListeners = new Map<string, () => void>();
+    const responseListeners = new Map<string, () => void>();
+    const req = {
+      user: { sub: 'user-1' },
+      on: jest.fn((event: string, handler: () => void) => {
+        requestListeners.set(event, handler);
+        return req;
+      }),
+      socket: {
+        setKeepAlive: jest.fn(),
+        setNoDelay: jest.fn(),
+        setTimeout: jest.fn(),
+      },
+    } as any;
+    const res = {
+      writableEnded: false,
+      status: jest.fn().mockReturnThis(),
+      setHeader: jest.fn(),
+      flushHeaders: jest.fn(),
+      flush: jest.fn(),
+      write: jest.fn((chunk: string) => {
+        writes.push(String(chunk));
+        return true;
+      }),
+      end: jest.fn(() => {
+        res.writableEnded = true;
+        return res;
+      }),
+      on: jest.fn((event: string, handler: () => void) => {
+        responseListeners.set(event, handler);
+        return res;
+      }),
+    } as any;
+
+    creationSessionService.getSession.mockResolvedValue({
+      id: 'session-1',
+      status: 'initializing',
+    });
+    creationSessionRealtimeService.streamSession.mockReturnValue(stream.asObservable());
+
+    await controller.streamCreationSessionEvents(req, res, 'session-1');
+
+    stream.next({
+      type: 'session.bootstrap',
+      id: 'session-1:1:session.bootstrap',
+      data: { sessionId: 'session-1', revision: 1 },
+    });
+    stream.next({
+      type: 'assistant.reply.delta',
+      id: 'session-1:2:assistant.reply.delta',
+      data: { sessionId: 'session-1', delta: '第一段' },
+    });
+    stream.next({
+      type: 'assistant.reply.done',
+      id: 'session-1:3:assistant.reply.done',
+      data: { sessionId: 'session-1', message: '第一轮完成' },
+    });
+    stream.next({
+      type: 'assistant.reply.delta',
+      id: 'session-1:4:assistant.reply.delta',
+      data: { sessionId: 'session-1', delta: '第二轮继续' },
+    });
+
+    const payload = writes.join('');
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.setHeader).toHaveBeenCalledWith('Content-Type', 'text/event-stream; charset=utf-8');
+    expect(payload).toContain(': sse-open');
+    expect(payload).toContain('event: session.bootstrap');
+    expect(payload).toContain('event: assistant.reply.delta');
+    expect(payload).toContain('第一轮完成');
+    expect(payload).toContain('第二轮继续');
+
+    requestListeners.get('close')?.();
+    expect(res.end).toHaveBeenCalled();
   });
 });
