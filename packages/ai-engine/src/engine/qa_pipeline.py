@@ -2061,8 +2061,11 @@ class QAPipeline:
             repaired = self._inject_input_bridge(repaired)
         if repair_family == "score_feedback" and self._needs_score_feedback(errors):
             repaired = self._inject_score_feedback_bridge(repaired)
-        if repair_family == "runtime_startup" and self._needs_touch_coordinate_guard(errors):
-            repaired = self._inject_touch_coordinate_guard(repaired)
+        if repair_family == "runtime_startup":
+            if self._needs_touch_coordinate_guard(errors):
+                repaired = self._inject_touch_coordinate_guard(repaired)
+            if self._needs_duplicate_declaration_guard(errors):
+                repaired = self._strip_config_duplicate_declarations(repaired, errors)
         if repair_family == "forbidden_api":
             repaired = self._sanitize_forbidden_api_usage(repaired, errors)
             repaired = self._strip_storage_apis(repaired)
@@ -2099,8 +2102,18 @@ class QAPipeline:
                     has_short_edge_scaling(code, orientation=orientation)
                     and not self._has_width_only_font_scaling(code)
                 )
-            if repair_family == "runtime_startup" and errors and self._needs_touch_coordinate_guard(errors):
-                return not self._still_has_unsafe_touch_coordinate_access(code)
+            if repair_family == "runtime_startup" and errors:
+                needs_touch_guard = self._needs_touch_coordinate_guard(errors)
+                needs_duplicate_guard = self._needs_duplicate_declaration_guard(errors)
+                if not needs_touch_guard and not needs_duplicate_guard:
+                    return False
+                touch_guard_resolved = True
+                if needs_touch_guard:
+                    touch_guard_resolved = not self._still_has_unsafe_touch_coordinate_access(code)
+                duplicate_guard_resolved = True
+                if needs_duplicate_guard:
+                    duplicate_guard_resolved = not self._still_has_config_duplicate_declarations(code, errors)
+                return touch_guard_resolved and duplicate_guard_resolved
             if repair_family == "forbidden_api" and errors:
                 return not self._still_contains_forbidden_api(code, errors)
             if repair_family == "terminal_state" and errors:
@@ -2167,6 +2180,7 @@ class QAPipeline:
             any(
                 token in (error.message or "").lower()
                 for token in (
+                    "reading '0'",
                     "reading 'clientx'",
                     "reading 'clienty'",
                     "touches[0]",
@@ -2174,6 +2188,22 @@ class QAPipeline:
             )
             for error in errors
         )
+
+    @staticmethod
+    def _extract_duplicate_declaration_identifiers(errors: List[QACheckError]) -> Tuple[str, ...]:
+        identifiers: List[str] = []
+        for error in errors:
+            for match in re.findall(
+                r"Identifier '([A-Za-z_$][\w$]*)' has already been declared",
+                error.message or "",
+            ):
+                if match not in identifiers:
+                    identifiers.append(match)
+        return tuple(identifiers)
+
+    @classmethod
+    def _needs_duplicate_declaration_guard(cls, errors: List[QACheckError]) -> bool:
+        return bool(cls._extract_duplicate_declaration_identifiers(errors))
 
     @staticmethod
     def _has_input_bridge_marker(code: str) -> bool:
@@ -2718,9 +2748,14 @@ class QAPipeline:
             return code
 
         repaired = re.sub(
+            r"\b([A-Za-z_$][\w$]*)\.touches\s*\?\s*\1\.touches\s*\[\s*0\s*\]\.(clientX|clientY)\s*:\s*\1\.\2\b",
+            r"window.__playforgeResolveTouchPoint(\1).\2",
+            code,
+        )
+        repaired = re.sub(
             r"\b([A-Za-z_$][\w$]*)\.touches\s*\?\s*\1\.touches\s*\[\s*0\s*\]\s*:\s*\1\b",
             r"window.__playforgeResolveTouchPoint(\1)",
-            code,
+            repaired,
         )
         repaired = re.sub(
             r"\b([A-Za-z_$][\w$]*)\.touches\s*\[\s*0\s*\]",
@@ -2768,7 +2803,61 @@ class QAPipeline:
         return bool(
             re.search(r"\b[A-Za-z_$][\w$]*\.touches\s*\[\s*0\s*\]", code)
             or re.search(r"\b([A-Za-z_$][\w$]*)\.touches\s*\?\s*\1\.touches\s*\[\s*0\s*\]\s*:\s*\1\b", code)
+            or re.search(
+                r"\b([A-Za-z_$][\w$]*)\.touches\s*\?\s*\1\.touches\s*\[\s*0\s*\]\.(clientX|clientY)\s*:\s*\1\.\2\b",
+                code,
+            )
         )
+
+    @classmethod
+    def _strip_config_duplicate_declarations(cls, code: str, errors: List[QACheckError]) -> str:
+        config_match = re.search(
+            r"(/\* SECTION:CONFIG START \*/)(?P<body>.*?)(/\* SECTION:CONFIG END \*/)",
+            code or "",
+            flags=re.DOTALL,
+        )
+        if config_match is None:
+            return code
+
+        config_body = config_match.group("body")
+        tail = code[config_match.end():]
+        repaired_body = config_body
+        for identifier in cls._extract_duplicate_declaration_identifiers(errors):
+            decl_pattern = re.compile(
+                rf"(?m)^[ \t]*(?:const|let|var)\s+{re.escape(identifier)}\b[^\n;]*;\s*\n?",
+            )
+            if not decl_pattern.search(repaired_body):
+                continue
+            if not decl_pattern.search(tail):
+                continue
+            repaired_body = decl_pattern.sub("", repaired_body)
+
+        if repaired_body == config_body:
+            return code
+        return (
+            code[:config_match.start("body")]
+            + repaired_body
+            + code[config_match.end("body"):]
+        )
+
+    @classmethod
+    def _still_has_config_duplicate_declarations(cls, code: str, errors: List[QACheckError]) -> bool:
+        config_match = re.search(
+            r"(/\* SECTION:CONFIG START \*/)(?P<body>.*?)(/\* SECTION:CONFIG END \*/)",
+            code or "",
+            flags=re.DOTALL,
+        )
+        if config_match is None:
+            return False
+        config_body = config_match.group("body")
+        tail = code[config_match.end():]
+        for identifier in cls._extract_duplicate_declaration_identifiers(errors):
+            decl_pattern = re.compile(
+                rf"(?m)^[ \t]*(?:const|let|var)\s+{re.escape(identifier)}\b[^\n;]*;\s*\n?",
+            )
+            if decl_pattern.search(config_body) and decl_pattern.search(tail):
+                return True
+        return False
 
     @staticmethod
     def _strip_storage_apis(code: str) -> str:
