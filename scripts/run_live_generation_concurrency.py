@@ -361,7 +361,7 @@ def wait_for_session_interactive_sse(
         )
 
         result: dict[str, Any] | None = None
-        if event_name in {"session.bootstrap", "session.updated"} and isinstance(latest_snapshot, dict):
+        if event_name in {"bootstrap", "snapshot", "session.bootstrap", "session.updated"} and isinstance(latest_snapshot, dict):
             if latest_snapshot.get("readyToGenerate") or current_question:
                 result = {
                     "snapshot": latest_snapshot,
@@ -378,10 +378,16 @@ def wait_for_session_interactive_sse(
                     "timedOutLocally": False,
                     "interactiveElapsedS": None,
                 }
-        elif event_name == "session.error":
+        elif event_name in {"error", "session.error"}:
             latest_snapshot = {
                 "status": "abandoned",
-                "initError": parsed.get("error") if isinstance(parsed, dict) else "session_error",
+                "initError": (
+                    parsed.get("message")
+                    if isinstance(parsed, dict) and parsed.get("message")
+                    else parsed.get("error")
+                    if isinstance(parsed, dict)
+                    else "session_error"
+                ),
             }
             result = {
                 "snapshot": latest_snapshot,

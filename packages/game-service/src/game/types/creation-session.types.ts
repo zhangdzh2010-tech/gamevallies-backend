@@ -82,3 +82,76 @@ export interface CreationSessionSnapshot {
   intentBuild: CreationSessionIntentPreview | null;
   metadata: CreationSessionPublicMetadata | null;
 }
+
+export type CreationSessionReplyKind = 'question' | 'summary';
+
+export type CreationSessionLegacyEventType =
+  | 'session.bootstrap'
+  | 'session.updated'
+  | 'assistant.reply.delta'
+  | 'assistant.reply.done'
+  | 'session.error';
+
+export type CreationSessionPublicEventType =
+  | 'bootstrap'
+  | 'delta'
+  | 'done'
+  | 'snapshot'
+  | 'error';
+
+interface CreationSessionStreamEventBase {
+  sessionId: string;
+  timestamp: number;
+}
+
+interface CreationSessionLegacyMappedEvent extends CreationSessionStreamEventBase {
+  legacyEventType: CreationSessionLegacyEventType;
+}
+
+export interface CreationSessionBootstrapEvent extends CreationSessionLegacyMappedEvent {
+  type: 'bootstrap';
+  session: CreationSessionSnapshot;
+}
+
+export interface CreationSessionSnapshotEvent extends CreationSessionLegacyMappedEvent {
+  type: 'snapshot';
+  session: CreationSessionSnapshot;
+}
+
+export interface CreationSessionDeltaEvent extends CreationSessionLegacyMappedEvent {
+  type: 'delta';
+  messageId: string;
+  delta: string;
+  accumulated: string;
+  kind: CreationSessionReplyKind;
+}
+
+export interface CreationSessionDoneEvent extends CreationSessionLegacyMappedEvent {
+  type: 'done';
+  messageId: string;
+  message: string;
+  kind: CreationSessionReplyKind;
+}
+
+export interface CreationSessionErrorEvent extends CreationSessionLegacyMappedEvent {
+  type: 'error';
+  code: string;
+  message: string;
+  retryable: boolean;
+  details: Record<string, unknown>;
+}
+
+export interface CreationSessionHeartbeatEvent extends CreationSessionStreamEventBase {
+  type: 'heartbeat';
+}
+
+export type CreationSessionPublicEvent =
+  | CreationSessionBootstrapEvent
+  | CreationSessionSnapshotEvent
+  | CreationSessionDeltaEvent
+  | CreationSessionDoneEvent
+  | CreationSessionErrorEvent;
+
+export type CreationSessionStreamEvent =
+  | CreationSessionPublicEvent
+  | CreationSessionHeartbeatEvent;

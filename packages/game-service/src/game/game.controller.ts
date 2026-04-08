@@ -324,6 +324,11 @@ export class GameController {
     const eventType = typeof event.type === 'string' && event.type.trim()
       ? event.type.trim()
       : 'message';
+    if (eventType === 'heartbeat') {
+      res.write(': heartbeat\n\n');
+      res.flush?.();
+      return;
+    }
     this.writeSseFrame(res, eventType, event.data, event.id, traceId);
   }
 
