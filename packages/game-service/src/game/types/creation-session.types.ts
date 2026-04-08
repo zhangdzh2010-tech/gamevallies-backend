@@ -85,13 +85,6 @@ export interface CreationSessionSnapshot {
 
 export type CreationSessionReplyKind = 'question' | 'summary';
 
-export type CreationSessionLegacyEventType =
-  | 'session.bootstrap'
-  | 'session.updated'
-  | 'assistant.reply.delta'
-  | 'assistant.reply.done'
-  | 'session.error';
-
 export type CreationSessionPublicEventType =
   | 'bootstrap'
   | 'delta'
@@ -104,21 +97,17 @@ interface CreationSessionStreamEventBase {
   timestamp: number;
 }
 
-interface CreationSessionLegacyMappedEvent extends CreationSessionStreamEventBase {
-  legacyEventType: CreationSessionLegacyEventType;
-}
-
-export interface CreationSessionBootstrapEvent extends CreationSessionLegacyMappedEvent {
+export interface CreationSessionBootstrapEvent extends CreationSessionStreamEventBase {
   type: 'bootstrap';
   session: CreationSessionSnapshot;
 }
 
-export interface CreationSessionSnapshotEvent extends CreationSessionLegacyMappedEvent {
+export interface CreationSessionSnapshotEvent extends CreationSessionStreamEventBase {
   type: 'snapshot';
   session: CreationSessionSnapshot;
 }
 
-export interface CreationSessionDeltaEvent extends CreationSessionLegacyMappedEvent {
+export interface CreationSessionDeltaEvent extends CreationSessionStreamEventBase {
   type: 'delta';
   messageId: string;
   delta: string;
@@ -126,14 +115,14 @@ export interface CreationSessionDeltaEvent extends CreationSessionLegacyMappedEv
   kind: CreationSessionReplyKind;
 }
 
-export interface CreationSessionDoneEvent extends CreationSessionLegacyMappedEvent {
+export interface CreationSessionDoneEvent extends CreationSessionStreamEventBase {
   type: 'done';
   messageId: string;
   message: string;
   kind: CreationSessionReplyKind;
 }
 
-export interface CreationSessionErrorEvent extends CreationSessionLegacyMappedEvent {
+export interface CreationSessionErrorEvent extends CreationSessionStreamEventBase {
   type: 'error';
   code: string;
   message: string;

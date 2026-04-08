@@ -1,53 +1,14 @@
 import { Injectable, MessageEvent } from '@nestjs/common';
 import { Observable, Subject } from 'rxjs';
 import {
+  CreationSessionHeartbeatEvent,
+  CreationSessionPublicEvent,
   CreationSessionReplyKind,
   CreationSessionSnapshot,
   CreationSessionStreamEvent,
 } from './types/creation-session.types';
 
-type CreationSessionRealtimePayload =
-  | {
-      type: 'bootstrap' | 'snapshot';
-      sessionId: string;
-      session: CreationSessionSnapshot;
-      legacyEventType: 'session.bootstrap' | 'session.updated';
-      timestamp: number;
-    }
-  | {
-      type: 'delta';
-      sessionId: string;
-      messageId: string;
-      delta: string;
-      accumulated: string;
-      kind: CreationSessionReplyKind;
-      legacyEventType: 'assistant.reply.delta';
-      timestamp: number;
-    }
-  | {
-      type: 'done';
-      sessionId: string;
-      messageId: string;
-      message: string;
-      kind: CreationSessionReplyKind;
-      legacyEventType: 'assistant.reply.done';
-      timestamp: number;
-    }
-  | {
-      type: 'error';
-      sessionId: string;
-      code: string;
-      message: string;
-      retryable: boolean;
-      details: Record<string, unknown>;
-      legacyEventType: 'session.error';
-      timestamp: number;
-    }
-  | {
-      type: 'heartbeat';
-      sessionId: string;
-      timestamp: number;
-    };
+type CreationSessionRealtimePayload = CreationSessionPublicEvent | CreationSessionHeartbeatEvent;
 
 @Injectable()
 export class CreationSessionRealtimeService {
@@ -72,7 +33,6 @@ export class CreationSessionRealtimeService {
           type: 'bootstrap',
           sessionId,
           session: initialSnapshot,
-          legacyEventType: 'session.bootstrap',
           timestamp: Date.now(),
         }),
       );
@@ -114,60 +74,8 @@ export class CreationSessionRealtimeService {
       type: 'snapshot',
       sessionId,
       session: snapshot,
-      legacyEventType: 'session.updated',
       timestamp: Date.now(),
     });
-  }
-
-  publishPhase(
-    userId: string,
-    sessionId: string,
-    phase: 'analyzing' | 'replying',
-    label: string,
-    details?: Record<string, unknown>,
-  ): void {
-    void userId;
-    void sessionId;
-    void phase;
-    void label;
-    void details;
-    // PR1: public creation-session SSE no longer exposes display-only phase events.
-  }
-
-  publishReply(
-    userId: string,
-    sessionId: string,
-    message: string,
-    kind: CreationSessionReplyKind = 'question',
-  ): void {
-    const stream = this.getStream(this.streamKey(userId, sessionId));
-    const normalized = String(message || '').trim();
-    if (!stream || !normalized) {
-      return;
-    }
-
-    const chunks = this.chunkReply(normalized);
-    const messageId = this.beginReplyMessage(this.streamKey(userId, sessionId), sessionId);
-    let accumulated = '';
-    chunks.forEach((delta) => {
-      accumulated += delta;
-      this.publishReplyDelta(
-        userId,
-        sessionId,
-        delta,
-        accumulated,
-        kind,
-        messageId,
-      );
-    });
-
-    this.publishReplyDone(
-      userId,
-      sessionId,
-      normalized,
-      kind,
-      messageId,
-    );
   }
 
   publishReplyDelta(
@@ -179,14 +87,13 @@ export class CreationSessionRealtimeService {
     messageId?: string,
   ): void {
     const key = this.streamKey(userId, sessionId);
-    this.getStream(this.streamKey(userId, sessionId))?.next({
+    this.getStream(key)?.next({
       type: 'delta',
       sessionId,
       messageId: this.beginReplyMessage(key, sessionId, messageId),
       delta,
       accumulated,
       kind,
-      legacyEventType: 'assistant.reply.delta',
       timestamp: Date.now(),
     });
   }
@@ -206,7 +113,6 @@ export class CreationSessionRealtimeService {
       messageId: resolvedMessageId,
       message: String(message || '').trim(),
       kind,
-      legacyEventType: 'assistant.reply.done',
       timestamp: Date.now(),
     });
   }
@@ -224,7 +130,6 @@ export class CreationSessionRealtimeService {
       message: error,
       retryable: this.isRetryable(details),
       details: details || {},
-      legacyEventType: 'session.error',
       timestamp: Date.now(),
     });
   }
@@ -267,33 +172,6 @@ export class CreationSessionRealtimeService {
   private buildReplyMessageId(sessionId: string): string {
     this.replySequence += 1;
     return `${sessionId}:reply:${this.replySequence}`;
-  }
-
-  private chunkReply(message: string): string[] {
-    const normalized = String(message || '').trim();
-    if (!normalized) {
-      return [];
-    }
-
-    const sentenceChunks = normalized
-      .split(/(?<=[。！？!?\.])\s*/u)
-      .map((item) => item.trim())
-      .filter(Boolean);
-    const chunks = sentenceChunks.length ? sentenceChunks : [normalized];
-    const flattened: string[] = [];
-
-    for (const chunk of chunks) {
-      if (chunk.length <= 48) {
-        flattened.push(chunk);
-        continue;
-      }
-
-      for (let index = 0; index < chunk.length; index += 32) {
-        flattened.push(chunk.slice(index, index + 32));
-      }
-    }
-
-    return flattened.filter(Boolean);
   }
 
   private bumpSubscribers(key: string, delta: number): void {

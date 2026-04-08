@@ -9,8 +9,8 @@ const { URL } = require('node:url');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const DEFAULT_ENV_PATH = path.join(REPO_ROOT, '.env.deploy');
-const BOOTSTRAP_EVENTS = new Set(['bootstrap', 'session.bootstrap']);
-const DONE_EVENTS = new Set(['done', 'assistant.reply.done']);
+const BOOTSTRAP_EVENTS = new Set(['bootstrap']);
+const DONE_EVENTS = new Set(['done']);
 
 function nowIso() {
   return new Date().toISOString();
