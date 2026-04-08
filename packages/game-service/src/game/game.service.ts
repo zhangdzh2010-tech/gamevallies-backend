@@ -491,6 +491,19 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     return this.resolveTimeoutCatalogValue('timeout.game_service.expand_prompt_request_ms', { min: 1_000 });
   }
 
+  public async getCreationSessionInitTimeoutMs(): Promise<number> {
+    await this.ensureTimeoutConfigCache();
+    const analyzeTurnTimeoutMs = this.resolveTimeoutCatalogValue(
+      'timeout.game_service.expand_prompt_request_ms',
+      { min: 1_000 },
+    );
+    const configuredInitTimeoutMs = this.resolveTimeoutCatalogValue(
+      'timeout.game_service.creation_session_init_ms',
+      { min: 1_000 },
+    );
+    return Math.max(configuredInitTimeoutMs, analyzeTurnTimeoutMs + 5_000);
+  }
+
   private getUpstreamRequestTimeoutMs(): number {
     return this.resolveTimeoutCatalogValue('timeout.game_service.upstream_request_ms', { min: 1_000 });
   }
