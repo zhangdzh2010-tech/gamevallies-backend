@@ -931,6 +931,7 @@ export class CreationSessionService {
       }
       const payload = JSON.parse(normalizedPayload);
       switch (rawEventName) {
+        case 'delta':
         case 'assistant.reply.delta': {
           ensureReplyPhase();
           const delta = String(payload?.delta || '');
@@ -944,6 +945,7 @@ export class CreationSessionService {
           );
           break;
         }
+        case 'done':
         case 'assistant.reply.done': {
           ensureReplyPhase();
           const message = String(payload?.message || accumulatedReply || '');
@@ -956,6 +958,7 @@ export class CreationSessionService {
           );
           break;
         }
+        case 'final':
         case 'analysis.result':
           finalResult = payload as AnalyzeTurnResponsePayload;
           break;

@@ -292,10 +292,10 @@ class TestDialogueEngine(unittest.TestCase):
             events = asyncio.run(collect_events())
 
         self.assertGreaterEqual(len(events), 4)
-        self.assertEqual(events[0]["event"], "assistant.reply.delta")
-        self.assertEqual(events[1]["event"], "assistant.reply.delta")
-        self.assertEqual(events[-2]["event"], "assistant.reply.done")
-        self.assertEqual(events[-1]["event"], "analysis.result")
+        self.assertEqual(events[0]["event"], "delta")
+        self.assertEqual(events[1]["event"], "delta")
+        self.assertEqual(events[-2]["event"], "done")
+        self.assertEqual(events[-1]["event"], "final")
         self.assertIn("办公室摸鱼喜剧", events[-2]["data"]["message"])
 
     def test_spec_from_slots_preserves_tier_and_uses_preferred_game_type_fallback(self):
@@ -780,34 +780,32 @@ class TestDialogueEngine(unittest.TestCase):
         ):
             events = asyncio.run(collect_events())
 
-        self.assertEqual(events[0]["event"], "assistant.reply.delta")
+        self.assertEqual(events[0]["event"], "delta")
         self.assertEqual(events[0]["data"]["delta"], "鍗婂彞")
-        self.assertEqual(events[-2]["event"], "assistant.reply.done")
+        self.assertEqual(events[-2]["event"], "done")
         self.assertEqual(events[-2]["data"]["message"], fallback_reply)
-        self.assertEqual(events[-1]["event"], "analysis.result")
+        self.assertEqual(events[-1]["event"], "final")
         self.assertEqual(events[-1]["data"]["reply"], fallback_reply)
 
     def test_dialogue_stream_endpoint_emits_sse_events(self):
         async def fake_stream(_request):
             yield {
-                "event": "assistant.reply.delta",
+                "event": "delta",
                 "data": {
                     "delta": "浜嗚В锛?",
                     "accumulated": "浜嗚В锛?",
                     "kind": "question",
-                    "chunkIndex": 0,
-                    "done": False,
                 },
             }
             yield {
-                "event": "assistant.reply.done",
+                "event": "done",
                 "data": {
                     "message": "浜嗚В锛屾垜鍏堢‘璁や竴涓嬭儨鍒╂柟寮忋€?",
                     "kind": "question",
                 },
             }
             yield {
-                "event": "analysis.result",
+                "event": "final",
                 "data": {
                     "reply": "浜嗚В锛屾垜鍏堢‘璁や竴涓嬭儨鍒╂柟寮忋€?",
                     "slots": {
@@ -833,9 +831,9 @@ class TestDialogueEngine(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/event-stream", response.headers.get("content-type", ""))
-        self.assertIn("event: assistant.reply.delta", response.text)
-        self.assertIn("event: assistant.reply.done", response.text)
-        self.assertIn("event: analysis.result", response.text)
+        self.assertIn("event: delta", response.text)
+        self.assertIn("event: done", response.text)
+        self.assertIn("event: final", response.text)
 
 
 if __name__ == "__main__":

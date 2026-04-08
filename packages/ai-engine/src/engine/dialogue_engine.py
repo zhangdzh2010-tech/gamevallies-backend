@@ -16,6 +16,9 @@ from ..api.models import (
     ChatResponse,
     ConversationMessage,
     CoreMechanic,
+    DialogueStreamDeltaPayload,
+    DialogueStreamDonePayload,
+    DialogueStreamFinalPayload,
     DraftPlanFromInputRequest,
     DraftPlanFromInputResponse,
     DialogueQuestion,
@@ -1989,7 +1992,6 @@ class DialogueEngine:
         reply_kind = "question" if analysis.current_question else "summary"
         fallback_reply = _normalize_free_text(analysis.reply)
         accumulated = ""
-        chunk_index = 0
         emitted_delta = False
         stream_failed = False
 
@@ -2001,16 +2003,13 @@ class DialogueEngine:
                 emitted_delta = True
                 accumulated += cleaned
                 yield {
-                    "event": "assistant.reply.delta",
-                    "data": {
-                        "delta": cleaned,
-                        "accumulated": accumulated,
-                        "kind": reply_kind,
-                        "chunkIndex": chunk_index,
-                        "done": False,
-                    },
+                    "event": "delta",
+                    "data": DialogueStreamDeltaPayload(
+                        delta=cleaned,
+                        accumulated=accumulated,
+                        kind=reply_kind,
+                    ).model_dump(mode="json"),
                 }
-                chunk_index += 1
         except Exception as exc:
             stream_failed = True
             logger.warning(
@@ -2024,28 +2023,27 @@ class DialogueEngine:
             for chunk in _chunk_reply_for_streaming(final_reply):
                 accumulated += chunk if accumulated else chunk
                 yield {
-                    "event": "assistant.reply.delta",
-                    "data": {
-                        "delta": chunk,
-                        "accumulated": accumulated,
-                        "kind": reply_kind,
-                        "chunkIndex": chunk_index,
-                        "done": False,
-                    },
+                    "event": "delta",
+                    "data": DialogueStreamDeltaPayload(
+                        delta=chunk,
+                        accumulated=accumulated,
+                        kind=reply_kind,
+                    ).model_dump(mode="json"),
                 }
-                chunk_index += 1
 
         analysis.reply = final_reply
         yield {
-            "event": "assistant.reply.done",
-            "data": {
-                "message": final_reply,
-                "kind": reply_kind,
-            },
+            "event": "done",
+            "data": DialogueStreamDonePayload(
+                message=final_reply,
+                kind=reply_kind,
+            ).model_dump(mode="json"),
         }
         yield {
-            "event": "analysis.result",
-            "data": analysis.model_dump(mode="json", exclude_none=True),
+            "event": "final",
+            "data": DialogueStreamFinalPayload(
+                **analysis.model_dump(mode="json", exclude_none=True),
+            ).model_dump(mode="json", exclude_none=True),
         }
 
     async def _stream_analyze_turn_reply(
