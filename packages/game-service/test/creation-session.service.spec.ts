@@ -16,27 +16,23 @@ function buildAnalyzeTurnStream(payload: Record<string, any>) {
   const secondDelta = reply.slice(midpoint);
 
   const events = [
-    buildSseEvent('assistant.reply.delta', {
+    buildSseEvent('delta', {
       delta: firstDelta,
       accumulated: firstDelta,
       kind,
-      chunkIndex: 0,
-      done: false,
     }),
     ...(secondDelta
-      ? [buildSseEvent('assistant.reply.delta', {
+      ? [buildSseEvent('delta', {
           delta: secondDelta,
           accumulated: `${firstDelta}${secondDelta}`,
           kind,
-          chunkIndex: 1,
-          done: false,
         })]
       : []),
-    buildSseEvent('assistant.reply.done', {
+    buildSseEvent('done', {
       message: reply,
       kind,
     }),
-    buildSseEvent('analysis.result', payload),
+    buildSseEvent('final', payload),
   ];
 
   return Readable.from(events);

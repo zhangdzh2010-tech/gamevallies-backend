@@ -3,7 +3,7 @@
 from __future__ import annotations
 from enum import Enum
 from pydantic import BaseModel, Field, field_validator
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Literal
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +187,33 @@ class AnalyzeDialogueTurnRequest(BaseModel):
 
 
 class AnalyzeDialogueTurnResponse(BaseModel):
+    reply: str
+    slots: SlotState = Field(default_factory=SlotState)
+    slots_updated: List[str] = Field(default_factory=list)
+    missing_required: List[str] = Field(default_factory=list)
+    slot_fill_pct: float = Field(0.0, ge=0.0, le=1.0)
+    ready_to_generate: bool = False
+    current_question: Optional[DialogueQuestion] = None
+    confidence_by_slot: Dict[str, float] = Field(default_factory=dict)
+    evidence_by_slot: Dict[str, str] = Field(default_factory=dict)
+    ambiguity_flags: List[str] = Field(default_factory=list)
+    next_best_question_reason: Optional[str] = None
+    question_strategy: Optional[QuestionStrategy] = None
+    plan_draft: Optional[PlanDraft] = None
+
+
+class DialogueStreamDeltaPayload(BaseModel):
+    delta: str = ""
+    accumulated: str = ""
+    kind: Literal["question", "summary"] = "question"
+
+
+class DialogueStreamDonePayload(BaseModel):
+    message: str = ""
+    kind: Literal["question", "summary"] = "question"
+
+
+class DialogueStreamFinalPayload(BaseModel):
     reply: str
     slots: SlotState = Field(default_factory=SlotState)
     slots_updated: List[str] = Field(default_factory=list)
