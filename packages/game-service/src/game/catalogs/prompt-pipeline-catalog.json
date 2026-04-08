@@ -63,7 +63,6 @@
       "promptKeys": [
         "prompt.game_design_template",
         "prompt.code_gen_system",
-        "prompt.platform_standard",
         "prompt.generate_request_context_template",
         "prompt.generate_alignment_reminder",
         "bundle.runtime.locked_contract",
@@ -164,6 +163,18 @@
       "promptKeys": [
         "prompt.expand_prompt_system"
       ]
+    },
+    {
+      "id": "extra_legacy_fallbacks",
+      "tag": "Legacy",
+      "title": "Legacy fallback prompts",
+      "description": "Compatibility prompts that are only used when newer owner prompts do not provide the required constraints.",
+      "color": "#6b7280",
+      "bg": "#f9fafb",
+      "border": "#d1d5db",
+      "promptKeys": [
+        "prompt.platform_standard"
+      ]
     }
   ],
   "itemMeta": {
@@ -241,7 +252,8 @@
       "displayName": "代码生成系统层"
     },
     "prompt.platform_standard": {
-      "displayName": "平台标准"
+      "displayName": "Platform standard (legacy fallback)",
+      "note": "Only used when prompt.runtime_contract_summary does not already declare platform constraints."
     },
     "prompt.generate_request_context_template": {
       "displayName": "原始请求上下文",
