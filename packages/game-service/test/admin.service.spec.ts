@@ -434,9 +434,23 @@ describe('AdminService', () => {
         }),
       ]),
     }));
+    expect(result.steps[2].prompts).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        configKey: 'prompt.platform_standard',
+      }),
+    ]));
     expect(result.extras).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: 'extra_iterate',
+      }),
+      expect.objectContaining({
+        id: 'extra_legacy_fallbacks',
+        prompts: expect.arrayContaining([
+          expect.objectContaining({
+            configKey: 'prompt.platform_standard',
+            note: expect.stringContaining('runtime_contract_summary'),
+          }),
+        ]),
       }),
     ]));
   });
