@@ -70,8 +70,6 @@ describe('CreationSessionService', () => {
     };
     realtimeService = {
       publishSnapshot: jest.fn(),
-      publishPhase: jest.fn(),
-      publishReply: jest.fn(),
       publishReplyDelta: jest.fn(),
       publishReplyDone: jest.fn(),
       publishError: jest.fn(),
@@ -281,12 +279,6 @@ describe('CreationSessionService', () => {
         readyToGenerate: true,
       }),
     );
-    expect(realtimeService.publishPhase).toHaveBeenCalledWith(
-      'user-1',
-      'session-1',
-      'analyzing',
-      '正在梳理你的想法',
-    );
     expect(realtimeService.publishReplyDelta).toHaveBeenCalled();
     expect(realtimeService.publishReplyDone).toHaveBeenCalledWith(
       'user-1',
@@ -478,12 +470,6 @@ describe('CreationSessionService', () => {
       metadata: null,
       intentBuild: null,
     }));
-    expect(realtimeService.publishPhase).toHaveBeenCalledWith(
-      'user-2',
-      'session-2',
-      'analyzing',
-      '正在梳理你的想法',
-    );
     expect(realtimeService.publishReplyDelta).toHaveBeenCalled();
     expect(realtimeService.publishReplyDone).toHaveBeenCalledWith(
       'user-2',
@@ -491,6 +477,111 @@ describe('CreationSessionService', () => {
       expect.stringContaining('可生成方案'),
       'summary',
     );
+  });
+
+  it('falls back to non-stream analyze-turn without synthetic delta chunks', async () => {
+    const existingSession = {
+      id: 'session-fallback-1',
+      userId: 'user-fallback-1',
+      status: 'collecting',
+      entryMode: 'create',
+      initialPrompt: 'Make a layered office puzzle game.',
+      titleDraft: 'Office Layers',
+      revision: 1,
+      slotState: {
+        game_type: 'puzzle',
+        core_mechanic: 'tap to clear three matching tiles',
+        input_method: 'tap',
+      },
+      missingRequired: ['theme', 'win_condition', 'difficulty'],
+      skippedSlots: [],
+      currentQuestion: {
+        slotKey: 'theme',
+        label: 'Theme',
+        prompt: 'What setting should the puzzle use?',
+        skippable: true,
+      },
+      conversation: [
+        { role: 'user', content: 'Make a layered office puzzle game.' },
+        { role: 'assistant', content: 'What setting should the puzzle use?' },
+      ],
+      generatedGameId: null,
+      generationTaskId: null,
+      sourceGameId: null,
+      questionBudget: 4,
+      metadata: {
+        orientation: 'portrait',
+        generationTier: 'standard',
+        readyToGenerate: false,
+        slotFillPct: 0.4,
+      },
+      createdAt: new Date('2026-03-30T10:00:00.000Z'),
+      updatedAt: new Date('2026-03-30T10:00:00.000Z'),
+    };
+    const updatedSession = {
+      ...existingSession,
+      revision: 2,
+      status: 'ready',
+      slotState: {
+        ...existingSession.slotState,
+        theme: 'funny office',
+        win_condition: 'clear the board before the move budget runs out',
+        difficulty: 'medium',
+      },
+      missingRequired: [],
+      currentQuestion: null,
+      conversation: [
+        ...existingSession.conversation,
+        { role: 'user', content: 'Funny office theme with sneaky coworkers.' },
+        { role: 'assistant', content: 'I have enough to start generating.' },
+      ],
+      metadata: {
+        ...existingSession.metadata,
+        readyToGenerate: true,
+        slotFillPct: 1,
+      },
+    };
+
+    repo.findUnique
+      .mockResolvedValueOnce(existingSession)
+      .mockResolvedValueOnce(updatedSession);
+    repo.updateMany.mockResolvedValue({ count: 1 });
+    (axios.post as jest.Mock)
+      .mockRejectedValueOnce({
+        message: 'Request failed with status code 404',
+        response: { status: 404 },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          reply: 'I have enough to start generating.',
+          slots: updatedSession.slotState,
+          slots_updated: ['theme', 'win_condition', 'difficulty'],
+          missing_required: [],
+          slot_fill_pct: 1,
+          ready_to_generate: true,
+          current_question: null,
+        },
+      });
+
+    const snapshot = await service.appendMessage('user-fallback-1', 'session-fallback-1', {
+      content: 'Funny office theme with sneaky coworkers.',
+      revision: 1,
+    });
+
+    expect((axios.post as jest.Mock).mock.calls[0]?.[0]).toContain('/api/v1/ai/dialogue/analyze-turn/stream');
+    expect((axios.post as jest.Mock).mock.calls[1]?.[0]).toContain('/api/v1/ai/dialogue/analyze-turn');
+    expect(realtimeService.publishReplyDelta).not.toHaveBeenCalled();
+    expect(realtimeService.publishReplyDone).toHaveBeenCalledWith(
+      'user-fallback-1',
+      'session-fallback-1',
+      'I have enough to start generating.',
+      'summary',
+    );
+    expect(snapshot).toEqual(expect.objectContaining({
+      id: 'session-fallback-1',
+      revision: 2,
+      readyToGenerate: true,
+    }));
   });
 
   it('compiles slots into a source spec before generating the game', async () => {

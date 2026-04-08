@@ -247,7 +247,7 @@ describe('GameController', () => {
     stream.next({
       type: 'bootstrap',
       id: 'session-1:1:bootstrap',
-      data: { sessionId: 'session-1', revision: 1, legacyEventType: 'session.bootstrap' },
+      data: { sessionId: 'session-1', revision: 1 },
     });
     stream.next({
       type: 'heartbeat',
@@ -263,7 +263,6 @@ describe('GameController', () => {
         accumulated: 'first chunk',
         kind: 'question',
         messageId: 'reply-1',
-        legacyEventType: 'assistant.reply.delta',
       },
     });
     stream.next({
@@ -274,7 +273,6 @@ describe('GameController', () => {
         message: 'first reply complete',
         kind: 'question',
         messageId: 'reply-1',
-        legacyEventType: 'assistant.reply.done',
       },
     });
     stream.next({
@@ -286,7 +284,6 @@ describe('GameController', () => {
         accumulated: 'second reply chunk',
         kind: 'question',
         messageId: 'reply-2',
-        legacyEventType: 'assistant.reply.delta',
       },
     });
 

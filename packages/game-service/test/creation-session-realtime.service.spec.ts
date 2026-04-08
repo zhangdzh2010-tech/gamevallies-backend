@@ -43,9 +43,21 @@ describe('CreationSessionRealtimeService', () => {
         events.push(event);
       });
 
-    service.publishPhase('user-1', 'session-1', 'analyzing', 'analyzing');
-    service.publishPhase('user-1', 'session-1', 'replying', 'replying');
-    service.publishReply(
+    service.publishReplyDelta(
+      'user-1',
+      'session-1',
+      'I understand the reference. ',
+      'I understand the reference. ',
+      'question',
+    );
+    service.publishReplyDelta(
+      'user-1',
+      'session-1',
+      'Before we generate, what setting should the game use?',
+      'I understand the reference. Before we generate, what setting should the game use?',
+      'question',
+    );
+    service.publishReplyDone(
       'user-1',
       'session-1',
       'I understand the reference. Before we generate, what setting should the game use?',
@@ -66,20 +78,21 @@ describe('CreationSessionRealtimeService', () => {
     subscription.unsubscribe();
 
     expect(events[0].type).toBe('bootstrap');
-    expect(events[0].data.legacyEventType).toBe('session.bootstrap');
+    expect(events[0].data).not.toHaveProperty('legacyEventType');
     expect(events.some((event) => event.type === 'assistant.phase')).toBe(false);
 
     const deltaEvents = events.filter((event) => event.type === 'delta');
-    expect(deltaEvents.length).toBeGreaterThan(1);
-    expect(deltaEvents.every((event) => event.data.legacyEventType === 'assistant.reply.delta')).toBe(true);
+    expect(deltaEvents).toHaveLength(2);
     expect(deltaEvents.every((event) => typeof event.data.messageId === 'string' && event.data.messageId.length > 0)).toBe(true);
+    expect(deltaEvents.every((event) => !('legacyEventType' in event.data))).toBe(true);
+    expect(deltaEvents[0].data.messageId).toBe(deltaEvents[1].data.messageId);
 
     const doneEvent = events.find((event) => event.type === 'done');
     expect(doneEvent).toBeDefined();
-    expect(doneEvent?.data.legacyEventType).toBe('assistant.reply.done');
+    expect(doneEvent?.data).not.toHaveProperty('legacyEventType');
     expect(doneEvent?.data.messageId).toBe(deltaEvents[0].data.messageId);
 
     expect(events[events.length - 1].type).toBe('snapshot');
-    expect(events[events.length - 1].data.legacyEventType).toBe('session.updated');
+    expect(events[events.length - 1].data).not.toHaveProperty('legacyEventType');
   });
 });

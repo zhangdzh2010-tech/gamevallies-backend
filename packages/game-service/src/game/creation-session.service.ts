@@ -257,12 +257,6 @@ export class CreationSessionService {
     regionHint?: string,
   ): Promise<void> {
     const repo = this.getRepo();
-    this.realtimeService.publishPhase(
-      userId,
-      sessionId,
-      'analyzing',
-      this.resolveRealtimePhaseLabel('analyzing', analyzePayload.initial_prompt),
-    );
 
     let analysis: AnalyzeTurnResponsePayload;
     try {
@@ -270,7 +264,6 @@ export class CreationSessionService {
         regionHint,
         userId,
         sessionId,
-        replyPhaseLabel: this.resolveRealtimePhaseLabel('replying', analyzePayload.initial_prompt),
       });
     } catch (error: any) {
       // AI analysis failed → mark session as abandoned with error info
@@ -440,12 +433,6 @@ export class CreationSessionService {
     const metadata = this.normalizeMetadata(session.metadata);
     const skippedSlots = this.normalizeStringList(session.skippedSlots);
     const currentQuestion = this.normalizeQuestion(session.currentQuestion);
-    this.realtimeService.publishPhase(
-      userId,
-      session.id,
-      'analyzing',
-      this.resolveRealtimePhaseLabel('analyzing', `${session.initialPrompt || ''} ${dto.content || ''}`),
-    );
     const analysis = await this.analyzeTurnWithRealtime(
       this.buildAnalyzeTurnPayload({
         sessionId: session.id,
@@ -464,7 +451,6 @@ export class CreationSessionService {
         regionHint: this.asOptionalString(metadata.regionHint),
         userId,
         sessionId: session.id,
-        replyPhaseLabel: this.resolveRealtimePhaseLabel('replying', `${session.initialPrompt || ''} ${dto.content || ''}`),
       },
     );
 
@@ -551,12 +537,6 @@ export class CreationSessionService {
       ...(currentQuestion?.slotKey ? [currentQuestion.slotKey] : []),
     ]);
     const conversation = this.normalizeConversation(session.conversation);
-    this.realtimeService.publishPhase(
-      userId,
-      session.id,
-      'analyzing',
-      this.resolveRealtimePhaseLabel('analyzing', session.initialPrompt),
-    );
     const analysis = await this.analyzeTurnWithRealtime(
       this.buildAnalyzeTurnPayload({
         sessionId: session.id,
@@ -574,7 +554,6 @@ export class CreationSessionService {
         regionHint: this.asOptionalString(metadata.regionHint),
         userId,
         sessionId: session.id,
-        replyPhaseLabel: this.resolveRealtimePhaseLabel('replying', session.initialPrompt),
       },
     );
     const normalizedPlanDraft = this.normalizePlanDraft(analysis.plan_draft);
@@ -847,7 +826,6 @@ export class CreationSessionService {
       regionHint?: string;
       userId: string;
       sessionId: string;
-      replyPhaseLabel: string;
     },
   ): Promise<AnalyzeTurnResponsePayload> {
     const aiEngineUrl = await this.gameService.getAiEngineBaseUrl(options.regionHint);
@@ -867,13 +845,7 @@ export class CreationSessionService {
       const status = error?.response?.status;
       if (status === 404 || status === 405) {
         const fallback = await this.analyzeTurn(payload, options.regionHint);
-        this.realtimeService.publishPhase(
-          options.userId,
-          options.sessionId,
-          'replying',
-          options.replyPhaseLabel,
-        );
-        this.realtimeService.publishReply(
+        this.realtimeService.publishReplyDone(
           options.userId,
           options.sessionId,
           fallback.reply,
@@ -901,28 +873,13 @@ export class CreationSessionService {
     options: {
       userId: string;
       sessionId: string;
-      replyPhaseLabel: string;
     },
   ): Promise<AnalyzeTurnResponsePayload> {
     let buffer = '';
     let eventName = 'message';
     let dataLines: string[] = [];
     let finalResult: AnalyzeTurnResponsePayload | null = null;
-    let replyPhasePublished = false;
     let accumulatedReply = '';
-
-    const ensureReplyPhase = () => {
-      if (replyPhasePublished) {
-        return;
-      }
-      replyPhasePublished = true;
-      this.realtimeService.publishPhase(
-        options.userId,
-        options.sessionId,
-        'replying',
-        options.replyPhaseLabel,
-      );
-    };
 
     const dispatchEvent = (rawEventName: string, rawPayload: string) => {
       const normalizedPayload = String(rawPayload || '').trim();
@@ -931,9 +888,7 @@ export class CreationSessionService {
       }
       const payload = JSON.parse(normalizedPayload);
       switch (rawEventName) {
-        case 'delta':
-        case 'assistant.reply.delta': {
-          ensureReplyPhase();
+        case 'delta': {
           const delta = String(payload?.delta || '');
           accumulatedReply = String(payload?.accumulated || `${accumulatedReply}${delta}`);
           this.realtimeService.publishReplyDelta(
@@ -945,9 +900,7 @@ export class CreationSessionService {
           );
           break;
         }
-        case 'done':
-        case 'assistant.reply.done': {
-          ensureReplyPhase();
+        case 'done': {
           const message = String(payload?.message || accumulatedReply || '');
           accumulatedReply = message;
           this.realtimeService.publishReplyDone(
@@ -959,7 +912,6 @@ export class CreationSessionService {
           break;
         }
         case 'final':
-        case 'analysis.result':
           finalResult = payload as AnalyzeTurnResponsePayload;
           break;
         case 'error':
@@ -1225,17 +1177,6 @@ export class CreationSessionService {
       initError: initError || null,
       abandonedAt: abandonedAt || null,
     };
-  }
-
-  private resolveRealtimePhaseLabel(
-    phase: 'analyzing' | 'replying',
-    sourceText?: string | null,
-  ): string {
-    const zh = /[\u3400-\u9fff]/.test(String(sourceText || ''));
-    if (phase === 'analyzing') {
-      return zh ? '正在梳理你的想法' : 'Understanding your game idea';
-    }
-    return zh ? '正在整理回复' : 'Drafting the next reply';
   }
 
   private normalizeMetadata(value: unknown): Record<string, unknown> {
