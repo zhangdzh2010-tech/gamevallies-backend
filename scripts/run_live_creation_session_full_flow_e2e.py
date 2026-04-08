@@ -206,7 +206,7 @@ def wait_for_session_interactive(
     session_id: str,
     bearer_headers: dict[str, str],
     *,
-    wait_s: int = 20,
+    wait_s: int = 60,
     poll_interval_s: float = 1.0,
 ) -> dict[str, Any]:
     started = time.perf_counter()

@@ -393,6 +393,34 @@ def _is_retryable_provider_error(exc: Exception) -> bool:
     return False
 
 
+def _provider_retry_after_seconds(exc: Exception) -> Optional[float]:
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return None
+    retry_after = (exc.response.headers.get("retry-after") or "").strip()
+    if not retry_after:
+        return None
+    try:
+        return max(float(retry_after), 0.0)
+    except ValueError:
+        return None
+
+
+def _provider_retry_backoff_seconds(
+    exc: Exception,
+    *,
+    attempt: int,
+    base_delay_s: float,
+    max_delay_s: float,
+) -> float:
+    capped_base = max(0.5, float(base_delay_s))
+    capped_max = max(capped_base, float(max_delay_s))
+    computed = min(capped_max, capped_base * (2 ** max(0, int(attempt) - 1)))
+    retry_after = _provider_retry_after_seconds(exc)
+    if retry_after is not None:
+        computed = max(computed, min(capped_max, retry_after))
+    return computed
+
+
 _LLM_HTTP_CLIENTS: dict[asyncio.AbstractEventLoop, httpx.AsyncClient] = {}
 _LLM_HTTP_CLIENTS_LOCK = threading.Lock()
 _LLM_CALL_SEMAPHORES: dict[asyncio.AbstractEventLoop, tuple[int, asyncio.Semaphore]] = {}
@@ -1313,6 +1341,9 @@ class LLMClient:
         timeout_retry_increment_s: int = 60,
         timeout_retry_max_s: Optional[int] = None,
         timeout_retry_min_s: Optional[int] = None,
+        provider_retry_attempts: int = 1,
+        provider_retry_base_delay_s: float = 2.0,
+        provider_retry_max_delay_s: float = 12.0,
         response_size_hint: Optional[str] = None,
         context_scope: str = "request",
         compression_policy: Optional[str] = None,
@@ -1372,6 +1403,8 @@ class LLMClient:
         )
         truncation_attempt = 0
         timeout_attempt = 0
+        provider_retry_limit = max(0, int(provider_retry_attempts))
+        provider_retry_attempt = 0
 
         while True:
             # Adaptive token budget: if enabled and we have history, adjust
@@ -1423,28 +1456,49 @@ class LLMClient:
                 continue
             except Exception as exc:
                 if (
-                    not _is_timeout_like_error(exc)
-                    or timeout_attempt >= timeout_retry_limit
-                    or requested_request_timeout_s is None
+                    _is_timeout_like_error(exc)
+                    and timeout_attempt < timeout_retry_limit
+                    and requested_request_timeout_s is not None
                 ):
-                    raise
-                next_timeout_s = max(
-                    requested_request_timeout_s + timeout_retry_increment,
-                    timeout_retry_floor or 0,
-                )
-                if timeout_retry_ceiling is not None:
-                    next_timeout_s = min(next_timeout_s, timeout_retry_ceiling)
-                if next_timeout_s <= requested_request_timeout_s:
-                    raise
-                logger.warning(
-                    "LLM %s timed out after %ss; retrying with longer timeout (%s -> %s)",
-                    step_key,
-                    requested_request_timeout_s,
-                    requested_request_timeout_s,
-                    next_timeout_s,
-                )
-                requested_request_timeout_s = next_timeout_s
-                timeout_attempt += 1
+                    next_timeout_s = max(
+                        requested_request_timeout_s + timeout_retry_increment,
+                        timeout_retry_floor or 0,
+                    )
+                    if timeout_retry_ceiling is not None:
+                        next_timeout_s = min(next_timeout_s, timeout_retry_ceiling)
+                    if next_timeout_s <= requested_request_timeout_s:
+                        raise
+                    logger.warning(
+                        "LLM %s timed out after %ss; retrying with longer timeout (%s -> %s)",
+                        step_key,
+                        requested_request_timeout_s,
+                        requested_request_timeout_s,
+                        next_timeout_s,
+                    )
+                    requested_request_timeout_s = next_timeout_s
+                    timeout_attempt += 1
+                    continue
+
+                if _is_retryable_provider_error(exc) and provider_retry_attempt < provider_retry_limit:
+                    provider_retry_attempt += 1
+                    delay_s = _provider_retry_backoff_seconds(
+                        exc,
+                        attempt=provider_retry_attempt,
+                        base_delay_s=provider_retry_base_delay_s,
+                        max_delay_s=provider_retry_max_delay_s,
+                    )
+                    logger.warning(
+                        "LLM %s hit retryable provider error; retrying after %.1fs (attempt %s/%s): %s",
+                        step_key,
+                        delay_s,
+                        provider_retry_attempt,
+                        provider_retry_limit,
+                        exc,
+                    )
+                    await asyncio.sleep(delay_s)
+                    continue
+
+                raise
 
     async def stream_complete(
         self,
