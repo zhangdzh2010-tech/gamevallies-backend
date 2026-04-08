@@ -38,7 +38,6 @@ import { presentGame } from '../common/game-presenter';
 
 const SUPPORTED_GAME_TYPES = ['casual', 'puzzle', 'education', 'funny'] as const;
 const GAME_ID_ROUTE = ':id([0-9a-fA-F-]{36})';
-const SSE_PRELUDE_PADDING = ' '.repeat(2048);
 type StreamingResponse = Response & {
   flush?: () => void;
   flushHeaders?: () => void;
@@ -123,6 +122,97 @@ export class GameController {
     return ok(await this.creationSessionService.getActiveSession(userId));
   }
 
+  @Get('/sse-probe')
+  @UseGuards(JwtAuthGuard)
+  async streamSseProbe(
+    @Req() req: any,
+    @Res() res: Response,
+    @Query('durationMs') durationMsRaw?: string,
+    @Query('tickMs') tickMsRaw?: string,
+  ): Promise<void> {
+    const userId = req.user?.sub || req.user?.id;
+    if (!userId) {
+      throw new BadRequestException('Invalid token');
+    }
+
+    const traceId = `probe:${userId}:${Date.now()}`;
+    const durationMs = this.normalizeProbeMs(durationMsRaw, 500, 100, 30_000);
+    const tickMs = this.normalizeProbeMs(tickMsRaw, 200, 50, 5_000);
+    this.logger.debug(`[creation-session-sse:${traceId}] probe accepted durationMs=${durationMs} tickMs=${tickMs}`);
+
+    this.prepareSseResponse(req, res as StreamingResponse, traceId);
+    this.logger.debug(`[creation-session-sse:${traceId}] probe response prepared`);
+    this.writeSseFrame(
+      res as StreamingResponse,
+      'probe.ready',
+      {
+        ok: true,
+        userId,
+        durationMs,
+        tickMs,
+        timestamp: Date.now(),
+      },
+      undefined,
+      traceId,
+    );
+
+    let tickCount = 0;
+    const timers = [
+      setInterval(() => {
+        if (!res.writableEnded) {
+          tickCount += 1;
+          this.writeSseFrame(
+            res as StreamingResponse,
+            'probe.tick',
+            { step: tickCount, durationMs, tickMs, timestamp: Date.now() },
+            undefined,
+            traceId,
+          );
+        }
+      }, tickMs),
+      setTimeout(() => {
+        if (!res.writableEnded) {
+          this.writeSseFrame(
+            res as StreamingResponse,
+            'probe.done',
+            { ok: true, durationMs, tickMs, timestamp: Date.now() },
+            undefined,
+            traceId,
+          );
+          res.end();
+        }
+      }, durationMs),
+    ];
+
+    const cleanup = () => {
+      this.logger.debug(`[creation-session-sse:${traceId}] probe cleanup invoked`);
+      timers.forEach((timer) => {
+        clearTimeout(timer as NodeJS.Timeout);
+        clearInterval(timer as NodeJS.Timeout);
+      });
+      if (!res.writableEnded) {
+        res.end();
+      }
+    };
+
+    req.on('close', cleanup);
+    req.on('aborted', cleanup);
+    res.on('close', cleanup);
+  }
+
+  private normalizeProbeMs(
+    value: string | undefined,
+    fallback: number,
+    min: number,
+    max: number,
+  ): number {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) {
+      return fallback;
+    }
+    return Math.min(max, Math.max(min, Math.round(parsed)));
+  }
+
   @Get('/creation-sessions/:sessionId/events')
   @UseGuards(JwtAuthGuard)
   async streamCreationSessionEvents(
@@ -135,25 +225,40 @@ export class GameController {
       throw new BadRequestException('Invalid token');
     }
 
+    const traceId = `${sessionId}:${Date.now()}`;
+    this.logger.debug(`[creation-session-sse:${traceId}] request accepted`);
+
     const snapshot = await this.creationSessionService.getSession(userId, sessionId);
+    this.logger.debug(`[creation-session-sse:${traceId}] session snapshot loaded status=${snapshot?.status ?? 'unknown'}`);
     const stream$ = this.creationSessionRealtimeService.streamSession(userId, sessionId, snapshot);
 
-    this.prepareSseResponse(req, res as StreamingResponse);
+    this.prepareSseResponse(req, res as StreamingResponse, traceId);
+    this.logger.debug(`[creation-session-sse:${traceId}] response prepared`);
 
+    let emittedEventCount = 0;
     const subscription = stream$.subscribe({
-      next: (event) => this.writeSseEvent(res as StreamingResponse, event),
+      next: (event) => {
+        emittedEventCount += 1;
+        if (emittedEventCount <= 3) {
+          this.logger.debug(
+            `[creation-session-sse:${traceId}] forwarding event ${String(event?.type || 'message')}`,
+          );
+        }
+        this.writeSseEvent(res as StreamingResponse, event, traceId);
+      },
       error: (error) => {
         const message = error?.message || 'Creation session stream failed';
-        this.logger.warn(`Creation session SSE stream error: ${message}`);
+        this.logger.warn(`[creation-session-sse:${traceId}] stream error: ${message}`);
         if (!res.writableEnded) {
           this.writeSseFrame(res as StreamingResponse, 'error', {
             sessionId,
             message,
-          });
+          }, undefined, traceId);
           res.end();
         }
       },
       complete: () => {
+        this.logger.debug(`[creation-session-sse:${traceId}] stream completed`);
         if (!res.writableEnded) {
           res.end();
         }
@@ -161,6 +266,7 @@ export class GameController {
     });
 
     const cleanup = () => {
+      this.logger.debug(`[creation-session-sse:${traceId}] cleanup invoked`);
       if (!subscription.closed) {
         subscription.unsubscribe();
       }
@@ -186,33 +292,39 @@ export class GameController {
     return ok(await this.creationSessionService.getSession(userId, sessionId));
   }
 
-  private prepareSseResponse(req: any, res: StreamingResponse): void {
-    res.status(HttpStatus.OK);
-    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Content-Encoding', 'identity');
+  private prepareSseResponse(req: any, res: StreamingResponse, traceId: string): void {
+    const headers: Record<string, string> = {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      'X-Accel-Buffering': 'no',
+      'X-Content-Type-Options': 'nosniff',
+    };
+
+    if (typeof (res as any).writeHead === 'function') {
+      (res as any).writeHead(HttpStatus.OK, headers);
+    } else {
+      res.status(HttpStatus.OK);
+      Object.entries(headers).forEach(([key, value]) => res.setHeader(key, value));
+    }
 
     req.socket?.setKeepAlive?.(true);
     req.socket?.setNoDelay?.(true);
     req.socket?.setTimeout?.(0);
     res.flushHeaders?.();
 
-    // Force an early chunk so upstream proxies do not wait for the first assistant event.
-    res.write(`: sse-open${SSE_PRELUDE_PADDING}\n\n`);
+    const wrotePrelude = res.write(': sse-open\n\n');
+    this.logger.debug(`[creation-session-sse:${traceId}] prelude written=${String(wrotePrelude)}`);
     res.flush?.();
   }
 
-  private writeSseEvent(res: StreamingResponse, event: MessageEvent): void {
+  private writeSseEvent(res: StreamingResponse, event: MessageEvent, traceId?: string): void {
     if (res.writableEnded) {
       return;
     }
     const eventType = typeof event.type === 'string' && event.type.trim()
       ? event.type.trim()
       : 'message';
-    this.writeSseFrame(res, eventType, event.data, event.id);
+    this.writeSseFrame(res, eventType, event.data, event.id, traceId);
   }
 
   private writeSseFrame(
@@ -220,13 +332,18 @@ export class GameController {
     eventType: string,
     data: unknown,
     id?: string | number,
+    traceId?: string,
   ): void {
     if (id !== undefined && id !== null) {
       res.write(`id: ${String(id)}\n`);
     }
     res.write(`event: ${eventType}\n`);
-    res.write(`data: ${JSON.stringify(data ?? null)}\n\n`);
+    const payload = JSON.stringify(data ?? null);
+    res.write(`data: ${payload}\n\n`);
     res.flush?.();
+    if (traceId && eventType !== 'heartbeat') {
+      this.logger.debug(`[creation-session-sse:${traceId}] frame flushed type=${eventType} bytes=${payload.length}`);
+    }
   }
 
   @Post('/creation-sessions/:sessionId/messages')
