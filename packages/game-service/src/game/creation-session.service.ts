@@ -909,7 +909,6 @@ export class CreationSessionService {
     let dataLines: string[] = [];
     let finalResult: AnalyzeTurnResponsePayload | null = null;
     let replyPhasePublished = false;
-    let chunkIndex = 0;
     let accumulatedReply = '';
 
     const ensureReplyPhase = () => {
@@ -942,10 +941,7 @@ export class CreationSessionService {
             delta,
             accumulatedReply,
             payload?.kind === 'summary' ? 'summary' : 'question',
-            Number(payload?.chunkIndex ?? chunkIndex),
-            Boolean(payload?.done),
           );
-          chunkIndex += 1;
           break;
         }
         case 'assistant.reply.done': {

@@ -1,14 +1,14 @@
 import { CreationSessionRealtimeService } from '../src/game/creation-session-realtime.service';
 
 describe('CreationSessionRealtimeService', () => {
-  it('streams bootstrap, assistant phases, reply deltas, and final snapshot updates', () => {
+  it('streams only the public bootstrap/delta/done/snapshot protocol', () => {
     const service = new CreationSessionRealtimeService();
     const initialSnapshot = {
       id: 'session-1',
       streamPath: '/api/v1/games/creation-sessions/session-1/events',
       status: 'collecting',
       entryMode: 'create',
-      initialPrompt: 'make a game like 羊了个羊',
+      initialPrompt: 'make a game like Triple Match',
       titleDraft: null,
       revision: 1,
       slotState: {},
@@ -16,8 +16,8 @@ describe('CreationSessionRealtimeService', () => {
       skippedSlots: [],
       currentQuestion: {
         slotKey: 'theme',
-        label: '题材情境',
-        prompt: '玩法可以参考《羊了个羊》，但题材你想换成什么情境或世界观？',
+        label: 'Theme',
+        prompt: 'What setting or world should this game take place in?',
         skippable: true,
       },
       conversation: [],
@@ -43,12 +43,12 @@ describe('CreationSessionRealtimeService', () => {
         events.push(event);
       });
 
-    service.publishPhase('user-1', 'session-1', 'analyzing', '正在梳理你的想法');
-    service.publishPhase('user-1', 'session-1', 'replying', '正在整理回复');
+    service.publishPhase('user-1', 'session-1', 'analyzing', 'analyzing');
+    service.publishPhase('user-1', 'session-1', 'replying', 'replying');
     service.publishReply(
       'user-1',
       'session-1',
-      '了解，我会把《羊了个羊》理解成层叠卡牌 + 三消收纳。为了别把关键体验做偏，我先追一个最重要的问题：玩法可以参考《羊了个羊》，但题材你想换成什么情境或世界观？',
+      'I understand the reference. Before we generate, what setting should the game use?',
       'question',
     );
     service.publishSnapshot('user-1', 'session-1', {
@@ -57,7 +57,7 @@ describe('CreationSessionRealtimeService', () => {
       conversation: [
         {
           role: 'assistant',
-          content: '了解，我会把《羊了个羊》理解成层叠卡牌 + 三消收纳。为了别把关键体验做偏，我先追一个最重要的问题：玩法可以参考《羊了个羊》，但题材你想换成什么情境或世界观？',
+          content: 'I understand the reference. Before we generate, what setting should the game use?',
           kind: 'question',
         },
       ],
@@ -65,11 +65,21 @@ describe('CreationSessionRealtimeService', () => {
 
     subscription.unsubscribe();
 
-    expect(events[0].type).toBe('session.bootstrap');
-    expect(events.some((event) => event.type === 'assistant.phase' && event.data.phase === 'analyzing')).toBe(true);
-    expect(events.some((event) => event.type === 'assistant.phase' && event.data.phase === 'replying')).toBe(true);
-    expect(events.filter((event) => event.type === 'assistant.reply.delta').length).toBeGreaterThan(1);
-    expect(events.some((event) => event.type === 'assistant.reply.done')).toBe(true);
-    expect(events[events.length - 1].type).toBe('session.updated');
+    expect(events[0].type).toBe('bootstrap');
+    expect(events[0].data.legacyEventType).toBe('session.bootstrap');
+    expect(events.some((event) => event.type === 'assistant.phase')).toBe(false);
+
+    const deltaEvents = events.filter((event) => event.type === 'delta');
+    expect(deltaEvents.length).toBeGreaterThan(1);
+    expect(deltaEvents.every((event) => event.data.legacyEventType === 'assistant.reply.delta')).toBe(true);
+    expect(deltaEvents.every((event) => typeof event.data.messageId === 'string' && event.data.messageId.length > 0)).toBe(true);
+
+    const doneEvent = events.find((event) => event.type === 'done');
+    expect(doneEvent).toBeDefined();
+    expect(doneEvent?.data.legacyEventType).toBe('assistant.reply.done');
+    expect(doneEvent?.data.messageId).toBe(deltaEvents[0].data.messageId);
+
+    expect(events[events.length - 1].type).toBe('snapshot');
+    expect(events[events.length - 1].data.legacyEventType).toBe('session.updated');
   });
 });

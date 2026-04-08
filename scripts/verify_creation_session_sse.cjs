@@ -9,6 +9,8 @@ const { URL } = require('node:url');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const DEFAULT_ENV_PATH = path.join(REPO_ROOT, '.env.deploy');
+const BOOTSTRAP_EVENTS = new Set(['bootstrap', 'session.bootstrap']);
+const DONE_EVENTS = new Set(['done', 'assistant.reply.done']);
 
 function nowIso() {
   return new Date().toISOString();
@@ -379,7 +381,7 @@ async function probeReadySessionSse(baseUrl, token, sessionId, connectTimeoutMs,
 
   stream.on('event', (event) => {
     metrics.eventCounts[event.event] = (metrics.eventCounts[event.event] || 0) + 1;
-    if (event.event === 'session.bootstrap') {
+    if (BOOTSTRAP_EVENTS.has(event.event)) {
       metrics.bootstrapSeen = true;
     }
   });
@@ -622,11 +624,11 @@ async function main() {
       if (event.event !== 'message') {
         result.sse.eventCounts[event.event] = (result.sse.eventCounts[event.event] || 0) + 1;
       }
-      if (event.event === 'session.bootstrap') {
+      if (BOOTSTRAP_EVENTS.has(event.event)) {
         bootstrapSeen.value = true;
         result.sse.bootstrapSeen = true;
       }
-      if (event.event === 'assistant.reply.done') {
+      if (DONE_EVENTS.has(event.event)) {
         if (!firstRoundDone.value) {
           firstRoundDone.value = true;
           result.sse.firstRoundDoneSeen = true;

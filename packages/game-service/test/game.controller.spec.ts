@@ -1,5 +1,5 @@
-import { GameController } from '../src/game/game.controller';
 import { Subject } from 'rxjs';
+import { GameController } from '../src/game/game.controller';
 
 describe('GameController', () => {
   let controller: GameController;
@@ -145,14 +145,14 @@ describe('GameController', () => {
     const result = await controller.createCreationSession(
       { user: { sub: 'user-1' } },
       {
-        prompt: '做一个办公室摸鱼游戏',
+        prompt: 'make a funny office game',
         orientation: 'portrait',
         generationTier: 'showcase',
       } as any,
     );
 
     expect(creationSessionService.createSession).toHaveBeenCalledWith('user-1', {
-      prompt: '做一个办公室摸鱼游戏',
+      prompt: 'make a funny office game',
       orientation: 'portrait',
       generationTier: 'showcase',
     });
@@ -199,7 +199,7 @@ describe('GameController', () => {
     );
   });
 
-  it('streams creation session events through a raw SSE response and keeps the connection reusable', async () => {
+  it('streams creation session events with the public SSE event protocol', async () => {
     const stream = new Subject<any>();
     const writes: string[] = [];
     const requestListeners = new Map<string, () => void>();
@@ -245,34 +245,62 @@ describe('GameController', () => {
     await controller.streamCreationSessionEvents(req, res, 'session-1');
 
     stream.next({
-      type: 'session.bootstrap',
-      id: 'session-1:1:session.bootstrap',
-      data: { sessionId: 'session-1', revision: 1 },
+      type: 'bootstrap',
+      id: 'session-1:1:bootstrap',
+      data: { sessionId: 'session-1', revision: 1, legacyEventType: 'session.bootstrap' },
     });
     stream.next({
-      type: 'assistant.reply.delta',
-      id: 'session-1:2:assistant.reply.delta',
-      data: { sessionId: 'session-1', delta: '第一段' },
+      type: 'heartbeat',
+      id: 'session-1:2:heartbeat',
+      data: { sessionId: 'session-1', timestamp: 2 },
     });
     stream.next({
-      type: 'assistant.reply.done',
-      id: 'session-1:3:assistant.reply.done',
-      data: { sessionId: 'session-1', message: '第一轮完成' },
+      type: 'delta',
+      id: 'session-1:3:delta',
+      data: {
+        sessionId: 'session-1',
+        delta: 'first chunk',
+        accumulated: 'first chunk',
+        kind: 'question',
+        messageId: 'reply-1',
+        legacyEventType: 'assistant.reply.delta',
+      },
     });
     stream.next({
-      type: 'assistant.reply.delta',
-      id: 'session-1:4:assistant.reply.delta',
-      data: { sessionId: 'session-1', delta: '第二轮继续' },
+      type: 'done',
+      id: 'session-1:4:done',
+      data: {
+        sessionId: 'session-1',
+        message: 'first reply complete',
+        kind: 'question',
+        messageId: 'reply-1',
+        legacyEventType: 'assistant.reply.done',
+      },
+    });
+    stream.next({
+      type: 'delta',
+      id: 'session-1:5:delta',
+      data: {
+        sessionId: 'session-1',
+        delta: 'second reply chunk',
+        accumulated: 'second reply chunk',
+        kind: 'question',
+        messageId: 'reply-2',
+        legacyEventType: 'assistant.reply.delta',
+      },
     });
 
     const payload = writes.join('');
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.setHeader).toHaveBeenCalledWith('Content-Type', 'text/event-stream; charset=utf-8');
     expect(payload).toContain(': sse-open');
-    expect(payload).toContain('event: session.bootstrap');
-    expect(payload).toContain('event: assistant.reply.delta');
-    expect(payload).toContain('第一轮完成');
-    expect(payload).toContain('第二轮继续');
+    expect(payload).toContain(': heartbeat');
+    expect(payload).toContain('event: bootstrap');
+    expect(payload).toContain('event: delta');
+    expect(payload).toContain('event: done');
+    expect(payload).not.toContain('event: heartbeat');
+    expect(payload).toContain('first reply complete');
+    expect(payload).toContain('second reply chunk');
 
     requestListeners.get('close')?.();
     expect(res.end).toHaveBeenCalled();
