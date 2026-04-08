@@ -277,4 +277,58 @@ describe('GameController', () => {
     requestListeners.get('close')?.();
     expect(res.end).toHaveBeenCalled();
   });
+
+  it('streams a minimal authenticated SSE probe immediately and closes cleanly', async () => {
+    jest.useFakeTimers();
+
+    const writes: string[] = [];
+    const requestListeners = new Map<string, () => void>();
+    const responseListeners = new Map<string, () => void>();
+    const req = {
+      user: { sub: 'user-9' },
+      on: jest.fn((event: string, handler: () => void) => {
+        requestListeners.set(event, handler);
+        return req;
+      }),
+      socket: {
+        setKeepAlive: jest.fn(),
+        setNoDelay: jest.fn(),
+        setTimeout: jest.fn(),
+      },
+    } as any;
+    const res = {
+      writableEnded: false,
+      status: jest.fn().mockReturnThis(),
+      setHeader: jest.fn(),
+      flushHeaders: jest.fn(),
+      flush: jest.fn(),
+      write: jest.fn((chunk: string) => {
+        writes.push(String(chunk));
+        return true;
+      }),
+      end: jest.fn(() => {
+        res.writableEnded = true;
+        return res;
+      }),
+      on: jest.fn((event: string, handler: () => void) => {
+        responseListeners.set(event, handler);
+        return res;
+      }),
+    } as any;
+
+    await controller.streamSseProbe(req, res);
+
+    jest.advanceTimersByTime(600);
+
+    const payload = writes.join('');
+    expect(payload).toContain(': sse-open');
+    expect(payload).toContain('event: probe.ready');
+    expect(payload).toContain('event: probe.tick');
+    expect(payload).toContain('event: probe.done');
+    expect(res.end).toHaveBeenCalled();
+
+    responseListeners.get('close')?.();
+    requestListeners.get('close')?.();
+    jest.useRealTimers();
+  });
 });
