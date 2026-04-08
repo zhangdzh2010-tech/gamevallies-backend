@@ -20,7 +20,6 @@ import {
 } from './dto';
 import {
   CREATION_SESSION_GENERATING_EXPIRE_MS,
-  CREATION_SESSION_INIT_TIMEOUT_MS,
   CREATION_SESSION_INTERACTIVE_STATUSES,
   DEFAULT_CREATION_SESSION_QUESTION_BUDGET,
 } from './creation-session.constants';
@@ -234,11 +233,13 @@ export class CreationSessionService {
         err?.stack,
       ));
 
-    // Timeout safety net: if analysis is still running after INIT_TIMEOUT_MS,
+    const initTimeoutMs = await this.gameService.getCreationSessionInitTimeoutMs();
+
+    // Timeout safety net: if analysis is still running after the init watchdog,
     // auto-abandon the session so it doesn't stay stuck in 'initializing'.
     setTimeout(
       () => this._expireStaleInit(created.id).catch(() => undefined),
-      CREATION_SESSION_INIT_TIMEOUT_MS,
+      initTimeoutMs,
     );
 
     return this.toSnapshot(created);

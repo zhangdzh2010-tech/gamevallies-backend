@@ -488,6 +488,15 @@ export const TIMEOUT_CONFIG_CATALOG: TimeoutConfigCatalogEntry[] = [
     unit: 's',
     valueType: 'int',
   },
+  {
+    key: 'timeout.game_service.creation_session_init_ms',
+    defaultValue: '45000',
+    description: 'Creation session init watchdog timeout. Must not be shorter than the analyze-turn upstream timeout.',
+    service: 'game-service',
+    group: 'pipeline',
+    unit: 'ms',
+    valueType: 'int',
+  },
 ];
 
 export const TIMEOUT_CONFIG_CATALOG_BY_KEY = new Map(

@@ -64,6 +64,7 @@ describe('CreationSessionService', () => {
     gameService = {
       getAiEngineBaseUrl: jest.fn().mockResolvedValue('https://ai-engine.example'),
       getExpandPromptRequestTimeoutMs: jest.fn().mockResolvedValue(5000),
+      getCreationSessionInitTimeoutMs: jest.fn().mockResolvedValue(45000),
       create: jest.fn(),
     };
     wsGateway = {
@@ -89,6 +90,13 @@ describe('CreationSessionService', () => {
   });
 
   it('creates a session optimistically as initializing, then finalizes via async analysis', async () => {
+    const originalSetTimeout = global.setTimeout;
+    const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((handler: any, timeout?: any, ...args: any[]) => {
+      if (timeout === 45000) {
+        return 0 as any;
+      }
+      return originalSetTimeout(handler, timeout as any, ...args);
+    }) as typeof setTimeout);
     // Phase 1: optimistic creation returns 'initializing' immediately
     repo.updateMany.mockResolvedValue({ count: 1 });
     repo.create.mockImplementation(async ({ data }: any) => ({
@@ -229,6 +237,8 @@ describe('CreationSessionService', () => {
         frozenSpec: null,
       }),
     }));
+    expect(gameService.getCreationSessionInitTimeoutMs).toHaveBeenCalledTimes(1);
+    expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 45000);
 
     // Phase 2: wait for async _finalizeSessionInit to complete
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -287,6 +297,7 @@ describe('CreationSessionService', () => {
       expect.stringContaining('玩家怎么才能赢'),
       'question',
     );
+    setTimeoutSpy.mockRestore();
   });
 
   it('abandons initialization after a single transient analyze-turn failure without retrying', async () => {
