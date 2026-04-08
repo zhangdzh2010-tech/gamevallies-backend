@@ -257,7 +257,12 @@ export class CreationSessionService {
     regionHint?: string,
   ): Promise<void> {
     const repo = this.getRepo();
-    this.realtimeService.publishPhase(userId, sessionId, 'analyzing', 'analyzing_initial_brief');
+    this.realtimeService.publishPhase(
+      userId,
+      sessionId,
+      'analyzing',
+      this.resolveRealtimePhaseLabel('analyzing', analyzePayload.initial_prompt),
+    );
 
     let analysis: AnalyzeTurnResponsePayload;
     try {
@@ -265,7 +270,7 @@ export class CreationSessionService {
         regionHint,
         userId,
         sessionId,
-        replyPhaseLabel: 'streaming_first_reply',
+        replyPhaseLabel: this.resolveRealtimePhaseLabel('replying', analyzePayload.initial_prompt),
       });
     } catch (error: any) {
       // AI analysis failed → mark session as abandoned with error info
@@ -435,7 +440,12 @@ export class CreationSessionService {
     const metadata = this.normalizeMetadata(session.metadata);
     const skippedSlots = this.normalizeStringList(session.skippedSlots);
     const currentQuestion = this.normalizeQuestion(session.currentQuestion);
-    this.realtimeService.publishPhase(userId, session.id, 'analyzing', 'analyzing_user_answer');
+    this.realtimeService.publishPhase(
+      userId,
+      session.id,
+      'analyzing',
+      this.resolveRealtimePhaseLabel('analyzing', `${session.initialPrompt || ''} ${dto.content || ''}`),
+    );
     const analysis = await this.analyzeTurnWithRealtime(
       this.buildAnalyzeTurnPayload({
         sessionId: session.id,
@@ -454,7 +464,7 @@ export class CreationSessionService {
         regionHint: this.asOptionalString(metadata.regionHint),
         userId,
         sessionId: session.id,
-        replyPhaseLabel: 'streaming_followup_reply',
+        replyPhaseLabel: this.resolveRealtimePhaseLabel('replying', `${session.initialPrompt || ''} ${dto.content || ''}`),
       },
     );
 
@@ -541,7 +551,12 @@ export class CreationSessionService {
       ...(currentQuestion?.slotKey ? [currentQuestion.slotKey] : []),
     ]);
     const conversation = this.normalizeConversation(session.conversation);
-    this.realtimeService.publishPhase(userId, session.id, 'analyzing', 'skipping_question_and_reframing');
+    this.realtimeService.publishPhase(
+      userId,
+      session.id,
+      'analyzing',
+      this.resolveRealtimePhaseLabel('analyzing', session.initialPrompt),
+    );
     const analysis = await this.analyzeTurnWithRealtime(
       this.buildAnalyzeTurnPayload({
         sessionId: session.id,
@@ -559,7 +574,7 @@ export class CreationSessionService {
         regionHint: this.asOptionalString(metadata.regionHint),
         userId,
         sessionId: session.id,
-        replyPhaseLabel: 'streaming_followup_reply',
+        replyPhaseLabel: this.resolveRealtimePhaseLabel('replying', session.initialPrompt),
       },
     );
     const normalizedPlanDraft = this.normalizePlanDraft(analysis.plan_draft);
@@ -1146,8 +1161,6 @@ export class CreationSessionService {
     const slotFillPct = this.clampSlotFillPct(metadata.slotFillPct, slotState);
     const currentQuestion = this.normalizeQuestion(session?.currentQuestion);
     const planDraft = this.normalizePlanDraft(metadata.planDraft);
-    const confidenceSummary = this.normalizeConfidenceSummary(metadata.confidenceSummary);
-    const questionStrategy = this.normalizeQuestionStrategy(metadata.questionStrategy);
     const intentBuild = normalizeIntentBuildSnapshot(metadata.intentBuild);
     const sessionStatus = String(session.status || 'collecting');
 
@@ -1187,11 +1200,43 @@ export class CreationSessionService {
       generationTier: String(metadata.generationTier || 'standard') as any,
       questionBudget: Number(session.questionBudget || DEFAULT_CREATION_SESSION_QUESTION_BUDGET),
       planDraft,
-      confidenceSummary,
-      questionStrategy,
-      intentBuild,
-      metadata,
+      confidenceSummary: null,
+      questionStrategy: null,
+      intentBuild: this.toPublicIntentBuild(intentBuild),
+      metadata: this.toPublicMetadata(metadata),
     };
+  }
+
+  private toPublicIntentBuild(value: ReturnType<typeof normalizeIntentBuildSnapshot>) {
+    if (!value?.brief) {
+      return null;
+    }
+    return {
+      brief: value.brief,
+    };
+  }
+
+  private toPublicMetadata(metadata: Record<string, unknown>): CreationSessionSnapshot['metadata'] {
+    const initError = this.asOptionalString(metadata.initError);
+    const abandonedAt = this.asOptionalString(metadata.abandonedAt);
+    if (!initError && !abandonedAt) {
+      return null;
+    }
+    return {
+      initError: initError || null,
+      abandonedAt: abandonedAt || null,
+    };
+  }
+
+  private resolveRealtimePhaseLabel(
+    phase: 'analyzing' | 'replying',
+    sourceText?: string | null,
+  ): string {
+    const zh = /[\u3400-\u9fff]/.test(String(sourceText || ''));
+    if (phase === 'analyzing') {
+      return zh ? '正在梳理你的想法' : 'Understanding your game idea';
+    }
+    return zh ? '正在整理回复' : 'Drafting the next reply';
   }
 
   private normalizeMetadata(value: unknown): Record<string, unknown> {

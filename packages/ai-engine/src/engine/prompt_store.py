@@ -52,7 +52,6 @@ PROMPT_KEYS = [
     "prompt.slot_json_repair_user_template",
     "prompt.intent_detail_template",
     "prompt.mobile_layout_guardrails",
-    "prompt.iteration_mobile_layout_guardrails",
     "prompt.iteration_spec_context_template",
     "prompt.generate_request_context_template",
     "prompt.generate_alignment_reminder",

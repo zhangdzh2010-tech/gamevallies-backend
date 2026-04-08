@@ -232,10 +232,11 @@ describe('CreationSessionService', () => {
       orientation: 'landscape',
       generationTier: 'showcase',
       intentBuild: expect.objectContaining({
-        intentFingerprint: expect.any(String),
-        specFingerprint: null,
-        frozenSpec: null,
+        brief: expect.any(String),
       }),
+      confidenceSummary: null,
+      questionStrategy: null,
+      metadata: null,
     }));
     expect(gameService.getCreationSessionInitTimeoutMs).toHaveBeenCalledTimes(1);
     expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 45000);
@@ -288,7 +289,7 @@ describe('CreationSessionService', () => {
       'user-1',
       'session-1',
       'analyzing',
-      'analyzing_initial_brief',
+      '正在梳理你的想法',
     );
     expect(realtimeService.publishReplyDelta).toHaveBeenCalled();
     expect(realtimeService.publishReplyDone).toHaveBeenCalledWith(
@@ -476,12 +477,16 @@ describe('CreationSessionService', () => {
       id: 'session-2',
       revision: 2,
       readyToGenerate: true,
+      confidenceSummary: null,
+      questionStrategy: null,
+      metadata: null,
+      intentBuild: null,
     }));
     expect(realtimeService.publishPhase).toHaveBeenCalledWith(
       'user-2',
       'session-2',
       'analyzing',
-      'analyzing_user_answer',
+      '正在梳理你的想法',
     );
     expect(realtimeService.publishReplyDelta).toHaveBeenCalled();
     expect(realtimeService.publishReplyDone).toHaveBeenCalledWith(
@@ -615,6 +620,100 @@ describe('CreationSessionService', () => {
         generationTaskId: 'task-1',
       }),
     }));
+  });
+
+  it('strips internal diagnostics from public session snapshots', async () => {
+    repo.findUnique.mockResolvedValue({
+      id: 'session-public-1',
+      userId: 'user-public-1',
+      status: 'abandoned',
+      entryMode: 'create',
+      initialPrompt: '做一个办公室摸鱼游戏',
+      titleDraft: '上班摸鱼',
+      revision: 2,
+      slotState: {
+        game_type: 'funny',
+        core_mechanic: 'tap to hide',
+      },
+      missingRequired: ['win_condition'],
+      skippedSlots: [],
+      currentQuestion: {
+        slotKey: 'win_condition',
+        label: 'Win Condition',
+        prompt: '玩家怎么才算赢？',
+        skippable: true,
+      },
+      conversation: [],
+      generatedGameId: null,
+      generationTaskId: null,
+      sourceGameId: null,
+      questionBudget: 4,
+      metadata: {
+        orientation: 'portrait',
+        generationTier: 'standard',
+        readyToGenerate: false,
+        slotFillPct: 0.4,
+        planDraft: {
+          title: '上班摸鱼',
+          summary: '一款围绕办公室摸鱼展开的搞笑小游戏。',
+        },
+        confidenceSummary: {
+          overallConfidence: 0.61,
+          strongestSlots: ['game_type'],
+          weakestSlots: ['win_condition'],
+          ambiguityFlags: ['win_condition:missing'],
+          missingCriticalSlots: ['win_condition'],
+        },
+        questionStrategy: {
+          mode: 'missing_required',
+          slotKey: 'win_condition',
+          reason: '需要先确认胜利目标',
+          impact: 0.95,
+          confidence: 0,
+          ambiguityWeight: 0.25,
+        },
+        intentBuild: {
+          brief: 'Summary: 一款围绕办公室摸鱼展开的搞笑小游戏。',
+          frozenSpec: { game_type: 'funny' },
+          intentFingerprint: 'intent-fp',
+          specFingerprint: 'spec-fp',
+        },
+        confidenceBySlot: {
+          game_type: 0.91,
+        },
+        evidenceBySlot: {
+          game_type: '用户明确说要搞笑游戏',
+        },
+        nextBestQuestionReason: '需要先确认胜利目标',
+        initError: 'Session initialization timed out',
+        abandonedAt: '2026-04-08T09:00:00.000Z',
+      },
+      createdAt: new Date('2026-04-08T09:00:00.000Z'),
+      updatedAt: new Date('2026-04-08T09:00:00.000Z'),
+    });
+
+    const snapshot = await service.getSession('user-public-1', 'session-public-1');
+
+    expect(snapshot).toEqual(expect.objectContaining({
+      id: 'session-public-1',
+      status: 'abandoned',
+      orientation: 'portrait',
+      generationTier: 'standard',
+      planDraft: expect.objectContaining({
+        title: '上班摸鱼',
+      }),
+      confidenceSummary: null,
+      questionStrategy: null,
+      intentBuild: {
+        brief: 'Summary: 一款围绕办公室摸鱼展开的搞笑小游戏。',
+      },
+      metadata: {
+        initError: 'Session initialization timed out',
+        abandonedAt: '2026-04-08T09:00:00.000Z',
+      },
+    }));
+    expect((snapshot.intentBuild as any).frozenSpec).toBeUndefined();
+    expect((snapshot.metadata as any).confidenceBySlot).toBeUndefined();
   });
 
   it('surfaces nested ai-engine spec compilation errors as readable messages', async () => {

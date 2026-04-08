@@ -44,10 +44,6 @@ COMMON_CODEGEN_PROMPTS = {
         "- Compute a shared mobile UI scale from the short edge, for example `uiScale = Math.min(scaleX, scaleY)`.\n"
         "- Keep HUD text around {hud_font}px base size and clamp it to about 14-20px after scaling."
     ),
-    "prompt.iteration_mobile_layout_guardrails": (
-        "NON-NEGOTIABLE MOBILE LAYOUT RULES:\n"
-        "- Keep the game portrait-first and fully playable on mobile touch screens."
-    ),
     "prompt.generate_request_context_template": (
         "Original user request:\n{request_text}"
     ),
@@ -55,19 +51,18 @@ COMMON_CODEGEN_PROMPTS = {
         "Make sure the final game satisfies both the original user request and the structured design document above."
     ),
     "prompt.runtime_contract_summary": (
-        "RUNTIME CONTRACT (NON-NEGOTIABLE):\n"
-        "- Runtime profile: {runtime_profile}\n"
-        "- Contract version: {contract_version}\n"
+        "RUNTIME CONTRACT (MUST STAY FUNCTIONAL):\n"
+        "- Runtime profile: {runtime_profile} (contract v{contract_version})\n"
+        "- Core state flow must support {required_states} with a restart path back into active play.\n"
+        "- Input must work through {input_modes}; expected gestures: {gestures}.\n"
+        "- Forbidden APIs: {forbidden_apis}.\n"
+        "- Mobile layout: {orientation}, {ui_scale_mode} scaling, HUD {hud_min}-{hud_max}px, title {title_min}-{title_max}px.\n"
+        "- Platform target: mobile H5 browser / WebView with a single main canvas.\n"
+        "- Prevent accidental page scrolling during play and keep gameplay local with no external network or asset requests.\n"
+        "- Accepted terminal/completion state aliases: {terminal_state_aliases}\n"
         "- Prompt bundle: {bundle_id}\n"
         "- Prompt layers: {layer_keys}\n"
-        "- Required states: {required_states}\n"
-        "- Required input modes: {input_modes}\n"
-        "- Preferred gestures: {gestures}\n"
-        "- Forbidden APIs: {forbidden_apis}\n"
-        "- Orientation: {orientation}\n"
-        "- UI scale mode: {ui_scale_mode}\n"
-        "- HUD font clamp: {hud_min}-{hud_max}px\n"
-        "- Title font clamp: {title_min}-{title_max}px"
+        "- The final code must respect every contract rule explicitly, not implicitly."
     ),
 }
 
@@ -259,6 +254,57 @@ class TestPromptIntegration(unittest.TestCase):
         self.assertIn("animals follow the player after rescue", message)
         self.assertIn("Original brief anchor:", message)
 
+    def test_generate_dedupes_reference_and_special_rules_when_gdd_already_includes_them(self):
+        generator = CodeGenerator(llm_mode="real")
+
+        def fake_get_prompt(key: str, default=None):
+            if key == "prompt.game_design_template":
+                return (
+                    "GAME DESIGN DOCUMENT\n"
+                    "Game Type: {game_type}\n"
+                    "Reference Game: {reference_game}\n"
+                    "Special Rules:\n{special_rules_list}"
+                )
+            if key == "prompt.code_gen_system":
+                return "SYSTEM"
+            if key == "prompt.platform_standard":
+                return "PLATFORM"
+            return COMMON_CODEGEN_PROMPTS.get(key, default)
+
+        spec = GameSpec(
+            game_type="casual",
+            source_description="build a rescue runner",
+            core_mechanics=[CoreMechanic(type="runner", input="swipe")],
+            rules=GameRules(win_condition="rescue all animals", lose_condition="caught", lives=3),
+            visual_style=VisualStyle(theme="zoo", art_style="cartoon"),
+            special_rules=["animals follow the player after rescue"],
+            reference_game="Temple Run",
+            platform_constraints=PlatformConstraints(platform="wechat_webview", input_mode="swipe"),
+        )
+        gdd = GDD(
+            canvas=CanvasConfig(width=420, height=600, dpr_adaptive=True, target_fps=60),
+            numerics=NumericsConfig(),
+            collision=CollisionConfig(),
+            input_map={"touchmove": "lane_switch"},
+            ui_layout={"score": {"x": 16, "y": 36, "font": "bold 18px Arial"}},
+        )
+
+        with patch(
+            "src.engine.code_generator.require_prompt",
+            side_effect=fake_get_prompt,
+        ), patch.object(
+            generator._client,
+            "complete_with_truncation_retry",
+            new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
+        ) as mock_complete:
+            asyncio.run(generator._llm_generate(spec, gdd, description=spec.source_description))
+
+        message = mock_complete.await_args.kwargs["messages"][0]["content"]
+        self.assertEqual(message.count("Reference Game: Temple Run"), 1)
+        self.assertNotIn("- Reference game: Temple Run", message)
+        self.assertEqual(message.count("animals follow the player after rescue"), 1)
+        self.assertNotIn("Must preserve these special rules", message)
+
 
     def test_generate_omits_empty_design_program_and_request_scaffold_for_compact_prompt(self):
         generator = CodeGenerator(llm_mode="real")
@@ -317,6 +363,8 @@ class TestPromptIntegration(unittest.TestCase):
                 return "Game Type: {game_type}\nTheme: {theme}"
             if key == "prompt.code_gen_system":
                 return "CODE_GEN_SYSTEM_FROM_DB"
+            if key == "prompt.platform_standard":
+                return "PLATFORM"
             return COMMON_CODEGEN_PROMPTS.get(key, default)
 
         spec = GameSpec(
@@ -345,11 +393,60 @@ class TestPromptIntegration(unittest.TestCase):
             asyncio.run(generator._llm_generate(spec, gdd, description="做一个竖屏跑酷小游戏"))
 
         message = mock_complete.await_args.kwargs["messages"][0]["content"]
-        self.assertIn("NON-NEGOTIABLE MOBILE LAYOUT RULES:", message)
-        self.assertIn("MOBILE LAYOUT CHECKLIST", message)
-        self.assertIn("portrait reference playfield", message)
+        self.assertIn("MOBILE LAYOUT IMPLEMENTATION RECIPE:", message)
+        self.assertIn("portrait-first reference size of 360x640", message)
         self.assertIn("Math.min(scaleX, scaleY)", message)
         self.assertIn("14-20px", message)
+        self.assertNotIn("NON-NEGOTIABLE MOBILE LAYOUT RULES:", message)
+        self.assertNotIn("\nPLATFORM", message)
+
+    def test_generate_omits_standalone_ui_language_block_when_gdd_already_declares_it(self):
+        generator = CodeGenerator(llm_mode="real")
+
+        def fake_get_prompt(key: str, default=None):
+            if key == "prompt.game_design_template":
+                return (
+                    "GAME DESIGN DOCUMENT\n"
+                    "UI Language: {ui_language}\n"
+                    "Visible UI Copy Examples: {ui_text_examples}\n"
+                    "Theme: {theme}"
+                )
+            if key == "prompt.code_gen_system":
+                return "SYSTEM"
+            if key == "prompt.platform_standard":
+                return "PLATFORM"
+            return COMMON_CODEGEN_PROMPTS.get(key, default)
+
+        spec = GameSpec(
+            game_type="casual",
+            source_description="做一个中文城市跑酷游戏",
+            rules=GameRules(win_condition="reach the finish line", lose_condition="hit obstacles", lives=3),
+            visual_style=VisualStyle(theme="city", art_style="cartoon"),
+            ui_language="zh-CN",
+            platform_constraints=PlatformConstraints(platform="wechat_webview", input_mode="touch_only"),
+        )
+        gdd = GDD(
+            canvas=CanvasConfig(width=360, height=640, dpr_adaptive=True, target_fps=60),
+            numerics=NumericsConfig(),
+            collision=CollisionConfig(),
+            input_map={"touchmove": "lane_switch"},
+            ui_layout={"score": {"x": 16, "y": 32, "font": "bold 16px Arial"}},
+        )
+
+        with patch(
+            "src.engine.code_generator.require_prompt",
+            side_effect=fake_get_prompt,
+        ), patch.object(
+            generator._client,
+            "complete_with_truncation_retry",
+            new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
+        ) as mock_complete:
+            asyncio.run(generator._llm_generate(spec, gdd, description=spec.source_description))
+
+        message = mock_complete.await_args.kwargs["messages"][0]["content"]
+        self.assertIn("UI Language: zh-CN", message)
+        self.assertIn("Visible UI Copy Examples:", message)
+        self.assertNotIn("UI LANGUAGE (NON-NEGOTIABLE):", message)
 
     def test_runtime_contract_block_uses_compact_default_summary(self):
         generator = CodeGenerator(llm_mode="real")
@@ -365,7 +462,8 @@ class TestPromptIntegration(unittest.TestCase):
         self.assertIn("Input must work through pointer, touch; expected gestures: tap.", block)
         self.assertIn("Forbidden APIs: eval, Function, import, require.", block)
         self.assertIn("Mobile layout: portrait_first, short_edge scaling, HUD 14-20px, title 28-36px.", block)
-        self.assertIn("Prompt bundle: arcade_v3.", block)
+        self.assertIn("Platform target: mobile H5 browser / WebView with a single main canvas.", block)
+        self.assertIn("Prompt bundle: arcade_v3", block)
         self.assertNotIn("Prompt layers:", block)
 
     def test_runtime_contract_block_compacts_long_lists_and_conditional_aliases(self):
@@ -386,7 +484,24 @@ class TestPromptIntegration(unittest.TestCase):
         self.assertIn("touch, pointer, keyboard, gamepad, +1 more", block)
         self.assertIn("tap, drag, swipe, hold, +1 more", block)
         self.assertIn("eval, Function, fetch, XMLHttpRequest, WebSocket, localStorage, +2 more", block)
-        self.assertIn("Accepted terminal/completion state aliases: game_over, victory, complete, failed, won, lost, clear, solved, +1 more.", block)
+        self.assertIn("Accepted terminal/completion state aliases: game_over, victory, complete, failed, won, lost, clear, solved, +1 more", block)
+
+    def test_platform_standard_falls_back_only_for_legacy_runtime_contract_templates(self):
+        generator = CodeGenerator(llm_mode="real")
+
+        with patch(
+            "src.engine.code_generator.get_prompt",
+            side_effect=lambda key, default=None: (
+                "RUNTIME CONTRACT:\n- Runtime profile: {runtime_profile}\n- Orientation: {orientation}"
+                if key == "prompt.runtime_contract_summary"
+                else "PLATFORM"
+                if key == "prompt.platform_standard"
+                else COMMON_CODEGEN_PROMPTS.get(key, default)
+            ),
+        ):
+            fallback = generator._build_platform_standard_fallback()
+
+        self.assertEqual(fallback, "PLATFORM")
 
     def test_mobile_layout_guardrails_switch_to_landscape_when_contract_requests_it(self):
         generator = CodeGenerator(llm_mode="real")
@@ -908,10 +1023,11 @@ class TestPromptIntegration(unittest.TestCase):
         self.assertIn("LOCKED_CONTRACT_FROM_BUNDLE", kwargs["system"])
         self.assertIn("PRODUCT_POLICY_FROM_BUNDLE", kwargs["system"])
         self.assertIn("LEGACY_SYSTEM_FROM_DB", kwargs["system"])
+        self.assertEqual(kwargs["context_scope"], "request")
         message = kwargs["messages"][0]["content"]
         self.assertIn("LOGIC_GENERATE_FROM_BUNDLE", message)
         self.assertIn("PROFILE_FEW_SHOT_FROM_BUNDLE", message)
-        self.assertIn("PLATFORM_FROM_DB", message)
+        self.assertNotIn("PLATFORM_FROM_DB", message)
 
     def test_iterate_uses_resolved_prompt_bundle_layers(self):
         generator = CodeGenerator(llm_mode="real")
@@ -958,6 +1074,7 @@ class TestPromptIntegration(unittest.TestCase):
         self.assertIn("LOCKED_CONTRACT_FROM_BUNDLE", kwargs["system"])
         self.assertIn("PRODUCT_POLICY_FROM_BUNDLE", kwargs["system"])
         self.assertIn("LEGACY_SYSTEM_FROM_DB", kwargs["system"])
+        self.assertEqual(kwargs["context_scope"], "request")
         message = kwargs["messages"][0]["content"]
         self.assertNotIn("LOGIC_GENERATE_FROM_BUNDLE", message)
         self.assertNotIn("PROFILE_FEW_SHOT_FROM_BUNDLE", message)

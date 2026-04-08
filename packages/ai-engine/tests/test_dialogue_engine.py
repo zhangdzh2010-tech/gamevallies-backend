@@ -514,6 +514,9 @@ class TestDialogueEngine(unittest.TestCase):
         self.assertIn("DIALOGUE_REPLY_STYLE_FROM_DB", system_prompt)
         self.assertIn("ZH_TEMPLATE_FROM_DB", user_prompt)
         self.assertIn("Safe fallback wording:", user_prompt)
+        self.assertNotIn("- game_type:", user_prompt)
+        self.assertNotIn("Need to lock the success beat.", user_prompt)
+        self.assertNotIn(analysis.reply, user_prompt)
 
     def test_dialogue_slot_extract_fast_path_skips_truncation_retry_without_excerpt(self):
         engine = DialogueEngine()

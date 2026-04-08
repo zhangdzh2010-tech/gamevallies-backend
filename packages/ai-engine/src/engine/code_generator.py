@@ -320,6 +320,7 @@ class CodeGenerator:
             spec,
             request_text,
             runtime_profile=runtime_profile,
+            structured_design=structured_design,
         )
         enriched_block = self._build_enriched_design_block(gdd)
         full_prompt = self._compose_prompt_sections(
@@ -332,11 +333,11 @@ class CodeGenerator:
                 mechanic_diversity_block,
                 design_program_block,
                 critical_intent_block,
-                self._build_ui_language_block(spec.ui_language),
+                "" if self._structured_design_has_ui_language(structured_design) else self._build_ui_language_block(spec.ui_language),
                 self._build_runtime_contract_block(runtime_contract, runtime_profile, prompt_bundle_snapshot),
                 implementation_budget,
                 self._build_mobile_layout_guardrails(gdd, runtime_contract),
-                require_prompt("prompt.platform_standard"),
+                self._build_platform_standard_fallback(),
                 enriched_block,
             ],
         )
@@ -376,7 +377,7 @@ class CodeGenerator:
                 overall_timeout_s=long_generation_timeout_s,
                 allow_provider_fallback=True,
                 response_size_hint=self._response_size_hint_from_budget(token_budget),
-                context_scope="task",
+                context_scope="request",
                 compression_policy="code_generation",
                 truncation_retry_attempts=1,
                 truncation_retry_increment=2048,
@@ -737,6 +738,7 @@ class CodeGenerator:
         request_text: str,
         *,
         runtime_profile: Optional[str] = None,
+        structured_design: str = "",
     ) -> str:
         reference_line = (
             f"- Reference game: {spec.reference_game}"
@@ -757,10 +759,51 @@ class CodeGenerator:
             special_rules_block=special_rules_block,
             ui_language=self._describe_ui_language(spec.ui_language),
         )
+        base_block = self._strip_ui_language_line(base_block)
+        base_block = self._strip_reference_and_special_rules(base_block, structured_design)
         distinctive_hint = self._build_distinctive_loop_hint(spec, request_text, runtime_profile)
         if distinctive_hint:
             return "\n".join([base_block, distinctive_hint])
         return base_block
+
+    @staticmethod
+    def _strip_ui_language_line(prompt: str) -> str:
+        lines = [
+            line for line in (prompt or "").splitlines()
+            if not line.strip().lower().startswith("- ui language:")
+        ]
+        return "\n".join(lines).strip()
+
+    @staticmethod
+    def _structured_design_has_ui_language(prompt: str) -> bool:
+        normalized = (prompt or "").lower()
+        return "ui language:" in normalized or "visible ui copy examples:" in normalized
+
+    @classmethod
+    def _strip_reference_and_special_rules(cls, prompt: str, structured_design: str) -> str:
+        normalized_design = (structured_design or "").lower()
+        has_reference = "reference game:" in normalized_design
+        has_special_rules = "special rules:" in normalized_design
+
+        lines = (prompt or "").splitlines()
+        stripped_lines: List[str] = []
+        skip_special_rule_children = False
+        for line in lines:
+            normalized_line = line.strip().lower()
+            if has_reference and normalized_line.startswith("- reference game:"):
+                continue
+            if has_special_rules and normalized_line.startswith("- must preserve these special rules:"):
+                skip_special_rule_children = True
+                continue
+            if has_special_rules and normalized_line.startswith("- special rules:"):
+                continue
+            if skip_special_rule_children:
+                if line.startswith("  - "):
+                    continue
+                skip_special_rule_children = False
+            stripped_lines.append(line)
+
+        return cls._strip_empty_prompt_lines("\n".join(stripped_lines))
 
     def _build_design_program_block(self, spec: GameSpec, gdd: GDD) -> str:
         lines: List[str] = []
@@ -1047,12 +1090,12 @@ class CodeGenerator:
             orientation_label=reference_label,
         )
         prompt = self._rewrite_layout_prompt_for_orientation(prompt, orientation)
-        supplement = (
-            "MOBILE LAYOUT CHECKLIST\n"
-            f"- Use a {reference_label} reference size of {gdd.canvas.width}x{gdd.canvas.height} and read both viewport dimensions during resize.\n"
-            "- Compute scaleX/scaleY once, derive uiScale from Math.min(scaleX, scaleY) or an equivalent short-edge fit, then center the canvas and HUD."
+        return self._compact_mobile_layout_guardrails(
+            prompt,
+            reference_label=reference_label,
+            canvas_w=gdd.canvas.width,
+            canvas_h=gdd.canvas.height,
         )
-        return "\n".join([prompt, supplement])
 
     @staticmethod
     def _resolve_layout_orientation(runtime_contract: Optional[GameRuntimeContract]) -> str:
@@ -1084,6 +1127,39 @@ class CodeGenerator:
         for source, target in replacements:
             updated = updated.replace(source, target)
         return updated
+
+    @classmethod
+    def _compact_mobile_layout_guardrails(
+        cls,
+        prompt: str,
+        *,
+        reference_label: str,
+        canvas_w: int,
+        canvas_h: int,
+    ) -> str:
+        keep_markers = (
+            "side padding",
+            "hud text",
+            "overlay title",
+            "restart/help text",
+        )
+        kept_lines: List[str] = []
+        for raw_line in (prompt or "").splitlines():
+            stripped = raw_line.strip()
+            if not stripped.startswith("- "):
+                continue
+            lowered = stripped.lower()
+            if any(marker in lowered for marker in keep_markers):
+                kept_lines.append(stripped)
+
+        recipe_lines = [
+            "MOBILE LAYOUT IMPLEMENTATION RECIPE:",
+            f"- Use a {reference_label} reference size of {canvas_w}x{canvas_h} during resize calculations.",
+            "- Read both viewport width and height before deriving scale.",
+            "- Compute scaleX/scaleY once, derive uiScale from Math.min(scaleX, scaleY) or an equivalent short-edge fit, then center the canvas and HUD.",
+            *kept_lines,
+        ]
+        return cls._compose_prompt_sections(["\n".join(recipe_lines)])
 
     @staticmethod
     def _format_state_flow(state_machine: Dict[str, Any]) -> str:
@@ -1159,43 +1235,47 @@ class CodeGenerator:
             if runtime_contract and runtime_contract.mobile_layout and runtime_contract.mobile_layout.font_clamp
             else 36
         )
-
-        lines = [
-            "RUNTIME CONTRACT (MUST STAY FUNCTIONAL):",
-            f"- Runtime profile: {profile_value} (contract v{contract_version})",
-            (
-                "- Core state flow must support "
-                f"{self._format_compact_contract_items(required_states, max_items=5)}"
-                " with a restart path back into active play."
-            ),
-            (
-                "- Input must work through "
-                f"{self._format_compact_contract_items(input_modes, max_items=4)}"
-                f"; expected gestures: {self._format_compact_contract_items(gestures, max_items=4)}."
-            ),
-            (
-                "- Forbidden APIs: "
-                f"{self._format_compact_contract_items(forbidden_apis, max_items=6)}."
-            ),
-            (
-                f"- Mobile layout: {orientation}, {ui_scale_mode} scaling, "
-                f"HUD {hud_min}-{hud_max}px, title {title_min}-{title_max}px."
-            ),
-        ]
-
         normalized_aliases = [alias for alias in terminal_state_aliases if (alias or "").strip()]
-        if normalized_aliases and normalized_aliases != ["game_over"]:
-            lines.append(
-                "- Accepted terminal/completion state aliases: "
-                + self._format_compact_contract_items(normalized_aliases, max_items=8)
-                + "."
-            )
-
-        if prompt_bundle_snapshot:
-            bundle_id = (prompt_bundle_snapshot or {}).get("bundle_id")
-            if bundle_id:
-                lines.append(f"- Prompt bundle: {bundle_id}.")
-        return "\n".join(lines)
+        bundle_id = str((prompt_bundle_snapshot or {}).get("bundle_id") or "").strip()
+        template = get_prompt(
+            "prompt.runtime_contract_summary",
+            (
+                "RUNTIME CONTRACT (MUST STAY FUNCTIONAL):\n"
+                "- Runtime profile: {runtime_profile} (contract v{contract_version})\n"
+                "- Core state flow must support {required_states} with a restart path back into active play.\n"
+                "- Input must work through {input_modes}; expected gestures: {gestures}.\n"
+                "- Forbidden APIs: {forbidden_apis}.\n"
+                "- Mobile layout: {orientation}, {ui_scale_mode} scaling, HUD {hud_min}-{hud_max}px, title {title_min}-{title_max}px.\n"
+                "- Platform target: mobile H5 browser / WebView with a single main canvas.\n"
+                "- Prevent accidental page scrolling during play and keep gameplay local with no external network or asset requests.\n"
+                "- Accepted terminal/completion state aliases: {terminal_state_aliases}\n"
+                "- Prompt bundle: {bundle_id}\n"
+                "- Prompt layers: {layer_keys}\n"
+                "- The final code must respect every contract rule explicitly, not implicitly."
+            ),
+        )
+        rendered = template.format_map(_SafePromptFormatDict({
+            "runtime_profile": profile_value,
+            "contract_version": contract_version,
+            "bundle_id": bundle_id,
+            "layer_keys": self._resolve_bundle_layer_keys(prompt_bundle_snapshot),
+            "required_states": self._format_compact_contract_items(required_states, max_items=5),
+            "input_modes": self._format_compact_contract_items(input_modes, max_items=4),
+            "gestures": self._format_compact_contract_items(gestures, max_items=4),
+            "forbidden_apis": self._format_compact_contract_items(forbidden_apis, max_items=6),
+            "orientation": orientation,
+            "ui_scale_mode": ui_scale_mode,
+            "hud_min": hud_min,
+            "hud_max": hud_max,
+            "title_min": title_min,
+            "title_max": title_max,
+            "terminal_state_aliases": (
+                self._format_compact_contract_items(normalized_aliases, max_items=8)
+                if normalized_aliases and normalized_aliases != ["game_over"]
+                else ""
+            ),
+        }))
+        return self._strip_empty_prompt_lines(rendered)
 
     @staticmethod
     def _format_compact_contract_items(items: List[str], *, max_items: int) -> str:
@@ -1206,6 +1286,40 @@ class CodeGenerator:
             return ", ".join(normalized)
         remaining = len(normalized) - max_items
         return ", ".join(normalized[:max_items]) + f", +{remaining} more"
+
+    @staticmethod
+    def _resolve_bundle_layer_keys(prompt_bundle_snapshot: Optional[Dict[str, Any]]) -> str:
+        resolved_prompts = ((prompt_bundle_snapshot or {}).get("layers") or {}).get("resolved_prompts")
+        if not isinstance(resolved_prompts, dict):
+            return ""
+        keys = [str(key).strip() for key in resolved_prompts.keys() if str(key).strip()]
+        return ", ".join(keys[:8])
+
+    @staticmethod
+    def _strip_empty_prompt_lines(prompt: str) -> str:
+        cleaned: List[str] = []
+        for raw_line in (prompt or "").splitlines():
+            line = raw_line.rstrip()
+            stripped = line.strip()
+            if stripped.startswith("- ") and stripped.endswith(":"):
+                continue
+            cleaned.append(line)
+
+        compacted: List[str] = []
+        previous_blank = False
+        for line in cleaned:
+            is_blank = not line.strip()
+            if is_blank and previous_blank:
+                continue
+            compacted.append(line)
+            previous_blank = is_blank
+        return "\n".join(compacted).strip()
+
+    def _build_platform_standard_fallback(self) -> str:
+        runtime_contract_template = get_prompt("prompt.runtime_contract_summary", "").lower()
+        if "mobile h5 browser" in runtime_contract_template or "platform target" in runtime_contract_template:
+            return ""
+        return get_prompt("prompt.platform_standard", "")
 
     @staticmethod
     def _resolved_bundle_prompt(
@@ -1551,22 +1665,6 @@ class CodeGenerator:
         return code
 
     @staticmethod
-    def _build_iteration_mobile_reminder(
-        runtime_contract: Optional[GameRuntimeContract] = None,
-    ) -> str:
-        """Minimal mobile layout reminder for mechanic_change iterations."""
-        orientation = (
-            runtime_contract.mobile_layout.orientation
-            if runtime_contract and runtime_contract.mobile_layout
-            else "portrait_first"
-        )
-        label = "landscape-first" if orientation == "landscape_first" else "portrait-first"
-        return (
-            f"MOBILE LAYOUT: Preserve {label} sizing. "
-            "Derive uiScale from Math.min(scaleX, scaleY) using both viewport width and height."
-        )
-
-    @staticmethod
     def _select_iteration_patch_sections(
         iter_type: IterationType,
         feedback: str,
@@ -1637,7 +1735,6 @@ class CodeGenerator:
                     patch_protocol,
                     contract_block,
                     ui_language_block,
-                    self._build_iteration_mobile_reminder(runtime_contract),
                     prompt,
                 ]
                 if part
@@ -1672,7 +1769,7 @@ class CodeGenerator:
                 overall_timeout_s=long_generation_timeout_s,
                 allow_provider_fallback=True,
                 response_size_hint=self._response_size_hint_from_budget(token_budget),
-                context_scope="task",
+                context_scope="request",
                 compression_policy="iteration_rewrite",
                 truncation_retry_attempts=1,
                 truncation_retry_increment=2048,

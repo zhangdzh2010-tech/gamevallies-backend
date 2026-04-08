@@ -3380,16 +3380,150 @@ def _compose_creation_session_reply_v2(
     return f"{opener} Give me one more sentence about the mechanic or feeling you care about most, and I will tighten the brief from there."
 
 
+def _build_dialogue_public_direction_summary(
+    analysis: AnalyzeDialogueTurnResponse,
+    *,
+    zh: bool,
+) -> str:
+    slots = analysis.slots
+    reference_game = _normalize_free_text(str(getattr(slots, "reference_game", "") or ""))
+    theme = _normalize_free_text(str(getattr(slots, "theme", "") or ""))
+    core_mechanic = _normalize_free_text(str(getattr(slots, "core_mechanic", "") or ""))
+    objective = _normalize_free_text(str(getattr(slots, "win_condition", "") or ""))
+    plan_summary = _normalize_free_text(str(getattr(analysis.plan_draft, "summary", "") or ""))
+
+    fragments: List[str] = []
+    if reference_game:
+        fragments.append(
+            f"参考《{reference_game}》的直觉反馈"
+            if zh else
+            f"capture some of the immediate feel of {reference_game}"
+        )
+    if theme:
+        fragments.append(
+            f"放在{theme}这个主题里"
+            if zh else
+            f"set it inside a {theme} theme"
+        )
+    if core_mechanic:
+        fragments.append(
+            f"核心交互围绕“{_shorten_text(core_mechanic, limit=34)}”展开"
+            if zh else
+            f"center it on {_shorten_text(core_mechanic, limit=40)}"
+        )
+    if objective:
+        fragments.append(
+            f"玩家目标是“{_shorten_text(objective, limit=28)}”"
+            if zh else
+            f"and give the player a clear goal: {_shorten_text(objective, limit=36)}"
+        )
+
+    if fragments:
+        return (
+            "目前我会把这个方向理解成：" + "，".join(fragments) + "。"
+            if zh else
+            "Current working direction: " + ", ".join(fragments) + "."
+        )
+    if plan_summary:
+        return plan_summary
+    return (
+        "先顺着用户最新的想法继续收口，不要把语气写成内部分析报告。"
+        if zh else
+        "Stay grounded in the user's latest idea and avoid sounding like an internal analysis note."
+    )
+
+
+def _build_dialogue_public_follow_up_guidance(
+    analysis: AnalyzeDialogueTurnResponse,
+    *,
+    zh: bool,
+) -> str:
+    question_text = _normalize_free_text(
+        str(getattr(analysis.current_question, "prompt", "") or "")
+    )
+    if analysis.ready_to_generate and question_text:
+        return (
+            f"已经足够开始创建了；如果继续追问，只能把“{question_text}”当成可选打磨。"
+            if zh else
+            f"The brief is already strong enough to build; if you ask anything else, treat '{question_text}' as an optional polish question."
+        )
+    if analysis.ready_to_generate:
+        return (
+            "已经足够开始创建，不要再把语气写成还缺少必填信息。"
+            if zh else
+            "The brief is ready to build, so do not frame the reply like required information is still missing."
+        )
+    if question_text:
+        return (
+            f"如果要追问，只问这一个用户能直接回答的问题：{question_text}"
+            if zh else
+            f"If you ask a follow-up, make it exactly one user-facing question: {question_text}"
+        )
+    return (
+        "只有在确实能明显帮助收口时才追问，而且一次只问一个问题。"
+        if zh else
+        "Only ask a follow-up if it clearly sharpens the brief, and never ask more than one question."
+    )
+
+
+def _build_dialogue_public_draft_summary(
+    analysis: AnalyzeDialogueTurnResponse,
+    *,
+    zh: bool,
+) -> str:
+    plan_draft = analysis.plan_draft
+    if not plan_draft:
+        return "暂无" if zh else "none yet"
+
+    pieces = [
+        _normalize_free_text(str(getattr(plan_draft, "summary", "") or "")),
+        _normalize_free_text(str(getattr(plan_draft, "interaction", "") or "")),
+        _normalize_free_text(str(getattr(plan_draft, "objective", "") or "")),
+    ]
+    compact = " / ".join(piece for piece in pieces if piece)
+    return compact or ("暂无" if zh else "none yet")
+
+
+def _build_dialogue_public_readiness_hint(
+    analysis: AnalyzeDialogueTurnResponse,
+    *,
+    zh: bool,
+) -> str:
+    if analysis.ready_to_generate and analysis.current_question:
+        return (
+            "可以开始创建了，但如果继续问，只能当成可选优化。"
+            if zh else
+            "Ready to build now; any follow-up must sound optional rather than required."
+        )
+    if analysis.ready_to_generate:
+        return (
+            "可以明确告诉用户：现在已经能开始创建。"
+            if zh else
+            "You can clearly tell the user the brief is ready and creation can start now."
+        )
+    return (
+        "还没完全收口，不要说已经可以直接生成。"
+        if zh else
+        "The brief is not fully locked yet, so do not say generation is ready yet."
+    )
+
+
 def _build_dialogue_reply_system_prompt_from_catalog(
     analysis: AnalyzeDialogueTurnResponse,
 ) -> str:
-    missing_slots = ", ".join(
-        SLOT_LABELS.get(item, item)
-        for item in (analysis.missing_required or [])
-    ) or "None"
+    language = _detect_ui_language(
+        " ".join(
+            part for part in [
+                str(getattr(analysis.slots, "reference_game", "") or ""),
+                str(getattr(analysis.slots, "theme", "") or ""),
+                str(getattr(analysis.slots, "core_mechanic", "") or ""),
+            ] if part
+        )
+    )
+    zh = language.startswith("zh")
     base_prompt = require_prompt("prompt.dialogue_system").format(
-        slot_summary=_format_slot_summary(analysis.slots),
-        missing_slots=missing_slots,
+        slot_summary=_build_dialogue_public_direction_summary(analysis, zh=zh),
+        missing_slots=_build_dialogue_public_follow_up_guidance(analysis, zh=zh),
     )
     return safe_format_prompt(
         require_prompt("prompt.dialogue_reply_system"),
@@ -3407,27 +3541,19 @@ def _build_dialogue_reply_user_prompt_from_catalog(
     zh = language.startswith("zh")
     history = [
         f"{item.role}: {_normalize_free_text(item.content)}"
-        for item in (request.conversation or [])[-6:]
+        for item in (request.conversation or [])[-4:]
         if _normalize_free_text(item.content)
     ]
-    plan_draft = analysis.plan_draft
-    summary_lines = [
-        f"- game_type: {_normalize_free_text(str(analysis.slots.game_type or '')) or 'unknown'}",
-        f"- reference_game: {_normalize_free_text(str(analysis.slots.reference_game or '')) or 'none'}",
-        f"- theme: {_normalize_free_text(str(analysis.slots.theme or '')) or 'unknown'}",
-        f"- core_mechanic: {_normalize_free_text(str(analysis.slots.core_mechanic or '')) or 'unknown'}",
-        f"- input_method: {_normalize_free_text(str(analysis.slots.input_method or '')) or 'unknown'}",
-        f"- win_condition: {_normalize_free_text(str(analysis.slots.win_condition or '')) or 'unknown'}",
-        f"- difficulty: {_normalize_free_text(str(analysis.slots.difficulty or '')) or 'unknown'}",
-    ]
-    draft_summary = ""
-    if plan_draft:
-        pieces = [
-            _normalize_free_text(str(getattr(plan_draft, "summary", "") or "")),
-            _normalize_free_text(str(getattr(plan_draft, "interaction", "") or "")),
-            _normalize_free_text(str(getattr(plan_draft, "objective", "") or "")),
-        ]
-        draft_summary = " / ".join(piece for piece in pieces if piece)
+    public_fallback_reply = _compose_creation_session_reply_v2(
+        slots=analysis.slots,
+        current_question=analysis.current_question,
+        ready_to_generate=analysis.ready_to_generate,
+        source_text=source_text,
+        title=request.title,
+        latest_user_answer=request.latest_user_answer,
+        question_strategy=analysis.question_strategy,
+        plan_draft=analysis.plan_draft,
+    )
 
     return safe_format_prompt(
         require_prompt(
@@ -3440,12 +3566,12 @@ def _build_dialogue_reply_user_prompt_from_catalog(
             request.latest_user_answer or _latest_user_answer_from_history(request.conversation or [])
         ) or ("none yet" if zh else "none"),
         recent_conversation="\n".join(history) if history else ("none yet" if zh else "none"),
-        inferred_direction="\n".join(summary_lines),
-        draft_summary=draft_summary or ("none yet" if zh else "none"),
+        inferred_direction=_build_dialogue_public_direction_summary(analysis, zh=zh),
+        draft_summary=_build_dialogue_public_draft_summary(analysis, zh=zh),
         current_question=analysis.current_question.prompt if analysis.current_question else ("none" if zh else "none"),
-        next_best_question_reason=_normalize_free_text(str(analysis.next_best_question_reason or "")) or ("none" if zh else "none"),
-        ready_to_generate=("yes" if analysis.ready_to_generate else "no"),
-        safe_fallback_reply=analysis.reply,
+        next_best_question_reason=_build_dialogue_public_follow_up_guidance(analysis, zh=zh),
+        ready_to_generate=_build_dialogue_public_readiness_hint(analysis, zh=zh),
+        safe_fallback_reply=public_fallback_reply,
     ).strip()
 
 
