@@ -417,7 +417,7 @@ def _safe_int(value: str | None, default: int) -> int:
 
 
 def _desired_request_timeout(svc: dict) -> int | None:
-    if svc["svc"] not in {"ai-engine", "user-service"}:
+    if svc["svc"] not in {"ai-engine", "user-service", "game-service"}:
         return None
     pipeline_timeout = _safe_int(os.environ.get("PIPELINE_TIMEOUT_S"), 600)
     return max(DEFAULT_FUNCTION_REQUEST_TIMEOUT_S, pipeline_timeout + AI_ENGINE_TIMEOUT_HEADROOM_S)
@@ -933,6 +933,11 @@ def _env_vars(port: int, svc: dict | None = None) -> dict:
     public_api_base = PUBLIC_API_BASE_URL or ""
     if svc_name == "game-service":
         env["APP_URL"] = public_api_base or GAME_SERVICE_URL or "http://localhost:3002"
+        env["GENERATION_QUEUE_ENABLED"] = os.environ.get("GENERATION_QUEUE_ENABLED", "true")
+        env["GENERATION_QUEUE_WORKER_CONCURRENCY"] = os.environ.get(
+            "GENERATION_QUEUE_WORKER_CONCURRENCY",
+            "6",
+        )
     elif svc_name == "feed-service":
         env["APP_URL"] = public_api_base or USER_SERVICE_URL or GAME_SERVICE_URL or "https://playforge.app"
     elif svc_name == "user-service":

@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib import parse, request
+from uuid import uuid4
 
 from run_live_creation_session_full_flow_e2e import (
     DEFAULT_CASES as DEFAULT_SESSION_CASES,
@@ -313,6 +314,7 @@ def wait_for_session_interactive_sse(
     latest_snapshot: dict[str, Any] = {}
     event_name = "message"
     data_lines: list[str] = []
+    last_session_refresh_monotonic = 0.0
     auth_mode = "bearer_header"
     stream_url = f"{base_url}/api/v1/games/creation-sessions/{session_id}/events"
     auth_header = str(bearer_headers.get("Authorization") or "")
@@ -329,6 +331,44 @@ def wait_for_session_interactive_sse(
             req.add_header(key, value)
     req.add_header("Accept", "text/event-stream")
     req.add_header("Cache-Control", "no-cache")
+
+    def current_question_slot(snapshot: dict[str, Any]) -> str | None:
+        current_question = snapshot.get("currentQuestion")
+        return current_question.get("slotKey") if isinstance(current_question, dict) else None
+
+    def build_result(*, elapsed_s: float | None, timed_out: bool) -> dict[str, Any]:
+        return {
+            "snapshot": latest_snapshot,
+            "events": history,
+            "authMode": auth_mode,
+            "timedOutLocally": timed_out,
+            "interactiveElapsedS": elapsed_s,
+        }
+
+    def refresh_snapshot_from_api(elapsed_s: float, *, force: bool = False) -> dict[str, Any] | None:
+        nonlocal latest_snapshot, last_session_refresh_monotonic
+        now = time.perf_counter()
+        if not force and (now - last_session_refresh_monotonic) < 0.25:
+            return None
+        last_session_refresh_monotonic = now
+        latest_snapshot = get_session(base_url, session_id, bearer_headers)
+        history.append(
+            {
+                "elapsedS": elapsed_s,
+                "event": "session.refresh",
+                "status": latest_snapshot.get("status"),
+                "revision": latest_snapshot.get("revision"),
+                "readyToGenerate": bool(latest_snapshot.get("readyToGenerate")),
+                "slotFillPct": latest_snapshot.get("slotFillPct"),
+                "error": latest_snapshot.get("initError"),
+                "currentQuestion": current_question_slot(latest_snapshot),
+            }
+        )
+        if latest_snapshot.get("readyToGenerate") or current_question_slot(latest_snapshot):
+            return build_result(elapsed_s=elapsed_s, timed_out=False)
+        if str(latest_snapshot.get("status") or "").lower() in {"abandoned", "completed"}:
+            return build_result(elapsed_s=None, timed_out=False)
+        return None
 
     def flush_event() -> dict[str, Any] | None:
         nonlocal event_name, data_lines, latest_snapshot
@@ -363,21 +403,14 @@ def wait_for_session_interactive_sse(
         result: dict[str, Any] | None = None
         if event_name in {"bootstrap", "snapshot"} and isinstance(latest_snapshot, dict):
             if latest_snapshot.get("readyToGenerate") or current_question:
-                result = {
-                    "snapshot": latest_snapshot,
-                    "events": history,
-                    "authMode": auth_mode,
-                    "timedOutLocally": False,
-                    "interactiveElapsedS": elapsed_s,
-                }
+                result = build_result(elapsed_s=elapsed_s, timed_out=False)
             elif str(latest_snapshot.get("status") or "").lower() in {"abandoned", "completed"}:
-                result = {
-                    "snapshot": latest_snapshot,
-                    "events": history,
-                    "authMode": auth_mode,
-                    "timedOutLocally": False,
-                    "interactiveElapsedS": None,
-                }
+                result = refresh_snapshot_from_api(elapsed_s, force=True) or build_result(
+                    elapsed_s=None,
+                    timed_out=False,
+                )
+        elif event_name in {"delta", "done"}:
+            result = refresh_snapshot_from_api(elapsed_s)
         elif event_name == "error":
             latest_snapshot = {
                 "status": "abandoned",
@@ -389,13 +422,7 @@ def wait_for_session_interactive_sse(
                     else "session_error"
                 ),
             }
-            result = {
-                "snapshot": latest_snapshot,
-                "events": history,
-                "authMode": auth_mode,
-                "timedOutLocally": False,
-                "interactiveElapsedS": None,
-            }
+            result = build_result(elapsed_s=None, timed_out=False)
 
         event_name = "message"
         return result
@@ -422,6 +449,9 @@ def wait_for_session_interactive_sse(
     flushed = flush_event()
     if flushed is not None:
         return flushed
+    refreshed = refresh_snapshot_from_api(round(time.perf_counter() - started, 3), force=True)
+    if refreshed is not None:
+        return refreshed
     return {
         "snapshot": latest_snapshot,
         "events": history,
@@ -960,7 +990,9 @@ def main(argv: list[str]) -> int:
         print("PUBLIC_API_BASE_URL and ADMIN_TOKEN are required", file=sys.stderr)
         return 1
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    username_seed = datetime.now().strftime("%y%m%d%H%M%S")
+    run_nonce = uuid4().hex[:4]
     output_path = Path(args.output) if args.output else REPO_ROOT / f"tmp_generation_concurrency_{timestamp}.json"
     cases = choose_cases(args.flow)
     worker_count = args.max_workers or args.users
@@ -987,7 +1019,7 @@ def main(argv: list[str]) -> int:
     with ThreadPoolExecutor(max_workers=max(1, min(args.prepare_workers, args.users))) as executor:
         future_map = {}
         for index in range(1, args.users + 1):
-            password = f"CodexLoad!{timestamp}_{index:03d}"
+            password = f"CodexLoad!{timestamp}_{run_nonce}_{index:03d}"
             if index <= len(selected_existing_users):
                 future = executor.submit(
                     prepare_existing_user_context,
@@ -999,7 +1031,7 @@ def main(argv: list[str]) -> int:
                     min_remaining_quota=args.min_remaining_quota,
                 )
             else:
-                username = f"load_{timestamp}_{index:03d}"
+                username = f"load_{username_seed}_{run_nonce}_{index:03d}"
                 future = executor.submit(
                     prepare_user_context,
                     base_url=base_url,

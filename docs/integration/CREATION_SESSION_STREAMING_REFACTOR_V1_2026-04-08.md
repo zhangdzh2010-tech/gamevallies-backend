@@ -1986,6 +1986,25 @@ PR4 算完成，必须同时满足：
 2. 指标连续多次验证通过。
 3. 前端不再需要把当前公网 SSE 当成“实验能力”。
 
+### 18.8 当前 PR4 已验证结论（2026-04-08）
+
+截至 `2026-04-08`，PR4 已完成以下定位与修复：
+
+1. `game-service` 直连 APIG 公网域名一直具备真实增量 SSE 能力。
+2. `https://gamevallies.com` 与共享公网 APIG 入口最初都存在“短 SSE 被整包返回、长 SSE 无首包或超时”的问题。
+3. 根因不在 `game-service` 或 `ai-engine`，而在共享公网入口的统一代理层：
+   - `gv-user-service` 启动时会注册 [unified-api-proxy.ts](/d:/Project/gamevallies/gamevallies-backend/packages/user-service/src/edge/unified-api-proxy.ts)
+   - 旧实现对所有 upstream 响应统一执行 `await upstreamRes.arrayBuffer()` 后再 `res.send(...)`
+   - 这会把 `text/event-stream` 整包缓冲掉
+4. 当前仓库里的 `nginx/conf.d/default.conf` 只代表本地 `docker-compose` 网关基线，不代表当前中国区生产入口；真正生效的共享公网入口代理逻辑在 `user-service` 里。
+5. 修复后，共享公网 APIG 入口和 `https://gamevallies.com` 都已经恢复真实增量 SSE。
+
+当前结论：
+
+1. `ai-engine` 与 `game-service` 的主链应用代码，不再是当前 SSE 的阻塞点。
+2. `user-service` 统一代理层已经支持对 `text/event-stream` 做流式透传。
+3. PR4 的公网透传目标已经达成，可以进入 PR5。
+
 ---
 
 ## 19. Phase 5 / PR5 实施版细化

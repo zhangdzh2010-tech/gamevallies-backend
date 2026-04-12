@@ -90,24 +90,7 @@
         "prompt.code_review_system",
         "prompt.code_review_template",
         "prompt.qa_runtime_contract_block",
-        "prompt.qa_instruction_input_handlers",
-        "prompt.qa_instruction_visible_feedback",
-        "prompt.qa_instruction_terminal_state",
-        "prompt.qa_instruction_storage",
-        "prompt.qa_instruction_blank_screen",
-        "prompt.qa_instruction_runtime_js_error",
-        "prompt.qa_instruction_mobile_layout",
-        "prompt.qa_instruction_forbidden_api",
-        "prompt.qa_instruction_generic",
-        "prompt.qa_fix",
-        "prompt.qa_fix_fast",
-        "bundle.repair.input_contract",
-        "bundle.repair.syntax_structural",
-        "bundle.repair.terminal_state",
-        "bundle.repair.mobile_layout",
-        "bundle.repair.forbidden_api",
-        "bundle.repair.runtime_startup",
-        "bundle.repair.generic"
+        "bundle.repair.syntax_structural"
       ],
       "support": [
         {
@@ -180,52 +163,101 @@
   "itemMeta": {
     "prompt.dialogue_system": {
       "displayName": "对话骨架",
-      "variables": ["{slot_summary}", "{missing_slots}"]
+      "variables": [
+        "{slot_summary}",
+        "{missing_slots}"
+      ]
     },
     "prompt.dialogue_reply_system": {
       "displayName": "专家回复系统层",
-      "variables": ["{base_prompt}"]
+      "variables": [
+        "{base_prompt}"
+      ]
     },
     "prompt.dialogue_reply_user_template_zh": {
       "displayName": "中文专家回复模板",
-      "variables": ["{initial_idea}", "{latest_user_message}", "{recent_conversation}", "{inferred_direction}", "{draft_summary}", "{current_question}", "{next_best_question_reason}", "{ready_to_generate}", "{safe_fallback_reply}"]
+      "variables": [
+        "{reply_context}"
+      ]
     },
     "prompt.dialogue_reply_user_template_en": {
       "displayName": "英文专家回复模板",
-      "variables": ["{initial_idea}", "{latest_user_message}", "{recent_conversation}", "{inferred_direction}", "{draft_summary}", "{current_question}", "{next_best_question_reason}", "{ready_to_generate}", "{safe_fallback_reply}"]
+      "variables": [
+        "{reply_context}"
+      ]
     },
     "prompt.slot_extraction_system": {
       "displayName": "多轮 slot 抽取"
     },
     "prompt.slot_output_contract": {
       "displayName": "slot 输出契约",
-      "variables": ["{slot_json_schema}"]
+      "variables": [
+        "{slot_json_schema}"
+      ]
     },
     "prompt.slot_json_repair_system": {
       "displayName": "slot JSON 修复系统层"
     },
     "prompt.slot_json_repair_user_template": {
       "displayName": "slot JSON 修复模板",
-      "variables": ["{source_text}", "{raw_parser_output}"]
+      "variables": [
+        "{source_text}",
+        "{raw_parser_output}"
+      ]
     },
     "prompt.intent_parse_system": {
       "displayName": "单轮 intent 解析"
     },
     "prompt.intent_detail_template": {
       "displayName": "意图细节块",
-      "variables": ["{core_mechanic}", "{theme}", "{win_condition}", "{reference_line}", "{special_rules_block}"]
+      "variables": [
+        "{core_mechanic}",
+        "{theme}",
+        "{win_condition}",
+        "{reference_line}",
+        "{special_rules_block}"
+      ]
     },
     "prompt.runtime_contract_summary": {
       "displayName": "运行时约束摘要",
-      "variables": ["{runtime_profile}", "{contract_version}", "{bundle_id}", "{layer_keys}", "{required_states}", "{input_modes}", "{gestures}", "{forbidden_apis}", "{orientation}", "{ui_scale_mode}", "{hud_min}", "{hud_max}", "{title_min}", "{title_max}", "{terminal_state_aliases}"]
+      "variables": [
+        "{runtime_profile}",
+        "{contract_version}",
+        "{bundle_id}",
+        "{layer_keys}",
+        "{required_states}",
+        "{input_modes}",
+        "{gestures}",
+        "{forbidden_apis}",
+        "{orientation}",
+        "{ui_scale_mode}",
+        "{hud_min}",
+        "{hud_max}",
+        "{title_min}",
+        "{title_max}",
+        "{terminal_state_aliases}"
+      ]
     },
     "prompt.mobile_layout_guardrails": {
       "displayName": "生成态移动布局约束",
-      "variables": ["{canvas_w}", "{canvas_h}", "{hud_font}", "{reference_orientation}"]
+      "variables": [
+        "{canvas_w}",
+        "{canvas_h}",
+        "{hud_font}",
+        "{reference_orientation}"
+      ]
     },
     "prompt.iteration_spec_context_template": {
       "displayName": "迭代 spec 上下文",
-      "variables": ["{current_summary}", "{source_spec_summary}", "{source_bundle_context}", "{status}", "{visibility}", "{feedback}", "{conversation_text}"]
+      "variables": [
+        "{current_summary}",
+        "{source_spec_summary}",
+        "{source_bundle_context}",
+        "{status}",
+        "{visibility}",
+        "{feedback}",
+        "{conversation_text}"
+      ]
     },
     "bundle.product.intent_parse": {
       "displayName": "Bundle · Intent Parse Policy"
@@ -257,7 +289,9 @@
     },
     "prompt.generate_request_context_template": {
       "displayName": "原始请求上下文",
-      "variables": ["{request_text}"]
+      "variables": [
+        "{request_text}"
+      ]
     },
     "prompt.generate_alignment_reminder": {
       "displayName": "生成对齐提醒"
@@ -276,90 +310,56 @@
     },
     "prompt.code_review_template": {
       "displayName": "语义 Review 模板",
-      "variables": ["{code_preview}"]
+      "variables": [
+        "{code_preview}"
+      ]
     },
     "prompt.qa_runtime_contract_block": {
       "displayName": "QA 运行时约束块",
-      "variables": ["{contract_version}", "{runtime_profile}", "{required_states}", "{input_modes}", "{forbidden_apis}"]
-    },
-    "prompt.qa_instruction_input_handlers": {
-      "displayName": "QA Checklist · Input Handlers"
-    },
-    "prompt.qa_instruction_visible_feedback": {
-      "displayName": "QA Checklist · Visible Feedback"
-    },
-    "prompt.qa_instruction_terminal_state": {
-      "displayName": "QA Checklist · Terminal State"
-    },
-    "prompt.qa_instruction_storage": {
-      "displayName": "QA Checklist · Storage"
-    },
-    "prompt.qa_instruction_blank_screen": {
-      "displayName": "QA Checklist · Blank Screen"
-    },
-    "prompt.qa_instruction_runtime_js_error": {
-      "displayName": "QA Checklist · Runtime JS Error"
-    },
-    "prompt.qa_instruction_mobile_layout": {
-      "displayName": "QA Checklist · Mobile Layout"
-    },
-    "prompt.qa_instruction_forbidden_api": {
-      "displayName": "QA Checklist · Forbidden API"
-    },
-    "prompt.qa_instruction_generic": {
-      "displayName": "QA Checklist · Generic"
-    },
-    "prompt.qa_fix": {
-      "displayName": "全量 QA 修复",
-      "variables": ["{game_type}", "{runtime_contract_block}", "{error_list}", "{code}"]
-    },
-    "prompt.qa_fix_fast": {
-      "displayName": "定向 QA 修复",
-      "variables": ["{game_type}", "{runtime_contract_block}", "{error_list}", "{targeted_instructions}", "{code}"]
-    },
-    "bundle.repair.input_contract": {
-      "displayName": "Bundle Repair · Input Contract",
-      "variables": ["{targeted_instructions}", "{runtime_contract_block}", "{error_list}", "{code}"]
+      "variables": [
+        "{contract_version}",
+        "{runtime_profile}",
+        "{required_states}",
+        "{input_modes}",
+        "{forbidden_apis}"
+      ]
     },
     "bundle.repair.syntax_structural": {
       "displayName": "Bundle Repair · Syntax / Structural",
-      "variables": ["{targeted_instructions}", "{runtime_contract_block}", "{error_list}", "{code}"]
-    },
-    "bundle.repair.terminal_state": {
-      "displayName": "Bundle Repair · Terminal State",
-      "variables": ["{targeted_instructions}", "{runtime_contract_block}", "{error_list}", "{code}"]
-    },
-    "bundle.repair.mobile_layout": {
-      "displayName": "Bundle Repair · Mobile Layout",
-      "variables": ["{targeted_instructions}", "{runtime_contract_block}", "{error_list}", "{code}"]
-    },
-    "bundle.repair.forbidden_api": {
-      "displayName": "Bundle Repair · Forbidden API",
-      "variables": ["{targeted_instructions}", "{runtime_contract_block}", "{error_list}", "{code}"]
-    },
-    "bundle.repair.runtime_startup": {
-      "displayName": "Bundle Repair · Runtime Startup",
-      "variables": ["{targeted_instructions}", "{runtime_contract_block}", "{error_list}", "{code}"]
-    },
-    "bundle.repair.generic": {
-      "displayName": "Bundle Repair · Generic",
-      "variables": ["{targeted_instructions}", "{runtime_contract_block}", "{error_list}", "{code}"]
+      "variables": [
+        "{targeted_instructions}",
+        "{runtime_contract_block}",
+        "{error_list}",
+        "{code}"
+      ]
     },
     "prompt.iterate_classify": {
       "displayName": "迭代反馈分类",
-      "variables": ["{feedback}"]
+      "variables": [
+        "{feedback}"
+      ]
     },
     "prompt.param_adjust": {
       "displayName": "参数调整",
-      "variables": ["{feedback}", "{code}"]
+      "variables": [
+        "{feedback}",
+        "{code}"
+      ]
     },
     "prompt.element_change": {
       "displayName": "元素调整",
-      "variables": ["{feedback}", "{code}"]
+      "variables": [
+        "{feedback}",
+        "{code}"
+      ]
     },
     "prompt.mechanic_change": {
       "displayName": "机制改动",
-      "variables": ["{history}", "{feedback}", "{code}"]
+      "variables": [
+        "{history}",
+        "{feedback}",
+        "{code}"
+      ]
     },
     "prompt.expand_prompt_system": {
       "displayName": "短描述扩写工具"

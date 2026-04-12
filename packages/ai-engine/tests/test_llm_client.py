@@ -24,6 +24,8 @@ from src.services.llm_client import (
     LLMUsageSnapshot,
     _build_anthropic_base_url,
     _build_openai_compatible_chat_url,
+    _adaptive_token_budget_enabled_for_step,
+    _apply_request_timeout_override,
     _extract_openai_choice_text,
     _extract_openai_message_text,
     _is_anthropic_protocol_mismatch,
@@ -56,6 +58,27 @@ def test_detects_anthropic_protocol_mismatch_from_openai_compatible_400():
     )
     exc = httpx.HTTPStatusError("bad request", request=request, response=response)
     assert _is_anthropic_protocol_mismatch(exc) is True
+
+
+def test_apply_request_timeout_override_honors_explicit_caller_budget():
+    route = SimpleNamespace(
+        request_timeout_s=30,
+        route_snapshot={"step_key": "intent_parse"},
+    )
+
+    overridden = _apply_request_timeout_override(route, 90)
+
+    assert overridden is not route
+    assert overridden.request_timeout_s == 90
+    assert overridden.route_snapshot["base_request_timeout_s"] == 30
+    assert overridden.route_snapshot["request_timeout_override_s"] == 90
+    assert overridden.route_snapshot["request_timeout_override_applied"] is True
+
+
+def test_adaptive_token_budget_is_disabled_for_full_document_generation_steps():
+    assert _adaptive_token_budget_enabled_for_step("code_generate.full") is False
+    assert _adaptive_token_budget_enabled_for_step("qa_fix.syntax_structural") is False
+    assert _adaptive_token_budget_enabled_for_step("intent_parse") is True
 
 
 def test_build_anthropic_base_url_strips_openai_style_suffixes():
@@ -365,6 +388,84 @@ def test_complete_fails_over_to_secondary_provider_on_timeout():
         settings.LLM_PROVIDER_FAILOVER_ENABLED = old_failover
 
 
+def test_complete_fails_over_to_secondary_provider_on_cancelled_error():
+    client = LLMClient()
+    primary = SimpleNamespace(
+        provider_id="provider-primary",
+        provider_name="Code Preview Primary",
+        provider_type="openai_compatible",
+        region="cn-shanghai",
+        base_url="https://primary.example/v1",
+        api_key="secret",
+        model="code-preview",
+        fast_model="code-preview",
+        request_timeout_s=600,
+        connect_timeout_s=15,
+        config_version=123,
+        route_snapshot={"step_key": "code_generate.full"},
+    )
+    secondary = SimpleNamespace(
+        provider_id="provider-secondary",
+        provider_name="Code Pro Secondary",
+        provider_type="openai_compatible",
+        region="cn-shanghai",
+        base_url="https://secondary.example/v1",
+        api_key="secret-2",
+        model="code-pro",
+        fast_model="code-pro",
+        request_timeout_s=600,
+        connect_timeout_s=15,
+        config_version=123,
+        route_snapshot={"step_key": "code_generate.full"},
+    )
+    old_mode = settings.LLM_MODE
+    old_failover = settings.LLM_PROVIDER_FAILOVER_ENABLED
+    settings.LLM_MODE = "real"
+    settings.LLM_PROVIDER_FAILOVER_ENABLED = True
+
+    try:
+        attempts = []
+
+        async def fake_complete_with_route(**kwargs):
+            route = kwargs["route"]
+            attempts.append(route.provider_id)
+            if route.provider_id == "provider-primary":
+                raise asyncio.CancelledError()
+            return "<html>fallback-ok</html>"
+
+        with patch.object(llm_client_module.gateway, "has_enabled_provider", return_value=True), patch.object(
+            llm_client_module.gateway,
+            "resolve_candidates",
+            return_value=[primary, secondary],
+        ), patch.object(
+            llm_client_module.gateway,
+            "emit_task_activity",
+            new=AsyncMock(),
+        ), patch.object(
+            llm_client_module.gateway,
+            "emit_llm_call_log",
+            new=AsyncMock(),
+        ) as emit_log, patch.object(
+            client,
+            "_complete_with_route",
+            new=AsyncMock(side_effect=fake_complete_with_route),
+        ):
+            result = asyncio.run(client.complete(
+                messages=[{"role": "user", "content": "make me a game"}],
+                max_tokens=16,
+                step_key="code_generate.full",
+                stage="code_generating",
+                allow_provider_fallback=True,
+            ))
+
+        assert result == "<html>fallback-ok</html>"
+        assert attempts == ["provider-primary", "provider-secondary"]
+        assert emit_log.await_count == 0
+    finally:
+        settings.LLM_MODE = old_mode
+        settings.LLM_PROVIDER_FAILOVER_ENABLED = old_failover
+
+
 def test_complete_fails_over_when_openai_provider_returns_no_usable_text():
     client = LLMClient()
     primary = SimpleNamespace(
@@ -633,6 +734,130 @@ def test_complete_applies_overall_timeout_budget_across_provider_fallbacks():
         settings.LLM_PROVIDER_FAILOVER_ENABLED = old_failover
 
 
+def test_complete_uses_hedged_provider_fallback_when_requested():
+    client = LLMClient()
+    primary = SimpleNamespace(
+        provider_id="provider-primary",
+        provider_name="Primary",
+        provider_type="openai_compatible",
+        region="cn-shanghai",
+        base_url="https://primary.example/v1",
+        api_key="secret",
+        model="deepseek-chat",
+        fast_model="deepseek-chat",
+        request_timeout_s=600,
+        connect_timeout_s=15,
+        config_version=123,
+        route_snapshot={"step_key": "code_generate.full"},
+    )
+    secondary = SimpleNamespace(
+        provider_id="provider-secondary",
+        provider_name="Secondary",
+        provider_type="openai_compatible",
+        region="cn-shanghai",
+        base_url="https://secondary.example/v1",
+        api_key="secret-2",
+        model="MiniMax-M2.5",
+        fast_model="MiniMax-M2.5",
+        request_timeout_s=600,
+        connect_timeout_s=15,
+        config_version=123,
+        route_snapshot={"step_key": "code_generate.full"},
+    )
+    old_mode = settings.LLM_MODE
+    old_failover = settings.LLM_PROVIDER_FAILOVER_ENABLED
+    old_hedging = settings.LLM_PROVIDER_HEDGING_ENABLED
+    settings.LLM_MODE = "real"
+    settings.LLM_PROVIDER_FAILOVER_ENABLED = True
+    settings.LLM_PROVIDER_HEDGING_ENABLED = True
+
+    try:
+        with patch.object(llm_client_module.gateway, "has_enabled_provider", return_value=True), patch.object(
+            llm_client_module.gateway,
+            "resolve_candidates",
+            return_value=[primary, secondary],
+        ), patch.object(
+            client,
+            "_complete_with_hedged_routes",
+            new=AsyncMock(return_value="ok"),
+        ) as mock_hedged:
+            result = asyncio.run(client.complete(
+                messages=[{"role": "user", "content": "make me a game"}],
+                max_tokens=1024,
+                step_key="code_generate.full",
+                stage="code_generating",
+                request_timeout_s=105,
+                overall_timeout_s=210,
+                allow_provider_fallback=True,
+                hedge_provider_fallback_after_s=45,
+            ))
+
+        assert result == "ok"
+        assert mock_hedged.await_count == 1
+        kwargs = mock_hedged.await_args.kwargs
+        assert kwargs["routes"] == [primary, secondary]
+        assert kwargs["hedge_after_s"] == 45
+    finally:
+        settings.LLM_MODE = old_mode
+        settings.LLM_PROVIDER_FAILOVER_ENABLED = old_failover
+        settings.LLM_PROVIDER_HEDGING_ENABLED = old_hedging
+
+
+def test_complete_with_hedged_routes_returns_faster_secondary_provider():
+    client = LLMClient()
+    routes = [
+        SimpleNamespace(provider_id="provider-primary", provider_name="Primary", route_snapshot={"provider_id": "provider-primary"}),
+        SimpleNamespace(provider_id="provider-secondary", provider_name="Secondary", route_snapshot={"provider_id": "provider-secondary"}),
+    ]
+
+    async def fake_prepare(**kwargs):
+        route = kwargs["resolved_route"]
+        route.route_snapshot = {
+            **dict(getattr(route, "route_snapshot", {}) or {}),
+            "provider_id": route.provider_id,
+            "provider_name": route.provider_name,
+            "attempt": kwargs["attempt_index"],
+        }
+        return llm_client_module._PreparedCompletionAttempt(
+            route=route,
+            messages=[{"role": "user", "content": "ping"}],
+            system=None,
+            max_tokens=64,
+        )
+
+    async def fake_run(*, prepared, **_kwargs):
+        if prepared.route.provider_id == "provider-primary":
+            await asyncio.sleep(0.05)
+            return "primary"
+        await asyncio.sleep(0.01)
+        return "secondary"
+
+    with patch.object(client, "_prepare_completion_attempt", new=AsyncMock(side_effect=fake_prepare)), patch.object(
+        client,
+        "_run_prepared_completion_attempt",
+        new=AsyncMock(side_effect=fake_run),
+    ):
+        result = asyncio.run(
+            client._complete_with_hedged_routes(
+                routes=routes,
+                hedge_after_s=0,
+                messages=[{"role": "user", "content": "make me a game"}],
+                max_tokens=64,
+                system=None,
+                step_key="code_generate.full",
+                stage="code_generating",
+                request_timeout_s=105,
+                overall_timeout_s=210,
+                response_size_hint="large",
+                context_scope="request",
+                compression_policy="code_generation",
+                return_route_snapshot=False,
+            )
+        )
+
+    assert result == "secondary"
+
+
 def test_complete_clamps_max_tokens_to_provider_limit_and_records_metadata():
     client = LLMClient()
     route = SimpleNamespace(
@@ -684,7 +909,65 @@ def test_complete_clamps_max_tokens_to_provider_limit_and_records_metadata():
         assert captured["route_snapshot"]["effective_max_tokens"] == 4096
         assert captured["route_snapshot"]["provider_max_tokens"] == 4096
         assert captured["route_snapshot"]["provider_context_window"] == 128000
-        assert captured["route_snapshot"]["limit_source"] == "gateway_provider_max"
+        assert captured["route_snapshot"]["limit_source"] == "caller_capped_by_gateway"
+    finally:
+        settings.LLM_MODE = old_mode
+
+
+def test_complete_keeps_requested_output_budget_when_provider_cap_is_higher():
+    client = LLMClient()
+    route = SimpleNamespace(
+        provider_id="provider-1",
+        provider_name="Doubao Code",
+        provider_type="openai_compatible",
+        region="cn-shanghai",
+        base_url="https://example.com/v1",
+        api_key="secret",
+        model="doubao-seed-code-preview",
+        fast_model="doubao-seed-code-preview",
+        request_timeout_s=600,
+        connect_timeout_s=15,
+        context_window=256000,
+        max_tokens=128000,
+        tokenizer_family=None,
+        strict_admission=True,
+        safety_margin_tokens=12800,
+        config_version=123,
+        route_snapshot={"step_key": "code_generate.full"},
+    )
+    old_mode = settings.LLM_MODE
+    settings.LLM_MODE = "real"
+
+    try:
+        captured = {}
+
+        async def fake_complete_with_route(**kwargs):
+            captured["max_tokens"] = kwargs["max_tokens"]
+            captured["route_snapshot"] = kwargs["route"].route_snapshot
+            return "ok"
+
+        with patch.object(llm_client_module.gateway, "has_enabled_provider", return_value=True), patch.object(
+            llm_client_module.gateway,
+            "resolve",
+            return_value=route,
+        ), patch.object(
+            client,
+            "_complete_with_route",
+            new=AsyncMock(side_effect=fake_complete_with_route),
+        ):
+            result = asyncio.run(client.complete(
+                messages=[{"role": "user", "content": "make me a game"}],
+                max_tokens=12288,
+                step_key="code_generate.full",
+                stage="code_generating",
+            ))
+
+        assert result == "ok"
+        assert captured["max_tokens"] == 12288
+        assert captured["route_snapshot"]["requested_max_tokens"] == 12288
+        assert captured["route_snapshot"]["effective_max_tokens"] == 12288
+        assert captured["route_snapshot"]["provider_max_tokens"] == 128000
+        assert captured["route_snapshot"]["limit_source"] == "caller_requested"
     finally:
         settings.LLM_MODE = old_mode
 
@@ -1513,3 +1796,127 @@ def test_complete_with_truncation_retry_retries_retryable_provider_errors_with_b
     assert mock_complete.await_count == 2
     assert mock_sleep.await_count == 1
     assert mock_sleep.await_args_list[0].args[0] == 3.0
+
+
+def test_complete_with_truncation_retry_retries_cancelled_error_with_backoff():
+    client = LLMClient()
+
+    with patch.object(
+        client,
+        "complete",
+        new=AsyncMock(side_effect=[
+            asyncio.CancelledError(),
+            "<!DOCTYPE html><html><body>ok</body></html>",
+        ]),
+    ) as mock_complete, patch.object(
+        llm_client_module.asyncio,
+        "sleep",
+        new=AsyncMock(),
+    ) as mock_sleep:
+        result = asyncio.run(
+            client.complete_with_truncation_retry(
+                messages=[{"role": "user", "content": "repair"}],
+                max_tokens=4096,
+                step_key="code_generate.full",
+                stage="code_generating",
+                allow_provider_fallback=True,
+                provider_retry_attempts=1,
+                provider_retry_base_delay_s=2,
+                provider_retry_max_delay_s=8,
+            )
+        )
+
+    assert result == "<!DOCTYPE html><html><body>ok</body></html>"
+    assert mock_complete.await_count == 2
+    assert mock_sleep.await_count == 1
+    assert mock_sleep.await_args_list[0].args[0] == 2.0
+
+
+def test_complete_with_truncation_retry_does_not_provider_retry_timeout_when_disabled():
+    client = LLMClient()
+
+    with patch.object(
+        client,
+        "complete",
+        new=AsyncMock(side_effect=httpx.ReadTimeout("timed out")),
+    ) as mock_complete, patch.object(
+        llm_client_module.asyncio,
+        "sleep",
+        new=AsyncMock(),
+    ) as mock_sleep:
+        try:
+            asyncio.run(
+                client.complete_with_truncation_retry(
+                    messages=[{"role": "user", "content": "repair"}],
+                    max_tokens=4096,
+                    step_key="code_generate.full",
+                    stage="code_generating",
+                    provider_retry_attempts=1,
+                    provider_retry_on_timeout_errors=False,
+                    timeout_retry_attempts=0,
+                )
+            )
+            raise AssertionError("expected ReadTimeout to be re-raised")
+        except httpx.ReadTimeout:
+            pass
+
+    assert mock_complete.await_count == 1
+    assert mock_sleep.await_count == 0
+
+
+def test_complete_with_route_attaches_route_snapshot_to_transport_errors():
+    client = LLMClient()
+    route = SimpleNamespace(
+        provider_id="provider-primary",
+        provider_name="Primary Codegen",
+        provider_type="openai_compatible",
+        region="cn-shanghai",
+        base_url="https://primary.example/v1",
+        api_key="secret",
+        model="codegen-primary",
+        fast_model="codegen-primary",
+        request_timeout_s=120,
+        connect_timeout_s=15,
+        config_version=123,
+        route_snapshot={"step_key": "code_generate.full", "provider_id": "provider-primary"},
+    )
+    old_mode = settings.LLM_MODE
+    settings.LLM_MODE = "real"
+
+    try:
+        async def fake_complete_openai(**_kwargs):
+            raise httpx.ReadTimeout(
+                "timed out",
+                request=httpx.Request("POST", "https://primary.example/v1/chat/completions"),
+            )
+
+        with patch.object(
+            llm_client_module.gateway,
+            "emit_task_activity",
+            new=AsyncMock(),
+        ), patch.object(
+            llm_client_module.gateway,
+            "emit_llm_call_log",
+            new=AsyncMock(),
+        ), patch.object(
+            client,
+            "_complete_openai_compatible",
+            new=fake_complete_openai,
+        ):
+            try:
+                asyncio.run(
+                    client._complete_with_route(
+                        route=route,
+                        messages=[{"role": "user", "content": "make a game"}],
+                        max_tokens=2048,
+                        system=None,
+                        step_key="code_generate.full",
+                        stage="code_generating",
+                    )
+                )
+                raise AssertionError("expected ReadTimeout")
+            except httpx.ReadTimeout as exc:
+                assert getattr(exc, "route_snapshot", {}).get("step_key") == "code_generate.full"
+                assert getattr(exc, "route_snapshot", {}).get("provider_id") == "provider-primary"
+    finally:
+        settings.LLM_MODE = old_mode

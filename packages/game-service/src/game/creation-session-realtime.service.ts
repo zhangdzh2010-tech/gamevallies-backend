@@ -15,6 +15,7 @@ export class CreationSessionRealtimeService {
   private readonly streams = new Map<string, Subject<CreationSessionRealtimePayload>>();
   private readonly subscriberCounts = new Map<string, number>();
   private readonly activeReplyMessageIds = new Map<string, string>();
+  private readonly latestSnapshots = new Map<string, CreationSessionSnapshot>();
   private readonly heartbeatIntervalMs = 15_000;
   private replySequence = 0;
 
@@ -28,19 +29,19 @@ export class CreationSessionRealtimeService {
 
     return new Observable<MessageEvent>((subscriber) => {
       this.bumpSubscribers(key, 1);
-      subscriber.next(
-        this.toMessageEvent({
-          type: 'bootstrap',
-          sessionId,
-          session: initialSnapshot,
-          timestamp: Date.now(),
-        }),
-      );
-
       const subscription = subject.subscribe({
         next: (payload) => subscriber.next(this.toMessageEvent(payload)),
         error: (error) => subscriber.error(error),
       });
+      const bootstrapSnapshot = this.latestSnapshots.get(key) || initialSnapshot;
+      subscriber.next(
+        this.toMessageEvent({
+          type: 'bootstrap',
+          sessionId,
+          session: bootstrapSnapshot,
+          timestamp: Date.now(),
+        }),
+      );
 
       const heartbeat = setInterval(() => {
         subscriber.next(
@@ -59,6 +60,7 @@ export class CreationSessionRealtimeService {
         if ((this.subscriberCounts.get(key) || 0) <= 0) {
           this.subscriberCounts.delete(key);
           this.activeReplyMessageIds.delete(key);
+          this.latestSnapshots.delete(key);
           const existing = this.streams.get(key);
           if (existing === subject) {
             this.streams.delete(key);
@@ -70,7 +72,9 @@ export class CreationSessionRealtimeService {
   }
 
   publishSnapshot(userId: string, sessionId: string, snapshot: CreationSessionSnapshot): void {
-    this.getStream(this.streamKey(userId, sessionId))?.next({
+    const key = this.streamKey(userId, sessionId);
+    this.latestSnapshots.set(key, snapshot);
+    this.getStream(key)?.next({
       type: 'snapshot',
       sessionId,
       session: snapshot,

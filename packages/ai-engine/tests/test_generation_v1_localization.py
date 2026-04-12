@@ -63,7 +63,7 @@ CODEGEN_PROMPTS = {
 }
 
 QA_PROMPTS = {
-    "prompt.qa_fix": (
+    "bundle.repair.syntax_structural": (
         "Fix ALL listed issues.\n"
         "Game type: {game_type}\n"
         "{runtime_contract_block}\n"
@@ -78,7 +78,6 @@ QA_PROMPTS = {
         "- Required input modes: {input_modes}\n"
         "- Forbidden APIs: {forbidden_apis}"
     ),
-    "prompt.qa_instruction_generic": "- Fix only the listed QA issues and preserve the original game behavior.",
 }
 
 
@@ -149,7 +148,7 @@ def test_code_generator_prompt_includes_ui_language_contract_and_examples():
     ) as mock_complete:
         result = asyncio.run(generator._llm_generate(spec, gdd, description="做一个城市跑酷小游戏"))
 
-    assert result == "<!DOCTYPE html><html><body></body></html>"
+    assert result[0] == "<!DOCTYPE html><html><body></body></html>"
     prompt = mock_complete.await_args.kwargs["messages"][0]["content"]
     assert "UI Language: zh-CN" in prompt
     assert "Visible UI Copy Examples:" in prompt
@@ -165,7 +164,7 @@ def test_qa_pipeline_repair_prompt_preserves_ui_language():
         SlotState(game_type="casual"),
         source_description="做一个中文界面的躲避游戏",
     )
-    errors = [QACheckError(type="runtime_qa", message="overlay text is incorrect", severity="error")]
+    errors = [QACheckError(type="L1_syntax", message="Missing </html>", severity="error")]
 
     with patch(
         "src.engine.qa_pipeline.require_prompt",
@@ -182,7 +181,6 @@ def test_qa_pipeline_repair_prompt_preserves_ui_language():
                 game_spec=spec,
                 runtime_contract=GameRuntimeContract(),
                 max_tokens=1024,
-                prefer_fast=False,
             )
         )
 

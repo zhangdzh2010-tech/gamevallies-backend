@@ -26,11 +26,14 @@ from src.engine.dialogue_engine import (
     DialogueEngine,
     FAST_DIALOGUE_SLOT_OVERALL_TIMEOUT_S,
     FAST_DIALOGUE_SLOT_REQUEST_TIMEOUT_S,
+    INTENT_PARSE_OVERALL_TIMEOUT_S,
+    INTENT_PARSE_REQUEST_TIMEOUT_S,
     _build_dialogue_reply_system_prompt_from_catalog,
     _build_dialogue_reply_user_prompt_from_catalog,
     _infer_game_type_from_sparse_context,
     _infer_slots_from_text,
     _infer_theme_from_context,
+    _normalize_game_type_label,
     _normalize_slot_payload,
     _safe_parse_json,
 )
@@ -57,15 +60,11 @@ DIALOGUE_TEST_PROMPTS = {
     ),
     "prompt.dialogue_reply_user_template_zh": (
         "ZH_TEMPLATE_FROM_DB\n"
-        "Initial idea: {initial_idea}\n"
-        "Latest user message: {latest_user_message}\n"
-        "Safe fallback wording: {safe_fallback_reply}"
+        "{reply_context}"
     ),
     "prompt.dialogue_reply_user_template_en": (
         "EN_TEMPLATE_FROM_DB\n"
-        "Initial idea: {initial_idea}\n"
-        "Latest user message: {latest_user_message}\n"
-        "Safe fallback wording: {safe_fallback_reply}"
+        "{reply_context}"
     ),
 }
 
@@ -291,12 +290,15 @@ class TestDialogueEngine(unittest.TestCase):
         ):
             events = asyncio.run(collect_events())
 
-        self.assertGreaterEqual(len(events), 4)
-        self.assertEqual(events[0]["event"], "delta")
+        self.assertGreaterEqual(len(events), 3)
+        self.assertEqual(events[0]["event"], "final")
         self.assertEqual(events[1]["event"], "delta")
-        self.assertEqual(events[-2]["event"], "done")
-        self.assertEqual(events[-1]["event"], "final")
-        self.assertIn("办公室摸鱼喜剧", events[-2]["data"]["message"])
+        self.assertEqual(events[-1]["event"], "done")
+        self.assertEqual(events[0]["data"]["slots"]["game_type"], "funny")
+        self.assertEqual(events[0]["data"]["slots"]["core_mechanic"], "tap to hide")
+        joined_deltas = "".join(item["data"]["delta"] for item in events if item["event"] == "delta")
+        self.assertTrue(joined_deltas)
+        self.assertEqual(joined_deltas, events[-1]["data"]["message"])
 
     def test_spec_from_slots_preserves_tier_and_uses_preferred_game_type_fallback(self):
         engine = DialogueEngine()
@@ -327,7 +329,53 @@ class TestDialogueEngine(unittest.TestCase):
         self.assertTrue(response.spec.reward_loop)
         self.assertTrue(response.spec.design_goals)
         self.assertIn("上班摸鱼", response.spec.intent_summary)
+        self.assertEqual(response.missing_required, [])
         self.assertEqual(response.slot_fill_pct, 1.0)
+
+    def test_spec_from_slots_backfills_sparse_zero_question_brief(self):
+        engine = DialogueEngine()
+
+        response = asyncio.run(
+            engine.spec_from_slots(
+                SpecFromSlotsRequest(
+                    session_id="creation-sparse-1",
+                    slots={
+                        "core_mechanic": "dodge obstacles",
+                    },
+                    source_description="Make a simple dodge game.",
+                    title="Quick Dodge",
+                    generation_tier="standard",
+                )
+            )
+        )
+
+        self.assertIsNotNone(response.spec)
+        self.assertEqual(response.missing_required, [])
+        self.assertGreaterEqual(response.slot_fill_pct, 0.8)
+        self.assertTrue(response.spec.game_type)
+        self.assertTrue(response.spec.intent_summary)
+        self.assertTrue(response.spec.platform_constraints.input_mode)
+
+    def test_spec_from_slots_rich_runner_brief_does_not_use_sparse_random_game_type_fallback(self):
+        engine = DialogueEngine()
+
+        response = asyncio.run(
+            engine.spec_from_slots(
+                SpecFromSlotsRequest(
+                    session_id="creation-rich-runner-1",
+                    slots={},
+                    source_description=(
+                        "做一个竖屏跑酷战斗小游戏。点击开始后玩家通过左右滑动切换跑道、上滑跳跃、下滑滑铲，"
+                        "途中需要躲避障碍、收集能量、击败一个小 Boss，最终在 60 秒内通关。"
+                    ),
+                    title="E2E Complex Runner CN",
+                    generation_tier="standard",
+                )
+            )
+        )
+
+        self.assertEqual(response.spec.game_type, "casual")
+        self.assertEqual(response.spec.platform_constraints.input_mode, "swipe")
 
     def test_spec_from_slots_accepts_list_core_mechanic_from_creation_session_slots(self):
         engine = DialogueEngine()
@@ -410,6 +458,8 @@ class TestDialogueEngine(unittest.TestCase):
         self.assertEqual(kwargs["step_key"], "intent_parse")
         self.assertEqual(kwargs["stage"], "intent_parsing")
         self.assertFalse(kwargs["prefer_fast"])
+        self.assertEqual(kwargs["request_timeout_s"], INTENT_PARSE_REQUEST_TIMEOUT_S)
+        self.assertEqual(kwargs["overall_timeout_s"], INTENT_PARSE_OVERALL_TIMEOUT_S)
         self.assertIn("INTENT_PARSE_PROMPT_FROM_DB", kwargs["system"])
         self.assertIn("NON-NEGOTIABLE OUTPUT CONTRACT", kwargs["system"])
 
@@ -513,10 +563,73 @@ class TestDialogueEngine(unittest.TestCase):
         self.assertIn("DIALOGUE_REPLY_PROMPT_FROM_DB", system_prompt)
         self.assertIn("DIALOGUE_REPLY_STYLE_FROM_DB", system_prompt)
         self.assertIn("ZH_TEMPLATE_FROM_DB", user_prompt)
-        self.assertIn("Safe fallback wording:", user_prompt)
+        self.assertIn("\"working_direction\":", user_prompt)
+        self.assertIn("\"response_mode\":", user_prompt)
         self.assertNotIn("- game_type:", user_prompt)
         self.assertNotIn("Need to lock the success beat.", user_prompt)
         self.assertNotIn(analysis.reply, user_prompt)
+        self.assertNotIn("Safe fallback wording:", user_prompt)
+
+    def test_dialogue_reply_prompt_ignores_legacy_db_template_without_reply_context(self):
+        analysis = AnalyzeDialogueTurnResponse(
+            reply="我已经明确你的需求啦，接下来只差一个过关目标就能开做。",
+            slots=SlotState(
+                game_type="funny",
+                core_mechanic="tap to hide from the boss",
+                theme="office",
+                input_method="tap",
+                win_condition="survive the shift",
+                difficulty="medium",
+            ),
+            slots_updated=["game_type", "core_mechanic", "theme"],
+            missing_required=["win_condition"],
+            slot_fill_pct=0.83,
+            ready_to_generate=False,
+            current_question=DialogueQuestion(
+                slot_key="win_condition",
+                label="Win Condition",
+                prompt="你更希望玩家通过清空所有元素，还是撑过一轮来达成过关条件？",
+            ),
+            next_best_question_reason="Need to lock the success beat.",
+            plan_draft=PlanDraft(
+                summary="办公室摸鱼喜剧",
+                interaction="点击伪装摸鱼，老板巡查时快速切回工作状态",
+                objective="避开巡查并累计摸鱼进度",
+            ),
+        )
+        request = AnalyzeDialogueTurnRequest(
+            session_id="creation-catalog-legacy-1",
+            user_id="user-legacy-1",
+            conversation=[
+                ConversationMessage(role="user", content="帮我做一个类似羊了个羊，但把羊换成牛的小游戏"),
+            ],
+            initial_prompt="帮我做一个类似羊了个羊，但把羊换成牛的小游戏",
+            latest_user_answer="羊了个羊的玩法你知道吧",
+        )
+
+        def fake_get_prompt(key: str, default=None):
+            if key == "prompt.dialogue_system":
+                return "DIALOGUE_REPLY_PROMPT_FROM_DB\nCurrent slot fill state: {slot_summary}\nMissing required info: {missing_slots}"
+            if key == "prompt.dialogue_reply_user_template_zh":
+                return (
+                    "ZH_LEGACY_TEMPLATE_FROM_DB\n"
+                    "Initial idea: {initial_idea}\n"
+                    "Safe fallback wording: {safe_fallback_reply}"
+                )
+            return DIALOGUE_TEST_PROMPTS.get(key, default)
+
+        with patch("src.engine.dialogue_engine.require_prompt", side_effect=fake_get_prompt):
+            user_prompt = _build_dialogue_reply_user_prompt_from_catalog(
+                request=request,
+                analysis=analysis,
+                source_text=request.initial_prompt or "",
+            )
+
+        self.assertNotIn("ZH_LEGACY_TEMPLATE_FROM_DB", user_prompt)
+        self.assertNotIn("Safe fallback wording:", user_prompt)
+        self.assertIn("\"working_direction\":", user_prompt)
+        self.assertIn("\"follow_up_question\":", user_prompt)
+        self.assertNotIn("Need to lock the success beat.", user_prompt)
 
     def test_dialogue_slot_extract_fast_path_skips_truncation_retry_without_excerpt(self):
         engine = DialogueEngine()
@@ -596,6 +709,34 @@ class TestDialogueEngine(unittest.TestCase):
             "请设计一个课堂小游戏，包含3道配套练习题，帮助学生巩固浮力知识点。",
         )
         self.assertEqual(inferred.get("game_type"), "educational")
+
+    def test_runner_boss_prompt_does_not_bias_to_funny(self):
+        inferred = _infer_slots_from_text(
+            "做一个竖屏跑酷战斗小游戏。点击开始后玩家通过左右滑动切换跑道、上滑跳跃、下滑滑铲，"
+            "途中需要躲避障碍、收集能量、击败一个小 Boss，最终在 60 秒内通关。"
+        )
+        self.assertEqual(inferred.get("game_type"), "casual")
+
+    def test_normalize_game_type_preserves_curated_action_direction_without_explicit_funny_marker(self):
+        normalized = _normalize_game_type_label(
+            "casual",
+            "做一个竖屏跑酷战斗小游戏。玩家要击败一个小 Boss 并在 60 秒内通关。",
+        )
+        self.assertEqual(normalized, "casual")
+
+    def test_normalize_game_type_respects_explicit_funny_request_even_when_parser_returns_casual(self):
+        normalized = _normalize_game_type_label(
+            "casual",
+            "做一个搞笑办公室小游戏，玩家点按摸鱼并躲开老板巡查。",
+        )
+        self.assertEqual(normalized, "funny")
+
+    def test_normalize_game_type_coerces_runner_prompt_back_to_casual_when_parser_returns_puzzle(self):
+        normalized = _normalize_game_type_label(
+            "puzzle",
+            "Create a portrait endless lane runner for mobile web. The player swipes left or right to dodge traffic cones and survive for 45 seconds.",
+        )
+        self.assertEqual(normalized, "casual")
 
     def test_sparse_educational_context_prefers_educational(self):
         game_type = _infer_game_type_from_sparse_context(
@@ -718,6 +859,44 @@ class TestDialogueEngine(unittest.TestCase):
         self.assertTrue(kwargs["allow_provider_fallback"])
         self.assertEqual(kwargs["max_tokens"], 640)
 
+    def test_parse_description_to_spec_retries_timeout_with_dedicated_intent_parse_budget(self):
+        engine = DialogueEngine()
+
+        def fake_get_prompt(key: str, default=None):
+            if key == "prompt.intent_parse_system":
+                return "INTENT_PARSE_PROMPT_FROM_DB"
+            return DIALOGUE_TEST_PROMPTS.get(key, default)
+
+        with patch.object(engine._client, "is_enabled", return_value=True), patch(
+            "src.engine.dialogue_engine.require_prompt",
+            side_effect=fake_get_prompt,
+        ), patch.object(
+            engine._client,
+            "complete",
+            new=AsyncMock(side_effect=[TimeoutError("timeout of 30000ms exceeded")]),
+        ) as mock_complete, patch.object(
+            engine._client,
+            "complete_with_truncation_retry",
+            new=AsyncMock(
+                return_value=(
+                    '{"game_type":"casual","core_mechanic":"lane dodge","theme":"city",'
+                    '"input_method":"swipe","win_condition":"survive 45 seconds","difficulty":"progressive"}'
+                )
+            ),
+        ) as mock_retry:
+            spec = asyncio.run(
+                engine.parse_description_to_spec(
+                    "Create a portrait endless lane runner for mobile web. The player swipes left or right to dodge traffic cones and survive for 45 seconds.",
+                )
+            )
+
+        self.assertEqual(spec.game_type, "casual")
+        self.assertEqual(mock_complete.await_count, 1)
+        retry_kwargs = mock_retry.await_args.kwargs
+        self.assertEqual(retry_kwargs["request_timeout_s"], INTENT_PARSE_REQUEST_TIMEOUT_S)
+        self.assertEqual(retry_kwargs["overall_timeout_s"], INTENT_PARSE_OVERALL_TIMEOUT_S)
+        self.assertEqual(retry_kwargs["timeout_retry_attempts"], 1)
+
     def test_analyze_turn_stream_falls_back_to_full_reply_after_partial_stream_failure(self):
         engine = DialogueEngine()
         fallback_reply = "鎴戝厛鎶婅繖灞€瀹氫箟鎴愬姙鍏鎽搁奔鍠滃墽銆傛渶鍚庡啀甯垜纭涓€涓嬬帺瀹舵€庝箞鎵嶇畻杩囧叧锛?"
@@ -780,12 +959,80 @@ class TestDialogueEngine(unittest.TestCase):
         ):
             events = asyncio.run(collect_events())
 
-        self.assertEqual(events[0]["event"], "delta")
-        self.assertEqual(events[0]["data"]["delta"], "鍗婂彞")
-        self.assertEqual(events[-2]["event"], "done")
-        self.assertEqual(events[-2]["data"]["message"], fallback_reply)
-        self.assertEqual(events[-1]["event"], "final")
-        self.assertEqual(events[-1]["data"]["reply"], fallback_reply)
+        self.assertEqual(events[0]["event"], "final")
+        self.assertEqual(events[1]["event"], "delta")
+        self.assertNotEqual(events[1]["data"]["delta"], "鍗婂彞")
+        self.assertNotIn(
+            "鍗婂彞",
+            "".join(item["data"]["delta"] for item in events if item["event"] == "delta"),
+        )
+        self.assertEqual(events[-1]["event"], "done")
+        self.assertEqual(events[-1]["data"]["message"], fallback_reply)
+        self.assertEqual(events[0]["data"]["reply"], fallback_reply)
+
+    def test_analyze_turn_stream_blocks_internal_reply_leak_and_uses_fallback(self):
+        engine = DialogueEngine()
+        fallback_reply = (
+            "我已经理解你的方向了，会按参考玩法做成轻松上手的牛主题消除小游戏。"
+            "还想再确认一个细节：你更希望玩家通过清空所有元素，还是撑过一轮来过关？"
+        )
+
+        async def fake_stream_reply(*, req, analysis):
+            yield "用户现在要求我按照要求用简体中文回复，先理清楚，再调整下顺序。"
+
+        async def collect_events():
+            items = []
+            async for item in engine.analyze_turn_stream(
+                AnalyzeDialogueTurnRequest(
+                    session_id="creation-stream-leak-guard",
+                    user_id="user-stream-leak-guard",
+                    conversation=[
+                        ConversationMessage(role="user", content="帮我做一个类似羊了个羊，但把羊换成牛的小游戏"),
+                    ],
+                    initial_prompt="帮我做一个类似羊了个羊，但把羊换成牛的小游戏",
+                )
+            ):
+                items.append(item)
+            return items
+
+        fake_analysis = AnalyzeDialogueTurnResponse(
+            reply=fallback_reply,
+            slots=SlotState(
+                game_type="puzzle",
+                core_mechanic="tap to match and clear layers",
+                theme="cattle ranch",
+                input_method="tap",
+                win_condition="clear all layers",
+                difficulty="medium",
+                reference_game="羊了个羊",
+            ),
+            slots_updated=["game_type", "core_mechanic", "theme", "reference_game"],
+            missing_required=["win_condition"],
+            slot_fill_pct=0.9,
+            ready_to_generate=False,
+            current_question=DialogueQuestion(
+                slot_key="win_condition",
+                label="Win Condition",
+                prompt="你更希望玩家通过清空所有元素，还是撑过一轮来过关？",
+                skippable=True,
+            ),
+        )
+
+        with patch.object(engine, "analyze_turn", new=AsyncMock(return_value=fake_analysis)), patch.object(
+            engine,
+            "_stream_analyze_turn_reply",
+            new=fake_stream_reply,
+        ):
+            events = asyncio.run(collect_events())
+
+        joined_deltas = "".join(item["data"]["delta"] for item in events if item["event"] == "delta")
+        self.assertEqual(events[0]["event"], "final")
+        self.assertEqual(events[-1]["event"], "done")
+        self.assertEqual(events[-1]["data"]["message"], fallback_reply)
+        self.assertEqual(events[0]["data"]["reply"], fallback_reply)
+        self.assertNotIn("用户现在要求我", joined_deltas)
+        self.assertNotIn("先理清楚", joined_deltas)
+        self.assertNotIn("调整下顺序", joined_deltas)
 
     def test_dialogue_stream_endpoint_emits_sse_events(self):
         async def fake_stream(_request):

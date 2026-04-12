@@ -7,7 +7,7 @@ import {
 export interface CreationSessionConversationMessage {
   role: 'user' | 'assistant';
   content: string;
-  kind?: 'prompt' | 'answer' | 'question' | 'system';
+  kind?: 'prompt' | 'answer' | 'question' | 'summary' | 'system';
   createdAt?: string;
 }
 

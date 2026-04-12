@@ -56,6 +56,9 @@ describe('GameService', () => {
         findMany: jest.fn(),
         update: jest.fn(),
       },
+      llmCallLog: {
+        findFirst: jest.fn(),
+      },
       generationTaskEvent: {
         create: jest.fn(),
       },
@@ -300,7 +303,7 @@ describe('GameService', () => {
       },
     });
 
-    await (service as any).runPipeline('game-504', 'user-504', 'make a runner');
+    await (service as any).executePipelineTask('game-504', 'user-504', 'make a runner');
 
     expect(mockedAxios.post).toHaveBeenCalledTimes(1);
     expect(prisma.userSubscription.updateMany).toHaveBeenCalledWith({
@@ -374,7 +377,7 @@ describe('GameService', () => {
     bundleService.getBundle.mockResolvedValue(null);
     bundleService.saveBundle.mockResolvedValue(undefined);
 
-    const runPromise = (service as any).runPipeline(
+    const runPromise = (service as any).executePipelineTask(
       'game-network',
       'user-network',
       'make a runner',
@@ -580,7 +583,7 @@ describe('GameService', () => {
       code_size_bytes: 0,
     });
 
-    await (service as any).runPipeline('game-empty', 'user-empty', 'make a runner');
+    await (service as any).executePipelineTask('game-empty', 'user-empty', 'make a runner');
 
     expect(bundleService.saveBundle).not.toHaveBeenCalled();
     expect(prisma.game.update).toHaveBeenCalledWith({
@@ -621,7 +624,7 @@ describe('GameService', () => {
       .mockRejectedValueOnce(new Error('mongo temporarily unavailable'))
       .mockResolvedValueOnce(undefined);
 
-    const runPromise = (service as any).runIteration(
+    const runPromise = (service as any).executeIterationTask(
       'game-iter',
       'user-iter',
       'make it faster',
@@ -663,7 +666,7 @@ describe('GameService', () => {
       message: 'Request failed with status code 400',
     });
 
-    await (service as any).runIteration(
+    await (service as any).executeIterationTask(
       'game-iter-failed',
       'user-iter',
       'make it harder',
@@ -835,7 +838,7 @@ describe('GameService', () => {
       quality_breakdown: {},
     });
 
-    await (service as any).runPipeline('game-timeout', 'user-timeout', 'make a runner', 900);
+    await (service as any).executePipelineTask('game-timeout', 'user-timeout', 'make a runner', 900);
 
     expect(mockedAxios.post).toHaveBeenCalledWith(
       'http://ai-engine.test/api/v1/ai/pipeline/v2/run/async',
@@ -1449,26 +1452,12 @@ describe('GameService', () => {
     mockedAxios.post
       .mockResolvedValueOnce({
         data: {
-          slots: {
-            game_type: 'casual',
-            core_mechanic: 'lane switching',
-            theme: 'subway escape',
-            input_method: 'swipe',
-            win_condition: 'reach extraction',
-            difficulty: 'medium',
-          },
-          missing_required: [],
-          slot_fill_pct: 1,
-          ready_to_generate: true,
-        },
-      } as any)
-      .mockResolvedValueOnce({
-        data: {
           spec: {
             game_type: 'casual',
             generation_tier: 'standard',
             intent_summary: 'A subway escape runner with lane switching.',
           },
+          confidence: 0.91,
           missing_required: [],
           slot_fill_pct: 1,
         },
@@ -1508,30 +1497,18 @@ describe('GameService', () => {
 
     expect(mockedAxios.post).toHaveBeenNthCalledWith(
       1,
-      'http://ai-engine.test/api/v1/ai/dialogue/analyze-turn',
+      'http://ai-engine.test/api/v1/ai/parse-intent',
       expect.objectContaining({
         user_id: 'user-v2-zero-spec',
+        description: 'make a runner',
         title: 'Zero Spec Runner',
-        entry_mode: 'create',
         generation_tier: 'standard',
-        initial_prompt: 'make a runner',
-      }),
-      expect.objectContaining({ timeout: expect.any(Number) }),
-    );
-    expect(mockedAxios.post).toHaveBeenNthCalledWith(
-      2,
-      'http://ai-engine.test/api/v1/ai/dialogue/spec-from-slots',
-      expect.objectContaining({
-        title: 'Zero Spec Runner',
-        source_description: 'make a runner',
-        generation_tier: 'standard',
-        skipped_slots: [],
         variation_seed: expect.any(String),
       }),
       expect.objectContaining({ timeout: expect.any(Number) }),
     );
     expect(mockedAxios.post).toHaveBeenNthCalledWith(
-      3,
+      2,
       'http://ai-engine.test/api/v1/ai/pipeline/v2/run/async',
       expect.objectContaining({
         game_id: 'game-v2-zero-spec',
@@ -1559,8 +1536,10 @@ describe('GameService', () => {
           }),
           sourceSpecBuild: expect.objectContaining({
             source: 'zero_question',
+            parser: 'description_parse',
             variationSeed: expect.any(String),
             readyToGenerate: true,
+            confidence: 0.91,
           }),
         }),
       }),
@@ -1607,27 +1586,15 @@ describe('GameService', () => {
       accessGrantSubscriptionId: null,
     });
     prisma.game.update.mockResolvedValue({});
-    mockedAxios.post
-      .mockResolvedValueOnce({
-        data: {
-          slots: {
-            game_type: 'casual',
-            theme: 'subway escape',
-          },
-          missing_required: ['win_condition'],
-          slot_fill_pct: 0.5,
-          ready_to_generate: false,
+    mockedAxios.post.mockResolvedValueOnce({
+      data: {
+        spec: {
+          game_type: 'casual',
         },
-      } as any)
-      .mockResolvedValueOnce({
-        data: {
-          spec: {
-            game_type: 'casual',
-          },
-          missing_required: ['win_condition'],
-          slot_fill_pct: 0.5,
-        },
-      } as any);
+        missing_required: ['theme', 'difficulty'],
+        slot_fill_pct: 0.5,
+      },
+    } as any);
 
     await (service as any).executePipelineTask(
       'game-v2-incomplete-spec',
@@ -1641,7 +1608,7 @@ describe('GameService', () => {
       },
     );
 
-    expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+    expect(mockedAxios.post).toHaveBeenCalledTimes(1);
     expect(mockedAxios.get).not.toHaveBeenCalled();
     expect(generationTaskService.markFailed).toHaveBeenCalledWith(expect.objectContaining({
       taskId: 'task-v2-incomplete-spec',
@@ -1668,23 +1635,12 @@ describe('GameService', () => {
       accessGrantSubscriptionId: null,
     });
     prisma.game.update.mockResolvedValue({});
-    mockedAxios.post
-      .mockResolvedValueOnce({
-        data: {
-          slots: {
-            game_type: 'casual',
-          },
-          missing_required: [],
-          slot_fill_pct: 1,
-          ready_to_generate: true,
-        },
-      } as any)
-      .mockRejectedValueOnce({
+    mockedAxios.post.mockRejectedValueOnce({
         response: {
           data: {
             detail: [
               {
-                loc: ['body', 'slots', 'core_mechanic'],
+                loc: ['body', 'title'],
                 msg: 'Input should be a valid string',
               },
             ],
@@ -2089,6 +2045,147 @@ describe('GameService', () => {
       errorMessage: 'Runtime contract requires a restart entry point',
       failureFamily: 'contract_qa',
       primaryArtifactId: 'artifact-relayed-failure',
+    }));
+  });
+
+  it('recovers missing upstream snapshots from durable llm failure signals', async () => {
+    prisma.llmCallLog.findFirst
+      .mockResolvedValueOnce({
+        stepKey: 'code_generate.full',
+        stage: 'code_generating',
+        errorCode: 'CancelledError',
+        errorMessage: 'LLM call canceled before completion',
+        createdAt: new Date('2026-04-11T21:27:10.329Z'),
+      })
+      .mockResolvedValueOnce(null);
+    prisma.generationTask.findUnique.mockImplementation(({ select }: any) => {
+      if (select?.taskType) {
+        return Promise.resolve({
+          id: 'task-missing-upstream',
+          gameId: 'game-missing-upstream',
+          userId: 'user-missing-upstream',
+          taskType: 'pipeline_run',
+        });
+      }
+      if (select?.status) {
+        return Promise.resolve({ status: 'running' });
+      }
+      return Promise.resolve({
+        id: 'task-missing-upstream',
+        status: 'failed',
+        gameId: 'game-missing-upstream',
+      });
+    });
+    prisma.game.findUnique.mockImplementation(({ select }: any) => {
+      if (select?.status) {
+        return Promise.resolve({ status: 'generating' });
+      }
+      return Promise.resolve({
+        id: 'game-missing-upstream',
+        authorId: 'user-missing-upstream',
+        status: 'generating',
+        accessGrantSource: GameAccessGrantSource.none,
+        accessGrantSubscriptionId: null,
+      });
+    });
+    prisma.game.update.mockResolvedValue({});
+    mockedAxios.get.mockRejectedValue({ response: { status: 404 } } as any);
+
+    const result = await service.reconcileGenerationTask({
+      id: 'task-missing-upstream',
+      gameId: 'game-missing-upstream',
+      userId: 'user-missing-upstream',
+      taskType: 'pipeline_run',
+      status: 'running',
+      progressStage: 'code_generating',
+      retryCount: 0,
+      upstreamTaskId: 'upstream-missing',
+      updatedAt: new Date('2026-04-11T21:27:10.333Z'),
+      game: {
+        id: 'game-missing-upstream',
+        authorId: 'user-missing-upstream',
+        status: 'generating',
+        accessGrantSource: GameAccessGrantSource.none,
+        accessGrantSubscriptionId: null,
+      },
+    } as any);
+
+    expect(generationTaskService.markFailed).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'task-missing-upstream',
+      failedStage: 'logic_generate',
+      errorMessage: 'code_generate.full failed: LLM call canceled before completion',
+      failureFamily: 'code_generation',
+    }));
+    expect(result).toEqual(expect.objectContaining({
+      id: 'task-missing-upstream',
+      status: 'failed',
+    }));
+  });
+
+  it('fails stale tasks when the upstream snapshot is missing and no durable result exists', async () => {
+    prisma.llmCallLog.findFirst.mockResolvedValue(null);
+    prisma.generationTask.findUnique.mockImplementation(({ select }: any) => {
+      if (select?.taskType) {
+        return Promise.resolve({
+          id: 'task-stale-upstream',
+          gameId: 'game-stale-upstream',
+          userId: 'user-stale-upstream',
+          taskType: 'pipeline_run',
+        });
+      }
+      if (select?.status) {
+        return Promise.resolve({ status: 'running' });
+      }
+      return Promise.resolve({
+        id: 'task-stale-upstream',
+        status: 'failed',
+        gameId: 'game-stale-upstream',
+      });
+    });
+    prisma.game.findUnique.mockImplementation(({ select }: any) => {
+      if (select?.status) {
+        return Promise.resolve({ status: 'generating' });
+      }
+      return Promise.resolve({
+        id: 'game-stale-upstream',
+        authorId: 'user-stale-upstream',
+        status: 'generating',
+        accessGrantSource: GameAccessGrantSource.none,
+        accessGrantSubscriptionId: null,
+      });
+    });
+    prisma.game.update.mockResolvedValue({});
+    mockedAxios.get.mockRejectedValue({ response: { status: 404 } } as any);
+
+    const result = await service.reconcileGenerationTask({
+      id: 'task-stale-upstream',
+      gameId: 'game-stale-upstream',
+      userId: 'user-stale-upstream',
+      taskType: 'pipeline_run',
+      status: 'running',
+      progressStage: 'designing',
+      retryCount: 1,
+      upstreamTaskId: 'upstream-stale',
+      updatedAt: new Date(Date.now() - 90_000),
+      createdAt: new Date(Date.now() - 120_000),
+      game: {
+        id: 'game-stale-upstream',
+        authorId: 'user-stale-upstream',
+        status: 'generating',
+        accessGrantSource: GameAccessGrantSource.none,
+        accessGrantSubscriptionId: null,
+      },
+    } as any);
+
+    expect(generationTaskService.markFailed).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'task-stale-upstream',
+      failedStage: 'designing',
+      errorMessage: 'Upstream AI task state was lost before completion during designing',
+      failureFamily: 'pipeline',
+    }));
+    expect(result).toEqual(expect.objectContaining({
+      id: 'task-stale-upstream',
+      status: 'failed',
     }));
   });
 
@@ -3542,7 +3639,16 @@ describe('GameService', () => {
     });
 
     const reconcileSpy = jest.spyOn(service, 'reconcileGenerationTask').mockResolvedValue({} as any);
-    const executePipelineTaskSpy = jest.spyOn(service as any, 'executePipelineTask').mockResolvedValue(undefined);
+    const launchPipelineTaskSpy = jest.spyOn(service as any, 'launchPipelineTask').mockResolvedValue({
+      generationTier: 'standard',
+      resolvedTimeoutS: 900,
+      handle: {
+        task_id: 'upstream-existing',
+        status: 'queued',
+        aiEngineBaseUrl: 'http://ai-engine.test',
+      },
+      runtimeContract: null,
+    });
 
     await service.processQueuedPipelineRunTask('task-existing-upstream');
 
@@ -3550,7 +3656,7 @@ describe('GameService', () => {
       id: 'task-existing-upstream',
       upstreamTaskId: 'upstream-existing',
     }));
-    expect(executePipelineTaskSpy).not.toHaveBeenCalled();
+    expect(launchPipelineTaskSpy).not.toHaveBeenCalled();
   });
 
   it('replays queued iteration jobs from the persisted request snapshot instead of the latest bundle', async () => {
@@ -3591,15 +3697,23 @@ describe('GameService', () => {
       htmlCode: '<!DOCTYPE html><html><body>latest-source</body></html>',
     });
 
-    const executeIterationTaskSpy = jest.spyOn(service as any, 'executeIterationTask').mockResolvedValue(undefined);
+    const launchIterationTaskSpy = jest.spyOn(service as any, 'launchIterationTask').mockResolvedValue({
+      generationTier: 'standard',
+      resolvedTimeoutS: 900,
+      handle: {
+        task_id: 'upstream-iter-queued',
+        status: 'queued',
+        aiEngineBaseUrl: 'http://ai-engine.test',
+      },
+      runtimeContract: null,
+    });
 
     await service.processQueuedIterationTask('task-iter-queued');
 
-    expect(executeIterationTaskSpy).toHaveBeenCalledWith(
+    expect(launchIterationTaskSpy).toHaveBeenCalledWith(
       'game-iter-queued',
       'user-iter-queued',
       'make it tighter',
-      3,
       [{ role: 'user', content: 'make it tighter' }],
       '<!DOCTYPE html><html><body>persisted-source</body></html>',
       900,

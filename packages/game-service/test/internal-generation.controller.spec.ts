@@ -125,7 +125,12 @@ describe('InternalGenerationController', () => {
     }));
   });
 
-  it('suppresses heartbeat task activity noise before it reaches the timeline', async () => {
+  it('persists heartbeat task activity while keeping it out of the websocket timeline', async () => {
+    generationTaskService.recordActivity.mockResolvedValue({
+      id: 'task-1',
+      progressPct: 78,
+    });
+
     const result = await controller.relayTaskActivity('unit-test-token', {
       taskId: 'task-1',
       userId: 'user-1',
@@ -138,10 +143,13 @@ describe('InternalGenerationController', () => {
       },
     });
 
-    expect(generationTaskService.recordActivity).not.toHaveBeenCalled();
+    expect(generationTaskService.recordActivity).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'task-1',
+      stepKey: 'qa_fix',
+    }));
     expect(wsGateway.emitGenerationProgress).not.toHaveBeenCalled();
     expect(result).toEqual(expect.objectContaining({
-      data: expect.objectContaining({ relayed: false, suppressed: true }),
+      data: expect.objectContaining({ relayed: false, suppressed: true, persisted: true }),
     }));
   });
 

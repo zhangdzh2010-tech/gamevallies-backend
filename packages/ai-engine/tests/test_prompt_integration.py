@@ -68,6 +68,143 @@ COMMON_CODEGEN_PROMPTS = {
 
 
 class TestPromptIntegration(unittest.TestCase):
+    def test_preflight_safety_block_requires_safe_grid_accessor_for_puzzle_profiles(self):
+        generator = CodeGenerator(llm_mode="real")
+        spec = GameSpec(
+            game_type="puzzle",
+            source_description="build a fruit merge puzzle",
+            core_mechanics=[CoreMechanic(type="merge", input="tap")],
+            rules=GameRules(win_condition="clear_board", lose_condition="board_full", lives=1),
+            visual_style=VisualStyle(theme="fruit", art_style="flat"),
+        )
+        runtime_contract = GameRuntimeContract(runtime_profile="puzzle_grid_merge")
+
+        block = generator._build_preflight_safety_block(
+            spec,
+            runtime_contract,
+            "puzzle_grid_merge",
+        )
+
+        self.assertIn("function getCell(grid, row, col)", block)
+        self.assertIn("zero raw `grid[row][col].*` reads", block)
+        self.assertIn("const cell = getCell(grid, row, col); if (!cell) continue;", block)
+        self.assertIn("`cell.fruit`", block)
+
+    def test_full_generation_keeps_provider_failover_disabled_but_allows_single_cancel_retry(self):
+        generator = CodeGenerator(llm_mode="real")
+        spec = GameSpec(
+            game_type="casual",
+            source_description="make a simple dodge game",
+            core_mechanics=[CoreMechanic(type="tap_dodge", input="tap")],
+            rules=GameRules(win_condition="survive", lose_condition="hit", lives=3),
+            visual_style=VisualStyle(theme="arcade", art_style="flat"),
+        )
+        gdd = GDD()
+        runtime_contract = GameRuntimeContract(runtime_profile="casual_arcade")
+
+        def fake_get_prompt(key: str, default=None):
+            if key == "prompt.code_gen_system":
+                return "CODE_GEN_SYSTEM_FROM_DB"
+            if key == "prompt.game_design_template":
+                return "GAME DESIGN DOCUMENT:\n- Core mechanic: {core_mechanic}\n- Theme: {theme}"
+            if key == "prompt.logic_generate_policy":
+                return "LOGIC GENERATE POLICY"
+            if key == "prompt.implementation_budget":
+                return "IMPLEMENTATION BUDGET"
+            if key == "prompt.critical_intent_block":
+                return "CRITICAL INTENT DETAILS:\n- Core mechanic: {core_mechanic}"
+            return COMMON_CODEGEN_PROMPTS.get(key, default)
+
+        with patch(
+            "src.engine.code_generator.require_prompt",
+            side_effect=fake_get_prompt,
+        ), patch.object(
+            generator._client,
+            "complete_with_truncation_retry",
+            new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
+        ) as mock_complete:
+            asyncio.run(
+                generator._llm_generate(
+                    spec,
+                    gdd,
+                    description="make a simple dodge game",
+                    runtime_contract=runtime_contract,
+                    runtime_profile="casual_arcade",
+                    prompt_bundle_snapshot={},
+                    budget_override="complex",
+                )
+            )
+
+        kwargs = mock_complete.await_args.kwargs
+        self.assertIs(kwargs["allow_provider_fallback"], True)
+        self.assertEqual(kwargs["hedge_provider_fallback_after_s"], 45)
+        self.assertEqual(kwargs["timeout_retry_attempts"], 0)
+        self.assertEqual(kwargs["provider_retry_attempts"], 1)
+        self.assertIs(kwargs["provider_retry_on_timeout_errors"], False)
+
+    def test_generation_timeout_budget_tracks_spec_complexity(self):
+        simple_spec = GameSpec(
+            game_type="casual",
+            source_description="make a simple dodge game",
+            core_mechanics=[CoreMechanic(type="tap_dodge", input="tap")],
+            rules=GameRules(win_condition="survive", lose_condition="hit", lives=3),
+            visual_style=VisualStyle(theme="arcade", art_style="flat"),
+            entities=[
+                GameEntity(name="player", role="player", shape="circle"),
+                GameEntity(name="enemy", role="obstacle", shape="square"),
+            ],
+        )
+        standard_spec = GameSpec(
+            game_type="casual",
+            source_description="build a lively office prank runner with a few obstacles and a clear restart loop",
+            core_mechanics=[CoreMechanic(type="runner", input="swipe")],
+            rules=GameRules(win_condition="survive the shift", lose_condition="caught", lives=3),
+            visual_style=VisualStyle(theme="office", art_style="flat"),
+            entities=[
+                GameEntity(name="worker", role="player", shape="circle"),
+                GameEntity(name="manager", role="enemy", shape="square"),
+                GameEntity(name="paper", role="collectible", shape="diamond"),
+                GameEntity(name="cart", role="obstacle", shape="rectangle"),
+            ],
+            special_rules=[
+                "Keep the first interaction immediate and visible.",
+                "Add a short booster route that changes obstacle timing.",
+            ],
+        )
+        complex_spec = GameSpec(
+            game_type="educational",
+            source_description="build a classroom runner with three waves, mini boss, quizzes, and route planning",
+            core_mechanics=[
+                CoreMechanic(type="runner", input="swipe"),
+                CoreMechanic(type="quiz", input="tap"),
+            ],
+            rules=GameRules(win_condition="finish the lesson", lose_condition="energy_zero", lives=3),
+            visual_style=VisualStyle(theme="classroom", art_style="playful"),
+            entities=[
+                GameEntity(name="student", role="player", shape="circle"),
+                GameEntity(name="question_gate", role="obstacle", shape="square"),
+                GameEntity(name="energy_orb", role="collectible", shape="diamond"),
+                GameEntity(name="teacher", role="boss", shape="rectangle"),
+                GameEntity(name="robot", role="enemy", shape="triangle"),
+            ],
+            special_rules=[
+                "Three waves before the mini boss appears",
+                "Energy is used to attack and defend",
+                "Quiz answers change the route plan",
+                "Escort classmates between stations",
+            ],
+        )
+
+        self.assertEqual(CodeGenerator._generation_request_timeout_budget_s(simple_spec), 90)
+        self.assertEqual(CodeGenerator._generation_overall_timeout_budget_s(simple_spec), 180)
+        self.assertIsNone(CodeGenerator._generation_provider_hedge_delay_s(simple_spec))
+        self.assertEqual(CodeGenerator._generation_request_timeout_budget_s(standard_spec), 105)
+        self.assertEqual(CodeGenerator._generation_overall_timeout_budget_s(standard_spec), 210)
+        self.assertEqual(CodeGenerator._generation_provider_hedge_delay_s(standard_spec), 45)
+        self.assertEqual(CodeGenerator._generation_request_timeout_budget_s(complex_spec), 120)
+        self.assertEqual(CodeGenerator._generation_overall_timeout_budget_s(complex_spec), 240)
+        self.assertEqual(CodeGenerator._generation_provider_hedge_delay_s(complex_spec), 45)
+
     def test_param_adjust_llm_fallback_uses_prompt_config(self):
         generator = CodeGenerator(llm_mode="real")
 
@@ -196,7 +333,8 @@ class TestPromptIntegration(unittest.TestCase):
         ) as mock_complete:
             result = asyncio.run(generator._llm_generate(spec, gdd, description="做一个太空躲避游戏"))
 
-        self.assertEqual(result, "<!DOCTYPE html><html></html>")
+        self.assertEqual(result[0], "<!DOCTYPE html><html></html>")
+        self.assertIsNone(result[1])
         kwargs = mock_complete.await_args.kwargs
         message = kwargs["messages"][0]["content"]
         self.assertIn("CODE_GEN_SYSTEM_FROM_DB", kwargs["system"])
@@ -397,6 +535,14 @@ class TestPromptIntegration(unittest.TestCase):
         self.assertIn("portrait-first reference size of 360x640", message)
         self.assertIn("Math.min(scaleX, scaleY)", message)
         self.assertIn("14-20px", message)
+        self.assertIn("CODE SAFETY CHECKLIST (FIRST PRIORITY):", message)
+        self.assertIn("Centralize touch extraction", message)
+        self.assertIn("CONTRACT IMPLEMENTATION CHECKLIST (CODE SHAPE, NOT JUST INTENT):", message)
+        self.assertIn("gameplay state variable", message)
+        self.assertIn("ctx.roundRect(...).fill()", message)
+        self.assertIn("touchstart, touchmove, and touchend", message)
+        self.assertIn("changedTouches[0]", message)
+        self.assertIn("const dot = dots[i]; if (!dot) continue;", message)
         self.assertNotIn("NON-NEGOTIABLE MOBILE LAYOUT RULES:", message)
         self.assertNotIn("\nPLATFORM", message)
 
@@ -485,6 +631,54 @@ class TestPromptIntegration(unittest.TestCase):
         self.assertIn("tap, drag, swipe, hold, +1 more", block)
         self.assertIn("eval, Function, fetch, XMLHttpRequest, WebSocket, localStorage, +2 more", block)
         self.assertIn("Accepted terminal/completion state aliases: game_over, victory, complete, failed, won, lost, clear, solved, +1 more", block)
+
+    def test_contract_implementation_checklist_spells_out_mobile_input_and_restart_requirements(self):
+        generator = CodeGenerator(llm_mode="real")
+
+        block = generator._build_contract_implementation_checklist(
+            runtime_contract=GameRuntimeContract(),
+            runtime_profile="casual_lane",
+        )
+
+        self.assertIn("scaleX and scaleY", block)
+        self.assertIn("uiScale = Math.min(scaleX, scaleY)", block)
+        self.assertIn("canvas.width and canvas.height", block)
+        self.assertIn("touchstart, touchmove, and touchend", block)
+        self.assertIn("changedTouches[0]", block)
+        self.assertIn("pointerdown, pointermove, and pointerup", block)
+        self.assertIn("restartGame(), resetGame(), or restart()", block)
+        self.assertIn("player.laneX()", block)
+        self.assertIn("length check", block)
+        self.assertIn("cell.anim or particle.anim", block)
+        self.assertIn("function getInputPoint(e)", block)
+
+        puzzle_block = generator._build_contract_implementation_checklist(
+            runtime_contract=GameRuntimeContract(),
+            runtime_profile="puzzle_grid",
+        )
+        self.assertIn("visible board-state change", puzzle_block)
+        self.assertIn("no-op selection toggles", puzzle_block)
+        self.assertIn("const rowBucket = grid[row]; const cell = rowBucket && rowBucket[col];", puzzle_block)
+        self.assertIn("function getCell(grid, row, col)", puzzle_block)
+
+    def test_preflight_safety_block_reads_nested_runtime_contract_input_and_orientation(self):
+        generator = CodeGenerator(llm_mode="real")
+
+        block = generator._build_preflight_safety_block(
+            spec=None,
+            runtime_contract=GameRuntimeContract(
+                input={"required_modes": ["touch"], "gestures": ["tap", "drag"]},
+                mobile_layout={"orientation": "landscape_first"},
+            ),
+            runtime_profile="casual_arcade",
+        )
+
+        self.assertIn("Centralize touch extraction", block)
+        self.assertIn("const point = (e.touches", block)
+        self.assertIn("landscape reference constants", block)
+        self.assertIn("const REF_W = 640; const REF_H = 360;", block)
+        self.assertIn("function resizeCanvas()", block)
+        self.assertIn("function getInputPoint(e)", block)
 
     def test_platform_standard_falls_back_only_for_legacy_runtime_contract_templates(self):
         generator = CodeGenerator(llm_mode="real")
@@ -1027,6 +1221,8 @@ class TestPromptIntegration(unittest.TestCase):
         message = kwargs["messages"][0]["content"]
         self.assertIn("LOGIC_GENERATE_FROM_BUNDLE", message)
         self.assertIn("PROFILE_FEW_SHOT_FROM_BUNDLE", message)
+        self.assertIn("CODE SAFETY CHECKLIST (FIRST PRIORITY):", message)
+        self.assertIn("function laneX(index)", message)
         self.assertNotIn("PLATFORM_FROM_DB", message)
 
     def test_iterate_uses_resolved_prompt_bundle_layers(self):
@@ -1076,6 +1272,7 @@ class TestPromptIntegration(unittest.TestCase):
         self.assertIn("LEGACY_SYSTEM_FROM_DB", kwargs["system"])
         self.assertEqual(kwargs["context_scope"], "request")
         message = kwargs["messages"][0]["content"]
+        self.assertIn("CONTRACT IMPLEMENTATION CHECKLIST (CODE SHAPE, NOT JUST INTENT):", message)
         self.assertNotIn("LOGIC_GENERATE_FROM_BUNDLE", message)
         self.assertNotIn("PROFILE_FEW_SHOT_FROM_BUNDLE", message)
         self.assertIn("ITERATE_PROMPT::add coins::CURRENT PATCHABLE SECTIONS:", message)

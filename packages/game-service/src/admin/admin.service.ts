@@ -115,6 +115,16 @@ interface PromptPipelineCatalog {
   itemMeta?: Record<string, { displayName?: string; variables?: string[]; note?: string }>;
 }
 
+interface LlmStepFlowMeta {
+  flowGroup: string;
+  flowOrder: number;
+  flowSummary: string;
+  triggerSummary: string;
+  journeys: string[];
+  journeySummary: string;
+  optional?: boolean;
+}
+
 const DEFAULT_PROMPT_CATALOG: PromptCatalogEntry[] = Array.isArray(promptCatalog)
   ? (promptCatalog as PromptCatalogEntry[])
   : [];
@@ -133,6 +143,98 @@ const PROMPT_PIPELINE_CATALOG: PromptPipelineCatalog = (
   : { steps: [], extras: [], itemMeta: {} };
 const PROMPT_PIPELINE_ITEM_META = PROMPT_PIPELINE_CATALOG.itemMeta || {};
 const PROMPT_CATALOG_BY_KEY = new Map(DEFAULT_PROMPT_CATALOG.map((entry) => [entry.key, entry]));
+const LLM_STEP_FLOW_META: Record<string, LlmStepFlowMeta> = {
+  'dialogue.slot_extract': {
+    flowGroup: 'Flow 01 - Creation Session',
+    flowOrder: 10,
+    flowSummary: 'Creation-session interview',
+    triggerSummary: 'Runs in multi-turn session mode before create',
+    journeys: ['creation_session'],
+    journeySummary: 'Creation session only',
+  },
+  'dialogue.reply': {
+    flowGroup: 'Flow 01 - Creation Session',
+    flowOrder: 20,
+    flowSummary: 'Creation-session interview',
+    triggerSummary: 'Runs in multi-turn session mode before create',
+    journeys: ['creation_session'],
+    journeySummary: 'Creation session only',
+  },
+  intent_parse: {
+    flowGroup: 'Flow 02 - Structured Intent',
+    flowOrder: 30,
+    flowSummary: 'Create + iterate spec compilation',
+    triggerSummary: 'Used by direct create, iterate, and sourceSpec backfill',
+    journeys: ['direct_create', 'session_generate', 'iterate'],
+    journeySummary: 'Direct create + session generate + iterate',
+  },
+  'code_generate.full': {
+    flowGroup: 'Flow 03 - Create Generation',
+    flowOrder: 40,
+    flowSummary: 'Create primary generation',
+    triggerSummary: 'Main create path full HTML generation',
+    journeys: ['direct_create', 'session_generate'],
+    journeySummary: 'Create only',
+  },
+  code_review: {
+    flowGroup: 'Flow 03 - Create Generation',
+    flowOrder: 50,
+    flowSummary: 'Create review pass',
+    triggerSummary: 'Runs after successful create candidates',
+    journeys: ['direct_create', 'session_generate'],
+    journeySummary: 'Create only',
+    optional: true,
+  },
+  'iterate.classify': {
+    flowGroup: 'Flow 04 - Iterate Generation',
+    flowOrder: 70,
+    flowSummary: 'Iterate entry classification',
+    triggerSummary: 'Chooses param / element / mechanic path',
+    journeys: ['iterate'],
+    journeySummary: 'Iterate only',
+  },
+  'iterate.param_adjust': {
+    flowGroup: 'Flow 04 - Iterate Generation',
+    flowOrder: 80,
+    flowSummary: 'Iterate parameter patch',
+    triggerSummary: 'Used for numeric and tuning changes',
+    journeys: ['iterate'],
+    journeySummary: 'Iterate only',
+  },
+  'iterate.element_change': {
+    flowGroup: 'Flow 04 - Iterate Generation',
+    flowOrder: 90,
+    flowSummary: 'Iterate element patch',
+    triggerSummary: 'Used for entity / UI / visual structure changes',
+    journeys: ['iterate'],
+    journeySummary: 'Iterate only',
+  },
+  'iterate.mechanic_change': {
+    flowGroup: 'Flow 04 - Iterate Generation',
+    flowOrder: 100,
+    flowSummary: 'Iterate mechanic rewrite',
+    triggerSummary: 'Used for larger gameplay logic changes',
+    journeys: ['iterate'],
+    journeySummary: 'Iterate only',
+  },
+  'qa_fix.syntax_structural': {
+    flowGroup: 'Flow 05 - QA Repair Families',
+    flowOrder: 110,
+    flowSummary: 'Syntax-only QA repair',
+    triggerSummary: 'Full-document syntax and structural repair for invalid HTML / JS output',
+    journeys: ['direct_create', 'session_generate', 'iterate'],
+    journeySummary: 'Create + iterate',
+  },
+  expand_prompt: {
+    flowGroup: 'Flow 90 - Auxiliary',
+    flowOrder: 120,
+    flowSummary: 'Auxiliary utility',
+    triggerSummary: 'Separate prompt-expansion tool, not create / iterate / fork mainline',
+    journeys: ['auxiliary'],
+    journeySummary: 'Auxiliary only',
+    optional: true,
+  },
+};
 
 @Injectable()
 export class AdminService {
@@ -261,6 +363,18 @@ export class AdminService {
   }
 
   private normalizeUserIds(ids: unknown): string[] {
+    const rawItems = Array.isArray(ids)
+      ? ids
+      : typeof ids === 'string'
+        ? ids.split(',')
+        : [];
+    const normalized = rawItems
+      .map((item) => (typeof item === 'string' ? item.trim() : String(item || '').trim()))
+      .filter(Boolean);
+    return Array.from(new Set(normalized));
+  }
+
+  private normalizeLlmFallbackProviderIds(ids: unknown): string[] {
     const rawItems = Array.isArray(ids)
       ? ids
       : typeof ids === 'string'
@@ -2412,6 +2526,9 @@ export class AdminService {
 
   async createUser(data: any) {
     if (!data.username) throw new BadRequestException('Username is required');
+    if (String(data.username).length > 32) {
+      throw new BadRequestException('Username must be 32 characters or fewer');
+    }
     const existing = await this.prisma.user.findUnique({ where: { username: data.username } });
     if (existing) throw new BadRequestException('Username already exists');
 
@@ -2419,19 +2536,30 @@ export class AdminService {
       ? await bcrypt.hash(data.password, 10)
       : null;
 
-    const user = await this.prisma.user.create({
-      data: {
-        id: randomUUID(),
-        username: data.username,
-        displayName: data.displayName || data.username,
-        email: data.email || null,
-        phone: data.phone || null,
-        role: data.role || 'user',
-        bio: data.bio || null,
-        passwordHash,
-        authProvider: 'email',
-      },
-    });
+    let user;
+    try {
+      user = await this.prisma.user.create({
+        data: {
+          id: randomUUID(),
+          username: data.username,
+          displayName: data.displayName || data.username,
+          email: data.email || null,
+          phone: data.phone || null,
+          role: data.role || 'user',
+          bio: data.bio || null,
+          passwordHash,
+          authProvider: 'email',
+        },
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError
+        && error.code === 'P2002'
+      ) {
+        throw new BadRequestException('Username already exists');
+      }
+      throw error;
+    }
     return this.getUser(user.id);
   }
 
@@ -3599,17 +3727,233 @@ export class AdminService {
           },
         },
       },
-      orderBy: [{ priority: 'asc' }, { createdAt: 'desc' }],
+      orderBy: [{ priority: 'asc' }, { updatedAt: 'desc' }],
     });
 
     return providers.map((provider) => this.presentLlmProvider(provider));
   }
 
-  async listLlmSteps() {
-    return this.prisma.llmStepCatalog.findMany({
-      where: { enabled: true },
-      orderBy: [{ stepOrder: 'asc' }, { stepKey: 'asc' }],
+  private getLlmStepFlowMeta(stepKey: string): LlmStepFlowMeta {
+    return LLM_STEP_FLOW_META[stepKey] || {
+      flowGroup: 'Flow 99 - Unclassified',
+      flowOrder: 999,
+      flowSummary: 'Unclassified step',
+      triggerSummary: 'Present in the gateway catalog but not mapped to the current game generation flow.',
+      journeys: ['unclassified'],
+      journeySummary: 'Unclassified',
+      optional: true,
+    };
+  }
+
+  private sortLlmFlowRows<T extends { flowOrder?: number | null; stepKey: string }>(rows: T[]): T[] {
+    return [...rows].sort((left, right) => {
+      const leftOrder = Number.isFinite(Number(left.flowOrder)) ? Number(left.flowOrder) : 999;
+      const rightOrder = Number.isFinite(Number(right.flowOrder)) ? Number(right.flowOrder) : 999;
+      if (leftOrder !== rightOrder) {
+        return leftOrder - rightOrder;
+      }
+      return left.stepKey.localeCompare(right.stepKey);
     });
+  }
+
+  private isVisibleGameGenerationLlmStep(stepKey: string): boolean {
+    const meta = this.getLlmStepFlowMeta(stepKey);
+    return !meta.journeys.includes('auxiliary') && !meta.journeys.includes('unclassified');
+  }
+
+  private getLlmRouteLookupCandidates(stepKey: string): Array<{ stepKey: string; routeMatchStrategy: string }> {
+    const candidates: Array<{ stepKey: string; routeMatchStrategy: string }> = [
+      { stepKey, routeMatchStrategy: 'exact' },
+    ];
+    let parentStepKey = stepKey;
+    while (parentStepKey.includes('.')) {
+      parentStepKey = parentStepKey.slice(0, parentStepKey.lastIndexOf('.'));
+      candidates.push({
+        stepKey: parentStepKey,
+        routeMatchStrategy: 'parent_step',
+      });
+    }
+    return candidates;
+  }
+
+  private sortLlmProvidersForRuntime(providers: any[], executionRegion: string): any[] {
+    const sorted = [...providers].sort((left, right) => {
+      const leftPriority = Number.isFinite(Number(left?.priority)) ? Number(left.priority) : 100;
+      const rightPriority = Number.isFinite(Number(right?.priority)) ? Number(right.priority) : 100;
+      if (leftPriority !== rightPriority) {
+        return leftPriority - rightPriority;
+      }
+      const leftUpdatedAt = left?.updatedAt ? new Date(left.updatedAt).getTime() : 0;
+      const rightUpdatedAt = right?.updatedAt ? new Date(right.updatedAt).getTime() : 0;
+      if (leftUpdatedAt !== rightUpdatedAt) {
+        return rightUpdatedAt - leftUpdatedAt;
+      }
+      return String(left?.id || '').localeCompare(String(right?.id || ''));
+    });
+    return [
+      ...sorted.filter((provider) => provider?.region === executionRegion),
+      ...sorted.filter((provider) => provider?.region !== executionRegion),
+    ];
+  }
+
+  private resolveLlmRouteBinding(
+    stepKey: string,
+    executionRegion: string,
+    routeMap: Map<string, any>,
+    runtimeProviders: any[],
+  ) {
+    const exactRoute = routeMap.get(stepKey) || null;
+    const runtimeProviderMap = new Map(runtimeProviders.map((provider) => [provider.id, provider]));
+    for (const candidate of this.getLlmRouteLookupCandidates(stepKey)) {
+      const candidateRoute = routeMap.get(candidate.stepKey);
+      if (!candidateRoute || candidateRoute.enabled === false) {
+        continue;
+      }
+      const configuredProviderIds = Array.from(new Set([
+        candidateRoute.providerId,
+        ...this.normalizeLlmFallbackProviderIds(candidateRoute.fallbackProviderIds),
+      ].filter(Boolean)));
+      const configuredProviders = configuredProviderIds
+        .map((providerId) => runtimeProviderMap.get(providerId))
+        .filter((provider): provider is any => Boolean(provider));
+      const effectiveProvider = configuredProviders[0] || null;
+      if (!effectiveProvider) {
+        return {
+          exactRoute,
+          effectiveRoute: candidateRoute,
+          effectiveProvider: null,
+          matchedStepKey: candidate.stepKey,
+          routeMatchStrategy: candidate.routeMatchStrategy,
+          routeBindingState: 'invalid_provider',
+          bindingNote: candidate.routeMatchStrategy === 'exact'
+            ? '启用路由绑定到了已禁用或不存在的 Provider，运行时会直接失败。'
+            : `父级步骤 ${candidate.stepKey} 的启用路由绑定到了已禁用或不存在的 Provider，运行时会直接失败。`,
+        };
+      }
+      const usingExplicitFallback = effectiveProvider.id !== candidateRoute.providerId;
+
+      if (candidate.routeMatchStrategy === 'exact') {
+        return {
+          exactRoute,
+          effectiveRoute: candidateRoute,
+          effectiveProvider,
+          matchedStepKey: candidate.stepKey,
+          routeMatchStrategy: candidate.routeMatchStrategy,
+          routeBindingState: usingExplicitFallback ? 'fallback_active' : 'configured',
+          bindingNote: usingExplicitFallback
+            ? `主 Provider 当前不可用，运行时会回退到显式 fallback ${effectiveProvider.name}。`
+            : null,
+        };
+      }
+
+      return {
+        exactRoute,
+        effectiveRoute: candidateRoute,
+        effectiveProvider,
+        matchedStepKey: candidate.stepKey,
+        routeMatchStrategy: candidate.routeMatchStrategy,
+        routeBindingState: usingExplicitFallback ? 'fallback_active' : 'inherited',
+        bindingNote: usingExplicitFallback
+          ? `当前步骤会继承父级步骤 ${candidate.stepKey}，并在主 Provider 不可用时回退到显式 fallback ${effectiveProvider.name}。`
+          : exactRoute && exactRoute.enabled === false
+            ? `当前步骤自己的路由已禁用，运行时会回退到父级步骤 ${candidate.stepKey}。`
+            : `当前步骤没有单独路由，运行时会继承父级步骤 ${candidate.stepKey}。`,
+      };
+    }
+
+    const providerPoolFallback = this.sortLlmProvidersForRuntime(runtimeProviders, executionRegion)[0] || null;
+    if (providerPoolFallback) {
+      return {
+        exactRoute,
+        effectiveRoute: null,
+        effectiveProvider: providerPoolFallback,
+        matchedStepKey: null,
+        routeMatchStrategy: 'provider_pool',
+        routeBindingState: 'provider_pool_fallback',
+        bindingNote: exactRoute && exactRoute.enabled === false
+          ? '当前步骤路由已禁用，且没有可继承的父级路由；运行时会退回到启用中的 Provider 池。'
+          : '当前步骤没有精确或父级路由；运行时会退回到启用中的 Provider 池。',
+      };
+    }
+
+    return {
+      exactRoute,
+      effectiveRoute: null,
+      effectiveProvider: null,
+      matchedStepKey: null,
+      routeMatchStrategy: 'none',
+      routeBindingState: 'missing',
+      bindingNote: exactRoute && exactRoute.enabled === false
+        ? '当前步骤路由已禁用，且当前区域没有可用的继承路由或 Provider 池。'
+        : '当前步骤没有可用的精确路由、父级路由或 Provider 池。',
+    };
+  }
+
+  private presentLlmRouteRow(step: any, executionRegion: string, routeMap: Map<string, any>, runtimeProviders: any[]) {
+    const meta = this.getLlmStepFlowMeta(step.stepKey);
+    const bindingRequired = !meta.optional && meta.flowGroup !== 'Flow 90 - Auxiliary';
+    const binding = this.resolveLlmRouteBinding(step.stepKey, executionRegion, routeMap, runtimeProviders);
+    const exactRoute = binding.exactRoute;
+    const exactProvider = exactRoute?.provider || null;
+    const effectiveProvider = binding.effectiveProvider || null;
+    const runtimeProviderMap = new Map(runtimeProviders.map((provider) => [provider.id, provider]));
+    const fallbackProviderIds = this.normalizeLlmFallbackProviderIds(exactRoute?.fallbackProviderIds);
+    const fallbackProviders = fallbackProviderIds.map((providerId) => {
+      const provider = runtimeProviderMap.get(providerId);
+      return {
+        id: providerId,
+        name: provider?.name || providerId,
+        region: provider?.region || null,
+        model: provider?.model || null,
+        fastModel: provider?.fastModel || null,
+        enabled: Boolean(provider) && provider.enabled !== false,
+      };
+    });
+    return {
+      id: exactRoute?.id || null,
+      stepKey: step.stepKey,
+      stepOrder: step.stepOrder,
+      stageLabel: meta.flowGroup,
+      flowGroup: meta.flowGroup,
+      flowOrder: meta.flowOrder,
+      flowSummary: meta.flowSummary,
+      triggerSummary: meta.triggerSummary,
+      journeys: meta.journeys,
+      journeySummary: meta.journeySummary,
+      optional: Boolean(meta.optional),
+      bindingRequired,
+      displayName: step.displayName || step.stepKey,
+      description: step.description || `${meta.flowSummary}. ${meta.triggerSummary}`,
+      executionRegion,
+      enabled: exactRoute?.enabled ?? false,
+      providerId: exactRoute?.providerId ?? null,
+      providerKey: exactProvider?.name ?? null,
+      providerDisplayName: exactProvider?.name ?? null,
+      providerRegionTargetId: exactProvider?.regionTargetId ?? null,
+      providerRegionDisplayName: exactProvider?.region ?? null,
+      providerEnabled: exactProvider?.enabled ?? null,
+      modelDefault: effectiveProvider?.model ?? exactProvider?.model ?? null,
+      modelFast: effectiveProvider?.fastModel ?? exactProvider?.fastModel ?? null,
+      fallbackProviderIds,
+      fallbackProviders,
+      fallbackProviderSummary: fallbackProviders.length
+        ? fallbackProviders.map((provider) => (
+          provider.enabled === false ? `${provider.name}（不可用）` : provider.name
+        )).join(' / ')
+        : null,
+      updatedAt: exactRoute?.updatedAt ?? null,
+      routeBindingState: binding.routeBindingState,
+      routeMatchStrategy: binding.routeMatchStrategy,
+      matchedStepKey: binding.matchedStepKey,
+      bindingNote: binding.bindingNote,
+      exactRouteId: exactRoute?.id ?? null,
+      exactRouteEnabled: exactRoute?.enabled ?? null,
+      effectiveProviderId: effectiveProvider?.id ?? null,
+      effectiveProviderDisplayName: effectiveProvider?.name ?? null,
+      effectiveProviderRegion: effectiveProvider?.region ?? null,
+      effectiveModelDefault: effectiveProvider?.model ?? null,
+      effectiveModelFast: effectiveProvider?.fastModel ?? null,
+    };
   }
 
   async upsertLlmProvider(id: string | undefined, body: any) {
@@ -3713,7 +4057,7 @@ export class AdminService {
 
   async listLlmRoutes(executionRegion?: string) {
     const resolvedRegion = executionRegion || this.getDefaultExecutionRegion();
-    const [steps, routes] = await Promise.all([
+    const [steps, routes, runtimeProviders] = await Promise.all([
       this.prisma.llmStepCatalog.findMany({
         where: { enabled: true },
         orderBy: [{ stepOrder: 'asc' }, { stepKey: 'asc' }],
@@ -3732,34 +4076,37 @@ export class AdminService {
               providerType: true,
               model: true,
               fastModel: true,
+              enabled: true,
+              priority: true,
+              updatedAt: true,
             },
           },
         },
       }),
+      this.prisma.llmGatewayProvider.findMany({
+        where: { enabled: true },
+        select: {
+          id: true,
+          name: true,
+          region: true,
+          regionTargetId: true,
+          providerType: true,
+          model: true,
+          fastModel: true,
+          enabled: true,
+          priority: true,
+          updatedAt: true,
+        },
+        orderBy: [{ priority: 'asc' }, { updatedAt: 'desc' }],
+      }),
     ]);
 
     const routeMap = new Map(routes.map((route) => [route.stepKey, route]));
-    return steps.map((step) => {
-      const route = routeMap.get(step.stepKey);
-      return {
-        id: route?.id || null,
-        stepKey: step.stepKey,
-        stepOrder: step.stepOrder,
-        stageLabel: step.stageLabel,
-        displayName: step.displayName,
-        description: step.description,
-        executionRegion: resolvedRegion,
-        enabled: route?.enabled ?? false,
-        providerId: route?.providerId ?? null,
-        providerKey: route?.provider?.name ?? null,
-        providerDisplayName: route?.provider?.name ?? null,
-        providerRegionTargetId: route?.provider?.regionTargetId ?? null,
-        providerRegionDisplayName: route?.provider?.region ?? null,
-        modelDefault: route?.provider?.model ?? null,
-        modelFast: route?.provider?.fastModel ?? null,
-        updatedAt: route?.updatedAt ?? null,
-      };
-    });
+    return this.sortLlmFlowRows(
+      steps
+        .filter((step) => this.isVisibleGameGenerationLlmStep(step.stepKey))
+        .map((step) => this.presentLlmRouteRow(step, resolvedRegion, routeMap, runtimeProviders)),
+    );
   }
 
   async getLlmRoute(id: string) {
@@ -3775,6 +4122,9 @@ export class AdminService {
             providerType: true,
             model: true,
             fastModel: true,
+            enabled: true,
+            priority: true,
+            updatedAt: true,
           },
         },
       },
@@ -3784,28 +4134,59 @@ export class AdminService {
       throw new NotFoundException('Route not found');
     }
 
-    const step = await this.prisma.llmStepCatalog.findUnique({
-      where: { stepKey: route.stepKey },
-    });
+    const [step, routes, runtimeProviders] = await Promise.all([
+      this.prisma.llmStepCatalog.findUnique({
+        where: { stepKey: route.stepKey },
+      }),
+      this.prisma.llmStepRoute.findMany({
+        where: { region: route.region },
+        include: {
+          provider: {
+            select: {
+              id: true,
+              name: true,
+              region: true,
+              regionTargetId: true,
+              providerType: true,
+              model: true,
+              fastModel: true,
+              enabled: true,
+              priority: true,
+              updatedAt: true,
+            },
+          },
+        },
+      }),
+      this.prisma.llmGatewayProvider.findMany({
+        where: { enabled: true },
+        select: {
+          id: true,
+          name: true,
+          region: true,
+          regionTargetId: true,
+          providerType: true,
+          model: true,
+          fastModel: true,
+          enabled: true,
+          priority: true,
+          updatedAt: true,
+        },
+        orderBy: [{ priority: 'asc' }, { updatedAt: 'desc' }],
+      }),
+    ]);
 
-    return {
-      id: route.id,
-      stepKey: route.stepKey,
-      stepOrder: step?.stepOrder ?? null,
-      stageLabel: step?.stageLabel ?? null,
-      displayName: step?.displayName ?? null,
-      description: step?.description ?? null,
-      executionRegion: route.region,
-      enabled: route.enabled,
-      providerId: route.providerId,
-      providerKey: route.provider?.name ?? null,
-      providerDisplayName: route.provider?.name ?? null,
-      providerRegionTargetId: route.provider?.regionTargetId ?? null,
-      providerRegionDisplayName: route.provider?.region ?? null,
-      modelDefault: route.provider?.model ?? null,
-      modelFast: route.provider?.fastModel ?? null,
-      updatedAt: route.updatedAt,
-    };
+    const routeMap = new Map(routes.map((item) => [item.stepKey, item]));
+    return this.presentLlmRouteRow(
+      step || {
+        stepKey: route.stepKey,
+        stepOrder: null,
+        displayName: route.stepKey,
+        description: null,
+      },
+      route.region,
+      routeMap,
+      runtimeProviders,
+    );
   }
 
   async upsertLlmRoute(id: string | undefined, body: any) {
@@ -3822,6 +4203,16 @@ export class AdminService {
       }),
       this.prisma.llmGatewayProvider.findUnique({
         where: { id: body.providerId },
+        select: {
+          id: true,
+          name: true,
+          region: true,
+          regionTargetId: true,
+          providerType: true,
+          model: true,
+          fastModel: true,
+          enabled: true,
+        },
       }),
     ]);
 
@@ -3831,10 +4222,40 @@ export class AdminService {
     if (!provider) {
       throw new BadRequestException('Provider not found');
     }
+    if (provider.enabled === false) {
+      throw new BadRequestException('Selected provider is disabled and cannot be bound to a live generation step');
+    }
     const requestedRegion = body.executionRegion || body.region || provider.region;
     const routeRegion = provider.region || this.getDefaultExecutionRegion();
     if (requestedRegion && requestedRegion !== routeRegion) {
       throw new BadRequestException('executionRegion must match the selected provider region');
+    }
+    const fallbackProviderIds = this.normalizeLlmFallbackProviderIds(body?.fallbackProviderIds)
+      .filter((providerId) => providerId !== body.providerId);
+    const fallbackProviders = fallbackProviderIds.length
+      ? await this.prisma.llmGatewayProvider.findMany({
+        where: { id: { in: fallbackProviderIds } },
+        select: {
+          id: true,
+          name: true,
+          region: true,
+          regionTargetId: true,
+          enabled: true,
+        },
+      })
+      : [];
+    if (fallbackProviders.length !== fallbackProviderIds.length) {
+      const existingIds = new Set(fallbackProviders.map((item) => item.id));
+      const missingIds = fallbackProviderIds.filter((providerId) => !existingIds.has(providerId));
+      throw new BadRequestException(`Fallback provider not found: ${missingIds.join(', ')}`);
+    }
+    const disabledFallback = fallbackProviders.find((item) => item.enabled === false);
+    if (disabledFallback) {
+      throw new BadRequestException(`Fallback provider is disabled: ${disabledFallback.name}`);
+    }
+    const crossRegionFallback = fallbackProviders.find((item) => item.region !== routeRegion);
+    if (crossRegionFallback) {
+      throw new BadRequestException('Fallback providers must match the selected provider region');
     }
     const routeId = id || randomUUID();
 
@@ -3845,7 +4266,7 @@ export class AdminService {
         stepKey: body.stepKey,
         region: routeRegion,
         providerId: body.providerId,
-        fallbackProviderIds: [],
+        fallbackProviderIds,
         modelOverride: null,
         fastModelOverride: null,
         requestTimeoutS: null,
@@ -3856,7 +4277,7 @@ export class AdminService {
         stepKey: body.stepKey,
         region: routeRegion,
         providerId: body.providerId,
-        fallbackProviderIds: [],
+        fallbackProviderIds,
         modelOverride: null,
         fastModelOverride: null,
         requestTimeoutS: null,

@@ -182,10 +182,6 @@ export class InternalGenerationController {
       throw new BadRequestException('Invalid task activity payload');
     }
 
-    if (shouldSuppressTaskActivity(details)) {
-      return ok({ relayed: false, suppressed: true });
-    }
-
     const task = await this.generationTaskService.recordActivity({
       taskId,
       userId,
@@ -196,6 +192,10 @@ export class InternalGenerationController {
       percentage: typeof percentage === 'number' ? percentage : undefined,
       details,
     });
+
+    if (shouldSuppressTaskActivity(details)) {
+      return ok({ relayed: false, suppressed: true, persisted: Boolean(task) });
+    }
 
     const progressPct = task?.progressPct ?? (typeof percentage === 'number' ? percentage : 0);
     this.wsGateway.emitGenerationProgress(

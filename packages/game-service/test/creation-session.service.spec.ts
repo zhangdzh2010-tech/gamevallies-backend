@@ -577,8 +577,110 @@ describe('CreationSessionService', () => {
       'I have enough to start generating.',
       'summary',
     );
-    expect(snapshot).toEqual(expect.objectContaining({
+  expect(snapshot).toEqual(expect.objectContaining({
       id: 'session-fallback-1',
+      revision: 2,
+      readyToGenerate: true,
+    }));
+  });
+
+  it('falls back to the non-stream analyze-turn endpoint when realtime streaming aborts mid-flight', async () => {
+    const existingSession = {
+      id: 'session-fallback-abort-1',
+      userId: 'user-fallback-abort-1',
+      status: 'collecting',
+      entryMode: 'create',
+      initialPrompt: 'Build a classroom wiring puzzle.',
+      titleDraft: 'Circuit Class',
+      revision: 1,
+      slotState: {
+        game_type: 'educational',
+        core_mechanic: 'connect matching circuits',
+        input_method: 'tap',
+      },
+      missingRequired: ['theme'],
+      skippedSlots: [],
+      currentQuestion: {
+        slotKey: 'theme',
+        label: 'Theme',
+        prompt: 'What classroom theme should this use?',
+        skippable: true,
+      },
+      conversation: [
+        { role: 'user', content: 'Build a classroom wiring puzzle.' },
+      ],
+      generatedGameId: null,
+      generationTaskId: null,
+      sourceGameId: null,
+      questionBudget: 4,
+      metadata: {
+        orientation: 'portrait',
+        generationTier: 'standard',
+        readyToGenerate: false,
+        slotFillPct: 0.5,
+      },
+      createdAt: new Date('2026-04-12T00:00:00.000Z'),
+      updatedAt: new Date('2026-04-12T00:00:00.000Z'),
+    };
+
+    const updatedSession = {
+      ...existingSession,
+      revision: 2,
+      status: 'ready',
+      slotState: {
+        ...existingSession.slotState,
+        theme: 'school lab',
+      },
+      missingRequired: [],
+      currentQuestion: null,
+      conversation: [
+        ...existingSession.conversation,
+        { role: 'user', content: 'school lab' },
+        { role: 'assistant', content: 'Nice, I have enough to generate it now.' },
+      ],
+      metadata: {
+        ...existingSession.metadata,
+        readyToGenerate: true,
+        slotFillPct: 1,
+      },
+    };
+
+    repo.findUnique
+      .mockResolvedValueOnce(existingSession)
+      .mockResolvedValueOnce(updatedSession);
+    repo.updateMany.mockResolvedValue({ count: 1 });
+    (axios.post as jest.Mock)
+      .mockRejectedValueOnce({
+        message: 'aborted',
+        response: { status: 500, data: { message: 'aborted' } },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          reply: 'Nice, I have enough to generate it now.',
+          slots: updatedSession.slotState,
+          slots_updated: ['theme'],
+          missing_required: [],
+          slot_fill_pct: 1,
+          ready_to_generate: true,
+          current_question: null,
+        },
+      });
+
+    const snapshot = await service.appendMessage('user-fallback-abort-1', 'session-fallback-abort-1', {
+      content: 'school lab',
+      revision: 1,
+    });
+
+    expect((axios.post as jest.Mock).mock.calls[0]?.[0]).toContain('/api/v1/ai/dialogue/analyze-turn/stream');
+    expect((axios.post as jest.Mock).mock.calls[1]?.[0]).toContain('/api/v1/ai/dialogue/analyze-turn');
+    expect(realtimeService.publishReplyDone).toHaveBeenCalledWith(
+      'user-fallback-abort-1',
+      'session-fallback-abort-1',
+      'Nice, I have enough to generate it now.',
+      'summary',
+    );
+    expect(snapshot).toEqual(expect.objectContaining({
+      id: 'session-fallback-abort-1',
       revision: 2,
       readyToGenerate: true,
     }));

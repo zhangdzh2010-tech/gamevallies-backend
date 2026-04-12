@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.services.llm_gateway import LLMGateway, ProviderRecord, RouteRecord
+from src.services.llm_gateway import LLMGateway, ProviderRecord, RouteRecord, llm_request_context
 
 
 def _provider(
@@ -29,6 +29,7 @@ def _provider(
         enabled=True,
         priority=100,
         description=None,
+        capability_flags={},
         extra_config=({"maxTokens": max_tokens} if max_tokens is not None else {}),
         context_window=None,
         max_tokens=max_tokens,
@@ -69,7 +70,7 @@ def test_resolve_candidates_falls_back_to_parent_route_for_dynamic_step():
     deepseek = _provider("provider-deepseek", "DeepSeek Shanghai", updated_at=90.0)
     gateway = _gateway(
         providers=[minimax, deepseek],
-        routes=[_route("route-qa-fix", "qa_fix", minimax.id)],
+        routes=[_route("route-codegen", "code_generate.full", minimax.id)],
     )
 
     with patch("src.services.llm_gateway.settings.SERVICE_REGION", "cn_shanghai"), patch.object(
@@ -77,11 +78,11 @@ def test_resolve_candidates_falls_back_to_parent_route_for_dynamic_step():
         "_ensure_loaded",
         return_value=None,
     ):
-        candidates = gateway.resolve_candidates(step_key="qa_fix.mobile_layout")
+        candidates = gateway.resolve_candidates(step_key="code_generate.full.variant")
 
     assert candidates[0].provider_id == minimax.id
-    assert candidates[0].route_snapshot["requested_step_key"] == "qa_fix.mobile_layout"
-    assert candidates[0].route_snapshot["matched_step_key"] == "qa_fix"
+    assert candidates[0].route_snapshot["requested_step_key"] == "code_generate.full.variant"
+    assert candidates[0].route_snapshot["matched_step_key"] == "code_generate.full"
     assert candidates[0].route_snapshot["route_match_strategy"] == "parent_step"
 
 
@@ -91,8 +92,8 @@ def test_resolve_candidates_prefers_exact_route_over_parent_route():
     gateway = _gateway(
         providers=[minimax, deepseek],
         routes=[
-            _route("route-qa-fix", "qa_fix", minimax.id),
-            _route("route-qa-fix-mobile", "qa_fix.mobile_layout", deepseek.id, updated_at=101.0),
+            _route("route-codegen", "code_generate.full", minimax.id),
+            _route("route-codegen-variant", "code_generate.full.variant", deepseek.id, updated_at=101.0),
         ],
     )
 
@@ -101,11 +102,11 @@ def test_resolve_candidates_prefers_exact_route_over_parent_route():
         "_ensure_loaded",
         return_value=None,
     ):
-        candidates = gateway.resolve_candidates(step_key="qa_fix.mobile_layout")
+        candidates = gateway.resolve_candidates(step_key="code_generate.full.variant")
 
     assert candidates[0].provider_id == deepseek.id
-    assert candidates[0].route_snapshot["requested_step_key"] == "qa_fix.mobile_layout"
-    assert candidates[0].route_snapshot["matched_step_key"] == "qa_fix.mobile_layout"
+    assert candidates[0].route_snapshot["requested_step_key"] == "code_generate.full.variant"
+    assert candidates[0].route_snapshot["matched_step_key"] == "code_generate.full.variant"
     assert candidates[0].route_snapshot["route_match_strategy"] == "exact"
 
 
@@ -170,6 +171,41 @@ def test_route_exists_with_explicit_fallbacks_returns_primary_and_fallbacks():
     assert candidates[0].route_snapshot["explicit_fallback_only"] is True
 
 
+def test_resolve_candidates_keeps_primary_provider_first_for_code_generation():
+    primary = _provider("provider-primary", "Primary")
+    fallback = _provider("provider-fallback", "Fallback")
+    tertiary = _provider("provider-tertiary", "Tertiary")
+
+    route = RouteRecord(
+        id="route-codegen",
+        step_key="code_generate.full",
+        region="cn_shanghai",
+        provider_id=primary.id,
+        fallback_provider_ids=[fallback.id, tertiary.id],
+        model_override=None,
+        fast_model_override=None,
+        request_timeout_s=None,
+        connect_timeout_s=None,
+        enabled=True,
+        updated_at=100.0,
+    )
+    gateway = _gateway(
+        providers=[primary, fallback, tertiary],
+        routes=[route],
+    )
+
+    with patch("src.services.llm_gateway.settings.SERVICE_REGION", "cn_shanghai"), patch.object(
+        gateway,
+        "_ensure_loaded",
+        return_value=None,
+    ):
+        with llm_request_context(task_id="task-rotate"):
+            candidates = gateway.resolve_candidates(step_key="code_generate.full")
+
+    assert [candidate.provider_id for candidate in candidates] == [primary.id, fallback.id, tertiary.id]
+    assert candidates[0].route_snapshot["explicit_fallback_only"] is True
+
+
 def test_no_route_falls_back_to_all_regional_providers():
     """When no route matches the step_key, all enabled providers
     in the same region should be returned as candidates."""
@@ -209,6 +245,7 @@ def test_resolve_candidates_exposes_provider_context_and_max_tokens_in_route_sna
         enabled=True,
         priority=100,
         description=None,
+        capability_flags={},
         extra_config={"contextWindow": 128000, "maxTokens": 8192},
         context_window=128000,
         max_tokens=8192,
@@ -229,7 +266,6 @@ def test_resolve_candidates_exposes_provider_context_and_max_tokens_in_route_sna
     ):
         candidates = gateway.resolve_candidates(
             step_key="code_generate.full",
-            allow_implicit_fallbacks=True,
             required_output_tokens=12288,
         )
 
@@ -241,7 +277,7 @@ def test_resolve_candidates_exposes_provider_context_and_max_tokens_in_route_sna
     assert candidates[0].route_snapshot["strict_admission"] is True
 
 
-def test_resolve_candidates_does_not_promote_implicit_failover_provider_when_route_exists():
+def test_resolve_candidates_keeps_route_primary_when_implicit_failover_is_not_requested():
     deepseek = _provider("provider-deepseek", "DeepSeek Shanghai", max_tokens=8192)
     minimax = _provider("provider-minimax", "MiniMax Shanghai", max_tokens=16384, updated_at=90.0)
     gateway = _gateway(
@@ -256,7 +292,6 @@ def test_resolve_candidates_does_not_promote_implicit_failover_provider_when_rou
     ):
         candidates = gateway.resolve_candidates(
             step_key="iterate.mechanic_change",
-            allow_implicit_fallbacks=True,
             required_output_tokens=12288,
         )
 
@@ -265,6 +300,79 @@ def test_resolve_candidates_does_not_promote_implicit_failover_provider_when_rou
     assert candidates[0].route_snapshot["implicit_provider_failover"] is False
     assert candidates[0].route_snapshot["required_output_tokens"] == 12288
     assert candidates[0].route_snapshot["explicit_fallback_only"] is True
+
+
+def test_resolve_candidates_uses_explicit_fallback_chain_without_implicit_provider_pool():
+    primary = _provider("provider-primary", "Primary Routed", max_tokens=8192)
+    fallback = _provider("provider-fallback", "Implicit Fallback", max_tokens=16384, updated_at=90.0)
+    gateway = _gateway(
+        providers=[primary, fallback],
+        routes=[RouteRecord(
+            id="route-codegen",
+            step_key="code_generate.full",
+            region="cn_shanghai",
+            provider_id=primary.id,
+            fallback_provider_ids=[fallback.id],
+            model_override=None,
+            fast_model_override=None,
+            request_timeout_s=None,
+            connect_timeout_s=None,
+            enabled=True,
+            updated_at=100.0,
+        )],
+    )
+
+    with patch("src.services.llm_gateway.settings.SERVICE_REGION", "cn_shanghai"), patch.object(
+        gateway,
+        "_ensure_loaded",
+        return_value=None,
+    ):
+        candidates = gateway.resolve_candidates(
+            step_key="code_generate.full",
+            required_output_tokens=12288,
+        )
+
+    assert len(candidates) == 2
+    assert candidates[0].provider_id == fallback.id
+    assert candidates[0].route_snapshot["implicit_provider_failover"] is False
+    assert candidates[0].route_snapshot["explicit_fallback_only"] is True
+    assert candidates[1].provider_id == primary.id
+    assert candidates[1].route_snapshot["implicit_provider_failover"] is False
+
+
+def test_resolve_candidates_can_exclude_primary_provider_to_advance_explicit_fallback_chain():
+    primary = _provider("provider-primary", "Primary Routed", max_tokens=16384)
+    fallback = _provider("provider-fallback", "Fallback Routed", max_tokens=16384, updated_at=90.0)
+    gateway = _gateway(
+        providers=[primary, fallback],
+        routes=[RouteRecord(
+            id="route-codegen",
+            step_key="code_generate.full",
+            region="cn_shanghai",
+            provider_id=primary.id,
+            fallback_provider_ids=[fallback.id],
+            model_override=None,
+            fast_model_override=None,
+            request_timeout_s=None,
+            connect_timeout_s=None,
+            enabled=True,
+            updated_at=100.0,
+        )],
+    )
+
+    with patch("src.services.llm_gateway.settings.SERVICE_REGION", "cn_shanghai"), patch.object(
+        gateway,
+        "_ensure_loaded",
+        return_value=None,
+    ):
+        candidates = gateway.resolve_candidates(
+            step_key="code_generate.full",
+            excluded_provider_ids=[primary.id],
+        )
+
+    assert len(candidates) == 1
+    assert candidates[0].provider_id == fallback.id
+    assert candidates[0].route_snapshot["fallback_provider_ids"] == [fallback.id]
 
 
 def test_invoke_test_completion_clamps_max_tokens_to_provider_limit():
@@ -283,6 +391,7 @@ def test_invoke_test_completion_clamps_max_tokens_to_provider_limit():
         enabled=True,
         priority=100,
         description=None,
+        capability_flags={},
         extra_config={"maxTokens": 512},
         context_window=None,
         max_tokens=512,

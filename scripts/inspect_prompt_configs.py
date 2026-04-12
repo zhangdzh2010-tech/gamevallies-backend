@@ -105,11 +105,9 @@ def main(argv: list[str]) -> int:
             key: prompt_map.get(key)
             for key in (
                 "prompt.code_gen_system",
-                "prompt.qa_instruction_visible_feedback",
                 "bundle.product.policy",
                 "bundle.product.logic_generate",
-                "bundle.repair.input_contract",
-                "bundle.repair.forbidden_api",
+                "bundle.repair.syntax_structural",
             )
             if key in prompt_map
         },

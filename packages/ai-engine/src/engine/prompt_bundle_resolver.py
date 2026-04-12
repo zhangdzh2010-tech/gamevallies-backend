@@ -25,13 +25,7 @@ BUNDLE_SLOT_CANDIDATES: dict[str, tuple[str, ...]] = {
     "product_policy": ("bundle.product.policy",),
     "intent_parse": ("bundle.product.intent_parse", "prompt.intent_parse_system"),
     "logic_generate": ("bundle.product.logic_generate",),
-    "repair_input_contract": ("bundle.repair.input_contract",),
     "repair_syntax_structural": ("bundle.repair.syntax_structural",),
-    "repair_terminal_state": ("bundle.repair.terminal_state",),
-    "repair_mobile_layout": ("bundle.repair.mobile_layout",),
-    "repair_forbidden_api": ("bundle.repair.forbidden_api",),
-    "repair_runtime_startup": ("bundle.repair.runtime_startup",),
-    "repair_generic": ("bundle.repair.generic",),
 }
 
 
@@ -167,15 +161,7 @@ def resolve_prompt_bundle_snapshot(
         source_keys=profile_sources,
     )
 
-    for slot in (
-        "repair_input_contract",
-        "repair_syntax_structural",
-        "repair_terminal_state",
-        "repair_mobile_layout",
-        "repair_forbidden_api",
-        "repair_runtime_startup",
-        "repair_generic",
-    ):
+    for slot in ("repair_syntax_structural",):
         key, value = _first_required_text(BUNDLE_SLOT_CANDIDATES[slot])
         repair_playbook = _format_override_payload((bundle_record or {}).get("repair_playbook"))
         source_keys = [key]

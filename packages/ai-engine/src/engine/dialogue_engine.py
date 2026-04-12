@@ -53,6 +53,14 @@ FAST_DIALOGUE_SLOT_OVERALL_TIMEOUT_S = max(
     FAST_DIALOGUE_SLOT_REQUEST_TIMEOUT_S,
     int(getattr(settings, "DIALOGUE_SLOT_OVERALL_TIMEOUT_S", 5) or 5),
 )
+INTENT_PARSE_REQUEST_TIMEOUT_S = max(
+    FAST_DIALOGUE_SLOT_REQUEST_TIMEOUT_S,
+    int(getattr(settings, "INTENT_PARSE_REQUEST_TIMEOUT_S", 45) or 45),
+)
+INTENT_PARSE_OVERALL_TIMEOUT_S = max(
+    INTENT_PARSE_REQUEST_TIMEOUT_S,
+    int(getattr(settings, "INTENT_PARSE_OVERALL_TIMEOUT_S", 90) or 90),
+)
 
 LOCALIZED_GAME_TYPE_DEFAULTS: Dict[str, Dict[str, Dict[str, str]]] = {
     "casual": {
@@ -299,7 +307,6 @@ FUNNY_REQUEST_MARKERS = (
     "\u5e7d\u9ed8",
     "\u6478\u9c7c",
     "office",
-    "boss",
 )
 
 REFERENCE_GAME_HINTS: Dict[str, Dict[str, str]] = {
@@ -430,7 +437,17 @@ CONTEXT_THEME_RULES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
 )
 
 EXPLICIT_GAME_TYPE_MARKERS: Dict[str, Tuple[str, ...]] = {
-    "casual": ("casual", "arcade", "\u4f11\u95f2", "\u8857\u673a"),
+    "casual": (
+        "casual",
+        "arcade",
+        "runner",
+        "lane runner",
+        "endless runner",
+        "parkour",
+        "\u4f11\u95f2",
+        "\u8857\u673a",
+        "\u8dd1\u9177",
+    ),
     "puzzle": ("puzzle", "logic", "brain teaser", "\u8c1c\u9898", "\u76ca\u667a"),
     "educational": ("educational", "education", "learning game", "quiz game", "\u6559\u80b2", "\u5b66\u4e60", "\u95ee\u7b54"),
     "funny": ("funny", "comedy", "meme", "\u641e\u7b11", "\u6076\u641e"),
@@ -918,6 +935,49 @@ def _looks_like_understanding_check(text: str) -> bool:
     return any(marker in normalized for marker in markers)
 
 
+def _looks_like_dialogue_internal_reply_leak(text: str) -> bool:
+    normalized = _normalize_free_text(text).lower()
+    if len(normalized) < 8:
+        return False
+    markers = (
+        "用户现在要求我",
+        "按照要求",
+        "先理清楚",
+        "先处理清楚",
+        "调整下顺序",
+        "符合要求",
+        "用简体中文回复",
+        "2到4句",
+        "两到四句",
+        "我要这样回复",
+        "我应该这样回答",
+        "让我组织一下",
+        "不对，",
+        "等下，",
+        "safe fallback wording",
+        "follow-up guidance",
+        "readiness guidance",
+        "optional follow-up question",
+        "public brief draft",
+        "reply to the user in",
+        "the user wants me to",
+        "i should respond in",
+        "let me think",
+        "wait,",
+        "actually,",
+    )
+    return any(marker in normalized for marker in markers)
+
+
+def _should_release_dialogue_reply_preview(text: str) -> bool:
+    normalized = _normalize_free_text(text)
+    if not normalized:
+        return False
+    if re.search(r"[。！？.!?]$", normalized):
+        return True
+    return len(normalized) >= 24
+
+
 def _slot_summary_label(slot_key: str, *, zh: bool) -> str:
     labels = {
         "game_type": "\u6e38\u620f\u65b9\u5411" if zh else "game direction",
@@ -1096,6 +1156,14 @@ def _looks_like_puzzle_request(*texts: str) -> bool:
     return any(_contains_marker(combined, marker) for marker in PUZZLE_REQUEST_MARKERS)
 
 
+def _looks_like_casual_request(*texts: str) -> bool:
+    normalized_texts = [_normalize_free_text(text) for text in texts if _normalize_free_text(text)]
+    if not normalized_texts:
+        return False
+    combined = " ".join(normalized_texts)
+    return any(_contains_marker(combined, marker) for marker in CASUAL_REQUEST_MARKERS)
+
+
 def _normalize_game_type_label(game_type: str, *texts: str) -> str:
     normalized = re.sub(r"[^a-z_-]+", " ", (game_type or "").strip().lower()).strip()
     normalized = normalized.replace("-", " ")
@@ -1103,11 +1171,42 @@ def _normalize_game_type_label(game_type: str, *texts: str) -> str:
     mapped = LEGACY_GAME_TYPE_ALIASES.get(normalized, normalized)
 
     context = " ".join(_normalize_free_text(text) for text in texts if _normalize_free_text(text))
-    if _looks_like_educational_request(context):
+    explicit_context = _infer_explicit_game_type(context) if context else None
+    educational_context = _looks_like_educational_request(context) if context else False
+    funny_context = _looks_like_funny_request(context) if context else False
+    puzzle_context = _looks_like_puzzle_request(context) if context else False
+    casual_context = _looks_like_casual_request(context) if context else False
+    if mapped in CURATED_GAME_TYPES:
+        if explicit_context and explicit_context != mapped:
+            return explicit_context
+        if mapped == "casual":
+            if educational_context:
+                return "educational"
+            if funny_context:
+                return "funny"
+            if puzzle_context:
+                return "puzzle"
+            return mapped
+        if mapped == "puzzle" and not puzzle_context:
+            if educational_context:
+                return "educational"
+            if funny_context:
+                return "funny"
+            if casual_context:
+                return "casual"
+        if mapped == "funny" and not funny_context:
+            if educational_context:
+                return "educational"
+            if puzzle_context:
+                return "puzzle"
+            if casual_context:
+                return "casual"
+        return mapped
+    if educational_context:
         return "educational"
-    if _looks_like_funny_request(context):
+    if funny_context:
         return "funny"
-    if _looks_like_puzzle_request(context):
+    if puzzle_context:
         return "puzzle"
     if mapped in CURATED_GAME_TYPES:
         return mapped
@@ -1345,6 +1444,59 @@ def _build_sparse_slot_fallback(
         merged["special_rules"] = special_rules
 
     return _normalize_slot_payload(merged)
+
+
+def _resolve_spec_request_slots(
+    *,
+    slots: SlotState,
+    source_text: str,
+    title: Optional[str],
+    preferred_game_type: Optional[str],
+    variation_seed: Optional[str] = None,
+) -> SlotState:
+    normalized_source = _normalize_free_text(source_text)
+    normalized_title = _normalize_free_text(title or "")
+    existing_payload = _normalize_slot_payload(
+        slots.model_dump(mode="python", exclude_none=True)
+    )
+    existing_required_count = sum(
+        1
+        for key in SlotState.model_fields["REQUIRED_SLOTS"].default
+        if str(existing_payload.get(key) or "").strip()
+    )
+    concise_source = bool(normalized_source and len(normalized_source) <= 64)
+    sparse_request = (
+        _looks_like_sparse_request(normalized_source)
+        or (concise_source and existing_required_count <= 1)
+        if normalized_source
+        else bool(normalized_title and _looks_like_sparse_request(normalized_title))
+    )
+    fallback_payload = _build_sparse_slot_fallback(
+        source_text=normalized_source,
+        title=normalized_title or None,
+        raw_text=" ".join(item for item in [normalized_title, normalized_source] if item),
+        repaired_text="",
+        preferred_game_type=preferred_game_type,
+        variation_seed=variation_seed,
+    ) if sparse_request else {}
+    merged_payload = _merge_slot_payloads(fallback_payload, existing_payload)
+    if not str(merged_payload.get("game_type") or "").strip():
+        preferred = _normalize_game_type_label(
+            preferred_game_type or "",
+            normalized_title,
+            normalized_source,
+        ) if preferred_game_type else ""
+        if preferred:
+            merged_payload["game_type"] = preferred
+        elif sparse_request:
+            merged_payload["game_type"] = _infer_game_type_from_sparse_context(
+                normalized_title,
+                normalized_source,
+                variation_seed=variation_seed,
+            ) or "casual"
+        else:
+            merged_payload["game_type"] = "casual"
+    return SlotState(**_normalize_slot_payload(merged_payload))
 
 
 def _has_minimum_viable_slot_payload(slot_data: Dict[str, Any]) -> bool:
@@ -1743,19 +1895,30 @@ class DialogueEngine:
         step_key: str,
         stage: str,
         max_tokens: int,
+        request_timeout_s: Optional[int] = None,
+        overall_timeout_s: Optional[int] = None,
+        timeout_retry_attempts: int = 0,
+        timeout_retry_increment_s: int = 30,
+        timeout_retry_max_s: Optional[int] = None,
     ) -> str:
         is_fast_dialogue_slot_extract = step_key == "dialogue.slot_extract"
         prefer_fast_route = False
-        request_timeout_s = (
-            FAST_DIALOGUE_SLOT_REQUEST_TIMEOUT_S
-            if is_fast_dialogue_slot_extract
-            else None
-        )
-        overall_timeout_s = (
-            FAST_DIALOGUE_SLOT_OVERALL_TIMEOUT_S
-            if is_fast_dialogue_slot_extract
-            else None
-        )
+        effective_request_timeout_s = request_timeout_s
+        effective_overall_timeout_s = overall_timeout_s
+        if is_fast_dialogue_slot_extract:
+            effective_request_timeout_s = (
+                FAST_DIALOGUE_SLOT_REQUEST_TIMEOUT_S
+                if effective_request_timeout_s is None
+                else max(1, int(effective_request_timeout_s))
+            )
+            effective_overall_timeout_s = (
+                FAST_DIALOGUE_SLOT_OVERALL_TIMEOUT_S
+                if effective_overall_timeout_s is None
+                else max(
+                    max(1, int(effective_request_timeout_s)),
+                    int(effective_overall_timeout_s),
+                )
+            )
         try:
             return await self._client.complete(
                 max_tokens=max_tokens,
@@ -1768,8 +1931,8 @@ class DialogueEngine:
                 response_size_hint="small",
                 context_scope="task",
                 compression_policy="intent_parse" if step_key == "intent_parse" else "dialogue",
-                request_timeout_s=request_timeout_s,
-                overall_timeout_s=overall_timeout_s,
+                request_timeout_s=effective_request_timeout_s,
+                overall_timeout_s=effective_overall_timeout_s,
             )
         except LLMResponseTruncatedError as exc:
             excerpt = _clean_llm_output(exc.response_excerpt or "")
@@ -1794,14 +1957,47 @@ class DialogueEngine:
                 response_size_hint="small",
                 context_scope="task",
                 compression_policy="intent_parse" if step_key == "intent_parse" else "dialogue",
-                request_timeout_s=request_timeout_s,
-                overall_timeout_s=overall_timeout_s,
+                request_timeout_s=effective_request_timeout_s,
+                overall_timeout_s=effective_overall_timeout_s,
                 truncation_retry_attempts=1,
                 truncation_retry_increment=512,
                 truncation_retry_max_tokens=max(max_tokens, 2048),
-                timeout_retry_attempts=0 if is_fast_dialogue_slot_extract else 1,
-                timeout_retry_increment_s=30,
-                timeout_retry_max_s=120,
+                timeout_retry_attempts=(
+                    0 if is_fast_dialogue_slot_extract else max(1, int(timeout_retry_attempts or 0))
+                ),
+                timeout_retry_increment_s=max(1, int(timeout_retry_increment_s)),
+                timeout_retry_max_s=timeout_retry_max_s or 120,
+            )
+        except Exception as exc:
+            normalized_message = str(exc or "").lower()
+            is_timeout_like = "timed out" in normalized_message or "timeout" in normalized_message
+            if is_fast_dialogue_slot_extract or not is_timeout_like or int(timeout_retry_attempts or 0) <= 0:
+                raise
+            logger.warning(
+                "LLM %s request timed out; retrying with extended timeout budget (request=%ss overall=%ss)",
+                step_key,
+                effective_request_timeout_s,
+                effective_overall_timeout_s,
+            )
+            return await self._client.complete_with_truncation_retry(
+                max_tokens=max_tokens,
+                system=system,
+                messages=messages,
+                step_key=step_key,
+                stage=stage,
+                prefer_fast=prefer_fast_route,
+                allow_provider_fallback=True,
+                response_size_hint="small",
+                context_scope="task",
+                compression_policy="intent_parse" if step_key == "intent_parse" else "dialogue",
+                request_timeout_s=effective_request_timeout_s,
+                overall_timeout_s=effective_overall_timeout_s,
+                truncation_retry_attempts=1,
+                truncation_retry_increment=512,
+                truncation_retry_max_tokens=max(max_tokens, 2048),
+                timeout_retry_attempts=max(1, int(timeout_retry_attempts)),
+                timeout_retry_increment_s=max(1, int(timeout_retry_increment_s)),
+                timeout_retry_max_s=timeout_retry_max_s or 120,
             )
 
     def get_or_create_session(self, session_id: str, user_id: str) -> DialogueSession:
@@ -1991,7 +2187,15 @@ class DialogueEngine:
         analysis = await self.analyze_turn(req)
         reply_kind = "question" if analysis.current_question else "summary"
         fallback_reply = _normalize_free_text(analysis.reply)
+        analysis.reply = fallback_reply
+        yield {
+            "event": "final",
+            "data": DialogueStreamFinalPayload(
+                **analysis.model_dump(mode="json", exclude_none=True),
+            ).model_dump(mode="json", exclude_none=True),
+        }
         accumulated = ""
+        preview_buffer = ""
         emitted_delta = False
         stream_failed = False
 
@@ -2000,8 +2204,39 @@ class DialogueEngine:
                 cleaned = str(delta or "")
                 if not cleaned:
                     continue
-                emitted_delta = True
-                accumulated += cleaned
+                if not emitted_delta:
+                    preview_buffer += cleaned
+                    if _looks_like_dialogue_internal_reply_leak(preview_buffer):
+                        stream_failed = True
+                        logger.warning(
+                            "Dialogue reply leak guard triggered before first delta for session=%s",
+                            req.session_id or "stateless",
+                        )
+                        break
+                    if not _should_release_dialogue_reply_preview(preview_buffer):
+                        continue
+                    accumulated = preview_buffer
+                    emitted_delta = True
+                    preview_buffer = ""
+                    yield {
+                        "event": "delta",
+                        "data": DialogueStreamDeltaPayload(
+                            delta=accumulated,
+                            accumulated=accumulated,
+                            kind=reply_kind,
+                        ).model_dump(mode="json"),
+                    }
+                    continue
+
+                candidate_accumulated = f"{accumulated}{cleaned}"
+                if _looks_like_dialogue_internal_reply_leak(candidate_accumulated):
+                    stream_failed = True
+                    logger.warning(
+                        "Dialogue reply leak guard triggered mid-stream for session=%s",
+                        req.session_id or "stateless",
+                    )
+                    break
+                accumulated = candidate_accumulated
                 yield {
                     "event": "delta",
                     "data": DialogueStreamDeltaPayload(
@@ -2018,7 +2253,30 @@ class DialogueEngine:
                 exc,
             )
 
+        if preview_buffer and not emitted_delta and not stream_failed:
+            if _looks_like_dialogue_internal_reply_leak(preview_buffer):
+                stream_failed = True
+                logger.warning(
+                    "Dialogue reply leak guard triggered on buffered preview for session=%s",
+                    req.session_id or "stateless",
+                )
+            else:
+                accumulated = preview_buffer
+                emitted_delta = True
+                preview_buffer = ""
+                yield {
+                    "event": "delta",
+                    "data": DialogueStreamDeltaPayload(
+                        delta=accumulated,
+                        accumulated=accumulated,
+                        kind=reply_kind,
+                    ).model_dump(mode="json"),
+                }
+
         final_reply = fallback_reply if stream_failed else (_normalize_free_text(accumulated) or fallback_reply)
+        if _looks_like_dialogue_internal_reply_leak(final_reply):
+            stream_failed = True
+            final_reply = fallback_reply
         if not emitted_delta and final_reply:
             for chunk in _chunk_reply_for_streaming(final_reply):
                 accumulated += chunk if accumulated else chunk
@@ -2038,12 +2296,6 @@ class DialogueEngine:
                 message=final_reply,
                 kind=reply_kind,
             ).model_dump(mode="json"),
-        }
-        yield {
-            "event": "final",
-            "data": DialogueStreamFinalPayload(
-                **analysis.model_dump(mode="json", exclude_none=True),
-            ).model_dump(mode="json", exclude_none=True),
         }
 
     async def _stream_analyze_turn_reply(
@@ -2128,15 +2380,16 @@ class DialogueEngine:
                 if not getattr(slots, key, None) and value is not None:
                     setattr(slots, key, value)
 
-        if not (slots.game_type or "").strip():
-            preferred = (req.preferred_game_type or "").strip()
-            if preferred:
-                slots.game_type = preferred
-            else:
-                slots.game_type = "casual"
+        effective_slots = _resolve_spec_request_slots(
+            slots=slots,
+            source_text=source_text,
+            title=title or None,
+            preferred_game_type=req.preferred_game_type,
+            variation_seed=req.variation_seed or req.session_id,
+        )
 
         spec = _build_game_spec(
-            slots,
+            effective_slots,
             source_description=source_text,
             variation_seed=req.variation_seed or req.session_id,
         )
@@ -2149,8 +2402,8 @@ class DialogueEngine:
                 spec.source_description = source_text
         return SpecFromSlotsResponse(
             spec=spec,
-            missing_required=slots.missing_required(),
-            slot_fill_pct=slots.fill_pct(),
+            missing_required=effective_slots.missing_required(),
+            slot_fill_pct=effective_slots.fill_pct(),
         )
 
     async def slots_to_game_spec(self, session_id: str) -> GameSpec:
@@ -2184,6 +2437,11 @@ class DialogueEngine:
             messages=[{"role": "user", "content": parse_input}],
             step_key="intent_parse",
             stage="intent_parsing",
+            request_timeout_s=INTENT_PARSE_REQUEST_TIMEOUT_S,
+            overall_timeout_s=INTENT_PARSE_OVERALL_TIMEOUT_S,
+            timeout_retry_attempts=1,
+            timeout_retry_increment_s=30,
+            timeout_retry_max_s=max(INTENT_PARSE_OVERALL_TIMEOUT_S, INTENT_PARSE_REQUEST_TIMEOUT_S + 30),
         )
         slot_data = await self._extract_slot_payload_with_repair(
             raw_text=text,
@@ -3175,6 +3433,7 @@ def _build_dialogue_question(
         for slot_key in required_slots
         if slot_key not in skipped and slot_key not in blocked
     )
+    has_missing_required = not all_required_present
     low_confidence_thresholds = {
         "core_mechanic": 0.72,
         "win_condition": 0.72,
@@ -3232,7 +3491,7 @@ def _build_dialogue_question(
             )
             candidates.append((score, slot_key, "missing_required", impact, confidence, reason))
             continue
-        if ambiguity_weight > 0:
+        if ambiguity_weight > 0 and not has_missing_required:
             score = impact + 0.35 + ambiguity_weight
             reason = (
                 f"「{_slot_summary_label(slot_key, zh=zh)}」目前存在歧义，需要先消歧。"
@@ -3523,10 +3782,54 @@ def _build_dialogue_reply_system_prompt_from_catalog(
         slot_summary=_build_dialogue_public_direction_summary(analysis, zh=zh),
         missing_slots=_build_dialogue_public_follow_up_guidance(analysis, zh=zh),
     )
-    return safe_format_prompt(
+    prompt = safe_format_prompt(
         require_prompt("prompt.dialogue_reply_system"),
         base_prompt=base_prompt,
     ).strip()
+    guardrail = (
+        "Critical guardrail:\n"
+        "- Never narrate your own reasoning, drafting steps, or compliance checks.\n"
+        "- Never say things like '用户现在要求我', '先理清楚', '调整下顺序', '2到4句', 'I should respond', or 'let me think'.\n"
+        "- Say only the final user-facing reply."
+    )
+    return f"{prompt}\n\n{guardrail}".strip()
+
+
+def _build_dialogue_reply_context_payload(
+    *,
+    request: AnalyzeDialogueTurnRequest,
+    analysis: AnalyzeDialogueTurnResponse,
+    source_text: str,
+    zh: bool,
+) -> Dict[str, Any]:
+    history = [
+        {
+            "role": item.role,
+            "content": _normalize_free_text(item.content),
+        }
+        for item in (request.conversation or [])[-4:]
+        if _normalize_free_text(item.content)
+    ]
+    follow_up_question = _normalize_free_text(
+        analysis.current_question.prompt if analysis.current_question else ""
+    )
+    return {
+        "language": "zh-CN" if zh else "en-US",
+        "initial_idea": _normalize_free_text(source_text) or ("暂无" if zh else "none yet"),
+        "latest_user_message": _normalize_free_text(
+            request.latest_user_answer or _latest_user_answer_from_history(request.conversation or [])
+        ) or ("暂无" if zh else "none yet"),
+        "recent_conversation": history,
+        "working_direction": _build_dialogue_public_direction_summary(analysis, zh=zh),
+        "public_brief": _build_dialogue_public_draft_summary(analysis, zh=zh),
+        "response_mode": (
+            "optional_refinement" if analysis.ready_to_generate and follow_up_question else
+            "ready_to_create" if analysis.ready_to_generate else
+            "ask_follow_up" if follow_up_question else
+            "tighten_brief"
+        ),
+        "follow_up_question": follow_up_question or None,
+    }
 
 
 def _build_dialogue_reply_user_prompt_from_catalog(
@@ -3537,40 +3840,29 @@ def _build_dialogue_reply_user_prompt_from_catalog(
 ) -> str:
     language = _detect_ui_language(" ".join(part for part in [request.title or "", source_text] if part))
     zh = language.startswith("zh")
-    history = [
-        f"{item.role}: {_normalize_free_text(item.content)}"
-        for item in (request.conversation or [])[-4:]
-        if _normalize_free_text(item.content)
-    ]
-    public_fallback_reply = _compose_creation_session_reply_v2(
-        slots=analysis.slots,
-        current_question=analysis.current_question,
-        ready_to_generate=analysis.ready_to_generate,
+    context_payload = _build_dialogue_reply_context_payload(
+        request=request,
+        analysis=analysis,
         source_text=source_text,
-        title=request.title,
-        latest_user_answer=request.latest_user_answer,
-        question_strategy=analysis.question_strategy,
-        plan_draft=analysis.plan_draft,
+        zh=zh,
     )
-
-    return safe_format_prompt(
-        require_prompt(
-            "prompt.dialogue_reply_user_template_zh"
-            if zh else
-            "prompt.dialogue_reply_user_template_en"
-        ),
-        initial_idea=_normalize_free_text(source_text) or ("none yet" if zh else "none"),
-        latest_user_message=_normalize_free_text(
-            request.latest_user_answer or _latest_user_answer_from_history(request.conversation or [])
-        ) or ("none yet" if zh else "none"),
-        recent_conversation="\n".join(history) if history else ("none yet" if zh else "none"),
-        inferred_direction=_build_dialogue_public_direction_summary(analysis, zh=zh),
-        draft_summary=_build_dialogue_public_draft_summary(analysis, zh=zh),
-        current_question=analysis.current_question.prompt if analysis.current_question else ("none" if zh else "none"),
-        next_best_question_reason=_build_dialogue_public_follow_up_guidance(analysis, zh=zh),
-        ready_to_generate=_build_dialogue_public_readiness_hint(analysis, zh=zh),
-        safe_fallback_reply=public_fallback_reply,
-    ).strip()
+    template = require_prompt(
+        "prompt.dialogue_reply_user_template_zh"
+        if zh else
+        "prompt.dialogue_reply_user_template_en"
+    )
+    reply_context = json.dumps(context_payload, ensure_ascii=False, indent=2)
+    if "{reply_context}" in template:
+        return safe_format_prompt(
+            template,
+            reply_context=reply_context,
+        ).strip()
+    prefix = (
+        "Reply context for the final user-facing answer:\n"
+        if not zh else
+        "用于生成最终用户回复的上下文：\n"
+    )
+    return f"{prefix}{reply_context}".strip()
 
 
 def _chunk_reply_for_streaming(message: str) -> List[str]:

@@ -382,15 +382,6 @@ class GDD(BaseModel):
     raw_description: str = ""
 
 
-class EnrichedGDD(GDD):
-    """Extended GDD with LLM-generated design details for deeper gameplay."""
-    level_design: List[Dict[str, Any]] = Field(default_factory=list)
-    enemy_behaviors: List[Dict[str, Any]] = Field(default_factory=list)
-    difficulty_curve_params: Dict[str, Any] = Field(default_factory=dict)
-    visual_effects: List[str] = Field(default_factory=list)
-    gameplay_phases: List[Dict[str, Any]] = Field(default_factory=list)
-
-
 # ---------------------------------------------------------------------------
 # Stage 04 – Template Matcher
 # ---------------------------------------------------------------------------
@@ -405,6 +396,7 @@ class GenerateCodeResult(BaseModel):
     template_id: Optional[str] = None
     generation_time_ms: int
     code_size_bytes: int
+    route_snapshot: Optional[Dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -780,12 +772,18 @@ class DialogueSession(BaseModel):
 
 class ParseIntentRequest(BaseModel):
     description: str
-    user_id: str
+    user_id: Optional[str] = None
+    title: Optional[str] = None
+    generation_tier: GenerationTier = GenerationTier.standard
+    preferred_game_type: Optional[str] = None
+    variation_seed: Optional[str] = None
 
 
 class ParseIntentResponse(BaseModel):
     spec: GameSpec
     confidence: float = Field(..., ge=0.0, le=1.0)
+    missing_required: List[str] = Field(default_factory=list)
+    slot_fill_pct: float = Field(1.0, ge=0.0, le=1.0)
 
 
 class GenerateCodeRequest(BaseModel):

@@ -141,7 +141,9 @@ _CANVAS_CHECK_JS = """
         const w = Math.min(canvas.width, 200);
         const h = Math.min(canvas.height, 200);
         if (w === 0 || h === 0) return false;
-        const data = ctx.getImageData(0, 0, w, h).data;
+        const x = Math.max(0, Math.floor((canvas.width - w) / 2));
+        const y = Math.max(0, Math.floor((canvas.height - h) / 2));
+        const data = ctx.getImageData(x, y, w, h).data;
         for (let i = 0; i < data.length; i++) {
             if (data[i] !== 0) return true;
         }
@@ -163,7 +165,9 @@ _CANVAS_FINGERPRINT_JS = """
         const w = Math.min(canvas.width, 160);
         const h = Math.min(canvas.height, 160);
         if (w === 0 || h === 0) return null;
-        const data = ctx.getImageData(0, 0, w, h).data;
+        const x = Math.max(0, Math.floor((canvas.width - w) / 2));
+        const y = Math.max(0, Math.floor((canvas.height - h) / 2));
+        const data = ctx.getImageData(x, y, w, h).data;
         let hash = 0;
         for (let i = 0; i < data.length; i += 16) {
             hash = (hash * 33 + data[i] + data[i + 1] + data[i + 2] + data[i + 3]) % 2147483647;
@@ -281,7 +285,9 @@ _FRAME_PALETTE_JS = """
                 const sampleW = Math.max(1, Math.min(canvas.width || canvas.clientWidth || 0, 96));
                 const sampleH = Math.max(1, Math.min(canvas.height || canvas.clientHeight || 0, 96));
                 if (sampleW > 0 && sampleH > 0) {
-                    const data = ctx.getImageData(0, 0, sampleW, sampleH).data;
+                    const sampleX = Math.max(0, Math.floor(((canvas.width || canvas.clientWidth || 0) - sampleW) / 2));
+                    const sampleY = Math.max(0, Math.floor(((canvas.height || canvas.clientHeight || 0) - sampleH) / 2));
+                    const data = ctx.getImageData(sampleX, sampleY, sampleW, sampleH).data;
                     const buckets = new Map();
                     for (let i = 0; i < data.length; i += 4) {
                         const alpha = data[i + 3];

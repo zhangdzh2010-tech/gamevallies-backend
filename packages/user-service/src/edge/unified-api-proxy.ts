@@ -127,6 +127,87 @@ function buildTargetUrl(upstreamBaseUrl: string, originalUrl: string): string {
   return new URL(originalUrl, `${upstreamBaseUrl}/`).toString();
 }
 
+export function shouldStreamUpstreamResponse(
+  upstreamRes: Pick<globalThis.Response, 'headers'>,
+): boolean {
+  const contentType = upstreamRes.headers.get('content-type') || '';
+  return contentType.toLowerCase().includes('text/event-stream');
+}
+
+async function writeChunk(res: Response, chunk: Uint8Array): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    res.write(Buffer.from(chunk), (error?: Error | null) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function streamUpstreamBody(
+  req: Request,
+  res: Response,
+  upstreamRes: globalThis.Response,
+): Promise<void> {
+  const body = upstreamRes.body;
+  if (!body) {
+    res.end();
+    return;
+  }
+
+  const reader = body.getReader();
+  const handleClientClose = () => {
+    void reader.cancel().catch(() => undefined);
+  };
+  req.on('close', handleClientClose);
+
+  try {
+    res.flushHeaders?.();
+    while (!res.writableEnded) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      if (!value || value.length === 0) {
+        continue;
+      }
+      await writeChunk(res, value);
+      const flush = (res as Response & { flush?: () => void }).flush;
+      flush?.();
+    }
+  } finally {
+    req.off('close', handleClientClose);
+    reader.releaseLock();
+    if (!res.writableEnded) {
+      res.end();
+    }
+  }
+}
+
+export async function forwardUpstreamResponse(
+  req: Request,
+  res: Response,
+  upstreamRes: globalThis.Response,
+): Promise<void> {
+  applyResponseHeaders(res, upstreamRes);
+  res.status(upstreamRes.status);
+
+  if (shouldStreamUpstreamResponse(upstreamRes)) {
+    await streamUpstreamBody(req, res, upstreamRes);
+    return;
+  }
+
+  const responseBody = Buffer.from(await upstreamRes.arrayBuffer());
+  if (responseBody.length === 0) {
+    res.end();
+    return;
+  }
+
+  res.send(responseBody);
+}
+
 export function getProxyTargets(): ProxyTarget[] {
   return [
     {
@@ -196,17 +277,7 @@ async function handleProxy(
     const upstreamRes = await fetch(buildTargetUrl(target.upstreamBaseUrl, req.originalUrl), {
       ...requestInit,
     });
-
-    applyResponseHeaders(res, upstreamRes);
-    res.status(upstreamRes.status);
-
-    const responseBody = Buffer.from(await upstreamRes.arrayBuffer());
-    if (responseBody.length === 0) {
-      res.end();
-      return;
-    }
-
-    res.send(responseBody);
+    await forwardUpstreamResponse(req, res, upstreamRes);
   } catch (error) {
     logger.error(
       `Failed to proxy ${req.method} ${req.originalUrl} to ${target.name}: ${

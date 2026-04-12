@@ -120,7 +120,7 @@ type LlmCallLogParams = {
 
 const MAX_INLINE_JSON_BYTES = 20 * 1024;
 const MAX_INLINE_TEXT_BYTES = 512 * 1024;
-const SUPPRESSED_TASK_ACTIVITY_STATES = new Set(['started', 'heartbeat', 'completed']);
+const SUPPRESSED_TASK_ACTIVITY_STATES = new Set(['started', 'completed']);
 const SLOW_LLM_CALL_THRESHOLD_MS = 30_000;
 const DISPLAY_PIPELINE_STAGES = [
   { key: 'submitting', label: '提交创作请求', pct: 5 },
@@ -158,6 +158,7 @@ const DISPLAY_STAGE_ALIASES: Record<string, string> = {
   'code_generate.full': 'logic_generate',
   logic_generate: 'logic_generate',
   qa_fix: 'contract_qa',
+  'qa_fix.syntax_structural': 'contract_qa',
   qa_checking: 'contract_qa',
   contract_qa: 'contract_qa',
   targeted_remediation: 'contract_qa',
@@ -298,6 +299,24 @@ export class GenerationTaskService {
     });
     if (!task || this.isFinalStatus(task.status)) {
       return null;
+    }
+
+    if (this.isHeartbeatTaskActivity(params.details)) {
+      const { task: runningTask } = await this.ensureTaskRunning(task);
+      if (!runningTask || this.isFinalStatus(runningTask.status)) {
+        return null;
+      }
+
+      const nextPercentage = params.percentage ?? runningTask.progressPct ?? 0;
+      const nextMessage = this.normalizeTaskMessage(params.message);
+      return this.prisma.generationTask.update({
+        where: { id: runningTask.id },
+        data: {
+          progressStage: params.stage,
+          progressPct: nextPercentage,
+          progressMessage: nextMessage,
+        },
+      });
     }
 
     if (this.shouldSuppressTaskActivity(params.details)) {
@@ -820,8 +839,15 @@ export class GenerationTaskService {
   }
 
   private shouldSuppressTaskActivity(details?: JsonMap | null): boolean {
-    const activityState = typeof details?.activityState === 'string' ? details.activityState : '';
-    return SUPPRESSED_TASK_ACTIVITY_STATES.has(activityState);
+    return SUPPRESSED_TASK_ACTIVITY_STATES.has(this.getTaskActivityState(details));
+  }
+
+  private isHeartbeatTaskActivity(details?: JsonMap | null): boolean {
+    return this.getTaskActivityState(details) === 'heartbeat';
+  }
+
+  private getTaskActivityState(details?: JsonMap | null): string {
+    return typeof details?.activityState === 'string' ? details.activityState : '';
   }
 
   private hasTaskSnapshotChanged(
