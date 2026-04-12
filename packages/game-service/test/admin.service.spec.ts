@@ -1,6 +1,7 @@
 import * as bcrypt from 'bcryptjs';
 import axios from 'axios';
 import { ConfigService } from '@nestjs/config';
+import { Prisma } from '@prisma/client';
 import { AdminService } from '../src/admin/admin.service';
 
 describe('AdminService', () => {
@@ -437,6 +438,16 @@ describe('AdminService', () => {
     expect(result.steps[2].prompts).not.toEqual(expect.arrayContaining([
       expect.objectContaining({
         configKey: 'prompt.platform_standard',
+      }),
+    ]));
+    expect(result.steps[0].prompts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        configKey: 'prompt.dialogue_reply_user_template_zh',
+        variables: ['{reply_context}'],
+      }),
+      expect.objectContaining({
+        configKey: 'prompt.dialogue_reply_user_template_en',
+        variables: ['{reply_context}'],
       }),
     ]));
     expect(result.extras).toEqual(expect.arrayContaining([
@@ -1095,6 +1106,30 @@ describe('AdminService', () => {
     await expect(bcrypt.compare('SmokePay123456', passwordHash)).resolves.toBe(true);
   });
 
+  it('maps duplicate username races to a bad request error', async () => {
+    prisma.user.findUnique.mockResolvedValue(null);
+    prisma.user.create.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+        code: 'P2002',
+        clientVersion: 'test',
+      }),
+    );
+
+    await expect(service.createUser({
+      username: 'smoke_user',
+      displayName: 'Smoke User',
+      password: 'SmokePay123456',
+    })).rejects.toThrow('Username already exists');
+  });
+
+  it('rejects usernames longer than the database limit', async () => {
+    await expect(service.createUser({
+      username: 'load_20260412_092603_602197_b58009_001',
+      displayName: 'Too Long',
+      password: 'SmokePay123456',
+    })).rejects.toThrow('Username must be 32 characters or fewer');
+  });
+
   it('hashes reset passwords with bcrypt', async () => {
     prisma.user.findUnique.mockResolvedValue({ id: 'user-1' });
     prisma.user.update.mockResolvedValue({ id: 'user-1' });
@@ -1107,20 +1142,163 @@ describe('AdminService', () => {
     await expect(bcrypt.compare('ResetPass123', passwordHash)).resolves.toBe(true);
   });
 
-  it('lists enabled llm steps ordered by stepOrder then stepKey', async () => {
+  it('returns llm routes aligned to the current live generation flow', async () => {
     prisma.llmStepCatalog.findMany.mockResolvedValue([
       { id: 'step-1', stepKey: 'intent_parse', stepOrder: 30, displayName: 'Intent Parse', enabled: true },
-      { id: 'step-2', stepKey: 'code_generate.hybrid', stepOrder: 40, displayName: 'Code Generate', enabled: true },
+      { id: 'step-3', stepKey: 'expand_prompt', stepOrder: 210, displayName: 'Expand Prompt', enabled: true },
+    ]);
+    prisma.llmStepRoute.findMany.mockResolvedValue([
+      {
+        id: 'route-1',
+        stepKey: 'intent_parse',
+        region: 'cn_shanghai',
+        providerId: 'provider-1',
+        enabled: true,
+        updatedAt: new Date('2026-04-11T01:00:00.000Z'),
+        provider: {
+          id: 'provider-1',
+          name: 'Doubao Pro',
+          region: 'cn_shanghai',
+          regionTargetId: 'target-1',
+          providerType: 'openai_compatible',
+          model: 'doubao-seed-2-0-pro',
+          fastModel: 'doubao-seed-2-0-pro',
+          enabled: true,
+          priority: 100,
+          updatedAt: new Date('2026-04-11T01:00:00.000Z'),
+        },
+      },
+      {
+        id: 'route-2',
+        stepKey: 'expand_prompt',
+        region: 'cn_shanghai',
+        providerId: 'provider-2',
+        enabled: true,
+        updatedAt: new Date('2026-04-11T02:00:00.000Z'),
+        provider: {
+          id: 'provider-2',
+          name: 'Utility Model',
+          region: 'cn_shanghai',
+          regionTargetId: 'target-2',
+          providerType: 'openai_compatible',
+          model: 'utility-model',
+          fastModel: null,
+          enabled: true,
+          priority: 110,
+          updatedAt: new Date('2026-04-11T02:00:00.000Z'),
+        },
+      },
+    ]);
+    prisma.llmGatewayProvider.findMany.mockResolvedValue([
+      {
+        id: 'provider-1',
+        name: 'Doubao Pro',
+        region: 'cn_shanghai',
+        regionTargetId: 'target-1',
+        providerType: 'openai_compatible',
+        model: 'doubao-seed-2-0-pro',
+        fastModel: 'doubao-seed-2-0-pro',
+        enabled: true,
+        priority: 100,
+        updatedAt: new Date('2026-04-11T01:00:00.000Z'),
+      },
+      {
+        id: 'provider-2',
+        name: 'Utility Model',
+        region: 'cn_shanghai',
+        regionTargetId: 'target-2',
+        providerType: 'openai_compatible',
+        model: 'utility-model',
+        fastModel: null,
+        enabled: true,
+        priority: 110,
+        updatedAt: new Date('2026-04-11T02:00:00.000Z'),
+      },
     ]);
 
-    const result = await service.listLlmSteps();
+    const result = await service.listLlmRoutes('cn_shanghai');
 
-    expect(prisma.llmStepCatalog.findMany).toHaveBeenCalledWith({
-      where: { enabled: true },
-      orderBy: [{ stepOrder: 'asc' }, { stepKey: 'asc' }],
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual(expect.objectContaining({
+      stepKey: 'intent_parse',
+      stageLabel: 'Flow 02 - Structured Intent',
+      flowSummary: 'Create + iterate spec compilation',
+      journeySummary: 'Direct create + session generate + iterate',
+      bindingRequired: true,
+      routeBindingState: 'configured',
+      routeMatchStrategy: 'exact',
+    }));
+  });
+
+  it('surfaces explicit fallback activation when the primary provider is unavailable', async () => {
+    prisma.llmStepCatalog.findMany.mockResolvedValue([
+      { id: 'step-1', stepKey: 'code_generate.full', stepOrder: 50, displayName: 'Full Code Generation', enabled: true },
+    ]);
+    prisma.llmStepRoute.findMany.mockResolvedValue([
+      {
+        id: 'route-1',
+        stepKey: 'code_generate.full',
+        region: 'cn_shanghai',
+        providerId: 'provider-primary',
+        fallbackProviderIds: ['provider-fallback'],
+        enabled: true,
+        updatedAt: new Date('2026-04-11T01:00:00.000Z'),
+        provider: null,
+      },
+    ]);
+    prisma.llmGatewayProvider.findMany.mockResolvedValue([
+      {
+        id: 'provider-fallback',
+        name: 'Fallback Provider',
+        region: 'cn_shanghai',
+        regionTargetId: 'target-2',
+        providerType: 'openai_compatible',
+        model: 'fallback-model',
+        fastModel: null,
+        enabled: true,
+        priority: 100,
+        updatedAt: new Date('2026-04-11T02:00:00.000Z'),
+      },
+    ]);
+
+    const result = await service.listLlmRoutes('cn_shanghai');
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual(expect.objectContaining({
+      stepKey: 'code_generate.full',
+      routeBindingState: 'fallback_active',
+      effectiveProviderId: 'provider-fallback',
+      fallbackProviderIds: ['provider-fallback'],
+      fallbackProviderSummary: 'Fallback Provider',
+    }));
+    expect(String(result[0].bindingNote || '')).toContain('显式 fallback');
+  });
+
+  it('rejects binding a live generation step to a disabled provider', async () => {
+    prisma.llmStepCatalog.findUnique.mockResolvedValue({
+      id: 'step-1',
+      stepKey: 'code_generate.full',
+      stepOrder: 50,
+      displayName: 'Full Code Generation',
+      enabled: true,
     });
-    expect(result).toHaveLength(2);
-    expect(result[0].stepKey).toBe('intent_parse');
+    prisma.llmGatewayProvider.findUnique.mockResolvedValue({
+      id: 'provider-disabled',
+      name: 'Disabled Provider',
+      region: 'cn_shanghai',
+      regionTargetId: 'target-1',
+      providerType: 'openai_compatible',
+      model: 'disabled-model',
+      fastModel: null,
+      enabled: false,
+    });
+
+    await expect(service.upsertLlmRoute(undefined, {
+      stepKey: 'code_generate.full',
+      executionRegion: 'cn_shanghai',
+      providerId: 'provider-disabled',
+      enabled: true,
+    })).rejects.toThrow('Selected provider is disabled and cannot be bound to a live generation step');
   });
 
   it('returns ordered generation task events for the admin detail panel', async () => {
@@ -2340,9 +2518,9 @@ describe('AdminService', () => {
   it('derives route region from the selected provider and stores a single primary binding', async () => {
     prisma.llmStepCatalog.findUnique.mockResolvedValue({
       id: 'step-1',
-      stepKey: 'code_generate.hybrid',
+      stepKey: 'code_generate.full',
       stepOrder: 40,
-      displayName: 'Code Generate (Hybrid)',
+      displayName: 'Full Code Generation',
       enabled: true,
     });
     prisma.llmGatewayProvider.findUnique.mockResolvedValue({
@@ -2352,13 +2530,23 @@ describe('AdminService', () => {
       regionTargetId: 'target-1',
       model: 'MiniMax-M2.5',
       fastModel: 'MiniMax-M2.5-fast',
+      enabled: true,
     });
+    prisma.llmGatewayProvider.findMany.mockResolvedValue([
+      {
+        id: 'provider-2',
+        name: 'Doubao Fallback',
+        region: 'cn_shanghai',
+        regionTargetId: 'target-2',
+        enabled: true,
+      },
+    ]);
     prisma.llmStepRoute.upsert.mockResolvedValue({
       id: 'route-1',
-      stepKey: 'code_generate.hybrid',
+      stepKey: 'code_generate.full',
       region: 'cn_shanghai',
       providerId: 'provider-1',
-      fallbackProviderIds: [],
+      fallbackProviderIds: ['provider-2'],
       modelOverride: null,
       fastModelOverride: null,
       requestTimeoutS: null,
@@ -2377,9 +2565,10 @@ describe('AdminService', () => {
     const refreshSpy = jest.spyOn(service, 'refreshLlmGateway').mockResolvedValue({ ok: true } as any);
 
     const result = await service.upsertLlmRoute(undefined, {
-      stepKey: 'code_generate.hybrid',
+      stepKey: 'code_generate.full',
       executionRegion: 'cn_shanghai',
       providerId: 'provider-1',
+      fallbackProviderIds: ['provider-2'],
       enabled: true,
     });
 
@@ -2387,23 +2576,23 @@ describe('AdminService', () => {
       expect.objectContaining({
         where: {
           llm_step_routes_step_key_region_key: {
-            stepKey: 'code_generate.hybrid',
+            stepKey: 'code_generate.full',
             region: 'cn_shanghai',
           },
         },
         create: expect.objectContaining({
           region: 'cn_shanghai',
-          fallbackProviderIds: [],
+          fallbackProviderIds: ['provider-2'],
           modelOverride: null,
           fastModelOverride: null,
         }),
         update: expect.objectContaining({
           region: 'cn_shanghai',
-          fallbackProviderIds: [],
+          fallbackProviderIds: ['provider-2'],
         }),
       }),
     );
-    expect(result.stepMeta.stepKey).toBe('code_generate.hybrid');
+    expect(result.stepMeta.stepKey).toBe('code_generate.full');
     expect(result.region).toBe('cn_shanghai');
     expect(refreshSpy).toHaveBeenCalledWith('target-1');
   });
@@ -2514,8 +2703,47 @@ describe('AdminService', () => {
         providerType: 'openai_compatible',
         model: 'deepseek-chat',
         fastModel: 'deepseek-chat',
+        enabled: true,
+        priority: 100,
+        updatedAt: new Date('2026-03-22T10:00:00.000Z'),
       },
     });
+    prisma.llmStepRoute.findMany.mockResolvedValue([
+      {
+        id: 'route-1',
+        stepKey: 'intent_parse',
+        region: 'cn_shanghai',
+        providerId: 'provider-1',
+        enabled: true,
+        updatedAt: new Date('2026-03-22T10:00:00.000Z'),
+        provider: {
+          id: 'provider-1',
+          name: 'Deepseek-cn-Shanghai',
+          region: 'cn_shanghai',
+          regionTargetId: 'target-1',
+          providerType: 'openai_compatible',
+          model: 'deepseek-chat',
+          fastModel: 'deepseek-chat',
+          enabled: true,
+          priority: 100,
+          updatedAt: new Date('2026-03-22T10:00:00.000Z'),
+        },
+      },
+    ]);
+    prisma.llmGatewayProvider.findMany.mockResolvedValue([
+      {
+        id: 'provider-1',
+        name: 'Deepseek-cn-Shanghai',
+        region: 'cn_shanghai',
+        regionTargetId: 'target-1',
+        providerType: 'openai_compatible',
+        model: 'deepseek-chat',
+        fastModel: 'deepseek-chat',
+        enabled: true,
+        priority: 100,
+        updatedAt: new Date('2026-03-22T10:00:00.000Z'),
+      },
+    ]);
     prisma.llmStepCatalog.findUnique.mockResolvedValue({
       id: 'step-1',
       stepKey: 'intent_parse',
@@ -2539,6 +2767,9 @@ describe('AdminService', () => {
             providerType: true,
             model: true,
             fastModel: true,
+            enabled: true,
+            priority: true,
+            updatedAt: true,
           },
         },
       },

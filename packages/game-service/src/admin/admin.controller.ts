@@ -355,12 +355,6 @@ export class AdminController {
     return ok(await this.adminService.syncAiEngineRegionTargetDeployState(body), 'Region target deploy state synced');
   }
 
-  @Get('admin/llm/steps')
-  async listLlmSteps(@Headers('x-admin-token') token: string) {
-    checkAdminToken(token);
-    return ok(await this.adminService.listLlmSteps());
-  }
-
   @Post('admin/llm/providers')
   async createLlmProvider(@Headers('x-admin-token') token: string, @Body() body: any) {
     checkAdminToken(token);

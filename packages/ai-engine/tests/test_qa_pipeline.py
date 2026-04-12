@@ -428,7 +428,7 @@ class TestFullCheck:
 
 def test_repair_code_supports_fix_round_prompt_variables():
     pipeline = QAPipeline()
-    errors = [QACheckError(type="L1_syntax", message="Missing </html>", severity="error")]
+    errors = [QACheckError(type="L1_syntax", message="Missing required HTML tag: </html>", severity="error")]
 
     with patch(
         "src.engine.qa_pipeline.require_prompt",
@@ -457,310 +457,39 @@ def test_repair_code_supports_fix_round_prompt_variables():
 
     prompt = mock_complete.await_args.kwargs["messages"][0]["content"]
     assert "Round 2/3::casual" in prompt
-    assert "Missing </html>" in prompt
+    assert "Missing required HTML tag: </html>" in prompt
 
 
 def test_repair_code_falls_back_when_db_prompt_template_is_invalid():
     pipeline = QAPipeline()
-    errors = [QACheckError(type="L1_syntax", message="Missing </html>", severity="error")]
+    errors = [QACheckError(type="L1_syntax", message="Missing required HTML tag: </html>", severity="error")]
 
     with patch(
         "src.engine.qa_pipeline.require_prompt",
         return_value="Broken template {",
-    ), patch("src.engine.qa_pipeline.settings.LLM_MODE", "real"):
+    ), patch("src.engine.qa_pipeline.settings.LLM_MODE", "real"), patch.object(
+        pipeline._client,
+        "is_enabled",
+        return_value=True,
+    ):
         with pytest.raises(RuntimeError, match="QA fix prompt template is invalid"):
             asyncio.run(
-            pipeline.repair_code(
-                "<!DOCTYPE html><html>",
-                errors,
-                GameSpec(game_type="casual"),
+                pipeline.repair_code(
+                    "<!DOCTYPE html><html>",
+                    errors,
+                    GameSpec(game_type="casual"),
+                )
             )
-        )
 
 
-def test_repair_code_includes_runtime_contract_block_for_forbidden_api_repairs():
-    pipeline = QAPipeline()
-    errors = [QACheckError(type="contract_safety", message="Runtime contract forbids API usage: fetch", severity="error")]
-    runtime_contract = GameRuntimeContract()
-
-    def fake_require_prompt(key: str):
-        if key == "prompt.qa_runtime_contract_block":
-            return (
-                "Runtime contract (must still hold after the repair):\n"
-                "- Contract version: {contract_version}\n"
-                "- Runtime profile: {runtime_profile}\n"
-                "- Required states: {required_states}\n"
-                "- Required input modes: {input_modes}\n"
-                "- Forbidden APIs: {forbidden_apis}\n"
-                "- The repaired output must remove forbidden APIs instead of hiding them behind wrappers."
-            )
-        if key == "prompt.qa_instruction_forbidden_api":
-            return (
-                "- Remove every forbidden dynamic-code or network API usage from the final HTML.\n"
-                "- Replace eval/new Function/import/require patterns with plain named functions and static control flow.\n"
-                "- Keep gameplay logic self-contained; do not fetch remote assets or open sockets."
-            )
-        return "PROMPT::{runtime_contract_block}::{targeted_instructions}"
-
-    with patch(
-        "src.engine.qa_pipeline.require_prompt",
-        side_effect=fake_require_prompt,
-    ), patch(
-        "src.engine.qa_pipeline.settings.LLM_MODE",
-        "real",
-    ), patch.object(
-        pipeline._client,
-        "is_enabled",
-        return_value=True,
-    ), patch.object(
-        pipeline._client,
-        "complete",
-        new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
-    ) as mock_complete:
-        asyncio.run(
-            pipeline.repair_code(
-                "<!DOCTYPE html><html><body><script>fetch('https://example.com')</script></body></html>",
-                errors,
-                GameSpec(game_type="casual"),
-                runtime_contract=runtime_contract,
-            )
-        )
-
-    prompt = mock_complete.await_args.kwargs["messages"][0]["content"]
-    assert "Runtime contract (must still hold after the repair):" in prompt
-    assert "Forbidden APIs: fetch, XMLHttpRequest, WebSocket, eval, Function" in prompt
-    assert "Remove every forbidden dynamic-code or network API usage" in prompt
 
 
-def test_repair_code_uses_family_specific_bundle_prompt_and_scopes_to_one_family():
-    pipeline = QAPipeline()
-    runtime_contract = GameRuntimeContract()
-    errors = [
-        QACheckError(type="contract_safety", message="Runtime contract forbids API usage: fetch", severity="error"),
-        QACheckError(type="contract_input", message="Runtime contract requires primary touch or pointer gameplay handlers", severity="error"),
-    ]
-    prompt_bundle_snapshot = {
-        "layers": {
-            "resolved_prompts": {
-                "repair_forbidden_api": {
-                    "content": "FORBIDDEN_ONLY::{error_list}::{targeted_instructions}::{code}"
-                }
-            }
-        }
-    }
-
-    def fake_require_prompt(key: str):
-        if key == "prompt.qa_runtime_contract_block":
-            return (
-                "Runtime contract (must still hold after the repair):\n"
-                "- Contract version: {contract_version}\n"
-                "- Runtime profile: {runtime_profile}\n"
-                "- Required states: {required_states}\n"
-                "- Required input modes: {input_modes}\n"
-                "- Forbidden APIs: {forbidden_apis}\n"
-                "- The repaired output must remove forbidden APIs instead of hiding them behind wrappers."
-            )
-        if key == "prompt.qa_instruction_forbidden_api":
-            return (
-                "- Remove every forbidden dynamic-code or network API usage from the final HTML.\n"
-                "- Replace eval/new Function/import/require patterns with plain named functions and static control flow.\n"
-                "- Keep gameplay logic self-contained; do not fetch remote assets or open sockets."
-            )
-        raise AssertionError(f"Unexpected prompt lookup: {key}")
-
-    with patch(
-        "src.engine.qa_pipeline.require_prompt",
-        side_effect=fake_require_prompt,
-    ), patch(
-        "src.engine.qa_pipeline.settings.LLM_MODE",
-        "real",
-    ), patch.object(
-        pipeline._client,
-        "is_enabled",
-        return_value=True,
-    ), patch.object(
-        pipeline._client,
-        "complete",
-        new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
-    ) as mock_complete:
-        asyncio.run(
-            pipeline.repair_code(
-                "<!DOCTYPE html><html><body><script>fetch('https://example.com')</script></body></html>",
-                errors,
-                GameSpec(game_type="casual"),
-                runtime_contract=runtime_contract,
-                prompt_bundle_snapshot=prompt_bundle_snapshot,
-            )
-        )
-
-    kwargs = mock_complete.await_args.kwargs
-    prompt = kwargs["messages"][0]["content"]
-    assert kwargs["step_key"] == "qa_fix.forbidden_api"
-    assert "Runtime contract forbids API usage: fetch" in prompt
-    assert "primary touch or pointer gameplay handlers" not in prompt
-    assert "FORBIDDEN_ONLY::" in prompt
 
 
-def test_repair_code_uses_patch_first_section_context_for_forbidden_api_family():
-    pipeline = QAPipeline()
-    errors = [
-        QACheckError(
-            type="contract_safety",
-            message="Runtime contract forbids API usage: fetch",
-            severity="error",
-        )
-    ]
-    code = "<!DOCTYPE html><html><body><script>fetch('https://example.com')</script></body></html>"
-
-    def fake_require_prompt(key: str):
-        if key == "prompt.qa_fix":
-            return "QA_FIX::{code}::{targeted_instructions}"
-        if key == "prompt.qa_runtime_contract_block":
-            return "Runtime contract (must still hold after the repair):\n- Forbidden APIs: {forbidden_apis}"
-        if key == "prompt.qa_instruction_forbidden_api":
-            return "- Remove forbidden API usage."
-        if key == "prompt.qa_instruction_generic":
-            return "- Generic fix."
-        raise AssertionError(f"Unexpected prompt lookup: {key}")
-
-    with patch(
-        "src.engine.qa_pipeline.require_prompt",
-        side_effect=fake_require_prompt,
-    ), patch(
-        "src.engine.qa_pipeline.settings.LLM_MODE",
-        "real",
-    ), patch.object(
-        pipeline._client,
-        "is_enabled",
-        return_value=True,
-    ), patch.object(
-        pipeline,
-        "_complete_repair_prompt_raw_with_retry",
-        new=AsyncMock(return_value='{"patches":[{"section":"SCRIPT","content":"const safe = 1;"}]}'),
-    ) as mock_raw:
-        asyncio.run(
-            pipeline.repair_code(
-                code,
-                errors,
-                GameSpec(game_type="casual"),
-            )
-        )
-
-    prompt = mock_raw.await_args.kwargs["prompt"]
-    assert "PATCH-FIRST QA REPAIR (FORBIDDEN_API) OUTPUT CONTRACT" in prompt
-    assert "Preferred patch targets: CONFIG, GAME_LOOP." in prompt
-    assert "CURRENT PATCHABLE SECTIONS:" in prompt
-    assert "PREFERRED PATCH TARGETS: CONFIG, GAME_LOOP" in prompt
-    assert "=== SECTION:SCRIPT START ===" in prompt
-    assert "fetch('https://example.com')" in prompt
-    assert "QA_FIX::CURRENT PATCHABLE SECTIONS:" in prompt
 
 
-def test_repair_code_applies_script_patch_response_for_patch_first_family():
-    pipeline = QAPipeline()
-    errors = [
-        QACheckError(
-            type="contract_safety",
-            message="Runtime contract forbids API usage: fetch",
-            severity="error",
-        )
-    ]
-    code = (
-        "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas>"
-        "<script>fetch('https://example.com'); const safe = 0;</script></body></html>"
-    )
-
-    def fake_require_prompt(key: str):
-        if key == "prompt.qa_fix":
-            return "QA_FIX::{code}"
-        if key == "prompt.qa_runtime_contract_block":
-            return "Runtime contract (must still hold after the repair):\n- Forbidden APIs: {forbidden_apis}"
-        if key == "prompt.qa_instruction_forbidden_api":
-            return "- Remove forbidden API usage."
-        if key == "prompt.qa_instruction_generic":
-            return "- Generic fix."
-        raise AssertionError(f"Unexpected prompt lookup: {key}")
-
-    with patch(
-        "src.engine.qa_pipeline.require_prompt",
-        side_effect=fake_require_prompt,
-    ), patch(
-        "src.engine.qa_pipeline.settings.LLM_MODE",
-        "real",
-    ), patch.object(
-        pipeline._client,
-        "is_enabled",
-        return_value=True,
-    ), patch.object(
-        pipeline,
-        "_complete_repair_prompt_raw_with_retry",
-        new=AsyncMock(return_value='{"patches":[{"section":"SCRIPT","content":"const safe = 1;"}]}'),
-    ):
-        repaired = asyncio.run(
-            pipeline.repair_code(
-                code,
-                errors,
-                GameSpec(game_type="casual"),
-            )
-        )
-
-    assert "const safe = 1;" in repaired
-    assert "<canvas id='gameCanvas'></canvas>" in repaired
-    assert "fetch(" not in repaired
 
 
-def test_repair_code_rejects_patch_first_full_document_that_changes_unallowed_sections():
-    pipeline = QAPipeline()
-    code = (
-        "<!DOCTYPE html><html><head><style>body{background:#000;}</style></head>"
-        "<body><canvas id='gameCanvas'></canvas><script>let over = false;</script></body></html>"
-    )
-    expected_stable_candidate = pipeline._apply_deterministic_repairs(code)
-    errors = [
-        QACheckError(
-            type="contract_state",
-            message="Runtime contract requires state 'game_over'",
-            severity="error",
-        )
-    ]
-
-    def fake_require_prompt(key: str):
-        if key == "prompt.qa_fix":
-            return "QA_FIX::{code}"
-        if key == "prompt.qa_runtime_contract_block":
-            return "Runtime contract block"
-        if key == "prompt.qa_instruction_terminal_state":
-            return "- Add a proper terminal state."
-        if key == "prompt.qa_instruction_generic":
-            return "- Generic fix."
-        raise AssertionError(f"Unexpected prompt lookup: {key}")
-
-    with patch(
-        "src.engine.qa_pipeline.require_prompt",
-        side_effect=fake_require_prompt,
-    ), patch(
-        "src.engine.qa_pipeline.settings.LLM_MODE",
-        "real",
-    ), patch.object(
-        pipeline._client,
-        "is_enabled",
-        return_value=True,
-    ), patch.object(
-        pipeline,
-        "_complete_repair_prompt_raw_with_retry",
-        new=AsyncMock(
-            return_value="<!DOCTYPE html><html><head><style>body{background:#f00;}</style></head><body><div>new overlay</div><canvas id='gameCanvas'></canvas><script>let over = true;</script></body></html>"
-        ),
-    ):
-        repaired = asyncio.run(
-            pipeline.repair_code(
-                code,
-                errors,
-                GameSpec(game_type='casual'),
-            )
-        )
-
-    assert repaired == expected_stable_candidate
 
 
 def test_structural_regression_guard_allows_short_document_script_only_repairs():
@@ -797,8 +526,8 @@ def test_repair_code_preserves_structured_markers_when_input_already_has_them():
     )
     errors = [
         QACheckError(
-            type="runtime_qa",
-            message="Runtime issue",
+            type="L1_syntax",
+            message="JavaScript syntax error in <script>: Unexpected end of input",
             severity="error",
         )
     ]
@@ -825,14 +554,6 @@ def test_repair_code_preserves_structured_markers_when_input_already_has_them():
     assert "const safe = 1;" in repaired
 
 
-def test_input_bridge_injects_dom_start_control_scan_and_dom_feedback_badge():
-    code = "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas></body></html>"
-
-    bridged = QAPipeline._inject_input_bridge(code)
-
-    assert "invokeVisibleDomStartControls" in bridged
-    assert "__playforgeInputBridgeBadge" in bridged
-    assert "startHints" in bridged
 
 
 def test_l4_playability_accepts_named_game_over_state_transition_helpers():
@@ -909,209 +630,14 @@ def test_l4_playability_accepts_puzzle_completion_state_without_score_loop_warni
     assert not any("Score variable exists but is never incremented" in warning.message for warning in warnings)
 
 
-def disabled_test_repair_code_uses_fast_prompt_and_fast_route_for_known_single_issue():
-    pipeline = QAPipeline()
-    errors = [QACheckError(type="L4_playability", message="No user input handlers – game is not interactive", severity="error")]
-
-    def fake_get_prompt(key: str, default=None):
-        if key == "prompt.qa_fix_fast":
-            return "FAST::{targeted_instructions}::{code}"
-        return default
-
-    with patch(
-        "src.engine.qa_pipeline.require_prompt",
-        side_effect=fake_get_prompt,
-    ), patch(
-        "src.engine.qa_pipeline.settings.LLM_MODE",
-        "real",
-    ), patch.object(
-        pipeline._client,
-        "is_enabled",
-        return_value=True,
-    ), patch.object(
-        pipeline._client,
-        "complete",
-        new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
-    ) as mock_complete:
-        asyncio.run(
-            pipeline.repair_code(
-                "<!DOCTYPE html><html><body></body></html>",
-                errors,
-                GameSpec(game_type="casual"),
-            )
-        )
-
-    kwargs = mock_complete.await_args.kwargs
-    assert kwargs["prefer_fast"] is True
-    assert kwargs["max_tokens"] < 8192
-    prompt = kwargs["messages"][0]["content"]
-    assert "FAST::" in prompt
-    assert "Add a dedicated input binding function" in prompt
 
 
-def disabled_test_repair_code_treats_runtime_qa_missing_registered_handlers_as_fast_input_issue():
-    pipeline = QAPipeline()
-    errors = [
-        QACheckError(
-            type="runtime_qa",
-            message="Runtime QA detected no registered user input handlers",
-            severity="error",
-        )
-    ]
-
-    with patch(
-        "src.engine.qa_pipeline.settings.LLM_MODE",
-        "real",
-    ), patch(
-        "src.engine.qa_pipeline.settings.QA_FAST_REPAIR_TIMEOUT_S",
-        111,
-    ), patch(
-        "src.engine.qa_pipeline.settings.LLM_PROVIDER_FAILOVER_ENABLED",
-        True,
-    ), patch.object(
-        pipeline._client,
-        "is_enabled",
-        return_value=True,
-    ), patch.object(
-        pipeline._client,
-        "complete",
-        new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
-    ) as mock_complete:
-        asyncio.run(
-            pipeline.repair_code(
-                "<!DOCTYPE html><html><body></body></html>",
-                errors,
-                GameSpec(game_type="casual"),
-            )
-        )
-
-    kwargs = mock_complete.await_args.kwargs
-    prompt = kwargs["messages"][0]["content"]
-    assert kwargs["prefer_fast"] is True
-    assert kwargs["request_timeout_s"] == 111
-    assert kwargs["allow_provider_fallback"] is True
-    assert "addEventListener-based pointer events or touch events" in prompt
-    assert "runtime QA can observe the binding directly" in prompt
 
 
-def test_repair_code_uses_fast_prompt_for_runtime_qa_missing_state_change():
-    pipeline = QAPipeline()
-    errors = [
-        QACheckError(
-            type="runtime_qa",
-            message="Runtime QA detected no visible state change after user interaction",
-            severity="error",
-        )
-    ]
-
-    def fake_get_prompt(key: str, default=None):
-        if key == "prompt.qa_fix_fast":
-            return "FAST::{targeted_instructions}::{code}"
-        return default
-
-    with patch(
-        "src.engine.qa_pipeline.require_prompt",
-        side_effect=fake_get_prompt,
-    ), patch(
-        "src.engine.qa_pipeline.settings.LLM_MODE",
-        "real",
-    ), patch(
-        "src.engine.qa_pipeline.settings.QA_FAST_REPAIR_TIMEOUT_S",
-        111,
-    ), patch(
-        "src.engine.qa_pipeline.settings.LLM_PROVIDER_FAILOVER_ENABLED",
-        True,
-    ), patch.object(
-        pipeline._client,
-        "is_enabled",
-        return_value=True,
-    ), patch.object(
-        pipeline._client,
-        "complete",
-        new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
-    ) as mock_complete:
-        repaired = asyncio.run(
-            pipeline.repair_code(
-                "<!DOCTYPE html><html><body></body></html>",
-                errors,
-                GameSpec(game_type="casual"),
-            )
-        )
-
-    assert "__playforgeInputBridgeInstalled" in repaired
-    assert "bindInputHandlers" in repaired
-    assert mock_complete.await_count == 0
 
 
-def test_repair_code_short_circuits_with_deterministic_input_bridge_for_missing_handlers():
-    pipeline = QAPipeline()
-    errors = [
-        QACheckError(
-            type="runtime_qa",
-            message="Runtime QA detected no registered user input handlers",
-            severity="error",
-        )
-    ]
-
-    with patch.object(
-        pipeline._client,
-        "is_enabled",
-        return_value=True,
-    ), patch.object(
-        pipeline._client,
-        "complete",
-        new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
-    ) as mock_complete:
-        repaired = asyncio.run(
-            pipeline.repair_code(
-                "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas></body></html>",
-                errors,
-                GameSpec(game_type="casual"),
-            )
-        )
-
-    assert "__playforgeInputBridgeInstalled" in repaired
-    assert "addEventListener('pointerdown'" in repaired
-    assert "window.__playforgeBridgeHandling = true;" in repaired
-    assert "BRIDGE_EVENT_FLAG" in repaired
-    assert "node.onclick = bridgeHandler" not in repaired
-    assert "node.onpointerdown = bridgeHandler" not in repaired
-    assert mock_complete.await_count == 0
 
 
-def test_repair_code_short_circuits_with_deterministic_visible_feedback_bridge():
-    pipeline = QAPipeline()
-    errors = [
-        QACheckError(
-            type="runtime_qa",
-            message="Runtime QA detected no visible state change after user interaction",
-            severity="error",
-        )
-    ]
-
-    with patch.object(
-        pipeline._client,
-        "is_enabled",
-        return_value=True,
-    ), patch.object(
-        pipeline._client,
-        "complete",
-        new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
-    ) as mock_complete:
-        repaired = asyncio.run(
-            pipeline.repair_code(
-                "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas></body></html>",
-                errors,
-                GameSpec(game_type="casual"),
-            )
-        )
-
-    assert "__playforgeInputBridgeInstalled" in repaired
-    assert "bindInputHandlers" in repaired
-    assert "__playforgeInteractionFeedbackVersion" in repaired
-    assert "Tap ' + stamp" in repaired
-    assert "markEvent(event, BRIDGE_HANDLED_FLAG);" in repaired
-    assert mock_complete.await_count == 0
 
 
 def test_classify_visible_scoring_loop_as_score_feedback():
@@ -1124,300 +650,24 @@ def test_classify_visible_scoring_loop_as_score_feedback():
     assert QAPipeline._classify_error_family(error) == "score_feedback"
 
 
-def test_repair_code_short_circuits_with_deterministic_score_bridge():
-    pipeline = QAPipeline()
-    errors = [
-        QACheckError(
-            type="contract_gameplay",
-            message="Runtime contract requires a visible scoring loop",
-            severity="error",
-        )
-    ]
-
-    with patch.object(
-        pipeline._client,
-        "is_enabled",
-        return_value=True,
-    ), patch.object(
-        pipeline._client,
-        "complete",
-        new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
-    ) as mock_complete:
-        repaired = asyncio.run(
-            pipeline.repair_code(
-                "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas></body></html>",
-                errors,
-                GameSpec(game_type="casual"),
-            )
-    )
-
-    assert "__playforgeScoreBridgeInstalled" in repaired
-    assert "playforgeScoreHud" in repaired
-    assert "formatLabel(sample.label) + ': ' + sample.value" in repaired
-    assert mock_complete.await_count == 0
 
 
-def test_repair_code_short_circuits_with_deterministic_mobile_layout_bridge():
-    pipeline = QAPipeline()
-    errors = [
-        QACheckError(
-            type="contract_mobile",
-            message="Runtime contract requires portrait-first short-edge UI scaling",
-            severity="error",
-        )
-    ]
-    code = """
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      </head>
-      <body>
-        <canvas id="gameCanvas"></canvas>
-        <script>
-          const canvas = document.getElementById('gameCanvas');
-          const ctx = canvas.getContext('2d');
-          const W = 360;
-          const H = 640;
-          canvas.width = W;
-          canvas.height = H;
-        </script>
-      </body>
-    </html>
-    """
-
-    with patch.object(
-        pipeline._client,
-        "is_enabled",
-        return_value=True,
-    ), patch.object(
-        pipeline._client,
-        "complete",
-        new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
-    ) as mock_complete:
-        repaired = asyncio.run(
-            pipeline.repair_code(
-                code,
-                errors,
-                GameSpec(game_type="casual"),
-            )
-        )
-
-    assert "__playforgeMobileLayoutBridgeInstalled" in repaired
-    assert "const uiScale = Math.min(scaleX, scaleY);" in repaired
-    assert "const shortEdge = Math.min(viewportWidth, viewportHeight);" in repaired
-    assert "const applyResponsiveLayout = () => {" in repaired
-    assert "window.__playforgeUiScale = uiScale;" in repaired
-    assert mock_complete.await_count == 0
 
 
-def test_repair_code_short_circuits_with_deterministic_landscape_mobile_layout_bridge():
-    pipeline = QAPipeline()
-    errors = [
-        QACheckError(
-            type="contract_mobile",
-            message="Runtime contract requires landscape-first short-edge UI scaling",
-            severity="error",
-        )
-    ]
-    code = """
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      </head>
-      <body>
-        <canvas id="gameCanvas"></canvas>
-        <script>
-          const canvas = document.getElementById('gameCanvas');
-          const ctx = canvas.getContext('2d');
-          const W = 640;
-          const H = 360;
-          canvas.width = W;
-          canvas.height = H;
-        </script>
-      </body>
-    </html>
-    """
-
-    with patch.object(
-        pipeline._client,
-        "is_enabled",
-        return_value=True,
-    ), patch.object(
-        pipeline._client,
-        "complete",
-        new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
-    ) as mock_complete:
-        repaired = asyncio.run(
-            pipeline.repair_code(
-                code,
-                errors,
-                GameSpec(game_type="casual"),
-                runtime_contract=GameRuntimeContract(
-                    canvas={"orientation": "landscape_first"},
-                    mobile_layout={"orientation": "landscape_first"},
-                ),
-            )
-        )
-
-    assert "__playforgeMobileLayoutBridgeInstalled" in repaired
-    assert "const designWidth = Math.max(1, Number(canvas.width) || Number(canvas.getAttribute('width')) || 360);" in repaired
-    assert "const applyResponsiveLayout = () => {" in repaired
-    assert "window.__playforgeUiScale = uiScale;" in repaired
-    assert mock_complete.await_count == 0
 
 
-def test_repair_code_short_circuits_with_deterministic_forbidden_api_cleanup():
-    pipeline = QAPipeline()
-    errors = [
-        QACheckError(
-            type="contract_safety",
-            message="Runtime contract forbids API usage: Function",
-            severity="error",
-        )
-    ]
-
-    with patch.object(
-        pipeline._client,
-        "is_enabled",
-        return_value=True,
-    ), patch.object(
-        pipeline._client,
-        "complete",
-        new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
-    ) as mock_complete:
-        repaired = asyncio.run(
-            pipeline.repair_code(
-                "<!DOCTYPE html><html><body><script>const fn = new Function('return 1');</script></body></html>",
-                errors,
-                GameSpec(game_type="casual"),
-            )
-        )
-
-    assert "new Function(" not in repaired
-    assert "const fn = ('return 1');" in repaired
 
 
-def test_repair_code_short_circuits_with_touch_coordinate_guard_for_runtime_clientx_error():
-    pipeline = QAPipeline()
-    errors = [
-        QACheckError(
-            type="runtime_qa",
-            message="Runtime JS error: Cannot read properties of undefined (reading 'clientX')",
-            severity="error",
-        )
-    ]
-    code = (
-        "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas><script>"
-        "function getPos(e){ const touch = e.touches ? e.touches[0] : e; return touch.clientX; }"
-        "</script></body></html>"
-    )
-
-    with patch.object(
-        pipeline._client,
-        "is_enabled",
-        return_value=True,
-    ), patch.object(
-        pipeline._client,
-        "complete",
-        new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
-    ) as mock_complete:
-        repaired = asyncio.run(
-            pipeline.repair_code(
-                code,
-                errors,
-                GameSpec(game_type="casual"),
-            )
-        )
-
-    assert "__playforgeResolveTouchPointInstalled" in repaired
-    assert "window.__playforgeResolveTouchPoint(e)" in repaired
-    assert mock_complete.await_count == 0
 
 
-def test_repair_code_short_circuits_with_touch_coordinate_guard_for_direct_clientx_ternary():
-    pipeline = QAPipeline()
-    errors = [
-        QACheckError(
-            type="runtime_qa",
-            message="Runtime JS error: Cannot read properties of undefined (reading '0')",
-            severity="error",
-        ),
-        QACheckError(
-            type="runtime_qa",
-            message="Runtime JS error: Cannot read properties of undefined (reading 'clientX')",
-            severity="error",
-        ),
-    ]
-    code = (
-        "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas><script>"
-        "function getPos(e){ const clientX = e.touches ? e.touches[0].clientX : e.clientX; return clientX; }"
-        "</script></body></html>"
-    )
-
-    with patch.object(
-        pipeline._client,
-        "is_enabled",
-        return_value=True,
-    ), patch.object(
-        pipeline._client,
-        "complete",
-        new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
-    ) as mock_complete:
-        repaired = asyncio.run(
-            pipeline.repair_code(
-                code,
-                errors,
-                GameSpec(game_type="casual"),
-            )
-        )
-
-    assert "__playforgeResolveTouchPointInstalled" in repaired
-    assert "window.__playforgeResolveTouchPoint(e).clientX" in repaired
-    assert mock_complete.await_count == 0
 
 
-def test_repair_code_short_circuits_with_config_duplicate_declaration_cleanup():
-    pipeline = QAPipeline()
-    errors = [
-        QACheckError(
-            type="runtime_qa",
-            message="Runtime JS error: Identifier 'stormActive' has already been declared",
-            severity="error",
-        )
-    ]
-    code = (
-        "<!DOCTYPE html><html><body><script>"
-        "/* SECTION:CONFIG START */\n"
-        "let stormActive = false;\n"
-        "const STORM_INTERVAL = 30;\n"
-        "/* SECTION:CONFIG END */\n"
-        "let stormActive = false;\n"
-        "function boot(){ return stormActive ? STORM_INTERVAL : 0; }\n"
-        "</script></body></html>"
-    )
 
-    with patch.object(
-        pipeline._client,
-        "is_enabled",
-        return_value=True,
-    ), patch.object(
-        pipeline._client,
-        "complete",
-        new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
-    ) as mock_complete:
-        repaired = asyncio.run(
-            pipeline.repair_code(
-                code,
-                errors,
-                GameSpec(game_type="casual"),
-            )
-        )
 
-    assert repaired.count("let stormActive = false;") == 1
-    assert "const STORM_INTERVAL = 30;" in repaired
-    assert mock_complete.await_count == 0
+
+
+
+
 
 
 def test_repair_code_uses_bundle_prompt_for_syntax_structural_family():
@@ -1425,7 +675,7 @@ def test_repair_code_uses_bundle_prompt_for_syntax_structural_family():
     errors = [
         QACheckError(
             type="L1_syntax",
-            message="JavaScript local static declarations are not valid in plain browser JS; use outer-scope let/const state instead",
+            message="JavaScript syntax error in <script>: Unexpected end of input",
             severity="error",
         )
     ]
@@ -1500,8 +750,8 @@ def test_repair_code_rejects_structurally_regressed_llm_candidate():
 def test_run_with_auto_fix_breaks_after_repeated_single_issue():
     pipeline = QAPipeline()
     repeated_error = QACheckError(
-        type="L4_playability",
-        message="No user input handlers – game is not interactive",
+        type="L1_syntax",
+        message="Conflict markers detected in generated output",
         severity="error",
     )
 
@@ -1555,121 +805,10 @@ def test_check_populates_issue_list_with_family_blocking_and_repair_hint():
     assert "input_contract" in failed.issue_list.families
 
 
-def test_repair_code_does_not_fallback_to_simplified_rewrite_when_syntax_fix_stays_broken():
-    pipeline = QAPipeline()
-    broken_code = VALID_GAME.replace("game.score += 1;", "if (true) {")
-    errors = [
-        QACheckError(
-            type="L1_syntax",
-            message="JavaScript syntax error in <script>: Unexpected end of input",
-            severity="error",
-        ),
-    ]
-
-    class _FakeEsprima:
-        @staticmethod
-        def parseScript(script_content, tolerant=False):
-            assert tolerant is False
-            if "if (true) {" in script_content:
-                raise Exception("Unexpected end of input")
-
-    with patch(
-        "src.engine.qa_pipeline.esprima",
-        _FakeEsprima(),
-    ), patch.object(
-        pipeline._client,
-        "is_enabled",
-        return_value=True,
-    ), patch.object(
-        pipeline,
-        "_fix_with_llm",
-        new=AsyncMock(return_value=broken_code),
-    ) as mock_fix, patch.object(
-        pipeline,
-        "_rewrite_with_simplified_budget",
-        new=AsyncMock(return_value=VALID_GAME),
-    ) as mock_rewrite:
-        repaired = asyncio.run(
-            pipeline.repair_code(
-                broken_code,
-                errors,
-                GameSpec(game_type="casual"),
-            )
-        )
-
-    assert repaired == broken_code
-    assert mock_fix.await_count == 1
-    assert mock_rewrite.await_count == 0
 
 
-def test_repair_code_does_not_rebuild_from_spec_when_syntax_repair_keeps_truncating():
-    pipeline = QAPipeline()
-    broken_code = VALID_GAME.replace("game.score += 1;", "if (true) {")
-    errors = [
-        QACheckError(
-            type="L1_syntax",
-            message="JavaScript syntax error in <script>: Unexpected end of input",
-            severity="error",
-        ),
-    ]
-
-    class _FakeEsprima:
-        @staticmethod
-        def parseScript(script_content, tolerant=False):
-            assert tolerant is False
-            if "if (true) {" in script_content:
-                raise Exception("Unexpected end of input")
-
-    with patch(
-        "src.engine.qa_pipeline.esprima",
-        _FakeEsprima(),
-    ), patch.object(
-        pipeline._client,
-        "is_enabled",
-        return_value=True,
-    ), patch.object(
-        pipeline,
-        "_fix_with_llm",
-        new=AsyncMock(return_value=broken_code),
-    ) as mock_fix, patch.object(
-        pipeline,
-        "_rewrite_with_simplified_budget",
-        new=AsyncMock(return_value=broken_code),
-    ) as mock_rewrite, patch.object(
-        pipeline,
-        "_rebuild_from_spec_for_syntax_recovery",
-        new=AsyncMock(return_value=VALID_GAME),
-    ) as mock_rebuild:
-        repaired = asyncio.run(
-            pipeline.repair_code(
-                broken_code,
-                errors,
-                GameSpec(game_type="casual", source_description="课堂浮力小游戏"),
-                runtime_contract=GameRuntimeContract(),
-            )
-        )
-
-    assert repaired == broken_code
-    assert mock_fix.await_count == 1
-    assert mock_rewrite.await_count == 0
-    assert mock_rebuild.await_count == 0
 
 
-def test_mixed_syntax_failures_do_not_force_generic_repair():
-    errors = [
-        QACheckError(
-            type="L1_syntax",
-            message="JavaScript syntax error in <script>: Unexpected end of input",
-            severity="error",
-        ),
-        QACheckError(
-            type="contract_input",
-            message="Runtime contract requires primary touch or pointer gameplay handlers",
-            severity="error",
-        ),
-    ]
-
-    assert QAPipeline._should_force_full_repair(errors) is False
 
 
 def test_repair_code_uses_larger_budget_for_truncation_prone_syntax_errors():
@@ -1700,7 +839,6 @@ def test_repair_code_uses_larger_budget_for_truncation_prone_syntax_errors():
             )
         )
 
-    assert mock_fix.await_args.kwargs["repair_family"] == "syntax_structural"
     assert mock_fix.await_args.kwargs["max_tokens"] >= 6144
 
 
@@ -1709,7 +847,7 @@ def test_fix_with_llm_retries_truncated_syntax_repair_with_larger_budget():
     errors = [
         QACheckError(
             type="L1_syntax",
-            message="JavaScript syntax error in <script>: Unexpected end of input",
+            message="Missing required HTML tag: </html>",
             severity="error",
         ),
     ]
@@ -1719,15 +857,8 @@ def test_fix_with_llm_retries_truncated_syntax_repair_with_larger_budget():
         return_value="FIX::{code}",
     ), patch.object(
         pipeline._client,
-        "complete",
-        new=AsyncMock(side_effect=[
-            LLMResponseTruncatedError(
-                "Anthropic response hit max_tokens and may be truncated",
-                response_excerpt="<html><body><script>function draw(){",
-                stop_reason="max_tokens",
-            ),
-            "<!DOCTYPE html><html><body>fixed</body></html>",
-        ]),
+        "complete_with_truncation_retry",
+        new=AsyncMock(return_value="<!DOCTYPE html><html><body>fixed</body></html>"),
     ) as mock_complete:
         repaired = asyncio.run(
             pipeline._fix_with_llm(
@@ -1736,111 +867,212 @@ def test_fix_with_llm_retries_truncated_syntax_repair_with_larger_budget():
                 GameSpec(game_type="casual"),
                 runtime_contract=None,
                 max_tokens=4096,
-                repair_family="syntax_structural",
             )
         )
 
     assert repaired == "<!DOCTYPE html><html><body>fixed</body></html>"
-    assert mock_complete.await_count == 2
-    first_max_tokens = mock_complete.await_args_list[0].kwargs["max_tokens"]
-    second_max_tokens = mock_complete.await_args_list[1].kwargs["max_tokens"]
-    assert second_max_tokens > first_max_tokens
+    assert mock_complete.await_count == 1
+    assert mock_complete.await_args.kwargs["max_tokens"] >= 4096
 
 
-def test_fix_with_llm_retries_truncated_generic_repair_with_larger_budget():
+def test_fix_with_llm_prefers_script_only_repair_for_inline_script_syntax_errors():
     pipeline = QAPipeline()
-    errors = [
-        QACheckError(
-            type="contract_gameplay",
-            message="Runtime contract requires a restart entry point",
-            severity="error",
-        ),
-    ]
-    repaired_script = ("const tile = 1;\n" * 400) + "function fix(){ return true; }\n"
-
-    with patch(
-        "src.engine.qa_pipeline.require_prompt",
-        return_value="FIX::{code}",
-    ), patch.object(
-        pipeline._client,
-        "complete",
-        new=AsyncMock(side_effect=[
-            LLMResponseTruncatedError(
-                "OpenAI-compatible response hit the output length limit and may be truncated",
-                response_excerpt="<!DOCTYPE html><html><body><script>function fix(){",
-                stop_reason="length",
-                output_tokens=5207,
-            ),
-            '{"patches":[{"section":"SCRIPT","content":"' + repaired_script.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"}]}',
-        ]),
-    ) as mock_complete:
-        repaired = asyncio.run(
-            pipeline._fix_with_llm(
-                "<!DOCTYPE html><html><body><script>" + ("const tile = 1;\n" * 400) + "</script></body></html>",
-                errors,
-                GameSpec(game_type="puzzle"),
-                runtime_contract=None,
-                max_tokens=5207,
-                repair_family="generic",
-            )
-        )
-
-    assert "function fix(){ return true; }" in repaired
-    assert mock_complete.await_count == 2
-    first_max_tokens = mock_complete.await_args_list[0].kwargs["max_tokens"]
-    second_max_tokens = mock_complete.await_args_list[1].kwargs["max_tokens"]
-    assert second_max_tokens > first_max_tokens
-
-
-def test_rebuild_from_spec_for_syntax_recovery_uses_large_initial_budget_and_timeout():
-    pipeline = QAPipeline()
-    code = "<!DOCTYPE html><html><body><script>" + ("const tile = 1;\n" * 1500) + "</script></body></html>"
     errors = [
         QACheckError(
             type="L1_syntax",
-            message="JavaScript syntax error in <script>: Line 98: Unexpected token .",
+            message="JavaScript syntax error in <script>: Line 82: Unexpected token ;",
             severity="error",
         ),
     ]
-    spec = GameSpec(game_type="puzzle")
+    code = "<!DOCTYPE html><html><body><script>function boot(){ const value = ; }</script></body></html>"
 
-    with patch.object(
+    with patch(
+        "src.engine.qa_pipeline.require_prompt",
+        return_value="FULL::{code}",
+    ), patch.object(
+        pipeline,
+        "_complete_script_repair_prompt_with_retry",
+        new=AsyncMock(return_value="function boot(){ const value = 1; }"),
+    ) as mock_script_repair, patch.object(
         pipeline,
         "_complete_repair_prompt_with_retry",
-        new=AsyncMock(return_value="<!DOCTYPE html><html><body>fixed</body></html>"),
-    ) as mock_repair:
+        new=AsyncMock(return_value="<html>should not run</html>"),
+    ) as mock_full_repair:
         repaired = asyncio.run(
-            pipeline._rebuild_from_spec_for_syntax_recovery(
-                code=code,
-                errors=errors,
-                game_spec=spec,
+            pipeline._fix_with_llm(
+                code,
+                errors,
+                GameSpec(game_type="casual"),
                 runtime_contract=None,
+                max_tokens=4096,
             )
         )
 
-    assert repaired == "<!DOCTYPE html><html><body>fixed</body></html>"
-    assert mock_repair.await_count == 1
-    kwargs = mock_repair.await_args.kwargs
-    assert kwargs["step_key"] == "qa_fix.syntax_rebuild"
-    assert kwargs["max_tokens"] > 8192
-    assert kwargs["request_timeout_s"] >= 240
+    assert "const value = 1;" in repaired
+    assert mock_script_repair.await_count == 1
+    assert mock_full_repair.await_count == 0
 
 
-def test_targeted_terminal_state_instructions_require_named_restart_or_explicit_reset_branch():
+def test_fix_with_llm_repairs_script_window_before_whole_script_fallback():
+    pipeline = QAPipeline()
+    errors = [
+        QACheckError(
+            type="L1_syntax",
+            message="JavaScript syntax error in <script>: Line 2: Unexpected token ;",
+            severity="error",
+        ),
+    ]
+    code = (
+        "<!DOCTYPE html><html><body><script>"
+        "const score = 0;\n"
+        "const value = ;\n"
+        "console.log(score + value);"
+        "</script></body></html>"
+    )
+
+    class _FakeEsprima:
+        @staticmethod
+        def parseScript(script_content, tolerant=False):
+            assert tolerant is False
+            if "const value = ;" in script_content:
+                raise Exception("Unexpected token ;")
+
     with patch(
         "src.engine.qa_pipeline.require_prompt",
-        return_value=(
-            "- Add or preserve one named restart/reset entry point such as `restartGame()` or `resetRound()`.\n"
-            "- If restart is handled inside a named input handler, make that terminal branch explicitly reset state flags and core progress values before returning to `ready` or `playing`."
-        ),
-    ):
-        instructions = QAPipeline._build_targeted_fix_instructions([
-            QACheckError(
-                type="contract_gameplay",
-                message="Runtime contract requires a restart entry point",
-                severity="error",
+        return_value="FULL::{code}",
+    ), patch(
+        "src.engine.qa_pipeline.esprima",
+        _FakeEsprima(),
+    ), patch.object(
+        pipeline,
+        "_complete_script_repair_prompt_with_retry",
+        new=AsyncMock(return_value="const value = 1;"),
+    ) as mock_script_repair, patch.object(
+        pipeline,
+        "_complete_repair_prompt_with_retry",
+        new=AsyncMock(return_value="<html>should not run</html>"),
+    ) as mock_full_repair:
+        repaired = asyncio.run(
+            pipeline._fix_with_llm(
+                code,
+                errors,
+                GameSpec(game_type="casual"),
+                runtime_contract=None,
+                max_tokens=4096,
             )
-        ])
+        )
 
-    assert "named restart/reset entry point" in instructions
-    assert "terminal branch explicitly reset state flags and core progress values" in instructions
+    assert "const value = 1;" in repaired
+    assert mock_script_repair.await_count == 1
+    assert "SCRIPT WINDOW SYNTAX REPAIR" in mock_script_repair.await_args.kwargs["prompt"]
+    assert "const value = ;" in mock_script_repair.await_args.kwargs["prompt"]
+    assert mock_full_repair.await_count == 0
+
+
+def test_fix_with_llm_skips_full_document_fallback_when_script_repair_fails():
+    pipeline = QAPipeline()
+    errors = [
+        QACheckError(
+            type="L1_syntax",
+            message="JavaScript syntax error in <script>: Line 2: Unexpected token ;",
+            severity="error",
+        ),
+    ]
+    code = (
+        "<!DOCTYPE html><html><body><script>"
+        "const score = 0;\n"
+        "const value = ;\n"
+        "console.log(score + value);"
+        "</script></body></html>"
+    )
+
+    with patch(
+        "src.engine.qa_pipeline.require_prompt",
+        return_value="FULL::{code}",
+    ), patch.object(
+        pipeline,
+        "_complete_script_repair_prompt_with_retry",
+        new=AsyncMock(side_effect=[TimeoutError("window timeout"), TimeoutError("script timeout")]),
+    ) as mock_script_repair, patch.object(
+        pipeline,
+        "_complete_repair_prompt_with_retry",
+        new=AsyncMock(return_value="<html>should not run</html>"),
+    ) as mock_full_repair:
+        repaired = asyncio.run(
+            pipeline._fix_with_llm(
+                code,
+                errors,
+                GameSpec(game_type="casual"),
+                runtime_contract=None,
+                max_tokens=4096,
+            )
+        )
+
+    assert repaired == code
+    assert mock_script_repair.await_count == 2
+    assert mock_full_repair.await_count == 0
+
+
+def test_syntax_repair_token_budget_is_capped_for_full_document_fix():
+    large_code = "const x = 1;\n" * 8000
+    assert qa._estimate_syntax_repair_max_tokens(large_code, truncation_risk=False) <= 8192
+    assert qa._estimate_syntax_repair_max_tokens(large_code, truncation_risk=True) <= 12288
+
+
+def test_syntax_repair_timeout_is_capped():
+    assert qa._estimate_repair_timeout_s(max_tokens=4096) <= 60
+    assert qa._estimate_repair_timeout_s(max_tokens=16384) <= 60
+
+
+def test_syntax_only_repair_guard_rejects_mixed_errors():
+    errors = [
+        QACheckError(type="L1_syntax", message="Missing </script> tag", severity="error"),
+        QACheckError(
+            type="contract_mobile",
+            message="Runtime contract requires portrait-first short-edge UI scaling",
+            severity="error",
+        ),
+    ]
+
+    assert qa._should_attempt_syntax_only_repair(errors) is False
+
+
+def test_syntax_only_repair_guard_rejects_non_truncation_syntax_errors():
+    errors = [
+        QACheckError(
+            type="L1_syntax",
+            message="JavaScript local static declarations are not valid in plain browser JS; use outer-scope let/const state instead",
+            severity="error",
+        )
+    ]
+
+    assert qa._should_attempt_syntax_only_repair(errors) is False
+
+
+def test_syntax_repair_enables_fast_provider_fallback():
+    pipeline = QAPipeline()
+
+    with patch.object(
+        pipeline._client,
+        "complete_with_truncation_retry",
+        new=AsyncMock(return_value="<!DOCTYPE html><html></html>"),
+    ) as mock_complete:
+        result = asyncio.run(
+            pipeline._complete_repair_prompt_raw_with_retry(
+                prompt="repair this",
+                code="<!DOCTYPE html><html></html>",
+                step_key="qa_fix.syntax_structural",
+                request_timeout_s=150,
+                max_tokens=8192,
+            )
+        )
+
+    assert result == "<!DOCTYPE html><html></html>"
+    assert mock_complete.await_args.kwargs["allow_provider_fallback"] is True
+    assert mock_complete.await_args.kwargs["hedge_provider_fallback_after_s"] == 15
+    assert mock_complete.await_args.kwargs["response_size_hint"] == "full_document"
+    assert mock_complete.await_args.kwargs["timeout_retry_attempts"] == 0
+    assert mock_complete.await_args.kwargs["provider_retry_attempts"] == 0
+    assert mock_complete.await_args.kwargs["provider_retry_on_timeout_errors"] is False
+    assert mock_complete.await_args.kwargs["context_scope"] == "request"
+    assert mock_complete.await_args.kwargs["prefer_fast"] is True

@@ -14,11 +14,11 @@ Auto-fix loop: on failure, build targeted fix-prompt → call LLM → retry (max
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import time
-import hashlib
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
     import esprima
@@ -39,28 +39,14 @@ from ..config.timeout_store import get_int as get_timeout_int
 from ..services.llm_client import LLMClient
 from ..services.llm_gateway import get_request_context
 from ..services.task_memory import task_memory
-from .mobile_layout import MOBILE_LAYOUT_BRIDGE_MARKER, has_short_edge_scaling
 from .prompt_store import require_prompt
 from .restart_entry import has_restart_entry
-from .scoring_loop import has_visible_scoring_loop
 from .section_patch import (
-    PATCH_SECTION_BODY,
-    PATCH_SECTION_HUD,
-    PATCH_SECTION_SCRIPT,
-    PATCH_SECTION_STYLE,
-    PATCH_SCRIPT_ANCHOR_CONFIG,
-    PATCH_SCRIPT_ANCHOR_GAME_LOOP,
-    PATCH_SCRIPT_ANCHOR_INPUT,
-    PATCH_SCRIPT_ANCHOR_LEVEL_DATA,
-    SectionPatch,
-    apply_section_patches,
-    build_patch_protocol,
-    build_section_context,
     ensure_structured_section_markers,
+    extract_script_content,
     find_incomplete_structured_markers,
     has_structured_section_markers,
-    parse_patch_response,
-    validate_patch_candidate,
+    replace_script_content,
 )
 from .terminal_state import has_required_state_presence, has_terminal_state_transition
 
@@ -126,26 +112,10 @@ _INPUT_EVENT_FAMILIES: Dict[str, Tuple[str, ...]] = {
     "sensor": ("deviceorientation", "devicemotion"),
 }
 
-REPAIR_SLOT_BY_FAMILY: Dict[str, str] = {
-    "forbidden_api": "repair_forbidden_api",
-    "input_contract": "repair_input_contract",
-    "score_feedback": "repair_generic",
-    "syntax_structural": "repair_syntax_structural",
-    "terminal_state": "repair_terminal_state",
-    "mobile_layout": "repair_mobile_layout",
-    "runtime_startup": "repair_runtime_startup",
-    "generic": "repair_generic",
-}
-
-REPAIR_FAMILY_PRIORITY: Tuple[str, ...] = (
-    "syntax_structural",
-    "forbidden_api",
-    "input_contract",
-    "score_feedback",
-    "terminal_state",
-    "mobile_layout",
-    "runtime_startup",
-    "generic",
+SYNTAX_REPAIR_FAMILY = "syntax_structural"
+_SCRIPT_SYNTAX_LINE_RE = re.compile(
+    r"JavaScript syntax error in <script>:\s*Line\s*(\d+)\s*:",
+    re.IGNORECASE,
 )
 
 
@@ -409,74 +379,102 @@ class QAPipeline:
         )
 
     @staticmethod
-    def _estimate_fix_max_tokens(code: str, *, prefer_fast: bool) -> int:
-        approx_tokens = max(1024, len((code or "").encode("utf-8")) // (4 if prefer_fast else 3))
-        buffer = 1024 if prefer_fast else 3072
-        ceiling = 6144 if prefer_fast else 10240
-        floor = 2048 if prefer_fast else 4096
-        return min(ceiling, max(floor, approx_tokens + buffer))
-
-    @staticmethod
     def _estimate_syntax_repair_max_tokens(code: str, *, truncation_risk: bool) -> int:
         approx_tokens = max(2048, len((code or "").encode("utf-8")) // 3)
-        buffer = 5120 if truncation_risk else 3584
-        ceiling = max(
+        buffer = 3072 if truncation_risk else 2048
+        ceiling = min(
             settings.LLM_LONG_GENERATION_MAX_TOKENS,
-            settings.LLM_GENERATION_TOKEN_BUDGET_COMPLEX if truncation_risk else settings.LLM_GENERATION_TOKEN_BUDGET_STANDARD,
+            12288 if truncation_risk else 8192,
         )
-        floor = 7168 if truncation_risk else 6144
+        floor = 6144 if truncation_risk else 4096
         return min(ceiling, max(floor, approx_tokens + buffer))
-
-    # ── Repair family timeout lookup (Phase 4 optimization) ────────────
-    _REPAIR_FAMILY_TIMEOUT_S: dict[str, int] = {
-        "forbidden_api": 45,
-        "input_contract": 45,
-        "score_feedback": 45,
-        "terminal_state": 60,
-        "mobile_layout": 60,
-        "runtime_startup": 60,
-        "syntax_structural": 120,
-        "generic": 120,
-    }
 
     @classmethod
     def _estimate_repair_timeout_s(
         cls,
         *,
         max_tokens: int,
-        prefer_fast: bool,
-        repair_family: str,
     ) -> int:
-        if getattr(settings, "LLM_ADAPTIVE_REPAIR_TIMEOUTS_ENABLED", False):
-            # Use family-based adaptive timeouts
-            base = cls._REPAIR_FAMILY_TIMEOUT_S.get(repair_family, 120)
-            # Scale up for very large token budgets
-            if max_tokens >= 12288:
-                base = max(base, settings.LLM_LONG_GENERATION_TIMEOUT_S)
-            elif max_tokens >= 8192:
-                base = max(base, 180)
-            elif max_tokens >= 6144:
-                base = max(base, min(base + 60, 180))
-            return base
-
-        # Legacy fixed timeout path
-        timeout_key = "timeout.ai_engine.qa_fast_repair_s" if prefer_fast else "timeout.ai_engine.qa_repair_s"
-        default_timeout = 120 if prefer_fast else 180
-        timeout_s = get_timeout_int(timeout_key, default_timeout, min_value=30)
-        if prefer_fast:
-            if max_tokens >= 4096:
-                timeout_s = max(timeout_s, 150)
-            if max_tokens >= 6144:
-                timeout_s = max(timeout_s, 180)
-            return timeout_s
-
-        if repair_family == "syntax_structural":
-            timeout_s = max(timeout_s, 240)
+        timeout_s = get_timeout_int("timeout.ai_engine.qa_repair_s", 45, min_value=30)
+        timeout_s = max(timeout_s, 45)
         if max_tokens >= 8192:
-            timeout_s = max(timeout_s, 240)
+            timeout_s = max(timeout_s, 50)
         if max_tokens >= 12288:
-            timeout_s = max(timeout_s, settings.LLM_LONG_GENERATION_TIMEOUT_S)
-        return timeout_s
+            timeout_s = max(timeout_s, 60)
+        return min(timeout_s, 60)
+
+    @staticmethod
+    def _syntax_repair_hedge_delay_s(request_timeout_s: int) -> int:
+        return max(8, min(15, request_timeout_s // 3))
+
+    @staticmethod
+    def _estimate_script_repair_max_tokens(script: str) -> int:
+        approx_tokens = max(1024, len((script or "").encode("utf-8")) // 3)
+        return min(6144, max(2048, approx_tokens + 1024))
+
+    @classmethod
+    def _estimate_script_repair_timeout_s(
+        cls,
+        *,
+        max_tokens: int,
+    ) -> int:
+        return min(30, max(18, cls._estimate_repair_timeout_s(max_tokens=max_tokens) - 20))
+
+    @staticmethod
+    def _script_syntax_error_line_numbers(errors: List[QACheckError]) -> List[int]:
+        line_numbers: list[int] = []
+        for error in errors or []:
+            match = _SCRIPT_SYNTAX_LINE_RE.search(error.message or "")
+            if not match:
+                continue
+            try:
+                line_numbers.append(int(match.group(1)))
+            except Exception:
+                continue
+        return sorted({line_no for line_no in line_numbers if line_no > 0})
+
+    @staticmethod
+    def _extract_script_repair_window(
+        script: str,
+        *,
+        line_numbers: List[int],
+        context_lines: int = 18,
+    ) -> tuple[int, int, str]:
+        script_lines = (script or "").splitlines()
+        if not script_lines:
+            return 1, 1, script or ""
+        if not line_numbers:
+            return 1, len(script_lines), script or ""
+        start_line = max(1, min(line_numbers) - context_lines)
+        end_line = min(len(script_lines), max(line_numbers) + context_lines)
+        snippet = "\n".join(script_lines[start_line - 1:end_line])
+        return start_line, end_line, snippet
+
+    @staticmethod
+    def _replace_script_repair_window(
+        script: str,
+        *,
+        start_line: int,
+        end_line: int,
+        replacement: str,
+    ) -> str:
+        original_lines = (script or "").splitlines()
+        replacement_lines = (replacement or "").splitlines()
+        merged = original_lines[: max(0, start_line - 1)] + replacement_lines + original_lines[end_line:]
+        return "\n".join(merged)
+
+    @staticmethod
+    def _script_has_valid_syntax(script: str) -> bool:
+        cleaned = (script or "").strip()
+        if not cleaned:
+            return False
+        if esprima is None:
+            return True
+        try:
+            esprima.parseScript(cleaned, tolerant=False)
+            return True
+        except Exception:
+            return False
 
     def _extract_input_handlers(self, code: str) -> Dict[str, List[str]]:
         detected: Dict[str, set[str]] = {
@@ -502,143 +500,6 @@ class QAPipeline:
         }
 
     @staticmethod
-    def _append_instruction_prompt(instructions: List[str], prompt_key: str) -> None:
-        prompt_text = require_prompt(prompt_key).strip()
-        if not prompt_text:
-            return
-        for line in prompt_text.splitlines():
-            normalized = line.strip()
-            if not normalized:
-                continue
-            instructions.append(normalized if normalized.startswith("-") else f"- {normalized}")
-
-    @staticmethod
-    def _build_targeted_fix_instructions(
-        errors: List[QACheckError],
-        runtime_contract: Optional[GameRuntimeContract] = None,
-    ) -> str:
-        instructions: List[str] = []
-        mobile_orientation = QAPipeline._resolve_mobile_layout_orientation(runtime_contract)
-        mobile_reference = "landscape" if mobile_orientation == "landscape_first" else "portrait"
-        mobile_requirement = "landscape-first" if mobile_orientation == "landscape_first" else "portrait-first"
-
-        for error in errors:
-            message = error.message.lower()
-            if "no user input handlers" in message or "no registered user input handlers" in message:
-                QAPipeline._append_instruction_prompt(
-                    instructions,
-                    "prompt.qa_instruction_input_handlers",
-                )
-            elif "visible state change after user interaction" in message:
-                QAPipeline._append_instruction_prompt(
-                    instructions,
-                    "prompt.qa_instruction_visible_feedback",
-                )
-            elif "game-over state never set to true" in message or "terminal or completion state is never set" in message:
-                QAPipeline._append_instruction_prompt(
-                    instructions,
-                    "prompt.qa_instruction_terminal_state",
-                )
-            elif "localstorage" in message or "sessionstorage" in message:
-                QAPipeline._append_instruction_prompt(
-                    instructions,
-                    "prompt.qa_instruction_storage",
-                )
-            elif "blank screen" in message or "canvas never rendered" in message:
-                QAPipeline._append_instruction_prompt(
-                    instructions,
-                    "prompt.qa_instruction_blank_screen",
-                )
-            elif "runtime js error" in message:
-                QAPipeline._append_instruction_prompt(
-                    instructions,
-                    "prompt.qa_instruction_runtime_js_error",
-                )
-            elif any(
-                token in message
-                for token in (
-                    "terminal state",
-                    "game-over state",
-                    "restart entry point",
-                    "restart/reset function",
-                    "requires state 'game_over'",
-                )
-            ):
-                QAPipeline._append_instruction_prompt(
-                    instructions,
-                    "prompt.qa_instruction_terminal_state",
-                )
-            elif any(
-                token in message
-                for token in (
-                    "viewport",
-                    "portrait-first",
-                    "portrait first",
-                    "short-edge",
-                    "short edge",
-                    "landscape",
-                    "width only",
-                    "mobile",
-                    "ui scale",
-                )
-            ):
-                QAPipeline._append_instruction_prompt(
-                    instructions,
-                    "prompt.qa_instruction_mobile_layout",
-                )
-                instructions.extend([
-                    "- Read both viewport width and viewport height inside a resize or orientation-change handler.",
-                    f"- Keep a {mobile_reference} reference canvas and compute scaleX and scaleY against that reference size.",
-                    f"- Derive uiScale from Math.min(scaleX, scaleY) or an equivalent short-edge fit, then center the {mobile_requirement} playfield.",
-                    "- Do not size HUD text from screen width alone on wide mobile screens.",
-                ])
-            elif any(
-                token in message
-                for token in (
-                    "visible scoring loop",
-                    "visible score",
-                    "score display",
-                    "score hud",
-                    "scoreboard",
-                )
-            ):
-                instructions.extend([
-                    "- Keep a visible score HUD, timer, or points display on screen during active play.",
-                    "- Bind the HUD to real score-like state when available, and make it update inside the gameplay loop or an animation frame callback.",
-                    "- Reset the visible score/timer display when the player restarts or returns to the ready state.",
-                ])
-            elif any(
-                token in message
-                for token in (
-                    "forbidden api",
-                    "forbids api usage",
-                    "eval",
-                    "function()",
-                    "import statement",
-                    "require()",
-                    "fetch()",
-                    "xmlhttprequest",
-                    "websocket",
-                )
-            ):
-                QAPipeline._append_instruction_prompt(
-                    instructions,
-                    "prompt.qa_instruction_forbidden_api",
-                )
-
-        if not instructions:
-            QAPipeline._append_instruction_prompt(
-                instructions,
-                "prompt.qa_instruction_generic",
-            )
-
-        unique_instructions: List[str] = []
-        for instruction in instructions:
-            if instruction not in unique_instructions:
-                unique_instructions.append(instruction)
-        return "\n".join(unique_instructions)
-
-    @staticmethod
     def _build_runtime_contract_block(runtime_contract: Optional[GameRuntimeContract]) -> str:
         if not runtime_contract:
             return ""
@@ -662,17 +523,6 @@ class QAPipeline:
         if "ui scale mode" not in block.lower():
             block += f"\n- UI scale mode: {runtime_contract.mobile_layout.ui_scale_mode}"
         return "\n" + block
-
-    @staticmethod
-    def _resolve_mobile_layout_orientation(
-        runtime_contract: Optional[GameRuntimeContract],
-    ) -> str:
-        orientation = str(
-            getattr(getattr(runtime_contract, "mobile_layout", None), "orientation", None)
-            or getattr(getattr(runtime_contract, "canvas", None), "orientation", None)
-            or "portrait_first"
-        ).strip()
-        return "landscape_first" if orientation == "landscape_first" else "portrait_first"
 
     @staticmethod
     def _resolved_bundle_prompt(
@@ -813,69 +663,64 @@ class QAPipeline:
             return f"Apply the smallest targeted fix that resolves: {message}"
         return "Apply the smallest targeted fix while preserving the current gameplay loop."
 
-    def _select_repair_scope(
+    @classmethod
+    def _syntax_repair_errors(cls, errors: List[QACheckError]) -> List[QACheckError]:
+        return [
+            error
+            for error in (errors or [])
+            if cls._classify_error_family(error) == SYNTAX_REPAIR_FAMILY
+        ]
+
+    @classmethod
+    def _is_markup_structure_syntax_error(cls, error: QACheckError) -> bool:
+        if cls._classify_error_family(error) != SYNTAX_REPAIR_FAMILY:
+            return False
+        message = str(error.message or "").lower()
+        return any(
+            token in message
+            for token in (
+                "missing required html tag",
+                "missing <!doctype html>",
+                "missing charset meta tag",
+                "unbalanced <html>",
+                "unbalanced <head>",
+                "unbalanced <body>",
+                "unbalanced <script>",
+                "html appears truncated",
+                "conflict markers detected",
+                "unexpected end of input",
+                "unexpected eof",
+                "unterminated string",
+                "missing closing",
+                "unclosed",
+                "syntax error: unexpected end",
+            )
+        )
+
+    @classmethod
+    def _should_attempt_syntax_only_repair(cls, errors: List[QACheckError]) -> bool:
+        normalized = cls.normalize_issues(errors or [], default_blocking=True)
+        if not normalized:
+            return False
+        syntax_errors = cls._syntax_repair_errors(normalized)
+        if not syntax_errors or len(syntax_errors) != len(normalized):
+            return False
+        if cls._errors_look_like_truncation(syntax_errors):
+            return True
+        return all(cls._is_markup_structure_syntax_error(error) for error in syntax_errors)
+
+    def _resolve_syntax_repair_prompt(
         self,
-        errors: List[QACheckError],
         *,
-        force_full: bool = False,
-    ) -> Tuple[str, List[QACheckError]]:
-        if not errors:
-            return "generic", []
-        if force_full:
-            return "generic", errors
-
-        grouped: Dict[str, List[QACheckError]] = {}
-        for error in errors:
-            family = self._classify_error_family(error)
-            grouped.setdefault(family, []).append(error)
-
-        for family in REPAIR_FAMILY_PRIORITY:
-            if family in grouped:
-                return family, grouped[family]
-        return "generic", errors
-
-    def _resolve_repair_prompt(
-        self,
-        *,
-        repair_family: str,
-        prefer_fast: bool,
         prompt_bundle_snapshot: Optional[Dict[str, Any]],
     ) -> Tuple[str, str]:
-        slot = REPAIR_SLOT_BY_FAMILY.get(repair_family)
-        if slot:
-            bundle_prompt = self._resolved_bundle_prompt(prompt_bundle_snapshot, slot)
-            if bundle_prompt:
-                return f"bundle.{slot}", bundle_prompt
-
-        prompt_key = "prompt.qa_fix_fast" if prefer_fast else "prompt.qa_fix"
-        return prompt_key, require_prompt(prompt_key)
-
-    def _should_use_fast_fix(self, errors: List[QACheckError]) -> bool:
-        if not errors or len(errors) > 2:
-            return False
-
-        known_issue_count = 0
-        for error in errors:
-            message = error.message.lower()
-            if any(
-                token in message
-                for token in (
-                    "no user input handlers",
-                    "no registered user input handlers",
-                    "game-over state never set to true",
-                    "terminal or completion state is never set",
-                    "localstorage",
-                    "sessionstorage",
-                    "blank screen",
-                    "canvas never rendered",
-                    "runtime js error",
-                    "visible state change after user interaction",
-                    "visible scoring loop",
-                )
-            ):
-                known_issue_count += 1
-
-        return known_issue_count == len(errors)
+        bundle_prompt = self._resolved_bundle_prompt(
+            prompt_bundle_snapshot,
+            "repair_syntax_structural",
+        )
+        if bundle_prompt:
+            return "bundle.repair.syntax_structural", bundle_prompt
+        return "bundle.repair.syntax_structural", require_prompt("bundle.repair.syntax_structural")
 
     # ------------------------------------------------------------------
     # Public: auto-fix loop
@@ -940,21 +785,27 @@ class QAPipeline:
                 logger.warning("QA failed but LLM auto-fix is unavailable")
                 break
 
-            current_signature = self._normalize_error_signature(result.errors)
-            can_use_fast_fix = self._should_use_fast_fix(result.errors)
-            if len(result.errors) == 1 and current_signature == previous_error_signature:
+            repairable_errors = self._syntax_repair_errors(result.errors)
+            if not repairable_errors or not self._should_attempt_syntax_only_repair(result.errors):
+                logger.info(
+                    "QA failed without truncation-like syntax issues; syntax-only repair is disabled for this error set"
+                )
+                break
+
+            current_signature = self._normalize_error_signature(repairable_errors)
+            if len(repairable_errors) == 1 and current_signature == previous_error_signature:
                 repeated_single_issue_rounds += 1
             else:
                 repeated_single_issue_rounds = 0
 
-            if can_use_fast_fix and repeated_single_issue_rounds >= 2:
+            if repeated_single_issue_rounds >= 2:
                 logger.warning(
-                    "QA circuit breaker triggered after repeated single-issue failures: %s",
-                    result.errors[0].message if result.errors else "unknown",
+                    "Syntax-only QA circuit breaker triggered after repeated single-issue failures: %s",
+                    repairable_errors[0].message if repairable_errors else "unknown",
                 )
                 break
 
-            if attempt >= 1 and self._errors_look_like_truncation(result.errors):
+            if attempt >= 1 and self._errors_look_like_truncation(repairable_errors):
                 logger.warning(
                     "Truncation persists after %d repair attempt(s); signaling regeneration needed",
                     repair_attempts,
@@ -969,7 +820,7 @@ class QAPipeline:
                     issue_list=final.issue_list,
                 )
 
-            error_count_history.append(len(result.errors))
+            error_count_history.append(len(repairable_errors))
             if len(error_count_history) >= 3:
                 last3 = error_count_history[-3:]
                 if last3[-1] >= last3[-2] >= last3[-3]:
@@ -981,19 +832,18 @@ class QAPipeline:
 
             if retry_cb:
                 try:
-                    retry_cb(attempt + 1, max_retries, result.errors)
+                    retry_cb(attempt + 1, max_retries, repairable_errors)
                 except Exception:
                     pass
-            logger.info(f"QA attempt {attempt} failed ({len(result.errors)} errors), triggering LLM auto-fix")
+            logger.info(f"QA attempt {attempt} failed ({len(repairable_errors)} syntax errors), triggering syntax-only auto-fix")
             repaired_code = await self.repair_code(
                 code,
-                result.errors,
+                repairable_errors,
                 game_spec,
                 runtime_contract=runtime_contract,
                 prompt_bundle_snapshot=prompt_bundle_snapshot,
                 fix_round=attempt + 1,
                 max_fix_rounds=max_retries,
-                force_full=repeated_single_issue_rounds >= 1,
             )
             repair_attempts += 1
             repaired_hash = self._code_hash(repaired_code)
@@ -1025,57 +875,35 @@ class QAPipeline:
         max_tokens: Optional[int] = None,
         fix_round: int = 1,
         max_fix_rounds: int = 1,
-        force_full: bool = False,
     ) -> str:
         repaired = self._apply_deterministic_repairs(code)
         errors = self.normalize_issues(errors, default_blocking=True)
-        if not self._client.is_enabled() or not errors:
+        syntax_errors = self._syntax_repair_errors(errors)
+        if (
+            not self._client.is_enabled()
+            or not syntax_errors
+            or not self._should_attempt_syntax_only_repair(errors)
+        ):
             return repaired
 
         preserve_structured_markers = has_structured_section_markers(code)
         if preserve_structured_markers:
             repaired = ensure_structured_section_markers(repaired)
 
-        force_full = force_full or self._should_force_full_repair(errors)
-        repair_family, scoped_errors = self._select_repair_scope(errors, force_full=force_full)
-        repaired = self._apply_family_deterministic_repairs(
+        effective_max_tokens = max_tokens if max_tokens is not None else self._estimate_syntax_repair_max_tokens(
             repaired,
-            scoped_errors,
-            repair_family=repair_family,
-            runtime_contract=runtime_contract,
+            truncation_risk=self._errors_look_like_truncation(syntax_errors),
         )
-        if self._can_short_circuit_repair(
-            repaired,
-            scoped_errors,
-            repair_family=repair_family,
-            runtime_contract=runtime_contract,
-        ):
-            return repaired
-        prefer_fast = self._should_use_fast_fix(scoped_errors) and not force_full and repair_family not in {"syntax_structural", "generic"}
-        effective_max_tokens = max_tokens if max_tokens is not None else self._estimate_fix_max_tokens(
-            repaired,
-            prefer_fast=prefer_fast,
-        )
-        if repair_family == "syntax_structural":
-            effective_max_tokens = max(
-                effective_max_tokens,
-                self._estimate_syntax_repair_max_tokens(
-                    repaired,
-                    truncation_risk=self._errors_look_like_truncation(scoped_errors),
-                ),
-            )
 
         llm_fixed = await self._fix_with_llm(
             repaired,
-            scoped_errors,
+            syntax_errors,
             game_spec,
             runtime_contract,
             max_tokens=effective_max_tokens,
             fix_round=fix_round,
             max_fix_rounds=max_fix_rounds,
-            prefer_fast=prefer_fast,
             prompt_bundle_snapshot=prompt_bundle_snapshot,
-            repair_family=repair_family,
         )
         llm_repaired = self._apply_deterministic_repairs(llm_fixed)
         if preserve_structured_markers:
@@ -1273,8 +1101,6 @@ class QAPipeline:
 
         if "</html>" not in lower:
             repaired += "\n</html>"
-
-        repaired = self._strip_storage_apis(repaired)
 
         return repaired.strip()
 
@@ -1627,219 +1453,6 @@ class QAPipeline:
             "- Do not rewrite visible UI copy into English unless the visible UI language itself is English."
         )
 
-    @staticmethod
-    def _build_compact_spec_summary(game_spec: GameSpec) -> str:
-        mechanics = ", ".join(
-            mechanic.type or ""
-            for mechanic in (game_spec.core_mechanics or [])
-            if (mechanic.type or "").strip()
-        ) or game_spec.game_type
-        entities = ", ".join(
-            f"{entity.role}:{entity.name}"
-            for entity in (game_spec.entities or [])[:6]
-            if (entity.role or "").strip() and (entity.name or "").strip()
-        ) or "player, obstacle, collectible"
-        special_rules = "; ".join(
-            rule.strip()
-            for rule in (game_spec.special_rules or [])
-            if (rule or "").strip()
-        ) or "none"
-        return (
-            f"Game type: {game_spec.game_type}\n"
-            f"Intent summary: {game_spec.intent_summary or game_spec.source_description or 'minimal mobile game'}\n"
-            f"Core mechanics: {mechanics}\n"
-            f"Theme: {game_spec.visual_style.theme}\n"
-            f"Art style: {game_spec.visual_style.art_style}\n"
-            f"Entities: {entities}\n"
-            f"Special rules: {special_rules}\n"
-            f"Original request: {game_spec.source_description or game_spec.intent_summary or '(empty)'}"
-        )
-
-    @staticmethod
-    def _repair_family_supports_section_patch(repair_family: str) -> bool:
-        return repair_family != "syntax_structural"
-
-    @staticmethod
-    def _repair_errors_touch_style(errors: List[QACheckError]) -> bool:
-        tokens = ("style", "css", "font", "color", "colour", "ui text", "hud")
-        for error in errors:
-            message = (error.message or "").lower()
-            if any(token in message for token in tokens):
-                return True
-        return False
-
-    @classmethod
-    def _select_patch_sections_for_repair(
-        cls,
-        repair_family: str,
-        errors: List[QACheckError],
-    ) -> tuple[str, ...]:
-        sections: List[str] = [PATCH_SECTION_SCRIPT]
-        if repair_family in {"mobile_layout", "runtime_startup", "generic"}:
-            sections.insert(0, PATCH_SECTION_BODY)
-        if repair_family == "mobile_layout" or cls._repair_errors_touch_style(errors):
-            sections.insert(0, PATCH_SECTION_STYLE)
-        deduped: List[str] = []
-        for section in sections:
-            if section not in deduped:
-                deduped.append(section)
-        return tuple(deduped)
-
-    @staticmethod
-    def _select_preferred_patch_targets_for_repair(
-        repair_family: str,
-        patch_sections: Sequence[str],
-    ) -> tuple[str, ...]:
-        candidates: List[str] = []
-        if repair_family == "forbidden_api":
-            candidates.extend([PATCH_SCRIPT_ANCHOR_CONFIG, PATCH_SCRIPT_ANCHOR_GAME_LOOP])
-        elif repair_family == "input_contract":
-            candidates.extend([PATCH_SCRIPT_ANCHOR_INPUT, PATCH_SCRIPT_ANCHOR_GAME_LOOP])
-        elif repair_family == "score_feedback":
-            candidates.extend([PATCH_SECTION_HUD, PATCH_SCRIPT_ANCHOR_GAME_LOOP, PATCH_SCRIPT_ANCHOR_LEVEL_DATA])
-        elif repair_family == "terminal_state":
-            candidates.extend([PATCH_SCRIPT_ANCHOR_GAME_LOOP, PATCH_SCRIPT_ANCHOR_INPUT])
-        elif repair_family == "mobile_layout":
-            candidates.extend([PATCH_SECTION_STYLE, PATCH_SECTION_HUD])
-        elif repair_family == "runtime_startup":
-            candidates.extend([PATCH_SCRIPT_ANCHOR_CONFIG, PATCH_SCRIPT_ANCHOR_GAME_LOOP, PATCH_SECTION_HUD])
-        else:
-            candidates.extend([PATCH_SCRIPT_ANCHOR_GAME_LOOP, PATCH_SCRIPT_ANCHOR_CONFIG, PATCH_SECTION_HUD])
-
-        allowed_targets: List[str] = []
-        allows_script = PATCH_SECTION_SCRIPT in patch_sections
-        allows_body = PATCH_SECTION_BODY in patch_sections
-        allows_style = PATCH_SECTION_STYLE in patch_sections
-        for target in candidates:
-            if target in {PATCH_SCRIPT_ANCHOR_CONFIG, PATCH_SCRIPT_ANCHOR_GAME_LOOP, PATCH_SCRIPT_ANCHOR_INPUT, PATCH_SCRIPT_ANCHOR_LEVEL_DATA} and not allows_script:
-                continue
-            if target == PATCH_SECTION_HUD and not allows_body:
-                continue
-            if target == PATCH_SECTION_STYLE and not allows_style:
-                continue
-            if target not in allowed_targets:
-                allowed_targets.append(target)
-        return tuple(allowed_targets)
-
-    async def _rebuild_from_spec_for_syntax_recovery(
-        self,
-        *,
-        code: str,
-        errors: List[QACheckError],
-        game_spec: Optional[GameSpec],
-        runtime_contract: Optional[GameRuntimeContract],
-    ) -> Optional[str]:
-        if not game_spec:
-            return None
-
-        from .code_generator import CodeGenerator
-
-        error_list = "\n".join(f"  - [{e.type}] {e.message}" for e in errors)
-        implementation_budget = CodeGenerator._build_implementation_budget_block(
-            game_spec,
-            game_spec.source_description or game_spec.intent_summary,
-            fallback_game_type="puzzle",
-        )
-        prompt_parts = [
-            self._build_ui_language_instruction(game_spec),
-            (
-                "MINIMAL SPEC REBUILD (NON-NEGOTIABLE):\n"
-                "- The previous candidate failed syntax validation repeatedly and must NOT be edited in place.\n"
-                "- Rebuild the game from scratch using the spec and runtime contract below.\n"
-                "- Return the smallest complete mobile game that satisfies the mechanic and runtime contract.\n"
-                "- Use one canvas, one primary state object, one requestAnimationFrame loop, and at most one overlay screen.\n"
-                "- Keep JavaScript compact, balanced, and syntactically complete.\n"
-                "- Prefer 3-5 short prompts/levels max for classroom or knowledge-check requests.\n"
-                "- Avoid long lesson-plan text, worksheets, scene managers, or multi-screen flows.\n"
-                "- Return ONLY one complete HTML document that ends with </html>."
-            ),
-            implementation_budget,
-            self._build_runtime_contract_block(runtime_contract),
-            self._build_compact_spec_summary(game_spec),
-            "Observed syntax/structural failures:",
-            error_list,
-        ]
-        prompt = "\n\n".join(part for part in prompt_parts if part)
-        try:
-            max_tokens = max(
-                6144,
-                self._estimate_syntax_repair_max_tokens(
-                    code,
-                    truncation_risk=True,
-                ),
-            )
-            request_timeout_s = self._estimate_repair_timeout_s(
-                max_tokens=max_tokens,
-                prefer_fast=False,
-                repair_family="syntax_structural",
-            )
-            return await self._complete_repair_prompt_with_retry(
-                prompt=prompt,
-                code=code,
-                step_key="qa_fix.syntax_rebuild",
-                request_timeout_s=request_timeout_s,
-                max_tokens=max_tokens,
-                prefer_fast=False,
-                repair_family="syntax_structural",
-            )
-        except Exception as exc:
-            logger.error("Spec-driven syntax rebuild failed: %s", exc)
-            return None
-
-    async def _rewrite_with_simplified_budget(
-        self,
-        code: str,
-        errors: List[QACheckError],
-        game_spec: Optional[GameSpec],
-        runtime_contract: Optional[GameRuntimeContract],
-    ) -> str:
-        error_list = "\n".join(f"  - [{e.type}] {e.message}" for e in errors)
-        prompt_parts = [
-            self._build_ui_language_instruction(game_spec),
-            (
-                "SIMPLIFIED STRUCTURAL REWRITE (NON-NEGOTIABLE):\n"
-                "- The previous candidate still has JavaScript or structural syntax errors.\n"
-                "- Rewrite the game into the smallest complete implementation that satisfies the listed issues and runtime contract.\n"
-                "- Use one canvas, one primary state object, one requestAnimationFrame loop, and at most one overlay screen.\n"
-                "- Remove optional subsystems, worksheets, lesson-plan text, scene managers, or multi-page flows before touching the core loop.\n"
-                "- Keep the original core mechanic and visible UI language, but simplify supporting systems aggressively.\n"
-                "- Output must parse as plain browser JavaScript with balanced blocks and complete statements.\n"
-                "- Return ONLY one complete HTML document."
-            ),
-            self._build_runtime_contract_block(runtime_contract),
-            f"Game type: {game_spec.game_type if game_spec else 'unknown'}",
-            "Issues:",
-            error_list,
-            "Current code:",
-            code,
-        ]
-        prompt = "\n\n".join(part for part in prompt_parts if part)
-        try:
-            max_tokens = max(
-                6144,
-                self._estimate_syntax_repair_max_tokens(
-                    code,
-                    truncation_risk=self._errors_look_like_truncation(errors),
-                ),
-            )
-            request_timeout_s = self._estimate_repair_timeout_s(
-                max_tokens=max_tokens,
-                prefer_fast=False,
-                repair_family="syntax_structural",
-            )
-            return await self._complete_repair_prompt_with_retry(
-                prompt=prompt,
-                code=code,
-                step_key="qa_fix.syntax_structural",
-                request_timeout_s=request_timeout_s,
-                max_tokens=max_tokens,
-                prefer_fast=False,
-                repair_family="syntax_structural",
-            )
-        except Exception as exc:
-            logger.error("Simplified syntax rewrite failed: %s", exc)
-            return code
-
     async def _complete_repair_prompt_raw_with_retry(
         self,
         *,
@@ -1848,48 +1461,43 @@ class QAPipeline:
         step_key: str,
         request_timeout_s: int,
         max_tokens: int,
-        prefer_fast: bool,
-        repair_family: str,
     ) -> str:
-        allow_provider_fallback = bool(settings.LLM_PROVIDER_FAILOVER_ENABLED)
-        retry_ceiling = 8192 if prefer_fast else max(
+        allow_provider_fallback = True
+        retry_ceiling = max(
             settings.LLM_LONG_GENERATION_MAX_TOKENS,
-            settings.LLM_GENERATION_TOKEN_BUDGET_COMPLEX,
+            12288,
         )
-        retry_floor = max_tokens + (1024 if prefer_fast else 3072)
-        if repair_family == "syntax_structural":
-            retry_floor = max(
-                retry_floor,
-                self._estimate_syntax_repair_max_tokens(code, truncation_risk=True),
-            )
-        else:
-            retry_floor = max(
-                retry_floor,
-                self._estimate_fix_max_tokens(code, prefer_fast=prefer_fast) + (1024 if prefer_fast else 2048),
-            )
-        timeout_retry_attempts = 1 if not prefer_fast else 0
-        timeout_retry_increment_s = 30 if prefer_fast else 60
-        timeout_retry_max_s = request_timeout_s + (60 if prefer_fast else 120)
+        retry_floor = max(
+            min(max_tokens + 2048, retry_ceiling),
+            self._estimate_syntax_repair_max_tokens(code, truncation_risk=True),
+        )
+        timeout_retry_attempts = 0
+        timeout_retry_increment_s = 30
+        timeout_retry_max_s = request_timeout_s
+        hedge_after_s = self._syntax_repair_hedge_delay_s(request_timeout_s)
 
         text = await self._client.complete_with_truncation_retry(
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
             step_key=step_key,
             stage="qa_checking",
-            prefer_fast=prefer_fast,
+            prefer_fast=True,
             request_timeout_s=request_timeout_s,
             overall_timeout_s=request_timeout_s,
             allow_provider_fallback=allow_provider_fallback,
-            response_size_hint="medium" if prefer_fast else "xlarge",
-            context_scope="task",
+            hedge_provider_fallback_after_s=hedge_after_s,
+            response_size_hint="full_document",
+            context_scope="request",
             compression_policy="qa_fix",
             truncation_retry_attempts=1,
-            truncation_retry_increment=1024 if prefer_fast else 3072,
+            truncation_retry_increment=2048,
             truncation_retry_max_tokens=retry_ceiling,
             truncation_retry_min_tokens=retry_floor,
             timeout_retry_attempts=timeout_retry_attempts,
-                timeout_retry_increment_s=timeout_retry_increment_s,
-                timeout_retry_max_s=timeout_retry_max_s,
+            timeout_retry_increment_s=timeout_retry_increment_s,
+            timeout_retry_max_s=timeout_retry_max_s,
+            provider_retry_attempts=0,
+            provider_retry_on_timeout_errors=False,
         )
         return text
 
@@ -1901,8 +1509,6 @@ class QAPipeline:
         step_key: str,
         request_timeout_s: int,
         max_tokens: int,
-        prefer_fast: bool,
-        repair_family: str,
     ) -> str:
         from .code_generator import _extract_html
 
@@ -1912,10 +1518,53 @@ class QAPipeline:
             step_key=step_key,
             request_timeout_s=request_timeout_s,
             max_tokens=max_tokens,
-            prefer_fast=prefer_fast,
-            repair_family=repair_family,
         )
         return _extract_html(text)
+
+    @staticmethod
+    def _extract_script_repair_text(text: str) -> str:
+        cleaned = (text or "").strip()
+        cleaned = re.sub(r"^\s*```(?:javascript|js|html)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```\s*$", "", cleaned)
+        if "<script" in cleaned.lower():
+            extracted = extract_script_content(f"<html><body>{cleaned}</body></html>")
+            if extracted:
+                return extracted
+        if "<html" in cleaned.lower() or "<body" in cleaned.lower():
+            raise ValueError("Script repair returned full HTML instead of raw JavaScript")
+        return cleaned
+
+    async def _complete_script_repair_prompt_with_retry(
+        self,
+        *,
+        prompt: str,
+        step_key: str,
+        request_timeout_s: int,
+        max_tokens: int,
+    ) -> str:
+        retry_ceiling = max(4096, max_tokens)
+        text = await self._client.complete_with_truncation_retry(
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+            step_key=step_key,
+            stage="qa_checking",
+            prefer_fast=True,
+            request_timeout_s=request_timeout_s,
+            overall_timeout_s=request_timeout_s,
+            allow_provider_fallback=True,
+            hedge_provider_fallback_after_s=self._syntax_repair_hedge_delay_s(request_timeout_s),
+            response_size_hint="medium",
+            context_scope="request",
+            compression_policy="qa_fix",
+            truncation_retry_attempts=1,
+            truncation_retry_increment=1024,
+            truncation_retry_max_tokens=retry_ceiling,
+            truncation_retry_min_tokens=max_tokens,
+            timeout_retry_attempts=0,
+            provider_retry_attempts=0,
+            provider_retry_on_timeout_errors=False,
+        )
+        return self._extract_script_repair_text(text)
 
     async def _fix_with_llm(
         self,
@@ -1926,50 +1575,29 @@ class QAPipeline:
         max_tokens: int,
         fix_round: int = 1,
         max_fix_rounds: int = 1,
-        prefer_fast: bool = False,
         prompt_bundle_snapshot: Optional[Dict[str, Any]] = None,
-        repair_family: str = "generic",
     ) -> str:
+        syntax_errors = self._syntax_repair_errors(errors)
+        if not syntax_errors:
+            return code
         await task_memory.remember_qa_findings(
             self._current_task_id(),
-            errors,
-            repair_family=repair_family,
+            syntax_errors,
+            repair_family=SYNTAX_REPAIR_FAMILY,
             fix_round=fix_round,
         )
-        error_list = "\n".join(f"  - [{e.type}] {e.message}" for e in errors)
-        game_type = game_spec.game_type if game_spec else "unknown"
-        targeted_instructions = self._build_targeted_fix_instructions(errors, runtime_contract)
+        error_list = "\n".join(f"  - [{e.type}] {e.message}" for e in syntax_errors)
         runtime_contract_block = self._build_runtime_contract_block(runtime_contract)
-        patch_sections = (
-            self._select_patch_sections_for_repair(repair_family, errors)
-            if self._repair_family_supports_section_patch(repair_family)
-            else ()
-        )
-        preferred_targets = (
-            self._select_preferred_patch_targets_for_repair(repair_family, patch_sections)
-            if patch_sections
-            else ()
-        )
-        code_context = (
-            build_section_context(code, patch_sections, preferred_targets=preferred_targets)
-            if patch_sections
-            else code
-        )
-
-        prompt_key, prompt_template = self._resolve_repair_prompt(
-            repair_family=repair_family,
-            prefer_fast=prefer_fast,
+        prompt_key, prompt_template = self._resolve_syntax_repair_prompt(
             prompt_bundle_snapshot=prompt_bundle_snapshot,
         )
         prompt_values = {
             "error_list": error_list,
-            "game_type": game_type,
-            "code": code_context,
+            "game_type": game_spec.game_type if game_spec else "unknown",
+            "code": code,
             "runtime_contract_block": runtime_contract_block,
             "fix_round": fix_round,
             "max_fix_rounds": max_fix_rounds,
-            "targeted_instructions": targeted_instructions,
-            "repair_family": repair_family,
         }
         try:
             prompt = prompt_template.format_map(_SafePromptFormatDict(prompt_values))
@@ -1980,963 +1608,123 @@ class QAPipeline:
         ui_language_instruction = self._build_ui_language_instruction(game_spec)
         if ui_language_instruction:
             prompt = "\n\n".join([ui_language_instruction, prompt])
-        if patch_sections:
-            prompt = "\n\n".join([
-                build_patch_protocol(
-                    patch_sections,
-                    task_label=f"qa repair ({repair_family})",
-                    preferred_targets=preferred_targets,
-                ),
-                prompt,
-            ])
-        try:
-            request_timeout_s = self._estimate_repair_timeout_s(
-                max_tokens=max_tokens,
-                prefer_fast=prefer_fast,
-                repair_family=repair_family,
+        script_only_errors = [
+            error
+            for error in syntax_errors
+            if "JavaScript syntax error in <script>:" in (error.message or "")
+        ]
+        script_content = extract_script_content(code or "")
+        if script_content and len(script_only_errors) == len(syntax_errors):
+            script_prompt_values = dict(prompt_values)
+            script_prompt_values["code"] = script_content
+            try:
+                script_base_prompt = prompt_template.format_map(_SafePromptFormatDict(script_prompt_values))
+            except Exception as exc:
+                raise RuntimeError(
+                    f"QA fix prompt template is invalid for {prompt_key}: {exc}"
+                ) from exc
+            script_prompt = "\n\n".join(
+                part
+                for part in (
+                    ui_language_instruction or "",
+                    "SCRIPT SYNTAX REPAIR (RETURN JAVASCRIPT ONLY):\n"
+                    "- Fix only the JavaScript syntax inside the main inline <script> block.\n"
+                    "- Return raw JavaScript only, with no <script> tags, HTML, markdown fences, or commentary.\n"
+                    "- Preserve gameplay logic, identifiers, and visible UI strings unless a syntax fix requires a tiny edit.\n"
+                    "- Do not rewrite unrelated HTML/CSS sections.\n"
+                    f"- Current fix round: {fix_round}/{max_fix_rounds}.",
+                    script_base_prompt,
+                )
+                if str(part).strip()
             )
-            step_key = f"qa_fix.{repair_family}" if repair_family and repair_family != "generic" else "qa_fix"
-            if patch_sections:
-                raw_response = await self._complete_repair_prompt_raw_with_retry(
-                    prompt=prompt,
-                    code=code,
-                    step_key=step_key,
-                    request_timeout_s=request_timeout_s,
-                    max_tokens=max_tokens,
-                    prefer_fast=prefer_fast,
-                    repair_family=repair_family,
-                )
-                patches, full_html = parse_patch_response(raw_response, allowed_sections=patch_sections)
-                if patches:
-                    repaired = apply_section_patches(code, patches)
-                elif full_html:
-                    repaired = full_html
-                else:
-                    repaired = code
-                validation_errors = validate_patch_candidate(
-                    code,
-                    repaired,
-                    allowed_sections=patch_sections,
-                )
-                if validation_errors:
-                    logger.warning(
-                        "QA patch candidate rejected; keeping previous stable code: %s",
-                        ", ".join(validation_errors),
+            try:
+                script_max_tokens = min(max_tokens, self._estimate_script_repair_max_tokens(script_content))
+                script_timeout_s = self._estimate_script_repair_timeout_s(max_tokens=script_max_tokens)
+                line_numbers = self._script_syntax_error_line_numbers(script_only_errors)
+                if line_numbers:
+                    start_line, end_line, script_window = self._extract_script_repair_window(
+                        script_content,
+                        line_numbers=line_numbers,
                     )
-                    repaired = code
-            else:
-                repaired = await self._complete_repair_prompt_with_retry(
-                    prompt=prompt,
-                    code=code,
-                    step_key=step_key,
-                    request_timeout_s=request_timeout_s,
-                    max_tokens=max_tokens,
-                    prefer_fast=prefer_fast,
-                    repair_family=repair_family,
+                    window_prompt = "\n\n".join(
+                        part
+                        for part in (
+                            ui_language_instruction or "",
+                            "SCRIPT WINDOW SYNTAX REPAIR (RETURN JAVASCRIPT ONLY):\n"
+                            "- Fix only the syntax inside the provided original script line window.\n"
+                            f"- The original script line range is {start_line}-{end_line}.\n"
+                            "- Return only the corrected replacement for those lines as raw JavaScript.\n"
+                            "- Do not return HTML, <script> tags, markdown fences, commentary, or the untouched lines outside this window.\n"
+                            "- Preserve gameplay logic and identifiers unless a tiny syntax edit is required.",
+                            script_base_prompt,
+                        )
+                        if str(part).strip()
+                    )
+                    try:
+                        window_max_tokens = min(
+                            script_max_tokens,
+                            max(
+                                1024,
+                                min(3072, len(script_window.encode("utf-8")) // 3 + 768),
+                            ),
+                        )
+                        window_timeout_s = min(script_timeout_s, 24)
+                        repaired_window = await self._complete_script_repair_prompt_with_retry(
+                            prompt=window_prompt,
+                            step_key="qa_fix.syntax_structural",
+                            request_timeout_s=window_timeout_s,
+                            max_tokens=window_max_tokens,
+                        )
+                        if repaired_window.strip():
+                            candidate_script = self._replace_script_repair_window(
+                                script_content,
+                                start_line=start_line,
+                                end_line=end_line,
+                                replacement=repaired_window,
+                            )
+                            if self._script_has_valid_syntax(candidate_script):
+                                return replace_script_content(code, candidate_script)
+                            logger.warning(
+                                "Windowed script syntax repair returned invalid JavaScript; falling back to whole-script repair"
+                            )
+                    except Exception as window_exc:
+                        logger.warning(
+                            "Windowed script syntax repair failed, falling back to whole-script repair: %s",
+                            window_exc,
+                        )
+                repaired_script = await self._complete_script_repair_prompt_with_retry(
+                    prompt=script_prompt,
+                    step_key="qa_fix.syntax_structural",
+                    request_timeout_s=script_timeout_s,
+                    max_tokens=script_max_tokens,
                 )
+                if repaired_script.strip():
+                    return replace_script_content(code, repaired_script)
+            except Exception as script_exc:
+                logger.warning(
+                    "Whole-script syntax repair failed; skipping full-document fallback for script-only syntax errors: %s",
+                    script_exc,
+                )
+                return code
+        try:
+            request_timeout_s = self._estimate_repair_timeout_s(max_tokens=max_tokens)
+            repaired = await self._complete_repair_prompt_with_retry(
+                prompt=prompt,
+                code=code,
+                step_key="qa_fix.syntax_structural",
+                request_timeout_s=request_timeout_s,
+                max_tokens=max_tokens,
+            )
             await task_memory.remember_code(
                 self._current_task_id(),
                 repaired,
-                label=f"qa_fix_{repair_family}",
+                label="qa_fix_syntax_structural",
             )
             await task_memory.append_decision(
                 self._current_task_id(),
-                f"Applied QA fix family={repair_family} round={fix_round}/{max_fix_rounds}",
+                f"Applied QA fix family={SYNTAX_REPAIR_FAMILY} round={fix_round}/{max_fix_rounds}",
             )
             return repaired
         except Exception as e:
             logger.error(f"LLM auto-fix failed: {e}")
             return code
-
-    def _apply_family_deterministic_repairs(
-        self,
-        code: str,
-        errors: List[QACheckError],
-        *,
-        repair_family: str,
-        runtime_contract: Optional[GameRuntimeContract] = None,
-    ) -> str:
-        repaired = code
-        if repair_family == "input_contract" and self._needs_input_bridge(errors):
-            repaired = self._inject_input_bridge(repaired)
-        if repair_family == "score_feedback" and self._needs_score_feedback(errors):
-            repaired = self._inject_score_feedback_bridge(repaired)
-        if repair_family == "runtime_startup":
-            if self._needs_touch_coordinate_guard(errors):
-                repaired = self._inject_touch_coordinate_guard(repaired)
-            if self._needs_duplicate_declaration_guard(errors):
-                repaired = self._strip_config_duplicate_declarations(repaired, errors)
-        if repair_family == "forbidden_api":
-            repaired = self._sanitize_forbidden_api_usage(repaired, errors)
-            repaired = self._strip_storage_apis(repaired)
-        if repair_family == "terminal_state":
-            repaired = self._inject_terminal_state_fallback(repaired)
-        if repair_family == "mobile_layout":
-            repaired = self._ensure_mobile_viewport_meta(repaired)
-            repaired = self._inject_mobile_layout_bridge(repaired, runtime_contract=runtime_contract)
-        return repaired
-
-    @classmethod
-    def _should_force_full_repair(cls, errors: List[QACheckError]) -> bool:
-        if len(errors) <= 1:
-            return False
-        families = {cls._classify_error_family(error) for error in errors}
-        if "syntax_structural" in families:
-            return False
-        return len(families) >= 3
-
-    def _can_short_circuit_repair(
-        self,
-        code: str,
-        errors: List[QACheckError],
-        *,
-        repair_family: str,
-        runtime_contract: Optional[GameRuntimeContract] = None,
-    ) -> bool:
-        if repair_family != "input_contract" or not errors:
-            if repair_family == "score_feedback" and errors:
-                return self._has_score_bridge_marker(code) or has_visible_scoring_loop(code)
-            if repair_family == "mobile_layout" and errors:
-                orientation = self._resolve_mobile_layout_orientation(runtime_contract)
-                return self._has_mobile_viewport_meta(code) and (
-                    has_short_edge_scaling(code, orientation=orientation)
-                    and not self._has_width_only_font_scaling(code)
-                )
-            if repair_family == "runtime_startup" and errors:
-                needs_touch_guard = self._needs_touch_coordinate_guard(errors)
-                needs_duplicate_guard = self._needs_duplicate_declaration_guard(errors)
-                if not needs_touch_guard and not needs_duplicate_guard:
-                    return False
-                touch_guard_resolved = True
-                if needs_touch_guard:
-                    touch_guard_resolved = not self._still_has_unsafe_touch_coordinate_access(code)
-                duplicate_guard_resolved = True
-                if needs_duplicate_guard:
-                    duplicate_guard_resolved = not self._still_has_config_duplicate_declarations(code, errors)
-                return touch_guard_resolved and duplicate_guard_resolved
-            if repair_family == "forbidden_api" and errors:
-                return not self._still_contains_forbidden_api(code, errors)
-            if repair_family == "terminal_state" and errors:
-                return has_terminal_state_transition(code) and has_required_state_presence(code, "game_over")
-            return False
-
-        if not self._needs_input_bridge(errors):
-            return False
-
-        input_handlers = self._extract_input_handlers(code)
-        has_observable_handlers = bool(
-            input_handlers["touch"] or input_handlers["pointer"] or input_handlers["mouse"]
-        )
-        if not has_observable_handlers:
-            return False
-
-        if self._needs_visible_feedback_bridge(errors):
-            return self._has_input_bridge_marker(code)
-        return True
-
-    @staticmethod
-    def _needs_input_bridge(errors: List[QACheckError]) -> bool:
-        for error in errors:
-            message = (error.message or "").lower()
-            if any(
-                token in message
-                for token in (
-                    "no user input handlers",
-                    "no registered user input handlers",
-                    "primary touch or pointer gameplay handlers",
-                    "game is not interactive",
-                    "visible state change after user interaction",
-                )
-            ):
-                return True
-        return False
-
-    @staticmethod
-    def _needs_visible_feedback_bridge(errors: List[QACheckError]) -> bool:
-        return any(
-            "visible state change after user interaction" in (error.message or "").lower()
-            for error in errors
-        )
-
-    @staticmethod
-    def _needs_score_feedback(errors: List[QACheckError]) -> bool:
-        return any(
-            any(
-                token in (error.message or "").lower()
-                for token in (
-                    "visible scoring loop",
-                    "visible score",
-                    "score display",
-                    "score hud",
-                    "scoreboard",
-                )
-            )
-            for error in errors
-        )
-
-    @staticmethod
-    def _needs_touch_coordinate_guard(errors: List[QACheckError]) -> bool:
-        return any(
-            any(
-                token in (error.message or "").lower()
-                for token in (
-                    "reading '0'",
-                    "reading 'clientx'",
-                    "reading 'clienty'",
-                    "touches[0]",
-                )
-            )
-            for error in errors
-        )
-
-    @staticmethod
-    def _extract_duplicate_declaration_identifiers(errors: List[QACheckError]) -> Tuple[str, ...]:
-        identifiers: List[str] = []
-        for error in errors:
-            for match in re.findall(
-                r"Identifier '([A-Za-z_$][\w$]*)' has already been declared",
-                error.message or "",
-            ):
-                if match not in identifiers:
-                    identifiers.append(match)
-        return tuple(identifiers)
-
-    @classmethod
-    def _needs_duplicate_declaration_guard(cls, errors: List[QACheckError]) -> bool:
-        return bool(cls._extract_duplicate_declaration_identifiers(errors))
-
-    @staticmethod
-    def _has_input_bridge_marker(code: str) -> bool:
-        return "__playforgeInputBridgeInstalled" in (code or "")
-
-    @staticmethod
-    def _has_score_bridge_marker(code: str) -> bool:
-        return "__playforgeScoreBridgeInstalled" in (code or "")
-
-    @staticmethod
-    def _has_mobile_layout_bridge_marker(code: str) -> bool:
-        return MOBILE_LAYOUT_BRIDGE_MARKER in (code or "")
-
-    @staticmethod
-    def _has_mobile_viewport_meta(code: str) -> bool:
-        return re.search(
-            r"<meta\b[^>]*name\s*=\s*['\"]viewport['\"]",
-            code or "",
-            re.IGNORECASE,
-        ) is not None
-
-    @classmethod
-    def _ensure_mobile_viewport_meta(cls, code: str) -> str:
-        if cls._has_mobile_viewport_meta(code):
-            return code
-
-        meta_tag = (
-            '<meta name="viewport" content="width=device-width, initial-scale=1.0, '
-            'maximum-scale=1.0, user-scalable=no">'
-        )
-        if re.search(r"<head\b[^>]*>", code, re.IGNORECASE):
-            return re.sub(
-                r"(<head\b[^>]*>)",
-                rf"\1\n    {meta_tag}",
-                code,
-                count=1,
-                flags=re.IGNORECASE,
-            )
-        return code
-
-    @staticmethod
-    def _inject_input_bridge(code: str) -> str:
-        marker = "__playforgeInputBridgeInstalled"
-        if marker in (code or ""):
-            return code
-
-        bridge = r"""
-<script>
-(() => {
-  if (window.__playforgeInputBridgeInstalled) return;
-  window.__playforgeInputBridgeInstalled = true;
-  window.__playforgeInteractionFeedbackVersion = 0;
-  window.__playforgeLastInputKind = '';
-  window.__playforgeBridgeHandling = false;
-  const BRIDGE_EVENT_FLAG = '__playforgeBridgeSynthetic';
-  const BRIDGE_HANDLED_FLAG = '__playforgeBridgeHandled';
-  const target = document.getElementById('gameCanvas') || document.querySelector('canvas') || document.body || document.documentElement;
-  if (!target) return;
-  const canvas = document.getElementById('gameCanvas') || document.querySelector('canvas');
-  const knownStartNames = [
-    'startGame', 'restartGame', 'resetGame', 'newGame', 'initGame',
-    'beginGame', 'playGame', 'resumeGame', 'bootGame', 'launchGame',
-    'start', 'restart', 'reset', 'begin', 'play'
-  ];
-  const startHints = /(start|begin|play|launch|ready|go|点击开始|开始游戏|开始|play again|restart|再来一局|重新开始)/i;
-
-  const markEvent = (event, key) => {
-    if (!event) return;
-    try {
-      Object.defineProperty(event, key, {
-        value: true,
-        configurable: true,
-      });
-      return;
-    } catch (err) {
-      /* ignore non-configurable event marker errors */
-    }
-    try {
-      event[key] = true;
-    } catch (err) {
-      /* ignore direct event marker errors */
-    }
-  };
-
-  const hasEventFlag = (event, key) => {
-    try {
-      return !!(event && event[key]);
-    } catch (err) {
-      return false;
-    }
-  };
-
-  const dispatchSyntheticEvent = (node, event) => {
-    if (!node || !event) return false;
-    markEvent(event, BRIDGE_EVENT_FLAG);
-    try {
-      return !!node.dispatchEvent(event);
-    } catch (err) {
-      return false;
-    }
-  };
-
-  const setKnownStateFlags = () => {
-    const candidates = ['gameState', 'state', 'currentState', 'status', 'mode'];
-    for (const key of candidates) {
-      try {
-        if (typeof window[key] === 'string' && /^(boot|ready|menu|start|idle)$/i.test(window[key])) {
-          window[key] = 'playing';
-        }
-      } catch (err) {
-        /* ignore state bridge errors */
-      }
-    }
-    for (const key of ['gameStarted', 'started', 'isRunning']) {
-      try {
-        if (typeof window[key] === 'boolean') {
-          window[key] = true;
-        }
-      } catch (err) {
-        /* ignore state bridge errors */
-      }
-    }
-    for (const key of ['gameOver', 'isGameOver']) {
-      try {
-        if (typeof window[key] === 'boolean') {
-          window[key] = false;
-        }
-      } catch (err) {
-        /* ignore state bridge errors */
-      }
-    }
-  };
-
-  const invokeKnownEntryPoint = () => {
-    for (const name of knownStartNames) {
-      try {
-        const fn = window[name];
-        if (typeof fn === 'function') {
-          fn();
-          return true;
-        }
-      } catch (err) {
-        /* ignore entry-point bridge errors */
-      }
-    }
-    try {
-      const dynamicNames = Object.keys(window)
-        .filter((name) => /(?:start|restart|reset|begin|play|launch|init|boot)/i.test(name))
-        .slice(0, 12);
-      for (const name of dynamicNames) {
-        const fn = window[name];
-        if (typeof fn === 'function') {
-          fn();
-          return true;
-        }
-      }
-    } catch (err) {
-      /* ignore dynamic entry-point scan errors */
-    }
-    return false;
-  };
-
-  const invokeVisibleDomStartControls = () => {
-    try {
-      const candidates = Array.from(document.querySelectorAll(
-        'button, [role="button"], [id], [class], [data-action], .ui-overlay, .button'
-      )).filter((node) => {
-        if (!node || typeof node.getBoundingClientRect !== 'function') return false;
-        const text = ((node.innerText || node.textContent || '') + ' ' + (node.id || '') + ' ' + (node.className || ''))
-          .replace(/\s+/g, ' ')
-          .trim();
-        if (!startHints.test(text)) return false;
-        const style = window.getComputedStyle ? window.getComputedStyle(node) : null;
-        if (style && (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0')) {
-          return false;
-        }
-        const rect = node.getBoundingClientRect();
-        return Math.round(rect.width || 0) > 0 && Math.round(rect.height || 0) > 0;
-      }).slice(0, 6);
-
-      for (const node of candidates) {
-        try {
-          dispatchSyntheticEvent(
-            node,
-            new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'touch' })
-          );
-        } catch (err) {
-          /* ignore pointerdown synthesis errors */
-        }
-        try {
-          dispatchSyntheticEvent(
-            node,
-            new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, buttons: 1 })
-          );
-        } catch (err) {
-          /* ignore mousedown synthesis errors */
-        }
-        try {
-          dispatchSyntheticEvent(
-            node,
-            new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })
-          );
-        } catch (err) {
-          /* ignore click synthesis errors */
-        }
-      }
-      return candidates.length > 0;
-    } catch (err) {
-      /* ignore DOM start-control scan errors */
-    }
-    return false;
-  };
-
-  const paintVisibleFeedback = (inputKind) => {
-    try {
-      window.__playforgeInteractionFeedbackVersion += 1;
-      window.__playforgeLastInputKind = inputKind || 'tap';
-      if (canvas && typeof canvas.getContext === 'function') {
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          const stamp = window.__playforgeInteractionFeedbackVersion;
-          const drawStamp = () => {
-            try {
-              const w = canvas.width || 320;
-              const h = canvas.height || 480;
-              ctx.save();
-              ctx.globalAlpha = 0.98;
-              ctx.fillStyle = 'rgba(12,18,28,0.88)';
-              ctx.fillRect(10, 10, Math.min(180, Math.max(140, w * 0.42)), 56);
-              ctx.fillStyle = '#ffffff';
-              ctx.font = 'bold 16px sans-serif';
-              ctx.fillText('Tap ' + stamp, 22, 38);
-              ctx.strokeStyle = 'rgba(34,197,94,0.95)';
-              ctx.lineWidth = 3;
-              ctx.strokeRect(Math.max(12, w - 68), Math.max(12, h - 68), 48, 48);
-              ctx.restore();
-            } catch (err) {
-              /* ignore draw stamp failures */
-            }
-          };
-          drawStamp();
-          window.requestAnimationFrame(drawStamp);
-          window.setTimeout(drawStamp, 120);
-          window.setTimeout(drawStamp, 280);
-          window.setTimeout(drawStamp, 520);
-        }
-      }
-      if (target && target.style) {
-        target.style.outline = '3px solid rgba(255,255,255,0.9)';
-        target.style.outlineOffset = '2px';
-      }
-      const existingBadge = document.getElementById('__playforgeInputBridgeBadge');
-      if (existingBadge) {
-        existingBadge.textContent = 'Tap ' + window.__playforgeInteractionFeedbackVersion;
-        return;
-      }
-      const badge = document.createElement('div');
-      badge.id = '__playforgeInputBridgeBadge';
-      badge.textContent = 'Tap ' + window.__playforgeInteractionFeedbackVersion;
-      badge.style.position = 'fixed';
-      badge.style.left = '12px';
-      badge.style.top = '12px';
-      badge.style.zIndex = '99999';
-      badge.style.padding = '6px 10px';
-      badge.style.background = 'rgba(12,18,28,0.88)';
-      badge.style.color = '#ffffff';
-      badge.style.font = 'bold 14px sans-serif';
-      badge.style.borderRadius = '10px';
-      document.body && document.body.appendChild(badge);
-    } catch (err) {
-      /* ignore feedback paint failures */
-    }
-  };
-
-  const dispatchBridgeEvents = () => {
-    try {
-      window.dispatchEvent(new CustomEvent('playforge:start-requested'));
-      document.dispatchEvent(new CustomEvent('playforge:start-requested'));
-      target.dispatchEvent(new CustomEvent('playforge:start-requested', { bubbles: true }));
-    } catch (err) {
-      /* ignore bridge custom events */
-    }
-  };
-
-  const bridgeHandler = (event) => {
-    const type = event && event.type ? String(event.type) : 'interaction';
-    if (hasEventFlag(event, BRIDGE_EVENT_FLAG) || hasEventFlag(event, BRIDGE_HANDLED_FLAG)) {
-      return;
-    }
-    markEvent(event, BRIDGE_HANDLED_FLAG);
-    if (window.__playforgeBridgeHandling) {
-      return;
-    }
-    window.__playforgeBridgeHandling = true;
-    window.__playforgeLastInputAt = Date.now();
-    try {
-      paintVisibleFeedback(type);
-      setKnownStateFlags();
-      invokeKnownEntryPoint();
-      invokeVisibleDomStartControls();
-      dispatchBridgeEvents();
-    } finally {
-      window.__playforgeBridgeHandling = false;
-    }
-  };
-
-  const attach = (node) => {
-    if (!node) return;
-    const options = { passive: true, capture: true };
-    node.addEventListener('pointerdown', bridgeHandler, options);
-    node.addEventListener('touchstart', bridgeHandler, options);
-    node.addEventListener('click', bridgeHandler, options);
-    node.addEventListener('keydown', bridgeHandler, options);
-  };
-
-  const bindInputHandlers = () => {
-    attach(target);
-    attach(document);
-    attach(window);
-  };
-
-  bindInputHandlers();
-})();
-</script>
-""".strip()
-
-        if re.search(r"</body>", code, re.IGNORECASE):
-            return re.sub(
-                r"</body>",
-                lambda _: bridge + "\n</body>",
-                code,
-                count=1,
-                flags=re.IGNORECASE,
-            )
-        if re.search(r"</html>", code, re.IGNORECASE):
-            return re.sub(
-                r"</html>",
-                lambda _: bridge + "\n</html>",
-                code,
-                count=1,
-                flags=re.IGNORECASE,
-            )
-        return code + "\n" + bridge
-
-    @classmethod
-    def _inject_mobile_layout_bridge(
-        cls,
-        code: str,
-        *,
-        runtime_contract: Optional[GameRuntimeContract] = None,
-    ) -> str:
-        orientation = cls._resolve_mobile_layout_orientation(runtime_contract)
-        if cls._has_mobile_layout_bridge_marker(code) or has_short_edge_scaling(code, orientation=orientation):
-            return code
-        if not re.search(r"<canvas\b", code, re.IGNORECASE):
-            return code
-
-        bridge = r"""
-<script>
-(() => {
-  if (window.__playforgeMobileLayoutBridgeInstalled) return;
-  window.__playforgeMobileLayoutBridgeInstalled = true;
-  const canvas = document.getElementById('gameCanvas') || document.querySelector('canvas');
-  if (!canvas) return;
-  const designWidth = Math.max(1, Number(canvas.width) || Number(canvas.getAttribute('width')) || 360);
-  const designHeight = Math.max(1, Number(canvas.height) || Number(canvas.getAttribute('height')) || 640);
-  const applyResponsiveLayout = () => {
-    const docEl = document.documentElement || document.body;
-    const viewportWidth = Math.max((docEl && docEl.clientWidth) || 0, window.innerWidth || 0);
-    const viewportHeight = Math.max((docEl && docEl.clientHeight) || 0, window.innerHeight || 0);
-    const scaleX = viewportWidth / designWidth;
-    const scaleY = viewportHeight / designHeight;
-    const uiScale = Math.min(scaleX, scaleY);
-    const shortEdge = Math.min(viewportWidth, viewportHeight);
-    const renderWidth = Math.max(1, Math.round(designWidth * uiScale));
-    const renderHeight = Math.max(1, Math.round(designHeight * uiScale));
-    if (document.body) {
-      document.body.style.margin = '0';
-      document.body.style.minHeight = '100vh';
-      document.body.style.overflow = 'hidden';
-      document.body.style.position = 'relative';
-      document.body.style.display = 'block';
-    }
-    canvas.style.position = 'absolute';
-    canvas.style.width = renderWidth + 'px';
-    canvas.style.height = renderHeight + 'px';
-    canvas.style.left = Math.max(0, Math.round((viewportWidth - renderWidth) / 2)) + 'px';
-    canvas.style.top = Math.max(0, Math.round((viewportHeight - renderHeight) / 2)) + 'px';
-    canvas.style.maxWidth = 'none';
-    canvas.style.maxHeight = 'none';
-    window.__playforgeUiScale = uiScale;
-    window.__playforgeShortEdge = shortEdge;
-    window.__playforgePortraitUiScale = uiScale;
-    window.__playforgePortraitShortEdge = shortEdge;
-  };
-  applyResponsiveLayout();
-  window.addEventListener('resize', applyResponsiveLayout, { passive: true });
-  window.addEventListener('orientationchange', applyResponsiveLayout, { passive: true });
-})();
-</script>
-"""
-
-        if re.search(r"</html>", code, re.IGNORECASE):
-            return re.sub(
-                r"</html>",
-                lambda _: bridge + "\n</html>",
-                code,
-                count=1,
-                flags=re.IGNORECASE,
-            )
-        return code + "\n" + bridge
-
-    @staticmethod
-    def _inject_score_feedback_bridge(code: str) -> str:
-        marker = "__playforgeScoreBridgeInstalled"
-        if marker in (code or ""):
-            return code
-
-        bridge = r"""
-<script>
-(() => {
-  if (window.__playforgeScoreBridgeInstalled) return;
-  window.__playforgeScoreBridgeInstalled = true;
-  window.__playforgeScoreBridgeStartedAt = Date.now();
-  const scoreKeys = ['score', 'points', 'point', 'combo', 'multiplier', 'coins', 'coin', 'time', 'timer', 'moves', 'steps'];
-  const rootKeys = ['game', 'state', 'player', 'world', 'session', 'hud', 'ui', 'stats', 'runtime'];
-
-  const ensureHud = () => {
-    let hud = document.getElementById('playforgeScoreHud');
-    if (hud) return hud;
-    hud = document.createElement('div');
-    hud.id = 'playforgeScoreHud';
-    hud.style.position = 'fixed';
-    hud.style.left = '12px';
-    hud.style.top = '12px';
-    hud.style.zIndex = '99998';
-    hud.style.padding = '8px 12px';
-    hud.style.borderRadius = '12px';
-    hud.style.background = 'rgba(15, 23, 42, 0.88)';
-    hud.style.color = '#f8fafc';
-    hud.style.font = '700 14px/1.2 sans-serif';
-    hud.style.letterSpacing = '0.02em';
-    hud.style.boxShadow = '0 8px 24px rgba(15, 23, 42, 0.22)';
-    hud.style.pointerEvents = 'none';
-    (document.body || document.documentElement).appendChild(hud);
-    return hud;
-  };
-
-  const normalizeValue = (value) => {
-    if (typeof value === 'number' && Number.isFinite(value)) return Math.round(value);
-    if (typeof value === 'string' && value.trim()) return value.trim();
-    return null;
-  };
-
-  const probeObject = (root, labelPrefix = '') => {
-    if (!root || typeof root !== 'object') return null;
-    for (const key of scoreKeys) {
-      try {
-        const value = normalizeValue(root[key]);
-        if (value !== null) {
-          return { label: labelPrefix || key, value };
-        }
-      } catch (err) {
-        /* ignore score probe errors */
-      }
-    }
-    return null;
-  };
-
-  const readScoreSample = () => {
-    for (const key of scoreKeys) {
-      try {
-        const value = normalizeValue(window[key]);
-        if (value !== null) {
-          return { label: key, value };
-        }
-      } catch (err) {
-        /* ignore direct score probe errors */
-      }
-    }
-
-    for (const rootKey of rootKeys) {
-      try {
-        const sample = probeObject(window[rootKey], rootKey);
-        if (sample) return sample;
-      } catch (err) {
-        /* ignore nested score probe errors */
-      }
-    }
-
-    const elapsedSeconds = Math.max(0, Math.floor((Date.now() - window.__playforgeScoreBridgeStartedAt) / 1000));
-    return { label: 'time', value: elapsedSeconds };
-  };
-
-  const formatLabel = (label) => {
-    const normalized = String(label || 'score').toLowerCase();
-    if (normalized === 'time' || normalized === 'timer') return 'Time';
-    if (normalized === 'coin' || normalized === 'coins') return 'Coins';
-    if (normalized === 'moves' || normalized === 'steps') return 'Moves';
-    if (normalized === 'combo') return 'Combo';
-    return 'Score';
-  };
-
-  const tick = () => {
-    try {
-      const hud = ensureHud();
-      const sample = readScoreSample();
-      hud.textContent = formatLabel(sample.label) + ': ' + sample.value;
-    } catch (err) {
-      /* ignore score bridge render errors */
-    }
-    window.requestAnimationFrame(tick);
-  };
-
-  tick();
-})();
-</script>
-""".strip()
-
-        if re.search(r"</body>", code, re.IGNORECASE):
-            return re.sub(
-                r"</body>",
-                lambda _: bridge + "\n</body>",
-                code,
-                count=1,
-                flags=re.IGNORECASE,
-            )
-        if re.search(r"</html>", code, re.IGNORECASE):
-            return re.sub(
-                r"</html>",
-                lambda _: bridge + "\n</html>",
-                code,
-                count=1,
-                flags=re.IGNORECASE,
-            )
-        return code + "\n" + bridge
-
-    @staticmethod
-    def _inject_touch_coordinate_guard(code: str) -> str:
-        marker = "__playforgeResolveTouchPointInstalled"
-        if marker in (code or ""):
-            return code
-
-        repaired = re.sub(
-            r"\b([A-Za-z_$][\w$]*)\.touches\s*\?\s*\1\.touches\s*\[\s*0\s*\]\.(clientX|clientY)\s*:\s*\1\.\2\b",
-            r"window.__playforgeResolveTouchPoint(\1).\2",
-            code,
-        )
-        repaired = re.sub(
-            r"\b([A-Za-z_$][\w$]*)\.touches\s*\?\s*\1\.touches\s*\[\s*0\s*\]\s*:\s*\1\b",
-            r"window.__playforgeResolveTouchPoint(\1)",
-            repaired,
-        )
-        repaired = re.sub(
-            r"\b([A-Za-z_$][\w$]*)\.touches\s*\[\s*0\s*\]",
-            r"window.__playforgeResolveTouchPoint(\1)",
-            repaired,
-        )
-
-        helper = r"""
-<script>
-(() => {
-  if (window.__playforgeResolveTouchPointInstalled) return;
-  window.__playforgeResolveTouchPointInstalled = true;
-  window.__playforgeResolveTouchPoint = function(evt) {
-    return (evt && evt.touches && evt.touches[0])
-      || (evt && evt.changedTouches && evt.changedTouches[0])
-      || evt
-      || { clientX: 0, clientY: 0 };
-  };
-})();
-</script>
-""".strip()
-
-        if re.search(r"</body>", repaired, re.IGNORECASE):
-            return re.sub(
-                r"</body>",
-                lambda _: helper + "\n</body>",
-                repaired,
-                count=1,
-                flags=re.IGNORECASE,
-            )
-        if re.search(r"</html>", repaired, re.IGNORECASE):
-            return re.sub(
-                r"</html>",
-                lambda _: helper + "\n</html>",
-                repaired,
-                count=1,
-                flags=re.IGNORECASE,
-            )
-        return repaired + "\n" + helper
-
-    @staticmethod
-    def _still_has_unsafe_touch_coordinate_access(code: str) -> bool:
-        if "__playforgeResolveTouchPointInstalled" in (code or ""):
-            return False
-        return bool(
-            re.search(r"\b[A-Za-z_$][\w$]*\.touches\s*\[\s*0\s*\]", code)
-            or re.search(r"\b([A-Za-z_$][\w$]*)\.touches\s*\?\s*\1\.touches\s*\[\s*0\s*\]\s*:\s*\1\b", code)
-            or re.search(
-                r"\b([A-Za-z_$][\w$]*)\.touches\s*\?\s*\1\.touches\s*\[\s*0\s*\]\.(clientX|clientY)\s*:\s*\1\.\2\b",
-                code,
-            )
-        )
-
-    @classmethod
-    def _strip_config_duplicate_declarations(cls, code: str, errors: List[QACheckError]) -> str:
-        config_match = re.search(
-            r"(/\* SECTION:CONFIG START \*/)(?P<body>.*?)(/\* SECTION:CONFIG END \*/)",
-            code or "",
-            flags=re.DOTALL,
-        )
-        if config_match is None:
-            return code
-
-        config_body = config_match.group("body")
-        tail = code[config_match.end():]
-        repaired_body = config_body
-        for identifier in cls._extract_duplicate_declaration_identifiers(errors):
-            decl_pattern = re.compile(
-                rf"(?m)^[ \t]*(?:const|let|var)\s+{re.escape(identifier)}\b[^\n;]*;\s*\n?",
-            )
-            if not decl_pattern.search(repaired_body):
-                continue
-            if not decl_pattern.search(tail):
-                continue
-            repaired_body = decl_pattern.sub("", repaired_body)
-
-        if repaired_body == config_body:
-            return code
-        return (
-            code[:config_match.start("body")]
-            + repaired_body
-            + code[config_match.end("body"):]
-        )
-
-    @classmethod
-    def _still_has_config_duplicate_declarations(cls, code: str, errors: List[QACheckError]) -> bool:
-        config_match = re.search(
-            r"(/\* SECTION:CONFIG START \*/)(?P<body>.*?)(/\* SECTION:CONFIG END \*/)",
-            code or "",
-            flags=re.DOTALL,
-        )
-        if config_match is None:
-            return False
-        config_body = config_match.group("body")
-        tail = code[config_match.end():]
-        for identifier in cls._extract_duplicate_declaration_identifiers(errors):
-            decl_pattern = re.compile(
-                rf"(?m)^[ \t]*(?:const|let|var)\s+{re.escape(identifier)}\b[^\n;]*;\s*\n?",
-            )
-            if decl_pattern.search(config_body) and decl_pattern.search(tail):
-                return True
-        return False
-
-    @staticmethod
-    def _strip_storage_apis(code: str) -> str:
-        """Deterministically remove localStorage/sessionStorage usage."""
-        repaired = code
-        # Replace getItem calls with empty string
-        repaired = re.sub(r'localStorage\.getItem\([^)]*\)', '""', repaired)
-        repaired = re.sub(r'sessionStorage\.getItem\([^)]*\)', '""', repaired)
-        # Remove setItem / removeItem / clear calls entirely
-        repaired = re.sub(r'localStorage\.(?:setItem|removeItem|clear)\([^)]*\)\s*;?', '', repaired)
-        repaired = re.sub(r'sessionStorage\.(?:setItem|removeItem|clear)\([^)]*\)\s*;?', '', repaired)
-        # Remove remaining bare references used as conditions
-        repaired = re.sub(r'localStorage\b', '({})', repaired)
-        repaired = re.sub(r'sessionStorage\b', '({})', repaired)
-        return repaired
-
-    @staticmethod
-    def _inject_terminal_state_fallback(code: str) -> str:
-        """If gameOver is declared but never set to true, inject a timeout fallback."""
-        if "__playforgeTerminalFallback" in code:
-            return code
-        # Check: gameOver declared as false but never assigned true
-        has_decl = bool(re.search(r'\bgameOver\s*=\s*false\b', code, re.IGNORECASE))
-        has_set_true = bool(re.search(r'\bgameOver\s*=\s*true\b', code, re.IGNORECASE))
-        if not has_decl or has_set_true:
-            return code
-        # Inject a 60-second timeout that sets gameOver = true
-        fallback = (
-            '\n<script>'
-            '/* __playforgeTerminalFallback */'
-            'setTimeout(function(){'
-            'if(typeof gameOver!=="undefined"&&!gameOver){gameOver=true;}'
-            '},60000);'
-            '</script>\n'
-        )
-        # Insert before </body>
-        if re.search(r'</body>', code, re.IGNORECASE):
-            return re.sub(r'(</body>)', fallback + r'\1', code, count=1, flags=re.IGNORECASE)
-        return code + fallback
-
-    @staticmethod
-    def _sanitize_forbidden_api_usage(code: str, errors: List[QACheckError]) -> str:
-        repaired = code
-        forbidden_names = QAPipeline._extract_forbidden_api_names(errors)
-
-        if "Function" in forbidden_names:
-            repaired = re.sub(r"\bnew\s+Function\s*\(", "(", repaired)
-            repaired = re.sub(r"\b(?:window|globalThis|self|this)\.Function\s*\(", "(", repaired)
-            repaired = re.sub(r"\bFunction\s*\(", "(", repaired)
-
-        if "eval" in forbidden_names:
-            repaired = re.sub(r"\b(?:window|globalThis|self|this)\.eval\s*\(", "(", repaired)
-            repaired = re.sub(r"\beval\s*\(", "(", repaired)
-
-        return repaired
-
-    @staticmethod
-    def _still_contains_forbidden_api(code: str, errors: List[QACheckError]) -> bool:
-        for api_name in QAPipeline._extract_forbidden_api_names(errors):
-            pattern = None
-            if api_name == "Function":
-                pattern = r"\bFunction\s*\("
-            elif api_name == "eval":
-                pattern = r"\beval\s*\("
-            elif api_name:
-                pattern = re.escape(api_name)
-
-            if pattern and re.search(pattern, code):
-                return True
-        return False
-
-    @staticmethod
-    def _extract_forbidden_api_names(errors: List[QACheckError]) -> set[str]:
-        names: set[str] = set()
-        for error in errors:
-            message = error.message or ""
-            contract_match = re.search(r"forbids API usage:\s*([A-Za-z.]+)", message)
-            detected_match = re.search(r"Forbidden API detected:\s*([A-Za-z.]+)", message)
-            candidate = contract_match.group(1) if contract_match else (detected_match.group(1) if detected_match else None)
-            if candidate:
-                names.add(candidate.strip().rstrip("()"))
-        return names

@@ -731,6 +731,83 @@ def _annotate_failure_exception(exc: Exception, failure: dict[str, Any]) -> None
         exc.detail = detail
 
 
+def _build_async_runner_failure_exception(
+    *,
+    message: str,
+    failed_stage: str,
+    failure_family: str,
+) -> Exception:
+    exc = RuntimeError(message)
+    for attr, value in (
+        ("stage", failed_stage),
+        ("retry_count", 0),
+        ("fallback", None),
+        ("failure_family", failure_family),
+        ("primary_artifact_id", None),
+    ):
+        try:
+            setattr(exc, attr, value)
+        except Exception:
+            pass
+    return exc
+
+
+async def _handle_async_runner_cancellation(
+    *,
+    task_id: str,
+    game_id: str,
+    fallback_stage: str,
+    default_message: str,
+) -> Exception | None:
+    snapshot = await task_manager.get_task(task_id)
+    if snapshot and snapshot.status == AsyncTaskStatus.canceled:
+        return None
+
+    failed_stage = (
+        snapshot.progress.stage
+        if snapshot and snapshot.progress and snapshot.progress.stage
+        else fallback_stage
+    )
+    failure_family = _classify_failure_family(
+        failed_stage=failed_stage,
+        message=default_message,
+        timed_out=False,
+    )
+
+    await _relay_task_failure_to_game_service(
+        task_id=task_id,
+        failed_stage=failed_stage,
+        error_message=default_message,
+        retry_count=0,
+        fallback=None,
+        timed_out=False,
+        failure_family=failure_family,
+        primary_artifact_id=None,
+        details={
+            "pipelineVersion": "v2",
+            "exceptionClass": "CancelledError",
+            "reason": "unexpected_async_cancellation",
+        },
+    )
+    await _relay_stage_summary_to_game_service(
+        task_id=task_id,
+        stage=failed_stage,
+        message=default_message,
+        conclusion_type="failure",
+        details={
+            "pipelineVersion": "v2",
+            "failureFamily": failure_family,
+            "exceptionClass": "CancelledError",
+            "reason": "unexpected_async_cancellation",
+        },
+    )
+    return _build_async_runner_failure_exception(
+        message=default_message,
+        failed_stage=failed_stage,
+        failure_family=failure_family,
+    )
+
+
 def _decorate_v2_run_response(
     response: RunPipelineResponse,
     request: RunPipelineV2Request,
@@ -1732,6 +1809,17 @@ async def run_pipeline_async(request: RunPipelineRequest) -> AsyncTaskHandleResp
                     task_id=upgraded_request.task_id or task_id,
                 )
             return await _run_pipeline_internal(request, task_id=request.task_id or task_id)
+        except asyncio.CancelledError:
+            failure_exc = await _handle_async_runner_cancellation(
+                task_id=task_id,
+                game_id=request.game_id,
+                fallback_stage="pipeline_run",
+                default_message="Async create pipeline was canceled before completion",
+            )
+            if failure_exc is None:
+                raise
+            await manager.send_error(request.game_id, str(failure_exc))
+            raise failure_exc
         except Exception as exc:
             await manager.send_error(request.game_id, str(exc))
             raise
@@ -1802,6 +1890,17 @@ async def pipeline_iterate_async(request: IterateRequest) -> AsyncTaskHandleResp
                     task_id=upgraded_request.task_id or task_id,
                 )
             return await _run_iteration_internal(request, task_id=request.task_id or task_id)
+        except asyncio.CancelledError:
+            failure_exc = await _handle_async_runner_cancellation(
+                task_id=task_id,
+                game_id=request.game_id,
+                fallback_stage="iteration",
+                default_message="Async iteration pipeline was canceled before completion",
+            )
+            if failure_exc is None:
+                raise
+            await manager.send_error(request.game_id, str(failure_exc))
+            raise failure_exc
         except Exception as exc:
             await manager.send_error(request.game_id, str(exc))
             raise
@@ -1858,6 +1957,17 @@ async def run_pipeline_v2_async(request: RunPipelineV2Request) -> AsyncTaskHandl
     async def runner(task_id: str) -> RunPipelineResponse:
         try:
             return await _run_pipeline_v2_internal(request, task_id=request.task_id or task_id)
+        except asyncio.CancelledError:
+            failure_exc = await _handle_async_runner_cancellation(
+                task_id=task_id,
+                game_id=request.game_id,
+                fallback_stage="pipeline_run",
+                default_message="Async create pipeline was canceled before completion",
+            )
+            if failure_exc is None:
+                raise
+            await manager.send_error(request.game_id, str(failure_exc))
+            raise failure_exc
         except Exception as exc:
             await manager.send_error(request.game_id, str(exc))
             raise
@@ -1907,6 +2017,17 @@ async def pipeline_iterate_v2_async(request: IterateV2Request) -> AsyncTaskHandl
     async def runner(task_id: str) -> IterateResponse:
         try:
             return await _run_iteration_v2_internal(request, task_id=request.task_id or task_id)
+        except asyncio.CancelledError:
+            failure_exc = await _handle_async_runner_cancellation(
+                task_id=task_id,
+                game_id=request.game_id,
+                fallback_stage="iteration",
+                default_message="Async iteration pipeline was canceled before completion",
+            )
+            if failure_exc is None:
+                raise
+            await manager.send_error(request.game_id, str(failure_exc))
+            raise failure_exc
         except Exception as exc:
             await manager.send_error(request.game_id, str(exc))
             raise
@@ -2046,8 +2167,22 @@ async def iterate_code_legacy(request: IterateRequest) -> IterateResponse:
 async def parse_intent(request: ParseIntentRequest) -> ParseIntentResponse:
     """Parse description into GameSpec (legacy)."""
     try:
-        spec = await _dialogue_engine.parse_description_to_spec(request.description)
-        return ParseIntentResponse(spec=spec, confidence=0.85)
+        spec = await _dialogue_engine.parse_description_to_spec(
+            request.description,
+            title=request.title,
+            preferred_game_type=request.preferred_game_type,
+            variation_seed=request.variation_seed,
+        )
+        spec.generation_tier = request.generation_tier
+        spec.complexity_budget = str(
+            getattr(request.generation_tier, "value", request.generation_tier) or "standard"
+        )
+        return ParseIntentResponse(
+            spec=spec,
+            confidence=0.9,
+            missing_required=[],
+            slot_fill_pct=1.0,
+        )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to parse intent: {str(e)}")
 

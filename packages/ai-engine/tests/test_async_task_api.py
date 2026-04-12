@@ -89,10 +89,10 @@ def _resolve_test_prompt_bundle(snapshot, runtime_profile=None):
             "key": f"bundle.runtime.profile.{runtime_profile or 'casual_arcade'}",
             "content": "PROFILE FEW SHOT",
         },
-        "repair_input_contract": {"key": "bundle.repair.input_contract", "content": "REPAIR INPUT"},
-        "repair_terminal_state": {"key": "bundle.repair.terminal_state", "content": "REPAIR TERMINAL"},
-        "repair_mobile_layout": {"key": "bundle.repair.mobile_layout", "content": "REPAIR MOBILE"},
-        "repair_forbidden_api": {"key": "bundle.repair.forbidden_api", "content": "REPAIR FORBIDDEN"},
+        "repair_syntax_structural": {
+            "key": "bundle.repair.syntax_structural",
+            "content": "REPAIR SYNTAX STRUCTURAL",
+        },
     }
     return snapshot.model_copy(update={"resolved_at": snapshot.resolved_at or TEST_V2_PROMPT_BUNDLE_SNAPSHOT["resolved_at"], "layers": layers})
 
@@ -497,6 +497,84 @@ class TestAsyncTaskApi(unittest.TestCase):
         self.assertEqual(payload["error"]["failed_stage"], "qa_checking")
         self.assertEqual(payload["error"]["failure_family"], "contract_qa")
         self.assertEqual(payload["error"]["primary_artifact_id"], "artifact-failure-1")
+
+    def test_async_pipeline_unexpected_cancellation_is_relayed_as_failed(self):
+        with patch_v2_prompt_defaults(), patch(
+            "src.api.endpoints.generate._run_pipeline_v2_internal",
+            new=AsyncMock(side_effect=asyncio.CancelledError()),
+        ), patch(
+            "src.api.endpoints.generate._relay_task_failure_to_game_service",
+            new=AsyncMock(),
+        ) as relay_failure, patch(
+            "src.api.endpoints.generate._relay_stage_summary_to_game_service",
+            new=AsyncMock(),
+        ) as relay_stage_summary:
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/v1/ai/pipeline/run/async",
+                    json={
+                        "game_id": "game-cancel-failed",
+                        "description": "make a runner game",
+                        "user_id": "user-cancel-failed",
+                        "timeout_s": 120,
+                    },
+                )
+
+                self.assertEqual(response.status_code, 202)
+                handle = response.json()
+                time.sleep(0.05)
+                task_response = client.get(handle["poll_url"])
+
+        self.assertEqual(task_response.status_code, 200)
+        payload = task_response.json()
+        self.assertEqual(payload["status"], "failed")
+        self.assertEqual(payload["error"]["failed_stage"], "pipeline_run")
+        self.assertEqual(payload["error"]["failure_family"], "pipeline")
+        self.assertIsNotNone(relay_failure.await_args)
+        self.assertEqual(relay_failure.await_args.kwargs["task_id"], handle["task_id"])
+        self.assertEqual(relay_failure.await_args.kwargs["failed_stage"], "pipeline_run")
+        self.assertIsNotNone(relay_stage_summary.await_args)
+
+    def test_async_cancellation_helper_skips_relay_for_user_canceled_tasks(self):
+        async def scenario():
+            manager = AsyncTaskManager()
+            relay_failure = AsyncMock()
+            relay_stage_summary = AsyncMock()
+
+            async def runner(_task_id: str):
+                await asyncio.sleep(10)
+
+            with patch(
+                "src.api.endpoints.generate.task_manager",
+                manager,
+            ), patch(
+                "src.api.endpoints.generate._relay_task_failure_to_game_service",
+                new=relay_failure,
+            ), patch(
+                "src.api.endpoints.generate._relay_stage_summary_to_game_service",
+                new=relay_stage_summary,
+            ):
+                handle = await manager.create_task(
+                    task_type=AsyncTaskType.pipeline_run,
+                    game_id="game-user-canceled",
+                    user_id="user-user-canceled",
+                    timeout_s=600,
+                    runner=runner,
+                )
+                await asyncio.sleep(0.02)
+                await manager.cancel_task(handle.task_id)
+                result = await generate_api._handle_async_runner_cancellation(
+                    task_id=handle.task_id,
+                    game_id="game-user-canceled",
+                    fallback_stage="pipeline_run",
+                    default_message="Async create pipeline was canceled before completion",
+                )
+
+            self.assertIsNone(result)
+            relay_failure.assert_not_awaited()
+            relay_stage_summary.assert_not_awaited()
+
+        asyncio.run(scenario())
 
     def test_v2_failure_persists_runner_artifacts_and_promotes_candidate_as_primary(self):
         request = RunPipelineV2Request(

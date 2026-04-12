@@ -9,7 +9,6 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..api.models import (
-    EnrichedGDD,
     GDD,
     GameRuntimeContract,
     GameSpec,
@@ -96,6 +95,92 @@ PLAYER_SIZE_BY_GAME_TYPE: Dict[str, tuple[int, int]] = {
     "funny": (44, 44),
 }
 
+_GENERIC_SPECIAL_RULE_PHRASES: tuple[str, ...] = (
+    "restart after losing",
+    "restart available",
+    "restart available anytime",
+    "restart button",
+    "restart function",
+    "click to start",
+    "tap to start",
+    "start hint",
+    "win state",
+    "lose state",
+    "victory screen",
+    "failure screen",
+    "failure settlement",
+    "game over screen",
+    "show final score",
+    "novice operation prompts",
+    "operation prompts",
+    "clear novice operation prompts",
+    "provide clear novice operation prompts",
+    "点击开始",
+    "开始提示",
+    "失败后可以重新开始",
+    "重新开始按钮",
+    "重新开始功能",
+    "失败页",
+    "胜利页",
+    "失败结算",
+    "新手提示",
+    "关卡提示",
+    "阶段进度",
+    "剩余步数",
+)
+
+_STANDARD_COMPLEXITY_KEYWORDS: tuple[str, ...] = (
+    "combo",
+    "meter",
+    "wave",
+    "waves",
+    "projectile",
+    "projectiles",
+    "shoot",
+    "shooter",
+    "boss",
+    "attack",
+    "enemy",
+    "enemies",
+    "stage progress",
+    "health bar",
+    "combo meter",
+    "三波",
+    "波次",
+    "boss",
+    "攻击",
+    "子弹",
+    "敌人",
+    "血量",
+    "进度",
+)
+
+_COMPLEX_COMPLEXITY_KEYWORDS: tuple[str, ...] = (
+    "boss",
+    "mini boss",
+    "three waves",
+    "consecutive enemy waves",
+    "energy is used to attack",
+    "defeat all",
+    "escort",
+    "rescue",
+    "quiz",
+    "classroom",
+    "worksheet",
+    "pathfinding",
+    "route planning",
+    "inventory",
+    "craft",
+    "procedural",
+    "mini boss",
+    "击败",
+    "boss",
+    "三波敌人",
+    "能量",
+    "课堂",
+    "问答",
+)
+
 class CodeGenerator:
     """Stage 05: LLM-only HTML5 game code generator."""
 
@@ -113,11 +198,155 @@ class CodeGenerator:
         )
 
     @staticmethod
+    def _generation_request_timeout_budget_s(
+        spec: Optional[GameSpec] = None,
+        budget_override: Optional[str] = None,
+    ) -> int:
+        base_timeout_s = CodeGenerator._long_generation_timeout_s()
+        budget = str(budget_override or CodeGenerator._resolve_budget_profile(spec)).strip().lower() or "standard"
+        capped = {
+            "safe": min(base_timeout_s, 75),
+            "simple": min(base_timeout_s, 90),
+            "standard": min(base_timeout_s, 105),
+            "complex": min(base_timeout_s, 120),
+            "showcase": min(base_timeout_s, 135),
+        }
+        return max(30, capped.get(budget, base_timeout_s))
+
+    @classmethod
+    def _generation_overall_timeout_budget_s(
+        cls,
+        spec: Optional[GameSpec] = None,
+        budget_override: Optional[str] = None,
+    ) -> int:
+        budget = str(budget_override or cls._resolve_budget_profile(spec)).strip().lower() or "standard"
+        base_timeout_s = cls._long_generation_timeout_s()
+        capped = {
+            "safe": min(base_timeout_s, 150),
+            "simple": min(base_timeout_s, 180),
+            "standard": min(base_timeout_s, 210),
+            "complex": min(base_timeout_s, 240),
+            "showcase": min(base_timeout_s, 270),
+        }
+        request_timeout_s = cls._generation_request_timeout_budget_s(spec, budget_override)
+        return max(request_timeout_s, capped.get(budget, base_timeout_s))
+
+    @classmethod
+    def _generation_provider_hedge_delay_s(
+        cls,
+        spec: Optional[GameSpec] = None,
+        budget_override: Optional[str] = None,
+    ) -> Optional[int]:
+        if not getattr(settings, "LLM_PROVIDER_HEDGING_ENABLED", False):
+            return None
+        budget = str(budget_override or cls._resolve_budget_profile(spec)).strip().lower() or "standard"
+        if budget in {"safe", "simple"}:
+            return None
+        return max(1, int(getattr(settings, "LLM_PROVIDER_HEDGING_DELAY_S", 45) or 45))
+
+    @staticmethod
     def _resolve_generation_tier(spec: Optional[GameSpec]) -> str:
         raw_value = getattr(spec, "generation_tier", "standard")
         value = str(getattr(raw_value, "value", raw_value) or "standard").strip().lower()
         if value in {"safe", "showcase"}:
             return value
+        return "standard"
+
+    @staticmethod
+    def _is_support_rule(rule: str) -> bool:
+        normalized = re.sub(r"\s+", " ", str(rule or "").strip().lower())
+        if not normalized:
+            return True
+        if any(phrase in normalized for phrase in _GENERIC_SPECIAL_RULE_PHRASES):
+            return True
+        if ("score" in normalized or "分数" in normalized) and any(
+            marker in normalized
+            for marker in ("display", "shown", "show", "counter", "final score", "显示", "实时", "结算")
+        ):
+            return True
+        if ("health" in normalized or "血量" in normalized) and any(
+            marker in normalized for marker in ("display", "bar", "shown", "show", "显示")
+        ):
+            return True
+        if ("wave" in normalized or "波次" in normalized) and any(
+            marker in normalized for marker in ("prompt", "display", "shown", "提示", "显示")
+        ):
+            return True
+        return False
+
+    @classmethod
+    def _meaningful_rule_count(cls, spec: Optional[GameSpec]) -> int:
+        if spec is None:
+            return 0
+        return sum(1 for rule in (spec.special_rules or []) if not cls._is_support_rule(rule))
+
+    @classmethod
+    def _resolve_budget_profile(cls, spec: Optional[GameSpec]) -> str:
+        if spec is None:
+            return "standard"
+
+        generation_tier = cls._resolve_generation_tier(spec)
+        if generation_tier in {"safe", "showcase"}:
+            return generation_tier
+
+        entity_count = len(spec.entities or [])
+        mechanic_count = len(spec.core_mechanics or [])
+        meaningful_rule_count = cls._meaningful_rule_count(spec)
+        game_type = (spec.game_type or "").strip().lower()
+        context_text = " ".join(
+            part
+            for part in (
+                spec.source_description,
+                spec.intent_summary,
+                spec.rules.win_condition if spec.rules else "",
+                spec.reward_loop,
+                spec.signature_moment,
+                spec.reference_game,
+                " ".join(spec.special_rules or []),
+            )
+            if str(part or "").strip()
+        ).lower()
+
+        score = 0
+        if game_type == "educational":
+            score += 2
+        elif game_type == "puzzle":
+            score += 1
+
+        if entity_count >= 5:
+            score += 2
+        elif entity_count >= 4:
+            score += 1
+
+        if mechanic_count >= 2:
+            score += 2
+
+        if meaningful_rule_count >= 4:
+            score += 2
+        elif meaningful_rule_count >= 2:
+            score += 1
+
+        if any(keyword in context_text for keyword in _STANDARD_COMPLEXITY_KEYWORDS):
+            score += 1
+        if any(keyword in context_text for keyword in _COMPLEX_COMPLEXITY_KEYWORDS):
+            score += 2
+
+        simple_candidate = (
+            game_type in {"casual", "funny"}
+            and entity_count <= 3
+            and mechanic_count <= 1
+            and score <= 1
+        )
+        puzzle_simple_candidate = (
+            game_type == "puzzle"
+            and entity_count <= 2
+            and mechanic_count <= 1
+            and score <= 2
+        )
+        if simple_candidate or puzzle_simple_candidate:
+            return "simple"
+        if score >= 5:
+            return "complex"
         return "standard"
 
     @staticmethod
@@ -128,7 +357,7 @@ class CodeGenerator:
                 "simple": settings.LLM_GENERATION_TOKEN_BUDGET_SIMPLE,
                 "standard": settings.LLM_GENERATION_TOKEN_BUDGET_STANDARD,
                 "complex": settings.LLM_GENERATION_TOKEN_BUDGET_COMPLEX,
-                "safe": settings.LLM_GENERATION_TOKEN_BUDGET_SIMPLE,
+                "safe": min(settings.LLM_GENERATION_TOKEN_BUDGET_SIMPLE, 4096),
                 "showcase": max(
                     settings.LLM_GENERATION_TOKEN_BUDGET_COMPLEX,
                     settings.LLM_LONG_GENERATION_MAX_TOKENS,
@@ -139,30 +368,36 @@ class CodeGenerator:
         if spec is None:
             return max(1024, settings.LLM_LONG_GENERATION_MAX_TOKENS)
 
-        special_rules_count = len(spec.special_rules or [])
-        entity_count = len(spec.entities or [])
-        game_type = (spec.game_type or "").lower()
-        generation_tier = CodeGenerator._resolve_generation_tier(spec)
+        budget_profile = CodeGenerator._resolve_budget_profile(spec)
+        mapping = {
+            "safe": min(settings.LLM_GENERATION_TOKEN_BUDGET_SIMPLE, 4096),
+            "simple": settings.LLM_GENERATION_TOKEN_BUDGET_SIMPLE,
+            "standard": settings.LLM_GENERATION_TOKEN_BUDGET_STANDARD,
+            "complex": settings.LLM_GENERATION_TOKEN_BUDGET_COMPLEX,
+            "showcase": max(
+                settings.LLM_GENERATION_TOKEN_BUDGET_COMPLEX,
+                settings.LLM_LONG_GENERATION_MAX_TOKENS,
+            ),
+        }
+        return max(1024, mapping.get(budget_profile, settings.LLM_GENERATION_TOKEN_BUDGET_STANDARD))
 
-        if generation_tier == "showcase":
-            return max(
-                1024,
-                max(
-                    settings.LLM_GENERATION_TOKEN_BUDGET_COMPLEX,
-                    settings.LLM_LONG_GENERATION_MAX_TOKENS,
-                ),
-            )
-
-        if generation_tier == "safe":
-            if special_rules_count >= 4 or entity_count >= 6 or game_type in ("educational",):
-                return max(1024, settings.LLM_GENERATION_TOKEN_BUDGET_STANDARD)
-            if special_rules_count <= 1 and entity_count <= 3 and game_type in ("casual", "funny"):
-                return max(1024, settings.LLM_GENERATION_TOKEN_BUDGET_SIMPLE)
-            return max(1024, settings.LLM_GENERATION_TOKEN_BUDGET_STANDARD)
-
-        if special_rules_count >= 4 or entity_count >= 6 or game_type in ("educational",):
-            return max(1024, settings.LLM_GENERATION_TOKEN_BUDGET_COMPLEX)
-        return max(1024, settings.LLM_GENERATION_TOKEN_BUDGET_STANDARD)
+    @classmethod
+    def _select_truncation_retry_cap(
+        cls,
+        spec: Optional[GameSpec] = None,
+        budget_override: Optional[str] = None,
+    ) -> int:
+        """Keep truncation retries aligned with the selected budget profile instead of always expanding to the max cap."""
+        token_budget = cls._select_token_budget(spec, budget_override)
+        profile = str(budget_override or cls._resolve_budget_profile(spec)).strip().lower() or "standard"
+        retry_cap_mapping = {
+            "safe": 4096,
+            "simple": 8192,
+            "standard": 14336,
+            "complex": settings.LLM_LONG_GENERATION_MAX_TOKENS,
+            "showcase": settings.LLM_LONG_GENERATION_MAX_TOKENS,
+        }
+        return max(token_budget, retry_cap_mapping.get(profile, token_budget))
 
     @staticmethod
     def _response_size_hint_from_budget(token_budget: int) -> str:
@@ -176,6 +411,10 @@ class CodeGenerator:
         if token_budget <= settings.LLM_GENERATION_TOKEN_BUDGET_SIMPLE:
             return "medium"
         return "large"
+
+    @staticmethod
+    def _create_response_size_hint() -> str:
+        return "full_document"
 
     @staticmethod
     def _is_prompt_bullet_line(line: str) -> bool:
@@ -259,12 +498,14 @@ class CodeGenerator:
         runtime_profile: Optional[str] = None,
         prompt_bundle_snapshot: Optional[Dict[str, Any]] = None,
         budget_override: Optional[str] = None,
+        generation_guidance: Optional[str] = None,
+        excluded_provider_ids: Optional[List[str]] = None,
     ) -> GenerateCodeResult:
         if self.llm_mode != "real" or not self._client.is_enabled():
             raise RuntimeError("Real LLM mode is required for game generation")
 
         start = time.time()
-        html = await self._llm_generate(
+        llm_result = await self._llm_generate(
             spec,
             gdd,
             description=description,
@@ -272,7 +513,13 @@ class CodeGenerator:
             runtime_profile=runtime_profile,
             prompt_bundle_snapshot=prompt_bundle_snapshot,
             budget_override=budget_override,
+            generation_guidance=generation_guidance,
+            excluded_provider_ids=excluded_provider_ids,
         )
+        if isinstance(llm_result, tuple):
+            html, route_snapshot = llm_result
+        else:
+            html, route_snapshot = llm_result, None
         html = ensure_structured_section_markers(html)
         elapsed = int((time.time() - start) * 1000)
         return GenerateCodeResult(
@@ -281,6 +528,7 @@ class CodeGenerator:
             template_id=None,
             generation_time_ms=elapsed,
             code_size_bytes=len(html.encode("utf-8")),
+            route_snapshot=route_snapshot,
         )
 
     async def _llm_generate(
@@ -292,7 +540,9 @@ class CodeGenerator:
         runtime_profile: Optional[str] = None,
         prompt_bundle_snapshot: Optional[Dict[str, Any]] = None,
         budget_override: Optional[str] = None,
-    ) -> str:
+        generation_guidance: Optional[str] = None,
+        excluded_provider_ids: Optional[List[str]] = None,
+    ) -> Tuple[str, Optional[Dict[str, Any]]]:
         request_text = self._resolve_request_context(spec, gdd, description)
         prompt_values = self._build_game_design_prompt_values(
             spec=spec,
@@ -322,10 +572,11 @@ class CodeGenerator:
             runtime_profile=runtime_profile,
             structured_design=structured_design,
         )
-        enriched_block = self._build_enriched_design_block(gdd)
         full_prompt = self._compose_prompt_sections(
             [
                 logic_generate_policy,
+                self._build_generation_guidance_block(generation_guidance),
+                self._build_preflight_safety_block(spec, runtime_contract, runtime_profile),
                 generation_tier_block,
                 visual_pack_block,
                 profile_few_shot,
@@ -335,10 +586,10 @@ class CodeGenerator:
                 critical_intent_block,
                 "" if self._structured_design_has_ui_language(structured_design) else self._build_ui_language_block(spec.ui_language),
                 self._build_runtime_contract_block(runtime_contract, runtime_profile, prompt_bundle_snapshot),
+                self._build_contract_implementation_checklist(runtime_contract, runtime_profile),
                 implementation_budget,
                 self._build_mobile_layout_guardrails(gdd, runtime_contract),
                 self._build_platform_standard_fallback(),
-                enriched_block,
             ],
         )
 
@@ -348,7 +599,6 @@ class CodeGenerator:
             request_text=request_text,
             skeleton=skeleton,
             design_program_block=design_program_block,
-            enriched_block=enriched_block,
         ):
             full_prompt = self._compose_prompt_sections(
                 [
@@ -360,36 +610,170 @@ class CodeGenerator:
             )
 
         try:
-            long_generation_timeout_s = self._long_generation_timeout_s()
+            request_timeout_s = self._generation_request_timeout_budget_s(spec, budget_override)
+            overall_timeout_s = self._generation_overall_timeout_budget_s(spec, budget_override)
+            hedge_after_s = self._generation_provider_hedge_delay_s(spec, budget_override)
             token_budget = self._select_token_budget(spec, budget_override)
-            truncation_retry_cap = max(
-                token_budget,
-                settings.LLM_LONG_GENERATION_MAX_TOKENS,
-                settings.LLM_GENERATION_TOKEN_BUDGET_COMPLEX,
-            )
-            text = await self._client.complete_with_truncation_retry(
+            truncation_retry_cap = self._select_truncation_retry_cap(spec, budget_override)
+            completion_result = await self._client.complete_with_truncation_retry(
                 max_tokens=token_budget,
                 system=self._build_system_prompt(prompt_bundle_snapshot, spec=spec),
                 messages=[{"role": "user", "content": full_prompt}],
                 step_key="code_generate.full",
                 stage="code_generating",
-                request_timeout_s=long_generation_timeout_s,
-                overall_timeout_s=long_generation_timeout_s,
+                request_timeout_s=request_timeout_s,
+                overall_timeout_s=overall_timeout_s,
                 allow_provider_fallback=True,
-                response_size_hint=self._response_size_hint_from_budget(token_budget),
+                response_size_hint=self._create_response_size_hint(),
                 context_scope="request",
                 compression_policy="code_generation",
                 truncation_retry_attempts=1,
                 truncation_retry_increment=2048,
                 truncation_retry_max_tokens=truncation_retry_cap,
-                timeout_retry_attempts=1,
-                timeout_retry_increment_s=60,
-                timeout_retry_max_s=long_generation_timeout_s + 60,
+                timeout_retry_attempts=0,
+                provider_retry_attempts=1,
+                provider_retry_on_timeout_errors=False,
+                provider_retry_base_delay_s=1,
+                provider_retry_max_delay_s=2,
+                excluded_provider_ids=excluded_provider_ids,
+                return_route_snapshot=True,
+                hedge_provider_fallback_after_s=hedge_after_s,
             )
-            return _extract_html(text)
+            if isinstance(completion_result, tuple):
+                text, route_snapshot = completion_result
+            else:
+                text, route_snapshot = completion_result, None
+            return _extract_html(text), route_snapshot
         except Exception as exc:
             logger.error("Full LLM generation failed: %s", exc)
-            raise RuntimeError(f"Full LLM generation failed: {exc}") from exc
+            wrapped = RuntimeError(f"Full LLM generation failed: {exc}")
+            route_snapshot = getattr(exc, "route_snapshot", None)
+            if route_snapshot is not None:
+                try:
+                    setattr(wrapped, "route_snapshot", route_snapshot)
+                except Exception:
+                    pass
+            raise wrapped from exc
+
+    @staticmethod
+    def _build_generation_guidance_block(generation_guidance: Optional[str]) -> str:
+        normalized = str(generation_guidance or "").strip()
+        if not normalized:
+            return ""
+        return normalized
+
+    @staticmethod
+    def _build_preflight_safety_block(
+        spec: Optional[GameSpec],
+        runtime_contract: Optional[GameRuntimeContract],
+        runtime_profile: Optional[str],
+    ) -> str:
+        lines = [
+            "CODE SAFETY CHECKLIST (FIRST PRIORITY):",
+            "- Declare every live helper, alias, and loop variable before use; never reference undeclared short aliases such as `line`, `cell`, `dot`, `nr`, `nc`, `viewWidth`, or `viewHeight`.",
+            "- Set explicit non-zero `canvas.width` and `canvas.height` during init/resize before the first render.",
+            "- Acquire `ctx = canvas.getContext('2d')` immediately after the canvas is created, and never call `ctx.setTransform(...)`, `ctx.clearRect(...)`, or similar APIs before that initialization succeeds.",
+            "- Do not initialize `ctx`, `player`, `touchState`, `dragState`, `dragStart`, or other live runtime objects to `null` if the main loop can run before they are assigned; prefer safe default objects or guard every property read until initialization completes.",
+            "- Keep collection item aliases scoped to the loop or callback that declares them; if code reads `star.x`, `particle.alpha`, or similar live members, declare `const star = stars[i]` / `const particle = particles[i]` in the same block before use.",
+            "- For decorative loops such as `dots`, `stars`, `particles`, or `lines`, use a concrete loop shape like `for (let i = 0; i < dots.length; i += 1) { const dot = dots[i]; if (!dot) continue; ... }` and never read `dot.*` outside that declaring block.",
+            "- Declare `update()`, `render()`, and any loop helper before the first direct call or `requestAnimationFrame(loop)` callback that invokes them; never rely on undeclared function expressions being available earlier in the file.",
+            "- If resize or layout logic uses `scaleX`, `scaleY`, `uiScale`, `viewWidth`, or `viewHeight`, define those aliases inside the same resize/init block before the first HUD or canvas draw that reads them.",
+            "- Do not begin a statement with a bare `.` or split property chains across lines; every canvas or object call must be a complete JavaScript statement on its own line.",
+            "- The first canvas/document interaction must be able to start gameplay from `boot` / `ready`; never write a primary input handler that only says `if (state !== 'playing') return` unless that same handler can call `startGame()` first.",
+            "- When reading input coordinates, prefer `const point = touch || e;` and only read `point.clientX` / `point.clientY` after guarding touch arrays and null cases.",
+            "- Do not build translucent gradient or fill colors by concatenating alpha suffixes onto dynamic color strings such as `light.color + '80'`; use explicit `rgba(...)` / `hsla(...)` values or full `#RRGGBBAA` literals.",
+        ]
+
+        profile = str(runtime_profile or "").strip().lower()
+        input_contract = getattr(runtime_contract, "input", None)
+        input_modes = [
+            str(mode or "").strip().lower()
+            for mode in (getattr(input_contract, "required_modes", None) or [])
+        ]
+        gestures = [
+            str(gesture or "").strip().lower()
+            for gesture in (getattr(input_contract, "gestures", None) or [])
+        ]
+        platform_input_mode = str(getattr(getattr(spec, "platform_constraints", None), "input_mode", "") or "").strip().lower()
+        if platform_input_mode:
+            input_modes.append(platform_input_mode)
+        input_modes = [mode for mode in dict.fromkeys(input_modes) if mode]
+        gestures = [gesture for gesture in dict.fromkeys(gestures) if gesture]
+        orientation = (
+            runtime_contract.mobile_layout.orientation
+            if runtime_contract and runtime_contract.mobile_layout
+            else "portrait_first"
+        )
+
+        touch_input_present = any("touch" in mode for mode in input_modes)
+        if touch_input_present or any("drag" in gesture or "tap" in gesture or "swipe" in gesture for gesture in gestures):
+            lines.append(
+                "- Centralize touch extraction in one guarded helper, for example "
+                "`const touch = (e.touches && e.touches.length ? e.touches[0] : (e.changedTouches && e.changedTouches.length ? e.changedTouches[0] : null)); if (!touch) return;`."
+            )
+            lines.append(
+                "- Never read `e.touches[0]` or `e.changedTouches[0]` directly inside gameplay handlers; define one helper such as "
+                "`function getInputPoint(e) { const point = (e.touches && e.touches.length ? e.touches[0] : (e.changedTouches && e.changedTouches.length ? e.changedTouches[0] : e)); "
+                "if (!point || point.clientX == null || point.clientY == null) return null; return { x: point.clientX, y: point.clientY }; }` and reuse that exact shape."
+            )
+            lines.append(
+                "- If gameplay stores live touch or drag state, initialize it to a safe object such as "
+                "`let touchState = { active: false, x: 0, y: 0, startX: 0, startY: 0 };` instead of `null`, "
+                "or guard every `touchState.*` / `touch.*` read before the first animation frame."
+            )
+            lines.append(
+                "- Prefer one shared coordinate helper such as "
+                "`const point = (e.touches && e.touches.length ? e.touches[0] : (e.changedTouches && e.changedTouches.length ? e.changedTouches[0] : e)); "
+                "if (!point || point.clientX == null || point.clientY == null) return;` and reuse it in start/move/end handlers."
+            )
+        if orientation == "landscape_first":
+            lines.append(
+                "- For landscape-first layouts, declare explicit landscape reference constants such as "
+                "`const REF_W = 640; const REF_H = 360; const scaleX = canvas.width / REF_W; const scaleY = canvas.height / REF_H; const uiScale = Math.min(scaleX, scaleY);` "
+                "before laying out HUD or gameplay."
+            )
+            lines.append(
+                "- Keep a resize scaffold equivalent to "
+                "`function resizeCanvas() { canvas.width = Math.max(1, Math.round(window.innerWidth || REF_W)); canvas.height = Math.max(1, Math.round(window.innerHeight || REF_H)); "
+                "const scaleX = canvas.width / REF_W; const scaleY = canvas.height / REF_H; const uiScale = Math.min(scaleX, scaleY); const viewWidth = canvas.width; const viewHeight = canvas.height; return { scaleX, scaleY, uiScale, viewWidth, viewHeight }; }`."
+            )
+        else:
+            lines.append(
+                "- For portrait-first layouts, declare explicit portrait reference constants such as "
+                "`const REF_W = 360; const REF_H = 640; const scaleX = canvas.width / REF_W; const scaleY = canvas.height / REF_H; const uiScale = Math.min(scaleX, scaleY);` "
+                "before laying out HUD or gameplay."
+            )
+            lines.append(
+                "- Keep a resize scaffold equivalent to "
+                "`function resizeCanvas() { canvas.width = Math.max(1, Math.round(window.innerWidth || REF_W)); canvas.height = Math.max(1, Math.round(window.innerHeight || REF_H)); "
+                "const scaleX = canvas.width / REF_W; const scaleY = canvas.height / REF_H; const uiScale = Math.min(scaleX, scaleY); const viewWidth = canvas.width; const viewHeight = canvas.height; return { scaleX, scaleY, uiScale, viewWidth, viewHeight }; }`."
+            )
+        if "puzzle_grid" in profile or "grid" in profile:
+            lines.append(
+                "- Never read `grid[row][col].prop` directly; define `getCell(row, col)` or local guards like "
+                "`const rowBucket = grid[row]; const cell = rowBucket && rowBucket[col]; if (!cell) return;` before every `cell.type`, `cell.anim`, or neighbor read."
+            )
+            lines.append(
+                "- Start every puzzle-grid implementation with a concrete safe accessor such as "
+                "`function getCell(grid, row, col) { const rowBucket = grid[row]; return rowBucket ? rowBucket[col] : null; }` "
+                "and reuse it everywhere instead of ad-hoc indexing."
+            )
+            lines.append(
+                "- In match-finding, gravity, hint, and neighbor scans, first read "
+                "`const cell = getCell(grid, row, col); if (!cell) continue;` and only then access `cell.type`, "
+                "`cell.fruit`, `cell.targetY`, `cell.anim`, `cell.animProgress`, or adjacent cells."
+            )
+            lines.append(
+                "- The final HTML must contain zero raw `grid[row][col].*` reads; route every grid lookup through "
+                "`getCell(grid, row, col)` or an equivalent guarded `rowBucket/cell` pattern."
+            )
+        if "lane" in profile:
+            lines.append(
+                "- If lane helpers are used, declare them explicitly, for example `function laneX(index) { ... }`, before the render or input loop references them."
+            )
+
+        lines.append("- If any draft pattern conflicts with these rules, rewrite it before finalizing the HTML output.")
+        return "\n".join(lines)
 
     def _build_game_design_prompt_values(
         self,
@@ -1032,7 +1416,6 @@ class CodeGenerator:
         request_text: str,
         skeleton: Optional[str],
         design_program_block: str,
-        enriched_block: str,
     ) -> bool:
         normalized_skeleton = (skeleton or "").strip()
         if not normalized_skeleton:
@@ -1040,8 +1423,6 @@ class CodeGenerator:
         generation_tier = cls._resolve_generation_tier(spec)
         skeleton_char_budget = 2400 if generation_tier == "safe" else 1400
         if len(normalized_skeleton) > skeleton_char_budget:
-            return False
-        if enriched_block.strip():
             return False
         if design_program_block.strip() and generation_tier != "safe":
             return False
@@ -1276,6 +1657,155 @@ class CodeGenerator:
             ),
         }))
         return self._strip_empty_prompt_lines(rendered)
+
+    def _build_contract_implementation_checklist(
+        self,
+        runtime_contract: Optional[GameRuntimeContract],
+        runtime_profile: Optional[str],
+    ) -> str:
+        profile_value = normalize_runtime_profile_id(
+            runtime_profile
+            or (
+                runtime_contract.runtime_profile
+                if runtime_contract
+                else ""
+            )
+        )
+        input_modes = [
+            str(mode).strip().lower()
+            for mode in (
+                runtime_contract.input.required_modes
+                if runtime_contract and runtime_contract.input and runtime_contract.input.required_modes
+                else ["pointer", "touch"]
+            )
+            if str(mode).strip()
+        ]
+        orientation = self._resolve_layout_orientation(runtime_contract)
+        restart_required = (
+            runtime_contract.gameplay.requires_restart_entry
+            if runtime_contract and runtime_contract.gameplay
+            else True
+        )
+        orientation_label = "portrait-first" if orientation == "portrait_first" else "landscape-first"
+        lines: List[str] = [
+            "CONTRACT IMPLEMENTATION CHECKLIST (CODE SHAPE, NOT JUST INTENT):",
+            (
+                "- Declare named scaleX and scaleY variables from viewport-to-reference dimensions, "
+                "then compute uiScale = Math.min(scaleX, scaleY) before laying out gameplay or HUD."
+            ),
+            (
+                f"- Keep the canvas and HUD {orientation_label}; do not rely on one unnamed `scale` value "
+                "without separate width and height factors."
+            ),
+            "- Obtain a 2D context from the main canvas up front and drive visible gameplay through that single canvas.",
+            "- During init and resize, set canvas.width and canvas.height to explicit non-zero values before the first render frame.",
+            (
+                "- When drawing rounded UI cards or buttons, do not chain `ctx.roundRect(...).fill()` or "
+                "`ctx.roundRect(...).stroke()`; call roundRect first, then fill/stroke as separate statements."
+            ),
+            (
+                "- If gameplay, camera, or HUD code reads viewWidth/viewHeight-style aliases, declare them from the live "
+                "canvas dimensions in the same init/resize path before render, update, or spawn code uses them."
+            ),
+            (
+                "- Every helper or property referenced from input, update, render, spawn, or scoring code must be "
+                "declared before use; never invent missing methods or state accessors."
+            ),
+            (
+                "- Do not reference bare placeholder locals such as type, line, touch, pointer, cell, or anim "
+                "unless they are explicitly declared in the same scope before use."
+            ),
+            (
+                "- If you use helper functions such as generateBackgroundLayers(), declare them before the first call, "
+                "or inline the layer construction during top-level initialization."
+            ),
+            (
+                "- When animation or effect progress belongs to an entity or cell, keep it on a declared object field "
+                "such as cell.anim or particle.anim; never read a bare anim identifier unless it is explicitly declared in scope."
+            ),
+            "- Do not use shorthand aliases like w, h, sx, or sy unless they are declared in the same scope that reads them.",
+            (
+                "- The first primary interaction must immediately leave boot/ready, start play, or visibly mutate "
+                "the canvas or HUD within the same frame or the next animation frame."
+            ),
+            (
+                "- Primary canvas/document pointer or touch handlers must handle ready/boot input too; do not early-return "
+                "before `playing` unless that same handler can call startGame() or switch state into `playing`."
+            ),
+            (
+                "- Overlay buttons may complement the UX, but a first tap or pointerdown on the play surface must also "
+                "dismiss the intro state and produce an immediate visible state change for runtime QA."
+            ),
+            (
+            "- Maintain a declared gameplay state variable that can reach `playing`; transition into `playing` "
+            "during auto-start or the first valid gameplay interaction instead of staying in boot/ready forever."
+            ),
+            "- Auto-advance boot/loading into ready without requiring a tap, and do not require two separate taps before gameplay starts.",
+            "- Call resize/setup, render at least one visible first frame, and start the main requestAnimationFrame loop from top-level initialization.",
+        ]
+        if orientation == "portrait_first":
+            lines.append(
+                "- For portrait-first code shape, use `const REF_W = 360; const REF_H = 640;`, then derive `scaleX`, `scaleY`, `uiScale`, `viewWidth`, and `viewHeight` from live canvas dimensions inside resize/init."
+            )
+        else:
+            lines.append(
+                "- For landscape-first code shape, use `const REF_W = 640; const REF_H = 360;`, then derive `scaleX`, `scaleY`, `uiScale`, `viewWidth`, and `viewHeight` from live canvas dimensions inside resize/init."
+            )
+        if "touch" in input_modes:
+            lines.append(
+                "- Register gameplay touchstart, touchmove, and touchend handlers on the canvas or primary input target; "
+                "prevent accidental page scrolling during active play."
+            )
+            lines.append(
+                "- When reading touch coordinates, use touches[0] for active touches and changedTouches[0] for touchend/touchcancel; "
+                "never assume touches[0] exists on release events."
+            )
+            lines.append(
+                "- Guard every touch read with a length check, for example `const touch = (e.touches && e.touches.length ? e.touches[0] "
+                ": (e.changedTouches && e.changedTouches.length ? e.changedTouches[0] : null)); if (!touch) return;`."
+            )
+            lines.append(
+                "- Prefer a shared helper such as `function getInputPoint(e) { const point = (e.touches && e.touches.length ? e.touches[0] : (e.changedTouches && e.changedTouches.length ? e.changedTouches[0] : e)); if (!point || point.clientX == null || point.clientY == null) return null; return { x: point.clientX, y: point.clientY }; }` and call it from every touchstart/touchmove/touchend handler."
+            )
+        if "pointer" in input_modes:
+            lines.append(
+                "- Register gameplay pointerdown, pointermove, and pointerup handlers on the canvas or primary input target."
+            )
+        if restart_required:
+            lines.append(
+                "- Provide an explicit restart entry such as restartGame(), resetGame(), or restart() that returns "
+                "terminal states back into ready or playing."
+            )
+        if profile_value.startswith("casual_lane"):
+            lines.append(
+                "- For lane games, keep lane positions in declared data and compute x from lane index with a declared helper "
+                "or array lookup; never call an undefined method like player.laneX()."
+            )
+        if profile_value.startswith("puzzle_grid"):
+            lines.append(
+                "- Grid puzzle interaction must support direct touch on the board; pointer support may complement touch, "
+                "but touch handlers are mandatory."
+            )
+            lines.append(
+                "- Drag or selection state such as dragStartCell, dragTarget, selectedCell, or hoveredCell must either be "
+                "initialized to a safe object shape like `{ active: false, row: -1, col: -1 }` before the loop starts "
+                "or be guarded before every property access."
+            )
+            lines.append(
+                "- Initialize a full rectangular grid before scanning for matches or neighbors, then read cells through "
+                "named locals such as `const rowBucket = grid[row]; const cell = rowBucket && rowBucket[col];`; never "
+                "access `grid[row][col].prop` directly without first proving both the row bucket and cell exist."
+            )
+            lines.append(
+                "- Define a safe accessor like `function getCell(grid, row, col) { const rowBucket = grid[row]; return rowBucket ? rowBucket[col] : null; }` before any match-finding, merge, gravity, or hint "
+                "logic, and route every read of `cell.type`, `cell.fruit`, `cell.anim`, or neighbor cells through that "
+                "helper instead of raw `grid[row][col]` indexing."
+            )
+            lines.append(
+                "- The first valid tap on a puzzle cell must cause an immediate visible board-state change such as a selection highlight, "
+                "focus ring, hint pulse, or committed swap; never use no-op selection toggles."
+            )
+        return "\n".join(lines)
 
     @staticmethod
     def _format_compact_contract_items(items: List[str], *, max_items: int) -> str:
@@ -1726,6 +2256,10 @@ class CodeGenerator:
             runtime_profile,
             prompt_bundle_snapshot,
         )
+        contract_implementation_block = self._build_contract_implementation_checklist(
+            runtime_contract,
+            runtime_profile,
+        )
         ui_language_block = self._build_ui_language_block(game_spec.ui_language if game_spec else "en-US")
 
         if iter_type == IterationType.mechanic_change:
@@ -1734,6 +2268,7 @@ class CodeGenerator:
                 for part in [
                     patch_protocol,
                     contract_block,
+                    contract_implementation_block,
                     ui_language_block,
                     prompt,
                 ]
@@ -1745,6 +2280,7 @@ class CodeGenerator:
                 for part in [
                     patch_protocol,
                     contract_block,
+                    contract_implementation_block,
                     ui_language_block,
                     prompt,
                 ]
@@ -1752,21 +2288,19 @@ class CodeGenerator:
             )
 
         try:
-            long_generation_timeout_s = self._long_generation_timeout_s()
+            request_timeout_s = self._generation_request_timeout_budget_s(game_spec)
+            overall_timeout_s = self._generation_overall_timeout_budget_s(game_spec)
+            hedge_after_s = self._generation_provider_hedge_delay_s(game_spec)
             token_budget = self._select_token_budget(game_spec)
-            truncation_retry_cap = max(
-                token_budget,
-                settings.LLM_LONG_GENERATION_MAX_TOKENS,
-                settings.LLM_GENERATION_TOKEN_BUDGET_COMPLEX,
-            )
+            truncation_retry_cap = self._select_truncation_retry_cap(game_spec)
             text = await self._client.complete_with_truncation_retry(
                 max_tokens=token_budget,
                 system=self._build_system_prompt(prompt_bundle_snapshot, spec=game_spec),
                 messages=[{"role": "user", "content": prompt}],
                 step_key=step_key,
                 stage="code_generating",
-                request_timeout_s=long_generation_timeout_s,
-                overall_timeout_s=long_generation_timeout_s,
+                request_timeout_s=request_timeout_s,
+                overall_timeout_s=overall_timeout_s,
                 allow_provider_fallback=True,
                 response_size_hint=self._response_size_hint_from_budget(token_budget),
                 context_scope="request",
@@ -1774,9 +2308,12 @@ class CodeGenerator:
                 truncation_retry_attempts=1,
                 truncation_retry_increment=2048,
                 truncation_retry_max_tokens=truncation_retry_cap,
-                timeout_retry_attempts=1,
-                timeout_retry_increment_s=60,
-                timeout_retry_max_s=long_generation_timeout_s + 60,
+                timeout_retry_attempts=0,
+                provider_retry_attempts=1,
+                provider_retry_on_timeout_errors=False,
+                provider_retry_base_delay_s=1,
+                provider_retry_max_delay_s=2,
+                hedge_provider_fallback_after_s=hedge_after_s,
             )
             patches, full_html = parse_patch_response(text, allowed_sections=allowed_sections)
             if full_html:
@@ -1856,56 +2393,6 @@ class CodeGenerator:
         except Exception as exc:
             logger.error("LLM iterate failed: %s", exc)
             raise RuntimeError(f"LLM iterate failed: {exc}") from exc
-
-    @staticmethod
-    def _build_enriched_design_block(gdd: GDD) -> str:
-        """Build a prompt block from EnrichedGDD fields, if present."""
-        if not isinstance(gdd, EnrichedGDD):
-            return ""
-        parts: List[str] = []
-        if gdd.gameplay_phases and isinstance(gdd.gameplay_phases, list):
-            phases_str = "\n".join(
-                f"  - {p.get('name', '?')}: {p.get('description', '')}"
-                for p in gdd.gameplay_phases
-                if isinstance(p, dict)
-            )
-            if phases_str:
-                parts.append(f"GAMEPLAY PHASES (implement in order):\n{phases_str}")
-        if gdd.level_design and isinstance(gdd.level_design, list):
-            levels_str = "\n".join(
-                f"  - Level {l.get('level', i+1)}: {l.get('enemy_count', '?')} enemies, "
-                f"speed×{l.get('speed_mult', 1.0)}, {l.get('spawn_pattern', 'sequential')}, "
-                f"{l.get('duration_s', '?')}s"
-                for i, l in enumerate(gdd.level_design)
-                if isinstance(l, dict)
-            )
-            if levels_str:
-                parts.append(f"LEVEL DESIGN:\n{levels_str}")
-        if gdd.enemy_behaviors and isinstance(gdd.enemy_behaviors, list):
-            behaviors_str = "\n".join(
-                f"  - {b.get('name', '?')}: {b.get('description', '')}"
-                for b in gdd.enemy_behaviors
-                if isinstance(b, dict)
-            )
-            if behaviors_str:
-                parts.append(f"ENEMY BEHAVIORS (implement these patterns):\n{behaviors_str}")
-        if gdd.difficulty_curve_params and isinstance(gdd.difficulty_curve_params, dict):
-            dc = gdd.difficulty_curve_params
-            parts.append(
-                f"DIFFICULTY CURVE:\n"
-                f"  - Ramp formula: {dc.get('ramp_formula', 'linear')}\n"
-                f"  - Plateau at: {dc.get('plateau_at_s', 'N/A')}s\n"
-                f"  - Spike at: {dc.get('spike_at_s', 'N/A')}s\n"
-                f"  - Max speed multiplier: {dc.get('max_speed_mult', 2.0)}"
-            )
-        if gdd.visual_effects and isinstance(gdd.visual_effects, list):
-            effects = [e for e in gdd.visual_effects if isinstance(e, str)]
-            if effects:
-                parts.append(f"VISUAL EFFECTS (implement these):\n  - " + "\n  - ".join(effects))
-        if not parts:
-            return ""
-        return "ENRICHED GAME DESIGN (follow this design closely):\n\n" + "\n\n".join(parts)
-
 
 def _extract_html(text: str) -> str:
     """Extract clean HTML from LLM output."""

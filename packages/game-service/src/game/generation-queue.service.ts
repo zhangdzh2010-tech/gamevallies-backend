@@ -230,11 +230,11 @@ export class GenerationQueueService implements OnModuleDestroy {
 
   private getWorkerConcurrency(): number {
     const raw = Number.parseInt(
-      this.configService.get<string>('GENERATION_QUEUE_WORKER_CONCURRENCY', '4'),
+      this.configService.get<string>('GENERATION_QUEUE_WORKER_CONCURRENCY', '6'),
       10,
     );
     if (!Number.isFinite(raw) || raw <= 0) {
-      return 4;
+      return 6;
     }
     return Math.min(raw, 16);
   }

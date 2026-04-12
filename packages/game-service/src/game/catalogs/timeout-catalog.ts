@@ -40,7 +40,7 @@ export const TIMEOUT_CONFIG_CATALOG: TimeoutConfigCatalogEntry[] = [
   },
   {
     key: 'timeout.game_service.active_task_sweep_interval_ms',
-    defaultValue: '30000',
+    defaultValue: '5000',
     description: '后台 reconcile 运行中 generation task 的扫表间隔。',
     service: 'game-service',
     group: 'tasking',

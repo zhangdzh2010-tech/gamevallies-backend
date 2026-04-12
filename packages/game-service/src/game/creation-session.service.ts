@@ -109,6 +109,13 @@ type SpecFromSlotsResponsePayload = {
   slot_fill_pct: number;
 };
 
+type AnalyzeTurnRealtimeOptions = {
+  regionHint?: string;
+  userId: string;
+  sessionId: string;
+  onFinal?: (analysis: AnalyzeTurnResponsePayload) => Promise<void> | void;
+};
+
 @Injectable()
 export class CreationSessionService {
   private readonly logger = new Logger(CreationSessionService.name);
@@ -131,7 +138,7 @@ export class CreationSessionService {
       this.userMessage(prompt, 'prompt'),
     ];
 
-    // ── Phase 1: Optimistic creation (synchronous, <200ms) ──────────
+    // Phase 1: optimistic creation (synchronous, <200ms).
     // Create the session immediately with status='initializing' and
     // return it to the client. AI analysis runs in the background.
     const createData = {
@@ -214,7 +221,7 @@ export class CreationSessionService {
           return repo.create({ data: createData });
         })();
 
-    // ── Phase 2: Async analysis (fire-and-forget) ───────────────────
+    // Phase 2: async analysis (fire-and-forget).
     const analyzePayload = this.buildAnalyzeTurnPayload({
       sessionId: created.id,
       userId,
@@ -229,7 +236,7 @@ export class CreationSessionService {
 
     this._finalizeSessionInit(created.id, userId, analyzePayload, dto, dto.regionHint)
       .catch((err) => this.logger.error(
-        `Session init async phase failed: ${created.id} — ${err?.message}`,
+        `Session init async phase failed: ${created.id} - ${err?.message}`,
         err?.stack,
       ));
 
@@ -257,6 +264,8 @@ export class CreationSessionService {
     regionHint?: string,
   ): Promise<void> {
     const repo = this.getRepo();
+    let initStateApplied = false;
+    let initialAssistantReply = '';
 
     let analysis: AnalyzeTurnResponsePayload;
     try {
@@ -264,9 +273,33 @@ export class CreationSessionService {
         regionHint,
         userId,
         sessionId,
+        onFinal: async (finalAnalysis) => {
+          const resolution = this.buildInitSessionResolution({
+            analyzePayload,
+            dto,
+            analysis: finalAnalysis,
+          });
+          initialAssistantReply = resolution.assistantReply;
+          const earlyResult = await repo.updateMany({
+            where: { id: sessionId, userId, status: 'initializing', revision: 1 },
+            data: {
+              revision: { increment: 1 },
+              status: resolution.nextStatus,
+              slotState: resolution.slotState,
+              missingRequired: resolution.missingRequired,
+              currentQuestion: resolution.currentQuestion,
+              conversation: resolution.conversation,
+              metadata: resolution.metadata,
+            },
+          });
+          if (earlyResult.count === 1) {
+            initStateApplied = true;
+            await this.publishRealtimeSessionSnapshot(userId, sessionId);
+          }
+        },
       });
     } catch (error: any) {
-      // AI analysis failed → mark session as abandoned with error info
+      // AI analysis failed, mark the session as abandoned with error info.
       const initError = this.extractAiError(error, 'Creation session initialization failed');
       await repo.updateMany({
         where: { id: sessionId, userId, status: 'initializing' },
@@ -281,7 +314,6 @@ export class CreationSessionService {
           },
         },
       });
-      // Notify frontend immediately so it can show the error without polling
       this.wsGateway.emitSessionError(userId, sessionId, initError, {
         reason: 'init_failed',
       });
@@ -291,77 +323,53 @@ export class CreationSessionService {
       return;
     }
 
-    // Build the full session data from analysis results
-    const conversation: CreationSessionConversationMessage[] = [
-      this.userMessage(String(analyzePayload.initial_prompt || ''), 'prompt'),
-      this.assistantMessage(analysis.reply),
-    ];
-    const normalizedPlanDraft = this.normalizePlanDraft(analysis.plan_draft);
-    const normalizedQuestionStrategy = this.normalizeQuestionStrategy(analysis.question_strategy);
-    const confidenceSummary = this.buildConfidenceSummary(
-      analysis.confidence_by_slot,
-      analysis.ambiguity_flags,
-      analysis.missing_required,
-    );
-    const intentBuild = this.buildSessionIntentBuild({
-      initialPrompt: analyzePayload.initial_prompt,
-      title: dto.title,
-      planDraft: normalizedPlanDraft,
-      slotState: analysis.slots || {},
-      entryMode: dto.entryMode || 'create',
-      generationTier: dto.generationTier || 'standard',
-      missingRequired: analysis.missing_required || [],
+    const resolution = this.buildInitSessionResolution({
+      analyzePayload,
+      dto,
+      analysis,
     });
 
-    // CAS update: only proceed if session is still in 'initializing' (not abandoned by user)
-    const result = await repo.updateMany({
-      where: { id: sessionId, userId, status: 'initializing', revision: 1 },
-      data: {
-        revision: { increment: 1 },
-        status: analysis.ready_to_generate ? 'ready' : 'collecting',
-        slotState: analysis.slots || {},
-        missingRequired: analysis.missing_required || [],
-        currentQuestion: this.normalizeQuestion(analysis.current_question),
-        conversation,
-        metadata: {
-          orientation: dto.orientation || null,
-          generationTier: dto.generationTier || 'standard',
-          regionHint: dto.regionHint || null,
-          readyToGenerate: Boolean(analysis.ready_to_generate),
-          slotFillPct: this.clampSlotFillPct(analysis.slot_fill_pct, analysis.slots || {}),
-          planDraft: normalizedPlanDraft,
-          confidenceSummary,
-          questionStrategy: normalizedQuestionStrategy,
-          intentBuild,
-          confidenceBySlot: this.normalizeNumberMap(analysis.confidence_by_slot),
-          evidenceBySlot: this.normalizeStringMap(analysis.evidence_by_slot),
-          ambiguityFlags: this.normalizeStringList(analysis.ambiguity_flags),
-          nextBestQuestionReason: this.asOptionalString(analysis.next_best_question_reason) || normalizedQuestionStrategy?.reason || null,
+    if (!initStateApplied) {
+      const result = await repo.updateMany({
+        where: { id: sessionId, userId, status: 'initializing', revision: 1 },
+        data: {
+          revision: { increment: 1 },
+          status: resolution.nextStatus,
+          slotState: resolution.slotState,
+          missingRequired: resolution.missingRequired,
+          currentQuestion: resolution.currentQuestion,
+          conversation: resolution.conversation,
+          metadata: resolution.metadata,
         },
-      },
-    });
+      });
 
-    if (result.count !== 1) {
-      // Session was already abandoned or modified by the user — silently discard analysis
-      this.logger.warn(`Session init CAS miss: ${sessionId} (likely abandoned)`);
+      if (result.count !== 1) {
+        // Session was already abandoned or modified by the user; discard stale analysis.
+        this.logger.warn(`Session init CAS miss: ${sessionId} (likely abandoned)`);
+        return;
+      }
+
+      await this.publishRealtimeSessionSnapshot(userId, sessionId);
       return;
     }
 
-    // Push real-time update to the frontend so it can display the first
-    // question immediately instead of waiting for the next poll cycle.
-    try {
-      const updatedSession = await repo.findUnique({ where: { id: sessionId } });
-      if (updatedSession) {
-        const snapshot = this.toSnapshot(updatedSession);
-        this.wsGateway.emitSessionUpdate(userId, sessionId, snapshot);
-        this.realtimeService.publishSnapshot(userId, sessionId, snapshot);
+    if (resolution.assistantReply && resolution.assistantReply !== initialAssistantReply) {
+      const replyRepair = await repo.updateMany({
+        where: {
+          id: sessionId,
+          userId,
+          revision: 2,
+          status: resolution.nextStatus,
+        },
+        data: {
+          conversation: resolution.conversation,
+        },
+      });
+      if (replyRepair.count === 1) {
+        await this.publishRealtimeSessionSnapshot(userId, sessionId);
       }
-    } catch (wsError: any) {
-      // Non-critical: frontend will still get the data on next poll
-      this.logger.warn(`Session WS push failed: ${sessionId} — ${wsError?.message}`);
     }
   }
-
   /**
    * Timeout safety: abandon sessions stuck in 'initializing' too long.
    */
@@ -370,7 +378,7 @@ export class CreationSessionService {
     // Look up the session first so we can get the userId for WS push
     const session = await repo.findUnique({ where: { id: sessionId } });
     if (!session || session.status !== 'initializing') {
-      return; // Already transitioned — nothing to expire
+      return; // Already transitioned; nothing to expire.
     }
 
     const existingMetadata = this.normalizeMetadata(session.metadata);
@@ -715,7 +723,7 @@ export class CreationSessionService {
       });
 
       // Bug 5 fix: mark session as 'completed' once the generation task is
-      // successfully queued. The session's role (slot collection → spec → kick
+      // successfully queued. The session's role (slot collection -> spec -> kick
       // off generation) is done; keeping it as 'generating' would block new
       // session creation and cause active-slot residue (Bug 2).
       await repo.update({
@@ -808,11 +816,11 @@ export class CreationSessionService {
     } catch (error: any) {
       const message = this.extractAiError(error, 'Creation session analyze-turn failed');
       const status = error?.response?.status;
-      // AI engine returned a client error → treat as bad request
+      // AI engine returned a client error; treat as bad request.
       if (status && status >= 400 && status < 500) {
         throw new BadRequestException(message);
       }
-      // Network timeout / connection refused / AI engine 5xx → upstream failure
+      // Network timeout / connection refused / AI engine 5xx; upstream failure.
       if (error?.code === 'ECONNABORTED' || error?.code === 'ECONNREFUSED' || error?.code === 'ETIMEDOUT') {
         throw new ServiceUnavailableException(message);
       }
@@ -822,11 +830,7 @@ export class CreationSessionService {
 
   private async analyzeTurnWithRealtime(
     payload: AnalyzeTurnRequestPayload,
-    options: {
-      regionHint?: string;
-      userId: string;
-      sessionId: string;
-    },
+    options: AnalyzeTurnRealtimeOptions,
   ): Promise<AnalyzeTurnResponsePayload> {
     const aiEngineUrl = await this.gameService.getAiEngineBaseUrl(options.regionHint);
     const timeoutMs = await this.gameService.getExpandPromptRequestTimeoutMs();
@@ -843,18 +847,10 @@ export class CreationSessionService {
       return await this.consumeAnalyzeTurnStream(response.data, options);
     } catch (error: any) {
       const status = error?.response?.status;
-      if (status === 404 || status === 405) {
-        const fallback = await this.analyzeTurn(payload, options.regionHint);
-        this.realtimeService.publishReplyDone(
-          options.userId,
-          options.sessionId,
-          fallback.reply,
-          this.resolveRealtimeReplyKind(fallback),
-        );
-        return fallback;
-      }
-
       const message = this.extractAiError(error, 'Creation session analyze-turn failed');
+      if (this.shouldFallbackToNonStreamingAnalyzeTurn(status, error, message)) {
+        return await this.fallbackAnalyzeTurnWithoutRealtime(payload, options);
+      }
       const isUpstreamFailure = error?.code === 'ECONNABORTED'
         || error?.code === 'ECONNREFUSED'
         || error?.code === 'ETIMEDOUT';
@@ -868,18 +864,52 @@ export class CreationSessionService {
     }
   }
 
+  private shouldFallbackToNonStreamingAnalyzeTurn(
+    status: number | undefined,
+    error: any,
+    message: string,
+  ): boolean {
+    if (status === 404 || status === 405) {
+      return true;
+    }
+    const code = String(error?.code || '').trim().toUpperCase();
+    if (['ECONNRESET', 'ERR_STREAM_PREMATURE_CLOSE'].includes(code)) {
+      return true;
+    }
+    const normalized = String(message || '').trim().toLowerCase();
+    return normalized.includes('aborted')
+      || normalized.includes('socket hang up')
+      || normalized.includes('premature close')
+      || normalized.includes('stream missing final result');
+  }
+
+  private async fallbackAnalyzeTurnWithoutRealtime(
+    payload: AnalyzeTurnRequestPayload,
+    options: AnalyzeTurnRealtimeOptions,
+  ): Promise<AnalyzeTurnResponsePayload> {
+    const fallback = await this.analyzeTurn(payload, options.regionHint);
+    if (options.onFinal) {
+      await Promise.resolve(options.onFinal(fallback));
+    }
+    this.realtimeService.publishReplyDone(
+      options.userId,
+      options.sessionId,
+      fallback.reply,
+      this.resolveRealtimeReplyKind(fallback),
+    );
+    return fallback;
+  }
+
   private async consumeAnalyzeTurnStream(
     stream: any,
-    options: {
-      userId: string;
-      sessionId: string;
-    },
+    options: AnalyzeTurnRealtimeOptions,
   ): Promise<AnalyzeTurnResponsePayload> {
     let buffer = '';
     let eventName = 'message';
     let dataLines: string[] = [];
     let finalResult: AnalyzeTurnResponsePayload | null = null;
     let accumulatedReply = '';
+    let pendingFinalSideEffect: Promise<void> | null = null;
 
     const dispatchEvent = (rawEventName: string, rawPayload: string) => {
       const normalizedPayload = String(rawPayload || '').trim();
@@ -903,6 +933,9 @@ export class CreationSessionService {
         case 'done': {
           const message = String(payload?.message || accumulatedReply || '');
           accumulatedReply = message;
+          if (finalResult) {
+            finalResult.reply = message;
+          }
           this.realtimeService.publishReplyDone(
             options.userId,
             options.sessionId,
@@ -913,6 +946,9 @@ export class CreationSessionService {
         }
         case 'final':
           finalResult = payload as AnalyzeTurnResponsePayload;
+          if (!pendingFinalSideEffect && options.onFinal) {
+            pendingFinalSideEffect = Promise.resolve(options.onFinal(finalResult));
+          }
           break;
         case 'error':
           throw new Error(
@@ -962,6 +998,9 @@ export class CreationSessionService {
     }
     flushEvent();
 
+    if (pendingFinalSideEffect) {
+      await pendingFinalSideEffect;
+    }
     if (!finalResult) {
       throw new Error('Creation session analyze-turn stream missing final result');
     }
@@ -1479,6 +1518,82 @@ export class CreationSessionService {
       return 'standard';
     }
     return undefined;
+  }
+
+  private buildInitSessionResolution(params: {
+    analyzePayload: AnalyzeTurnRequestPayload;
+    dto: CreateCreationSessionDto;
+    analysis: AnalyzeTurnResponsePayload;
+  }): {
+    nextStatus: 'ready' | 'collecting';
+    slotState: Record<string, unknown>;
+    missingRequired: string[];
+    currentQuestion: CreationSessionQuestion | null;
+    conversation: CreationSessionConversationMessage[];
+    metadata: Record<string, unknown>;
+    assistantReply: string;
+  } {
+    const slotState = this.normalizeSlotState(params.analysis.slots || {});
+    const missingRequired = this.normalizeStringList(params.analysis.missing_required);
+    const currentQuestion = this.normalizeQuestion(params.analysis.current_question);
+    const normalizedPlanDraft = this.normalizePlanDraft(params.analysis.plan_draft);
+    const normalizedQuestionStrategy = this.normalizeQuestionStrategy(params.analysis.question_strategy);
+    const confidenceSummary = this.buildConfidenceSummary(
+      params.analysis.confidence_by_slot,
+      params.analysis.ambiguity_flags,
+      missingRequired,
+    );
+    const intentBuild = this.buildSessionIntentBuild({
+      initialPrompt: params.analyzePayload.initial_prompt,
+      title: params.dto.title,
+      planDraft: normalizedPlanDraft,
+      slotState,
+      entryMode: params.dto.entryMode || 'create',
+      generationTier: params.dto.generationTier || 'standard',
+      missingRequired,
+    });
+    const assistantReply = String(params.analysis.reply || '').trim();
+    return {
+      nextStatus: params.analysis.ready_to_generate ? 'ready' : 'collecting',
+      slotState,
+      missingRequired,
+      currentQuestion,
+      conversation: [
+        this.userMessage(String(params.analyzePayload.initial_prompt || ''), 'prompt'),
+        this.assistantMessage(assistantReply, this.resolveRealtimeReplyKind(params.analysis)),
+      ],
+      metadata: {
+        orientation: params.dto.orientation || null,
+        generationTier: params.dto.generationTier || 'standard',
+        regionHint: params.dto.regionHint || null,
+        readyToGenerate: Boolean(params.analysis.ready_to_generate),
+        slotFillPct: this.clampSlotFillPct(params.analysis.slot_fill_pct, slotState),
+        planDraft: normalizedPlanDraft,
+        confidenceSummary,
+        questionStrategy: normalizedQuestionStrategy,
+        intentBuild,
+        confidenceBySlot: this.normalizeNumberMap(params.analysis.confidence_by_slot),
+        evidenceBySlot: this.normalizeStringMap(params.analysis.evidence_by_slot),
+        ambiguityFlags: this.normalizeStringList(params.analysis.ambiguity_flags),
+        nextBestQuestionReason: this.asOptionalString(params.analysis.next_best_question_reason)
+          || normalizedQuestionStrategy?.reason
+          || null,
+      },
+      assistantReply,
+    };
+  }
+
+  private async publishRealtimeSessionSnapshot(userId: string, sessionId: string): Promise<void> {
+    try {
+      const updatedSession = await this.getRepo().findUnique({ where: { id: sessionId } });
+      if (!updatedSession) {
+        return;
+      }
+      const snapshot = this.toSnapshot(updatedSession);
+      this.wsGateway.emitSessionUpdate(userId, sessionId, snapshot);
+      this.realtimeService.publishSnapshot(userId, sessionId, snapshot);
+    } catch (wsError: any) {
+    }
   }
 
   private resolveRealtimeReplyKind(

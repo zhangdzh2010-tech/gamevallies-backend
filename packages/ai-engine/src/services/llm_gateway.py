@@ -273,9 +273,7 @@ STEP_REQUIRED_CAPABILITIES: dict[str, tuple[str, ...]] = {
     "iterate.mechanic_change": ("supports_patch_generation",),
     "iterate.element_change": ("supports_patch_generation",),
     "iterate.param_adjust": ("supports_patch_generation",),
-    "qa_fix": ("supports_qa_repair",),
     "qa_fix.syntax_structural": ("supports_full_html_rewrite",),
-    "qa_fix.syntax_rebuild": ("supports_full_html_rewrite",),
     "intent_parse": ("supports_dialogue",),
     "dialogue.reply": ("supports_dialogue",),
     "dialogue.slot_extract": ("supports_dialogue",),
@@ -559,12 +557,14 @@ class LLMGateway:
         route: Optional[RouteRecord],
         service_region: str,
         step_key: str = "",
+        excluded_provider_ids: Optional[list[str]] = None,
     ) -> tuple[list[ProviderRecord], list[str]]:
         ordered: list[ProviderRecord] = []
         seen: set[str] = set()
+        excluded = {str(provider_id).strip() for provider_id in (excluded_provider_ids or []) if str(provider_id).strip()}
 
         def add_provider(provider_id: Optional[str]) -> None:
-            if not provider_id or provider_id in seen:
+            if not provider_id or provider_id in seen or provider_id in excluded:
                 return
             provider = self._providers.get(provider_id)
             if provider is None:
@@ -635,45 +635,6 @@ class LLMGateway:
         if provider_cap is None:
             return allow_unknown
         return provider_cap >= floor
-
-    def _augment_provider_candidates_for_failover(
-        self,
-        providers: list[ProviderRecord],
-        *,
-        route: Optional[RouteRecord],
-        service_region: str,
-        required_output_tokens: Optional[int],
-        allow_implicit_fallbacks: bool,
-    ) -> tuple[list[ProviderRecord], set[str]]:
-        if not allow_implicit_fallbacks or route is not None:
-            return providers, set()
-
-        existing_ids = {provider.id for provider in providers}
-        implicit_ids: set[str] = set()
-
-        def append_candidates(region_matched: bool) -> None:
-            for provider in self._providers.values():
-                if provider.id in existing_ids:
-                    continue
-                if region_matched and provider.region != service_region:
-                    continue
-                if not region_matched and provider.region == service_region:
-                    continue
-                if not self._provider_meets_output_floor(
-                    provider,
-                    required_output_tokens,
-                    allow_unknown=False,
-                ):
-                    continue
-                providers.append(provider)
-                existing_ids.add(provider.id)
-                implicit_ids.add(provider.id)
-
-        append_candidates(region_matched=True)
-        append_candidates(region_matched=False)
-        return providers, implicit_ids
-
-
 
     def _prioritize_provider_candidates_for_output_floor(
         self,
@@ -783,11 +744,13 @@ class LLMGateway:
         step_key: str,
         prefer_fast: bool = False,
         model_override: Optional[str] = None,
+        excluded_provider_ids: Optional[list[str]] = None,
     ) -> ResolvedRoute:
         return self.resolve_candidates(
             step_key=step_key,
             prefer_fast=prefer_fast,
             model_override=model_override,
+            excluded_provider_ids=excluded_provider_ids,
         )[0]
 
     def resolve_candidates(
@@ -796,8 +759,8 @@ class LLMGateway:
         step_key: str,
         prefer_fast: bool = False,
         model_override: Optional[str] = None,
-        allow_implicit_fallbacks: bool = False,
         required_output_tokens: Optional[int] = None,
+        excluded_provider_ids: Optional[list[str]] = None,
     ) -> list[ResolvedRoute]:
         self._ensure_loaded()
         if not self._providers:
@@ -809,16 +772,12 @@ class LLMGateway:
             region=service_region,
         )
         providers, capability_rejections = self._ordered_provider_candidates(
-            route=route, service_region=service_region, step_key=step_key,
-        )
-        base_provider_ids = {provider.id for provider in providers}
-        providers, implicit_provider_ids = self._augment_provider_candidates_for_failover(
-            providers,
             route=route,
             service_region=service_region,
-            required_output_tokens=required_output_tokens,
-            allow_implicit_fallbacks=allow_implicit_fallbacks,
+            step_key=step_key,
+            excluded_provider_ids=excluded_provider_ids,
         )
+        base_provider_ids = {provider.id for provider in providers}
         providers = self._prioritize_provider_candidates_for_output_floor(
             providers,
             required_output_tokens=required_output_tokens,
@@ -835,11 +794,9 @@ class LLMGateway:
                 route_match_strategy=route_match_strategy,
                 prefer_fast=prefer_fast,
                 model_override=model_override,
-                explicit_fallback_only=(
-                    route is not None and provider.id in base_provider_ids and provider.id not in implicit_provider_ids
-                ),
+                explicit_fallback_only=(route is not None and provider.id in base_provider_ids),
                 extra_route_snapshot={
-                    "implicit_provider_failover": provider.id in implicit_provider_ids,
+                    "implicit_provider_failover": False,
                     "required_output_tokens": _coerce_optional_positive_int(required_output_tokens),
                     "capability_rejections": capability_rejections,
                 },

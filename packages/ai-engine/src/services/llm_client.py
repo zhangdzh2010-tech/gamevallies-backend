@@ -151,6 +151,14 @@ class PromptAdmissionResult:
     prompt_dedup_summary: list[str] = field(default_factory=list)
 
 
+@dataclass
+class _PreparedCompletionAttempt:
+    route: Any
+    messages: List[Message]
+    system: Optional[str]
+    max_tokens: int
+
+
 def _build_openai_compatible_chat_url(base_url: str) -> str:
     normalized = base_url.strip().rstrip("/")
     if not normalized:
@@ -381,7 +389,9 @@ def _summarize_error_message(message: str, limit: int = 160) -> str:
     return re.sub(r"\s+", " ", (message or "")).strip()[:limit] or "unknown error"
 
 
-def _is_retryable_provider_error(exc: Exception) -> bool:
+def _is_retryable_provider_error(exc: BaseException) -> bool:
+    if isinstance(exc, asyncio.CancelledError):
+        return True
     if isinstance(exc, (asyncio.TimeoutError, httpx.TimeoutException, httpx.RequestError)):
         return True
     if isinstance(exc, LLMResponseTruncatedError):
@@ -419,6 +429,32 @@ def _provider_retry_backoff_seconds(
     if retry_after is not None:
         computed = max(computed, min(capped_max, retry_after))
     return computed
+
+
+def _attach_attempt_chain_to_exception(
+    exc: BaseException,
+    routes: list[Any],
+    *,
+    current_route_snapshot: Optional[dict[str, Any]] = None,
+) -> None:
+    snapshots = [dict(getattr(route, "route_snapshot", {}) or {}) for route in routes]
+    provider_ids = [
+        str(snapshot.get("provider_id") or getattr(route, "provider_id", "") or "").strip()
+        for route, snapshot in zip(routes, snapshots)
+    ]
+    provider_names = [
+        str(snapshot.get("provider_name") or getattr(route, "provider_name", "") or "").strip()
+        for route, snapshot in zip(routes, snapshots)
+    ]
+    merged_snapshot = dict(current_route_snapshot or getattr(exc, "route_snapshot", {}) or {})
+    merged_snapshot["attempted_provider_ids"] = [provider_id for provider_id in provider_ids if provider_id]
+    merged_snapshot["attempted_provider_names"] = [provider_name for provider_name in provider_names if provider_name]
+    if snapshots:
+        merged_snapshot["attempt_route_snapshots"] = snapshots
+    try:
+        setattr(exc, "route_snapshot", merged_snapshot)
+    except Exception:
+        pass
 
 
 _LLM_HTTP_CLIENTS: dict[asyncio.AbstractEventLoop, httpx.AsyncClient] = {}
@@ -499,21 +535,11 @@ STEP_OUTPUT_CLASS_DEFAULTS: dict[str, str] = {
     "iterate.classify": "small_json",
     "generate_game_spec": "small_json",
     "generate_game_spec.draft": "small_json",
-    "llm_design": "medium_structured",
     "code_review": "medium_structured",
     "iterate.param_adjust": "large_patch",
     "iterate.element_change": "large_patch",
     "iterate.mechanic_change": "large_patch",
-    "qa_fix": "large_patch",
-    "qa_fix.forbidden_api": "large_patch",
-    "qa_fix.input_contract": "large_patch",
-    "qa_fix.score_feedback": "large_patch",
-    "qa_fix.terminal_state": "large_patch",
-    "qa_fix.mobile_layout": "large_patch",
-    "qa_fix.runtime_startup": "large_patch",
-    "qa_fix.generic": "large_patch",
     "qa_fix.syntax_structural": "full_document",
-    "qa_fix.syntax_rebuild": "full_document",
     "code_generate.full": "full_document",
 }
 
@@ -524,6 +550,11 @@ OUTPUT_CLASS_TOKEN_DEFAULTS: dict[str, int] = {
     "large_patch": 4096,
     "full_document": 8192,
 }
+
+_ADAPTIVE_TOKEN_BUDGET_DISABLED_STEPS = frozenset({
+    "code_generate.full",
+    "qa_fix.syntax_structural",
+})
 
 
 def _normalize_output_class(value: Optional[str]) -> str:
@@ -601,6 +632,12 @@ class _OutputTokenTracker:
 _output_token_tracker = _OutputTokenTracker(
     max_history=getattr(settings, "LLM_ADAPTIVE_TOKEN_BUDGET_HISTORY_SIZE", 20),
 )
+
+
+def _adaptive_token_budget_enabled_for_step(step_key: str) -> bool:
+    if not getattr(settings, "LLM_ADAPTIVE_TOKEN_BUDGET_ENABLED", False):
+        return False
+    return (step_key or "").strip().lower() not in _ADAPTIVE_TOKEN_BUDGET_DISABLED_STEPS
 
 
 def _contains_cjk(text: str) -> int:
@@ -687,7 +724,7 @@ def _block_priority(block: str, compression_policy: str) -> int:
         score += 5 if policy == "iteration_rewrite" else 2
     if "spec" in lower or "structured design" in lower or "critical intent" in lower:
         score += 4
-    if "reference skeleton" in lower or "enriched design" in lower:
+    if "reference skeleton" in lower:
         score -= 1
     if "history" in lower or "conversation" in lower:
         score -= 2
@@ -737,12 +774,16 @@ def _apply_request_timeout_override(route: Any, request_timeout_s: Optional[int]
     overridden = copy(route)
     desired_timeout = max(1, int(request_timeout_s))
     current_timeout = getattr(route, "request_timeout_s", desired_timeout)
-    overridden.request_timeout_s = min(int(current_timeout), desired_timeout)
+    overridden.request_timeout_s = desired_timeout
     overridden.route_snapshot = {
         **dict(getattr(route, "route_snapshot", {}) or {}),
+        "base_request_timeout_s": int(current_timeout),
         "request_timeout_override_s": overridden.request_timeout_s,
+        "request_timeout_override_applied": True,
     }
     return overridden
+
+
 def _resolve_gateway_output_limit(
     route: Any,
     *,
@@ -753,7 +794,12 @@ def _resolve_gateway_output_limit(
     hint_tokens = _default_hint_tokens(response_size_hint)
     if provider_max_tokens is not None:
         requested = max(1, int(requested_max_tokens)) if requested_max_tokens is not None else hint_tokens
-        return provider_max_tokens, requested, "gateway_provider_max"
+        effective = min(requested, provider_max_tokens)
+        if requested_max_tokens is None:
+            limit_source = "hint_capped_by_gateway" if effective < requested else "hint_fallback"
+        else:
+            limit_source = "caller_capped_by_gateway" if effective < requested else "caller_requested"
+        return effective, requested, limit_source
     if requested_max_tokens is not None:
         return max(1, int(requested_max_tokens)), hint_tokens, "caller_fallback"
     return hint_tokens, hint_tokens, "hint_fallback"
@@ -1116,6 +1162,258 @@ class LLMClient:
             prompt_dedup_summary=prompt_dedup_summary,
         )
 
+    async def _prepare_completion_attempt(
+        self,
+        *,
+        resolved_route: Any,
+        attempt_index: int,
+        total_attempts: int,
+        previous_provider_id: Optional[str],
+        request_timeout_s: Optional[int],
+        overall_timeout_s: Optional[int],
+        deadline: Optional[float],
+        max_tokens: Optional[int],
+        system: Optional[str],
+        messages: List[Message],
+        step_key: str,
+        response_size_hint: Optional[str],
+        context_scope: str,
+        compression_policy: Optional[str],
+    ) -> _PreparedCompletionAttempt:
+        effective_request_timeout_s = request_timeout_s
+        if deadline is not None:
+            remaining_budget_s = int(deadline - time.monotonic())
+            if remaining_budget_s <= 0:
+                raise asyncio.TimeoutError(
+                    f"LLM call {step_key} exhausted overall timeout budget of {int(overall_timeout_s or 0)}s"
+                )
+            effective_request_timeout_s = min(
+                max(1, remaining_budget_s),
+                effective_request_timeout_s if effective_request_timeout_s is not None else max(1, remaining_budget_s),
+            )
+
+        route = _apply_request_timeout_override(resolved_route, effective_request_timeout_s)
+        effective_max_tokens, requested_max_tokens, limit_source = _resolve_gateway_output_limit(
+            route,
+            requested_max_tokens=max_tokens,
+            response_size_hint=response_size_hint,
+        )
+        route.route_snapshot = {
+            **dict(getattr(route, "route_snapshot", {}) or {}),
+            "attempt": attempt_index,
+            "attempt_count": total_attempts,
+            "provider_fallback_from": previous_provider_id,
+            "requested_max_tokens": int(requested_max_tokens),
+            "effective_max_tokens": int(effective_max_tokens),
+            "provider_max_tokens": _coerce_optional_int(getattr(route, "max_tokens", None)),
+            "provider_context_window": _coerce_optional_int(getattr(route, "context_window", None)),
+            "limit_source": limit_source,
+            "response_size_hint": _normalize_response_size_hint(response_size_hint),
+            "context_scope": context_scope,
+            "compression_policy": compression_policy,
+            "reserved_output_tokens": int(effective_max_tokens),
+            **(
+                {"overall_timeout_s": int(overall_timeout_s)}
+                if overall_timeout_s is not None
+                else {}
+            ),
+        }
+        try:
+            admission = await self._prepare_prompt_admission(
+                route=route,
+                system=system,
+                messages=messages,
+                step_key=step_key,
+                compression_policy=compression_policy,
+                context_scope=context_scope,
+                reserved_output_tokens=effective_max_tokens,
+                limit_source=limit_source,
+            )
+        except LLMContextWindowExceededError as exc:
+            route.route_snapshot = {
+                **route.route_snapshot,
+                "estimated_input_tokens": exc.estimated_input_tokens,
+                "allowed_input_tokens": exc.allowed_input_tokens,
+                "strict_admission": True,
+                "compression_summary": list(exc.compression_summary),
+                "prompt_fingerprint": exc.prompt_fingerprint,
+                "prompt_dedup_summary": list(exc.prompt_dedup_summary),
+                "prompt_dedup_saved_tokens_estimate": exc.prompt_dedup_saved_tokens_estimate,
+                "prompt_dedup_removed_block_count": exc.prompt_dedup_removed_block_count,
+            }
+            try:
+                setattr(exc, "route_snapshot", dict(route.route_snapshot or {}))
+            except Exception:
+                pass
+            raise
+        route.route_snapshot = {
+            **route.route_snapshot,
+            "requested_input_tokens": admission.requested_input_tokens,
+            "estimated_input_tokens": admission.estimated_input_tokens,
+            "allowed_input_tokens": admission.allowed_input_tokens,
+            "reserved_output_tokens": admission.reserved_output_tokens,
+            "safety_margin_tokens": admission.safety_margin_tokens,
+            "strict_admission": admission.strict_admission,
+            "task_memory_injected": admission.task_memory_injected,
+            "task_memory_compact": admission.task_memory_compact,
+            "compression_summary": list(admission.compression_summary),
+            "prompt_fingerprint": admission.prompt_fingerprint,
+            "prompt_dedup_applied": admission.prompt_dedup_applied,
+            "prompt_dedup_base_input_tokens": admission.prompt_dedup_base_input_tokens,
+            "prompt_dedup_saved_tokens_estimate": admission.prompt_dedup_saved_tokens_estimate,
+            "prompt_dedup_removed_block_count": admission.prompt_dedup_removed_block_count,
+            "prompt_dedup_removed_blocks": list(admission.prompt_dedup_removed_blocks),
+            "prompt_dedup_summary": list(admission.prompt_dedup_summary),
+        }
+        return _PreparedCompletionAttempt(
+            route=route,
+            messages=admission.messages,
+            system=admission.system,
+            max_tokens=effective_max_tokens,
+        )
+
+    async def _run_prepared_completion_attempt(
+        self,
+        *,
+        prepared: _PreparedCompletionAttempt,
+        step_key: str,
+        stage: str,
+        return_route_snapshot: bool,
+    ) -> Any:
+        text = await self._complete_with_route(
+            route=prepared.route,
+            messages=prepared.messages,
+            max_tokens=prepared.max_tokens,
+            system=prepared.system,
+            step_key=step_key,
+            stage=stage,
+        )
+        if return_route_snapshot:
+            return text, dict(prepared.route.route_snapshot or {})
+        return text
+
+    async def _complete_with_hedged_routes(
+        self,
+        *,
+        routes: list[Any],
+        hedge_after_s: float,
+        messages: List[Message],
+        max_tokens: Optional[int],
+        system: Optional[str],
+        step_key: str,
+        stage: str,
+        request_timeout_s: Optional[int],
+        overall_timeout_s: Optional[int],
+        response_size_hint: Optional[str],
+        context_scope: str,
+        compression_policy: Optional[str],
+        return_route_snapshot: bool,
+    ) -> Any:
+        total_attempts = len(routes)
+        deadline = None
+        if overall_timeout_s is not None:
+            deadline = time.monotonic() + max(1, int(overall_timeout_s))
+
+        launched_routes: list[Any] = []
+        task_to_route: dict[asyncio.Task[Any], Any] = {}
+        pending_tasks: set[asyncio.Task[Any]] = set()
+        first_task: Optional[asyncio.Task[Any]] = None
+        next_route_index = 0
+        last_exc: Optional[BaseException] = None
+        hedge_launched = False
+
+        async def _launch_attempt(route_index: int) -> asyncio.Task[Any]:
+            previous_provider_id = None
+            if launched_routes:
+                previous_provider_id = str(getattr(launched_routes[-1], "provider_id", "") or "").strip() or None
+            prepared = await self._prepare_completion_attempt(
+                resolved_route=routes[route_index],
+                attempt_index=route_index + 1,
+                total_attempts=total_attempts,
+                previous_provider_id=previous_provider_id,
+                request_timeout_s=request_timeout_s,
+                overall_timeout_s=overall_timeout_s,
+                deadline=deadline,
+                max_tokens=max_tokens,
+                system=system,
+                messages=messages,
+                step_key=step_key,
+                response_size_hint=response_size_hint,
+                context_scope=context_scope,
+                compression_policy=compression_policy,
+            )
+            launched_routes.append(prepared.route)
+            task = asyncio.create_task(
+                self._run_prepared_completion_attempt(
+                    prepared=prepared,
+                    step_key=step_key,
+                    stage=stage,
+                    return_route_snapshot=return_route_snapshot,
+                )
+            )
+            pending_tasks.add(task)
+            task_to_route[task] = prepared.route
+            return task
+
+        try:
+            first_task = await _launch_attempt(0)
+            next_route_index = 1
+            hedge_deadline = time.monotonic() + max(0.0, float(hedge_after_s))
+
+            while pending_tasks:
+                wait_timeout: Optional[float] = None
+                if (
+                    not hedge_launched
+                    and first_task is not None
+                    and first_task in pending_tasks
+                    and next_route_index < total_attempts
+                ):
+                    wait_timeout = max(0.0, hedge_deadline - time.monotonic())
+
+                done, _ = await asyncio.wait(
+                    pending_tasks,
+                    timeout=wait_timeout,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                if not done:
+                    await _launch_attempt(next_route_index)
+                    next_route_index += 1
+                    hedge_launched = True
+                    continue
+
+                for task in list(done):
+                    pending_tasks.discard(task)
+                    route = task_to_route.pop(task, None)
+                    try:
+                        result = task.result()
+                    except BaseException as exc:
+                        last_exc = exc
+                        if route is not None:
+                            _attach_attempt_chain_to_exception(exc, launched_routes)
+                        if not pending_tasks and next_route_index < total_attempts:
+                            await _launch_attempt(next_route_index)
+                            next_route_index += 1
+                            hedge_launched = True
+                        continue
+
+                    for pending in list(pending_tasks):
+                        pending.cancel()
+                    if pending_tasks:
+                        await asyncio.gather(*pending_tasks, return_exceptions=True)
+                        pending_tasks.clear()
+                    return result
+        finally:
+            for pending in list(pending_tasks):
+                pending.cancel()
+            if pending_tasks:
+                await asyncio.gather(*pending_tasks, return_exceptions=True)
+
+        if last_exc is not None:
+            _attach_attempt_chain_to_exception(last_exc, launched_routes)
+            raise last_exc
+        raise RuntimeError(f"LLM hedged call failed without attempts for step {step_key}")
+
     async def complete(
         self,
         *,
@@ -1132,7 +1430,10 @@ class LLMClient:
         response_size_hint: Optional[str] = None,
         context_scope: str = "request",
         compression_policy: Optional[str] = None,
-    ) -> str:
+        excluded_provider_ids: Optional[list[str]] = None,
+        return_route_snapshot: bool = False,
+        hedge_provider_fallback_after_s: Optional[float] = None,
+    ) -> Any:
         if not self.is_enabled():
             raise RuntimeError("Real LLM mode is not configured")
 
@@ -1142,14 +1443,15 @@ class LLMClient:
                 step_key=step_key,
                 prefer_fast=prefer_fast,
                 model_override=model,
-                allow_implicit_fallbacks=True,
                 required_output_tokens=required_output_tokens,
+                excluded_provider_ids=excluded_provider_ids,
             )
             if allow_provider_fallback and settings.LLM_PROVIDER_FAILOVER_ENABLED
             else [gateway.resolve(
                 step_key=step_key,
                 prefer_fast=prefer_fast,
                 model_override=model,
+                excluded_provider_ids=excluded_provider_ids,
             )]
         )
 
@@ -1184,139 +1486,117 @@ class LLMClient:
                     response_size_hint=response_size_hint,
                 )
 
-        last_exc: Optional[Exception] = None
+        last_exc: Optional[BaseException] = None
         previous_provider_id: Optional[str] = None
         total_attempts = len(routes)
+        attempted_routes: list[Any] = []
         deadline = None
         if overall_timeout_s is not None:
             deadline = time.monotonic() + max(1, int(overall_timeout_s))
-        for attempt_index, resolved_route in enumerate(routes, start=1):
-            effective_request_timeout_s = request_timeout_s
-            if deadline is not None:
-                remaining_budget_s = int(deadline - time.monotonic())
-                if remaining_budget_s <= 0:
-                    raise asyncio.TimeoutError(
-                        f"LLM call {step_key} exhausted overall timeout budget of {int(overall_timeout_s)}s"
-                    )
-                effective_request_timeout_s = min(
-                    max(1, remaining_budget_s),
-                    effective_request_timeout_s if effective_request_timeout_s is not None else max(1, remaining_budget_s),
-                )
-
-            route = _apply_request_timeout_override(resolved_route, effective_request_timeout_s)
-            effective_max_tokens, requested_max_tokens, limit_source = _resolve_gateway_output_limit(
-                route,
-                requested_max_tokens=max_tokens,
+        hedge_after_s = None
+        if (
+            allow_provider_fallback
+            and settings.LLM_PROVIDER_FAILOVER_ENABLED
+            and getattr(settings, "LLM_PROVIDER_HEDGING_ENABLED", False)
+            and hedge_provider_fallback_after_s is not None
+            and len(routes) > 1
+        ):
+            hedge_after_s = max(0.0, float(hedge_provider_fallback_after_s))
+        if hedge_after_s is not None:
+            return await self._complete_with_hedged_routes(
+                routes=routes,
+                hedge_after_s=hedge_after_s,
+                messages=messages,
+                max_tokens=max_tokens,
+                system=system,
+                step_key=step_key,
+                stage=stage,
+                request_timeout_s=request_timeout_s,
+                overall_timeout_s=overall_timeout_s,
                 response_size_hint=response_size_hint,
+                context_scope=context_scope,
+                compression_policy=compression_policy,
+                return_route_snapshot=return_route_snapshot,
             )
-            route.route_snapshot = {
-                **dict(getattr(route, "route_snapshot", {}) or {}),
-                "attempt": attempt_index,
-                "attempt_count": total_attempts,
-                "provider_fallback_from": previous_provider_id,
-                "requested_max_tokens": int(requested_max_tokens),
-                "effective_max_tokens": int(effective_max_tokens),
-                "provider_max_tokens": _coerce_optional_int(getattr(route, "max_tokens", None)),
-                "provider_context_window": _coerce_optional_int(getattr(route, "context_window", None)),
-                "limit_source": limit_source,
-                "response_size_hint": _normalize_response_size_hint(response_size_hint),
-                "context_scope": context_scope,
-                "compression_policy": compression_policy,
-                "reserved_output_tokens": int(effective_max_tokens),
-                **(
-                    {"overall_timeout_s": int(overall_timeout_s)}
-                    if overall_timeout_s is not None
-                    else {}
-                ),
-            }
+        for attempt_index, resolved_route in enumerate(routes, start=1):
             try:
-                admission = await self._prepare_prompt_admission(
-                    route=route,
+                prepared = await self._prepare_completion_attempt(
+                    resolved_route=resolved_route,
+                    attempt_index=attempt_index,
+                    total_attempts=total_attempts,
+                    previous_provider_id=previous_provider_id,
+                    request_timeout_s=request_timeout_s,
+                    overall_timeout_s=overall_timeout_s,
+                    deadline=deadline,
+                    max_tokens=max_tokens,
                     system=system,
                     messages=messages,
                     step_key=step_key,
-                    compression_policy=compression_policy,
+                    response_size_hint=response_size_hint,
                     context_scope=context_scope,
-                    reserved_output_tokens=effective_max_tokens,
-                    limit_source=limit_source,
+                    compression_policy=compression_policy,
                 )
+                attempted_routes.append(prepared.route)
             except Exception as exc:
-                if isinstance(exc, LLMContextWindowExceededError):
-                    route.route_snapshot = {
-                        **route.route_snapshot,
-                        "estimated_input_tokens": exc.estimated_input_tokens,
-                        "allowed_input_tokens": exc.allowed_input_tokens,
-                        "strict_admission": True,
-                        "compression_summary": list(exc.compression_summary),
-                        "prompt_fingerprint": exc.prompt_fingerprint,
-                        "prompt_dedup_summary": list(exc.prompt_dedup_summary),
-                        "prompt_dedup_saved_tokens_estimate": exc.prompt_dedup_saved_tokens_estimate,
-                        "prompt_dedup_removed_block_count": exc.prompt_dedup_removed_block_count,
-                    }
+                route_snapshot = dict(getattr(exc, "route_snapshot", {}) or dict(getattr(resolved_route, "route_snapshot", {}) or {}))
                 await gateway.emit_llm_call_log({
                     "stage": stage,
                     "stepKey": step_key,
-                    "providerId": route.provider_id,
-                    "providerName": route.provider_name,
-                    "providerType": route.provider_type,
-                    "region": route.region,
-                    "model": route.model,
-                    "requestTimeoutS": route.request_timeout_s,
-                    "connectTimeoutS": route.connect_timeout_s,
+                    "providerId": getattr(resolved_route, "provider_id", None),
+                    "providerName": getattr(resolved_route, "provider_name", None),
+                    "providerType": getattr(resolved_route, "provider_type", None),
+                    "region": getattr(resolved_route, "region", None),
+                    "model": getattr(resolved_route, "model", None),
+                    "requestTimeoutS": route_snapshot.get("request_timeout_override_s", getattr(resolved_route, "request_timeout_s", None)),
+                    "connectTimeoutS": getattr(resolved_route, "connect_timeout_s", None),
                     "success": False,
                     "errorCode": exc.__class__.__name__,
                     "errorMessage": str(exc),
-                    "configVersion": route.config_version,
-                    "routeSnapshot": route.route_snapshot,
-                    "outputClass": route.route_snapshot.get("output_class_for_step", ""),
-                    "isPrimaryProvider": route.route_snapshot.get("is_primary_provider", True),
-                    "failoverReason": route.route_snapshot.get("failover_reason"),
-                    "providerVerified": route.route_snapshot.get("provider_verified"),
+                    "configVersion": getattr(resolved_route, "config_version", None),
+                    "routeSnapshot": route_snapshot,
+                    "outputClass": route_snapshot.get("output_class_for_step", ""),
+                    "isPrimaryProvider": route_snapshot.get("is_primary_provider", True),
+                    "failoverReason": route_snapshot.get("failover_reason"),
+                    "providerVerified": route_snapshot.get("provider_verified"),
                 })
                 raise
-            route.route_snapshot = {
-                **route.route_snapshot,
-                "requested_input_tokens": admission.requested_input_tokens,
-                "estimated_input_tokens": admission.estimated_input_tokens,
-                "allowed_input_tokens": admission.allowed_input_tokens,
-                "reserved_output_tokens": admission.reserved_output_tokens,
-                "safety_margin_tokens": admission.safety_margin_tokens,
-                "strict_admission": admission.strict_admission,
-                "task_memory_injected": admission.task_memory_injected,
-                "task_memory_compact": admission.task_memory_compact,
-                "compression_summary": list(admission.compression_summary),
-                "prompt_fingerprint": admission.prompt_fingerprint,
-                "prompt_dedup_applied": admission.prompt_dedup_applied,
-                "prompt_dedup_base_input_tokens": admission.prompt_dedup_base_input_tokens,
-                "prompt_dedup_saved_tokens_estimate": admission.prompt_dedup_saved_tokens_estimate,
-                "prompt_dedup_removed_block_count": admission.prompt_dedup_removed_block_count,
-                "prompt_dedup_removed_blocks": list(admission.prompt_dedup_removed_blocks),
-                "prompt_dedup_summary": list(admission.prompt_dedup_summary),
-            }
             try:
-                return await self._complete_with_route(
-                    route=route,
-                    messages=admission.messages,
-                    max_tokens=effective_max_tokens,
-                    system=admission.system,
+                return await self._run_prepared_completion_attempt(
+                    prepared=prepared,
                     step_key=step_key,
                     stage=stage,
+                    return_route_snapshot=return_route_snapshot,
                 )
+            except asyncio.CancelledError as exc:
+                last_exc = exc
+                _attach_attempt_chain_to_exception(exc, [prepared.route])
+                if attempt_index >= total_attempts or not _is_retryable_provider_error(exc):
+                    raise
+                logger.warning(
+                    "LLM call %s was canceled on provider %s (attempt %s/%s), trying fallback",
+                    step_key,
+                    prepared.route.provider_name or prepared.route.provider_id or prepared.route.base_url,
+                    attempt_index,
+                    total_attempts,
+                )
+                previous_provider_id = prepared.route.provider_id
             except Exception as exc:
                 last_exc = exc
+                _attach_attempt_chain_to_exception(exc, [prepared.route])
                 if attempt_index >= total_attempts or not _is_retryable_provider_error(exc):
                     raise
                 logger.warning(
                     "LLM call %s failed on provider %s (attempt %s/%s), trying fallback: %s",
                     step_key,
-                    route.provider_name or route.provider_id or route.base_url,
+                    prepared.route.provider_name or prepared.route.provider_id or prepared.route.base_url,
                     attempt_index,
                     total_attempts,
                     exc,
                 )
-                previous_provider_id = route.provider_id
+                previous_provider_id = prepared.route.provider_id
 
         if last_exc is not None:
+            _attach_attempt_chain_to_exception(last_exc, attempted_routes)
             raise last_exc
         raise RuntimeError(f"LLM call failed without attempts for step {step_key}")
 
@@ -1342,12 +1622,16 @@ class LLMClient:
         timeout_retry_max_s: Optional[int] = None,
         timeout_retry_min_s: Optional[int] = None,
         provider_retry_attempts: int = 1,
+        provider_retry_on_timeout_errors: bool = True,
         provider_retry_base_delay_s: float = 2.0,
         provider_retry_max_delay_s: float = 12.0,
         response_size_hint: Optional[str] = None,
         context_scope: str = "request",
         compression_policy: Optional[str] = None,
-    ) -> str:
+        excluded_provider_ids: Optional[list[str]] = None,
+        return_route_snapshot: bool = False,
+        hedge_provider_fallback_after_s: Optional[float] = None,
+    ) -> Any:
         resolved_route = None
         try:
             if self.is_enabled():
@@ -1355,6 +1639,7 @@ class LLMClient:
                     step_key=step_key,
                     prefer_fast=prefer_fast,
                     model_override=model,
+                    excluded_provider_ids=excluded_provider_ids,
                 )
         except Exception:
             resolved_route = None
@@ -1377,7 +1662,7 @@ class LLMClient:
             if truncation_retry_max_tokens is not None
             else None
         )
-        if limit_source == "gateway_provider_max" and not allow_provider_fallback:
+        if limit_source in {"caller_capped_by_gateway", "hint_capped_by_gateway"} and not allow_provider_fallback:
             retry_ceiling = gateway_max_tokens
         retry_floor = (
             max(1, int(truncation_retry_min_tokens))
@@ -1407,8 +1692,9 @@ class LLMClient:
         provider_retry_attempt = 0
 
         while True:
-            # Adaptive token budget: if enabled and we have history, adjust
-            if getattr(settings, "LLM_ADAPTIVE_TOKEN_BUDGET_ENABLED", False) and requested_max_tokens:
+            # Adaptive token budget: keep it off for full-document generation paths so
+            # budgets do not ratchet upward and silently blow up latency/cost.
+            if _adaptive_token_budget_enabled_for_step(step_key) and requested_max_tokens:
                 suggested = _output_token_tracker.suggest_budget(step_key, requested_max_tokens)
                 if suggested > requested_max_tokens:
                     requested_max_tokens = suggested
@@ -1434,6 +1720,9 @@ class LLMClient:
                     response_size_hint=response_size_hint,
                     context_scope=context_scope,
                     compression_policy=compression_policy,
+                    excluded_provider_ids=excluded_provider_ids,
+                    return_route_snapshot=return_route_snapshot,
+                    hedge_provider_fallback_after_s=hedge_provider_fallback_after_s,
                 )
             except LLMResponseTruncatedError as exc:
                 if truncation_attempt >= max_retry_attempts:
@@ -1454,9 +1743,30 @@ class LLMClient:
                 requested_max_tokens = next_requested
                 truncation_attempt += 1
                 continue
+            except asyncio.CancelledError as exc:
+                if _is_retryable_provider_error(exc) and provider_retry_attempt < provider_retry_limit:
+                    provider_retry_attempt += 1
+                    delay_s = _provider_retry_backoff_seconds(
+                        exc,
+                        attempt=provider_retry_attempt,
+                        base_delay_s=provider_retry_base_delay_s,
+                        max_delay_s=provider_retry_max_delay_s,
+                    )
+                    logger.warning(
+                        "LLM %s was canceled by upstream; retrying after %.1fs (attempt %s/%s)",
+                        step_key,
+                        delay_s,
+                        provider_retry_attempt,
+                        provider_retry_limit,
+                    )
+                    await asyncio.sleep(delay_s)
+                    continue
+
+                raise
             except Exception as exc:
+                timeout_like_error = _is_timeout_like_error(exc)
                 if (
-                    _is_timeout_like_error(exc)
+                    timeout_like_error
                     and timeout_attempt < timeout_retry_limit
                     and requested_request_timeout_s is not None
                 ):
@@ -1479,7 +1789,11 @@ class LLMClient:
                     timeout_attempt += 1
                     continue
 
-                if _is_retryable_provider_error(exc) and provider_retry_attempt < provider_retry_limit:
+                if (
+                    _is_retryable_provider_error(exc)
+                    and provider_retry_attempt < provider_retry_limit
+                    and (provider_retry_on_timeout_errors or not timeout_like_error)
+                ):
                     provider_retry_attempt += 1
                     delay_s = _provider_retry_backoff_seconds(
                         exc,
@@ -1728,7 +2042,12 @@ class LLMClient:
                 "configVersion": route.config_version,
                 "routeSnapshot": route.route_snapshot,
             })
-            raise
+            cancelled_exc = asyncio.CancelledError("LLM call canceled before completion")
+            try:
+                setattr(cancelled_exc, "route_snapshot", dict(route.route_snapshot or {}))
+            except Exception:
+                pass
+            raise cancelled_exc
         except Exception as exc:
             http_status = None
             upstream_request_id = None
@@ -1795,6 +2114,10 @@ class LLMClient:
                 "failoverReason": route.route_snapshot.get("failover_reason"),
                 "providerVerified": route.route_snapshot.get("provider_verified"),
             })
+            try:
+                setattr(exc, "route_snapshot", dict(route.route_snapshot or {}))
+            except Exception:
+                pass
             raise
         finally:
             semaphore.release()
@@ -1955,6 +2278,10 @@ class LLMClient:
                 "failoverReason": route.route_snapshot.get("failover_reason"),
                 "providerVerified": route.route_snapshot.get("provider_verified"),
             })
+            try:
+                setattr(exc, "route_snapshot", dict(route.route_snapshot or {}))
+            except Exception:
+                pass
             raise
         finally:
             semaphore.release()

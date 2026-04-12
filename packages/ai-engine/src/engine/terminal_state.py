@@ -266,7 +266,7 @@ def _has_state_identifier_assignment(
         for match in pattern.finditer(source):
             identifier = match.group(2)
             normalized_alias = constant_alias_map.get(identifier, "")
-            if normalized_alias in alias_set:
+            if normalized_alias in alias_set or _identifier_matches_state_alias(identifier, alias_set):
                 return True
     return False
 
@@ -274,3 +274,35 @@ def _has_state_identifier_assignment(
 def _build_alias_search(alias: str) -> re.Pattern[str]:
     alias_pattern = _build_alias_pattern(alias)
     return re.compile(rf"(?<![\w$])['\"]?(?:{alias_pattern})['\"]?(?![\w$])", re.IGNORECASE)
+
+
+def _identifier_matches_state_alias(identifier: str, alias_set: Set[str]) -> bool:
+    raw_identifier = str(identifier or "").strip()
+    if not raw_identifier:
+        return False
+
+    normalized_identifier = _normalize_identifier(raw_identifier)
+    if not normalized_identifier:
+        return False
+
+    if normalized_identifier in alias_set:
+        return True
+
+    # Treat enum-style constants such as STATE_PLAYING or GAME_STATES.PLAYING as state aliases
+    # even when they carry numeric values instead of string literals.
+    if raw_identifier.upper() != raw_identifier:
+        return False
+
+    tokens = [part for part in normalized_identifier.split("_") if part]
+    if not tokens:
+        return False
+
+    return tokens[-1] in alias_set
+
+
+def _normalize_identifier(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", text)
+    return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")

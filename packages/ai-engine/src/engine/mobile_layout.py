@@ -15,11 +15,11 @@ _VIEWPORT_HEIGHT_RE = re.compile(
     re.IGNORECASE,
 )
 _WIDTH_HINT_RE = re.compile(
-    r"scaleX|widthScale|uiScaleX|layoutScaleX|viewportWidth|containerWidth|innerWidth|clientWidth|\bvw\b|\bsx\b|\bscalew\b",
+    r"scaleX|widthScale|uiScaleX|layoutScaleX|viewportWidth|containerWidth|innerWidth|clientWidth|\bvw\b|\bsx\b|\bsw\b|\bscalew\b",
     re.IGNORECASE,
 )
 _HEIGHT_HINT_RE = re.compile(
-    r"scaleY|heightScale|uiScaleY|layoutScaleY|viewportHeight|containerHeight|innerHeight|clientHeight|\bvh\b|\bsy\b|\bscaleh\b",
+    r"scaleY|heightScale|uiScaleY|layoutScaleY|viewportHeight|containerHeight|innerHeight|clientHeight|\bvh\b|\bsy\b|\bsh\b|\bscaleh\b",
     re.IGNORECASE,
 )
 _ASPECT_COMPARE_RE = re.compile(

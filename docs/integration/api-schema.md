@@ -162,6 +162,7 @@ Content-Type: application/json
 ```json
 {
   "id": "string",
+  "streamPath": "/api/v1/games/creation-sessions/<sessionId>/events",
   "status": "initializing | collecting | ready | generating | completed | failed | abandoned",
   "entryMode": "create | fork | iterate",
   "initialPrompt": "string",
@@ -220,7 +221,13 @@ Content-Type: application/json
     "confidence": 0,
     "ambiguityWeight": 0.25
   },
-  "metadata": {}
+  "intentBuild": {
+    "brief": "string | null"
+  },
+  "metadata": {
+    "initError": "string | null",
+    "abandonedAt": "ISO8601 | null"
+  }
 }
 ```
 
@@ -909,29 +916,60 @@ Authorization: Bearer <JWT>
 
 事件类型：
 
-- `session.bootstrap`：建立连接后立即返回一次当前快照
-- `session.updated`：会话状态、问题、revision 发生变化时推送
-- `session.error`：初始化失败或超时后推送
-- `heartbeat`：15 秒一次保活事件
+- `bootstrap`：建立连接后立即返回一次当前快照
+- `delta`：assistant 当前回复的增量片段
+- `done`：assistant 当前回复结束
+- `snapshot`：session 快照发生变化后的最新状态
+- `error`：初始化失败、超时或其它可公开错误
+- `heartbeat`：仍然存在，但以 SSE comment 形式发送，前端不需要作为普通事件处理
 
-`session.bootstrap` / `session.updated` 数据示例：
+`bootstrap` / `snapshot` 数据示例：
 
 ```json
 {
-  "type": "session.bootstrap",
+  "type": "bootstrap",
   "sessionId": "string",
   "session": "CreationSessionSnapshot",
   "timestamp": 0
 }
 ```
 
-`session.error` 数据示例：
+`delta` 数据示例：
 
 ```json
 {
-  "type": "session.error",
+  "type": "delta",
   "sessionId": "string",
-  "error": "string",
+  "messageId": "string",
+  "delta": "string",
+  "accumulated": "string",
+  "kind": "question | summary",
+  "timestamp": 0
+}
+```
+
+`done` 数据示例：
+
+```json
+{
+  "type": "done",
+  "sessionId": "string",
+  "messageId": "string",
+  "message": "string",
+  "kind": "question | summary",
+  "timestamp": 0
+}
+```
+
+`error` 数据示例：
+
+```json
+{
+  "type": "error",
+  "sessionId": "string",
+  "code": "init_failed | init_timeout | session_error",
+  "message": "string",
+  "retryable": true,
   "details": {
     "reason": "init_failed | init_timeout",
     "stage": "string"

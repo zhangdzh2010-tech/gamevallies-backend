@@ -14,13 +14,7 @@ def test_resolver_merges_system_prompt_bundle_and_runtime_profile_sources():
         "bundle.product.policy": "PRODUCT_POLICY_FROM_SYSTEM",
         "bundle.product.intent_parse": "INTENT_PARSE_FROM_SYSTEM",
         "bundle.product.logic_generate": "LOGIC_GENERATE_FROM_SYSTEM",
-        "bundle.repair.input_contract": "INPUT_REPAIR_FROM_SYSTEM",
         "bundle.repair.syntax_structural": "SYNTAX_REPAIR_FROM_SYSTEM",
-        "bundle.repair.terminal_state": "TERMINAL_REPAIR_FROM_SYSTEM",
-        "bundle.repair.mobile_layout": "MOBILE_REPAIR_FROM_SYSTEM",
-        "bundle.repair.forbidden_api": "FORBIDDEN_REPAIR_FROM_SYSTEM",
-        "bundle.repair.runtime_startup": "STARTUP_REPAIR_FROM_SYSTEM",
-        "bundle.repair.generic": "GENERIC_REPAIR_FROM_SYSTEM",
         "bundle.runtime.profile.casual_lane": "PROFILE_FROM_SYSTEM",
     }
 
@@ -64,10 +58,7 @@ def test_resolver_merges_system_prompt_bundle_and_runtime_profile_sources():
     assert "LOCKED_OVERRIDE_FROM_BUNDLE_ROW" in resolved_prompts["locked_contract"]["content"]
     assert "LOGIC_GENERATE_FROM_SYSTEM" in resolved_prompts["logic_generate"]["content"]
     assert "start_play_immediately" in resolved_prompts["logic_generate"]["content"]
-    assert "INPUT_REPAIR_FROM_SYSTEM" in resolved_prompts["repair_input_contract"]["content"]
     assert "SYNTAX_REPAIR_FROM_SYSTEM" in resolved_prompts["repair_syntax_structural"]["content"]
-    assert "BUNDLE REPAIR PLAYBOOK" in resolved_prompts["repair_input_contract"]["content"]
-    assert "STARTUP_REPAIR_FROM_SYSTEM" in resolved_prompts["repair_runtime_startup"]["content"]
-    assert "GENERIC_REPAIR_FROM_SYSTEM" in resolved_prompts["repair_generic"]["content"]
+    assert "BUNDLE REPAIR PLAYBOOK" in resolved_prompts["repair_syntax_structural"]["content"]
     assert "PROFILE_FROM_SYSTEM" in resolved_prompts["profile_few_shot"]["content"]
     assert "PROFILE_FROM_RUNTIME_PROFILE_TABLE" in resolved_prompts["profile_few_shot"]["content"]

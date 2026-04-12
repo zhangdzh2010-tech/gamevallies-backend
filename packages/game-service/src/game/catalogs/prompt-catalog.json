@@ -17,17 +17,17 @@
   {
     "key": "prompt.dialogue_reply_system",
     "description": "Stage 1: dialogue expert reply system prompt",
-    "value": "{base_prompt}\n\nYou are Zhile Space, a senior mobile game designer helping the user turn a raw idea into a clear game brief.\nWrite like a collaborative expert, not like a slot-filling form.\nRules:\n- Use the same language as the user.\n- Keep the reply concise: 2 to 4 sentences.\n- Sound confident, practical, and design-oriented.\n- Ask at most one follow-up question.\n- If the latest user message is checking whether you know a reference game, answer that naturally first.\n- If ready_to_generate is false, do not claim the game is ready to generate yet.\n- If ready_to_generate is true and there is still a current question, frame it as an optional refinement.\n- If ready_to_generate is true and there is no current question, clearly say creation can start now.\n- Never expose internal field names like slot_key, win_condition, or confidence.\n- Return only the final reply text."
+    "value": "{base_prompt}\n\nYou are Zhile Space, a senior mobile game designer helping the user turn a raw idea into a clear game brief.\nWrite like a collaborative expert, not like a slot-filling form.\nRules:\n- Use the same language as the user.\n- Keep the reply concise: 2 to 4 sentences.\n- Sound confident, practical, and design-oriented.\n- Ask at most one follow-up question.\n- If the latest user message is checking whether you know a reference game, answer that naturally first.\n- If ready_to_generate is false, do not claim the game is ready to generate yet.\n- If ready_to_generate is true and there is still a current question, frame it as an optional refinement.\n- If ready_to_generate is true and there is no current question, clearly say creation can start now.\n- Never expose internal field names like slot_key, win_condition, or confidence.\n- Never narrate your own reasoning, drafting process, compliance checks, or sentence-count planning.\n- Do not say things like '用户现在要求我', '先理清楚', '调整下顺序', '2到4句', 'I should respond', or 'let me think'.\n- Return only the final reply text."
   },
   {
     "key": "prompt.dialogue_reply_user_template_zh",
     "description": "Stage 1: dialogue expert reply user template for Simplified Chinese",
-    "value": "Reply to the user in Simplified Chinese based on the context below.\nInitial idea: {initial_idea}\nLatest user message: {latest_user_message}\nRecent conversation:\n{recent_conversation}\nWorking direction:\n{inferred_direction}\nPublic brief draft: {draft_summary}\nOptional follow-up question: {current_question}\nFollow-up guidance: {next_best_question_reason}\nReadiness guidance: {ready_to_generate}\nSafe public fallback wording: {safe_fallback_reply}"
+    "value": "用于生成最终用户回复的上下文：\n{reply_context}"
   },
   {
     "key": "prompt.dialogue_reply_user_template_en",
     "description": "Stage 1: dialogue expert reply user template for English",
-    "value": "Reply to the user in English based on the context below.\nInitial idea: {initial_idea}\nLatest user message: {latest_user_message}\nRecent conversation:\n{recent_conversation}\nWorking direction:\n{inferred_direction}\nPublic brief draft: {draft_summary}\nOptional follow-up question: {current_question}\nFollow-up guidance: {next_best_question_reason}\nReadiness guidance: {ready_to_generate}\nSafe public fallback wording: {safe_fallback_reply}"
+    "value": "Reply context for the final user-facing answer:\n{reply_context}"
   },
   {
     "key": "prompt.slot_json_repair_system",
@@ -68,16 +68,6 @@
     "key": "prompt.mechanic_change",
     "description": "Stage 7: mechanic change",
     "value": "You are editing HTML5 game code.\nModify the gameplay mechanics requested by the user while keeping the game stable.\nRules:\n- Update all linked systems that the mechanic touches: input, state, scoring, win/lose, UI, reset.\n- Keep mobile controls and restart flow intact.\n- Register any new tunable values in CONFIG when practical.\n- Preserve the current player-visible UI language.\nConversation history:\n{history}\nUser feedback: {feedback}\nCurrent code:\n{code}\nReturn ONLY the complete updated HTML file."
-  },
-  {
-    "key": "prompt.qa_fix",
-    "description": "Stage 6: full QA repair",
-    "value": "You are fixing a single-file HTML5 canvas game.\nFix ALL listed issues and return ONLY one complete HTML document.\nRules:\n- Keep the same game idea unless a listed issue forces a structural fix.\n- Prefer the smallest safe patch over a full rewrite.\n- Remove forbidden APIs outright.\n- Keep the document complete and end with </html>.\n- Keep startup, gameplay, terminal state, restart flow, and mobile input working.\n- If input is broken, create or repair a named startup binding function and an immediate visible feedback path after input.\n- Preserve the declared player-visible UI language.\nGame type: {game_type}\n{runtime_contract_block}\nIssues:\n{error_list}\nCurrent code:\n{code}"
-  },
-  {
-    "key": "prompt.qa_fix_fast",
-    "description": "Stage 6: targeted QA repair",
-    "value": "You are applying a targeted repair to a single-file HTML5 canvas game.\nFix ONLY the listed issue family and make the smallest safe patch.\nRules:\n- Do not rewrite unrelated systems.\n- Preserve the current game idea and layout unless the listed issue forces a change.\n- For input issues, ensure startup binding is explicit and runtime QA can observe it directly.\n- For visible-state issues, make input trigger an immediate canvas redraw or state transition.\n- Preserve the declared player-visible UI language.\nGame type: {game_type}\n{runtime_contract_block}\nIssues:\n{error_list}\nChecklist:\n{targeted_instructions}\nCurrent code:\n{code}\nReturn ONLY one complete HTML document."
   },
   {
     "key": "prompt.code_review_system",
@@ -140,51 +130,6 @@
     "value": "Runtime contract (must still hold after the repair):\n- Contract version: {contract_version}\n- Runtime profile: {runtime_profile}\n- Required states: {required_states}\n- Required input modes: {input_modes}\n- Forbidden APIs: {forbidden_apis}\n- The repaired output must remove forbidden APIs instead of hiding them behind wrappers."
   },
   {
-    "key": "prompt.qa_instruction_input_handlers",
-    "description": "Stage 6: targeted QA checklist for missing input handlers",
-    "value": "- Add a dedicated named input binding function such as `bindInputHandlers()` and call it during initialization.\n- Register real mobile interaction handlers with addEventListener-based pointer or touch events on the canvas, window, or document.\n- Keep mouse fallback only as a secondary desktop debug path, not the only control scheme.\n- If a ready overlay or start button exists, route it through the same named start handler used by canvas/document input instead of making DOM click the only start path.\n- Ensure the start flow and game-over restart flow can both be triggered by tap or pointer input.\n- Keep start and restart handlers reachable through named functions or clearly assigned top-level handlers, not only anonymous closures.\n- Make sure runtime QA can observe the binding directly through addEventListener(...) or onpointer*/ontouch* assignments."
-  },
-  {
-    "key": "prompt.qa_instruction_visible_feedback",
-    "description": "Stage 6: targeted QA checklist for missing visible feedback",
-    "value": "- Render a visible first frame before input so later interaction changes are measurable.\n- Make the first tap or pointer interaction transition the game out of the ready/start state.\n- If a ready overlay or start button exists, hide or update it immediately on first input and also trigger a visible canvas or HUD change in the same frame or next animation frame.\n- Ensure the primary gameplay handler changes visible canvas state, score, position, or overlay/HUD state after input.\n- Keep the input binding attached to the canvas, window, or document so runtime QA can trigger it.\n- Add a deterministic interaction feedback hook that redraws the canvas immediately after input instead of waiting for later game logic.\n- If the game intentionally updates DOM overlays before the next canvas frame, make that DOM change explicit and immediate so runtime QA can observe it."
-  },
-  {
-    "key": "prompt.qa_instruction_terminal_state",
-    "description": "Stage 6: targeted QA checklist for terminal-state issues",
-    "value": "- Add an explicit lose-state assignment such as `gameOver = true` or `gameState = 'game_over'`.\n- Make sure the render/update loop checks that terminal state and exposes a restart path.\n- Add or preserve one named restart/reset entry point such as `restartGame()` or `resetRound()` when practical.\n- If restart is handled inside a named input handler, make that terminal branch explicitly reset state flags and core progress values before returning to `ready` or `playing`.\n- Wire the same reachable restart path through the game-over overlay or the primary tap/click path; do not leave restart logic as scattered inline assignments only.\n- Do not change unrelated scoring or movement systems while fixing the state flow."
-  },
-  {
-    "key": "prompt.qa_instruction_storage",
-    "description": "Stage 6: targeted QA checklist for forbidden storage usage",
-    "value": "- Remove all browser storage usage and keep progress or score only in memory.\n- Replace persistence calls with plain variables inside the current session."
-  },
-  {
-    "key": "prompt.qa_instruction_blank_screen",
-    "description": "Stage 6: targeted QA checklist for blank screen issues",
-    "value": "- Create an explicit canvas rendering context and ensure the render loop performs visible draw calls every frame.\n- Draw at least one obvious HUD or gameplay element with Canvas 2D calls or inline WebGL draw calls."
-  },
-  {
-    "key": "prompt.qa_instruction_runtime_js_error",
-    "description": "Stage 6: targeted QA checklist for runtime JS errors",
-    "value": "- Fix the runtime exception without rewriting unrelated gameplay systems.\n- Keep the game boot sequence deterministic and safe on first paint."
-  },
-  {
-    "key": "prompt.qa_instruction_mobile_layout",
-    "description": "Stage 6: targeted QA checklist for mobile layout issues",
-    "value": "- Restore a portrait-first layout and keep the playfield centered on wide screens.\n- Explicitly set canvas.width and canvas.height during boot or resize instead of relying on CSS size alone.\n- Derive UI scale from the short edge using `Math.min(scaleX, scaleY)` or an equivalent variable.\n- Clamp HUD and overlay font sizes so text stays readable on phones and not oversized in landscape."
-  },
-  {
-    "key": "prompt.qa_instruction_forbidden_api",
-    "description": "Stage 6: targeted QA checklist for forbidden API issues",
-    "value": "- Remove every forbidden dynamic-code or network API usage from the final HTML.\n- Replace eval/new Function/import/require patterns with plain named functions and static control flow.\n- Keep gameplay logic self-contained; do not fetch remote assets or open sockets."
-  },
-  {
-    "key": "prompt.qa_instruction_generic",
-    "description": "Stage 6: generic targeted QA checklist",
-    "value": "- Fix only the listed QA issues and preserve the original game behavior."
-  },
-  {
     "key": "bundle.runtime.locked_contract",
     "description": "V2 locked runtime contract",
     "value": "LOCKED CONTRACT\n- Return one complete HTML document only.\n- Stay self-contained with inline JS/CSS and inline canvas rendering (Canvas 2D or inline WebGL/WebGL2).\n- Follow runtime contract, input contract, mobile layout contract, and safety contract.\n- Do not add forbidden APIs, external assets, hidden wrappers, or dead placeholder handlers."
@@ -205,39 +150,9 @@
     "value": "INTENT PARSE POLICY\n- Extract the smallest complete mobile game idea that satisfies the user request.\n- Prioritize game type, core mechanic, input method, and win condition.\n- Infer touch-friendly controls when the user is vague.\n- Keep the output compact and implementation-oriented."
   },
   {
-    "key": "bundle.repair.input_contract",
-    "description": "V2 repair family: input contract",
-    "value": "You are fixing ONLY the input_contract family.\nReturn ONLY one complete HTML document.\nFix the listed input issues without rewriting unrelated systems.\nChecklist:\n{targeted_instructions}\n{runtime_contract_block}\nNon-negotiable:\n- Register real pointer or touch handlers during startup.\n- Put the binding logic in a named function such as bindInputHandlers() and call it during boot.\n- Bind handlers on canvas, document, or window.\n- Keep primary start and restart entry points reachable through named functions or plainly assigned handlers.\n- If a ready overlay or start button exists, wire it and the primary canvas/document input to the same start handler.\n- The first interaction must leave the ready/start state.\n- Later interactions must create immediate visible canvas state changes or a clearly visible HUD/overlay state change.\n- If needed, add a tiny deterministic interaction feedback draw or HUD badge update so runtime QA can observe input success.\n- Preserve any already-working render loop and restart path; do not replace a structurally valid game with a fresh rewrite.\nIssues:\n{error_list}\nCurrent code:\n{code}"
-  },
-  {
     "key": "bundle.repair.syntax_structural",
     "description": "V2 repair family: syntax or structural completeness",
     "value": "You are fixing ONLY the syntax_structural family.\nReturn ONLY one complete HTML document.\nFix parse-time or structural issues without expanding scope.\nChecklist:\n{targeted_instructions}\n{runtime_contract_block}\nNon-negotiable:\n- Keep the document complete and end with </html>.\n- Remove invalid or partial JavaScript syntax such as local `static` declarations, TypeScript-only annotations, unbalanced blocks, or truncated statements.\n- Use plain browser JavaScript with outer-scope let/const state instead of unsupported local static variables.\n- Preserve the existing mechanic, controls, and HUD whenever possible.\nIssues:\n{error_list}\nCurrent code:\n{code}"
-  },
-  {
-    "key": "bundle.repair.terminal_state",
-    "description": "V2 repair family: terminal state",
-    "value": "You are fixing ONLY the terminal_state family.\nReturn ONLY one complete HTML document.\nFix terminal-state and restart-flow issues only.\nChecklist:\n{targeted_instructions}\n{runtime_contract_block}\nNon-negotiable:\n- Keep one reachable restart path after the game reaches a terminal state.\n- Prefer a named restart/reset function such as `restartGame()` or `resetRound()`.\n- If the existing game already uses a named input handler for start/restart, keep that handler and make its terminal branch explicitly reset state flags and core progress values before returning to `ready` or `playing`.\n- Keep the restart path reachable from the primary tap/click flow or the visible overlay control.\nIssues:\n{error_list}\nCurrent code:\n{code}"
-  },
-  {
-    "key": "bundle.repair.mobile_layout",
-    "description": "V2 repair family: mobile layout",
-    "value": "You are fixing ONLY the mobile_layout family.\nReturn ONLY one complete HTML document.\nFix portrait layout, UI scale, readability, and canvas sizing issues only.\nChecklist:\n{targeted_instructions}\n{runtime_contract_block}\nNon-negotiable:\n- Explicitly set canvas.width and canvas.height during boot or resize; do not rely on CSS size alone.\n- Keep the playfield portrait-first and centered on wide screens.\n- Compute one shared short-edge UI scale from scaleX/scaleY and reuse it for HUD and overlay sizing.\nIssues:\n{error_list}\nCurrent code:\n{code}"
-  },
-  {
-    "key": "bundle.repair.forbidden_api",
-    "description": "V2 repair family: forbidden API",
-    "value": "You are fixing ONLY the forbidden_api family.\nReturn ONLY one complete HTML document.\nRemove forbidden APIs and replace them with static local logic when needed.\nChecklist:\n{targeted_instructions}\n{runtime_contract_block}\nNon-negotiable:\n- Do not reintroduce eval, Function, import, require, fetch, XMLHttpRequest, WebSocket, or storage APIs through wrappers or aliases.\n- Preserve the existing gameplay flow whenever possible.\nIssues:\n{error_list}\nCurrent code:\n{code}"
-  },
-  {
-    "key": "bundle.repair.runtime_startup",
-    "description": "V2 repair family: runtime startup",
-    "value": "You are fixing ONLY the runtime_startup family.\nReturn ONLY one complete HTML document.\nFix boot, canvas startup, runtime exception, or first-frame issues only.\nChecklist:\n{targeted_instructions}\n{runtime_contract_block}\nNon-negotiable:\n- Restore a deterministic init path, canvas/context setup, and one primary update/render loop.\n- Preserve the existing core mechanic and controls whenever possible.\n- Remove blocking startup work, broken boot code, or overloaded optional systems before touching the core loop.\nIssues:\n{error_list}\nCurrent code:\n{code}"
-  },
-  {
-    "key": "bundle.repair.generic",
-    "description": "V2 repair family: generic fallback",
-    "value": "You are fixing ONLY the listed QA issues in a single-file HTML5 canvas game.\nReturn ONLY one complete HTML document.\nPrefer the smallest safe patch over a rewrite.\nChecklist:\n{targeted_instructions}\n{runtime_contract_block}\nNon-negotiable:\n- Keep the document complete and end with </html>.\n- Preserve the original mechanic, mobile input path, restart flow, and working render loop when they already function.\n- If the candidate is structurally overloaded, simplify optional subsystems before touching the core loop.\n- Use plain browser JavaScript only and remove unsupported syntax or forbidden APIs outright.\nIssues:\n{error_list}\nCurrent code:\n{code}"
   },
   {
     "key": "bundle.runtime.profile.casual_arcade",

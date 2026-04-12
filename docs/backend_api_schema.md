@@ -124,7 +124,6 @@ These endpoints are already called by `packages/game-service/src/admin/admin-pan
 | POST | `/api/v1/admin/llm/routes` | Create route | route payload |
 | PUT | `/api/v1/admin/llm/routes/:id` | Update route | route payload |
 | POST | `/api/v1/admin/llm/refresh` | Refresh gateway runtime config | none |
-| GET | `/api/v1/admin/llm/steps` | List available step keys / step catalog | none |
 | GET | `/api/v1/admin/cloud/ai-engine-region-targets` | List selectable ai-engine region targets | `providerSelectableOnly` |
 
 ### Admin Token

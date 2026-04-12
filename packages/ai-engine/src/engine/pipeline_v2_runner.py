@@ -27,6 +27,7 @@ from ..config.settings import settings
 from ..config.timeout_store import get_float as get_timeout_float, get_int as get_timeout_int
 from ..services.llm_gateway import get_request_context
 from ..services.task_memory import task_memory
+from .code_preflight import CodePreflightValidator
 from .code_generator import CodeGenerator
 from .code_reviewer import CodeReviewer
 from .dialogue_engine import (
@@ -35,12 +36,11 @@ from .dialogue_engine import (
     _looks_like_educational_request,
 )
 from .game_designer import GameDesigner
-from .llm_game_designer import LLMGameDesigner
 from .mobile_layout import has_short_edge_scaling
 from .pipeline_orchestrator import PipelineExecutionError
 from .pre_generation_validator import PreGenerationValidator
 from .prompt_store import get_default_runtime_profile, require_prompt
-from .qa_pipeline import QAPipeline
+from .qa_pipeline import QAPipeline, SYNTAX_REPAIR_FAMILY
 from .quality_scorer import LLMReviewResult, QAStaticResult, QualityScorer, RuntimeQAResult
 from .restart_entry import has_restart_entry
 from .runtime_profile_ids import DEFAULT_RUNTIME_PROFILE_ID, normalize_runtime_profile_id
@@ -52,6 +52,7 @@ from .visual_pack_catalog import apply_visual_pack_defaults
 logger = logging.getLogger(__name__)
 
 DEFAULT_STAGE_TOTAL_ATTEMPTS = 3
+DEFAULT_CREATE_FULL_GENERATION_ATTEMPTS = 2
 ProgressCallback = Optional[Callable[[str, int, str, Optional[dict[str, Any]]], None]]
 
 PROFILE_CANDIDATES_BY_GAME_TYPE: dict[str, tuple[str, ...]] = {
@@ -223,12 +224,12 @@ class V2PipelineRunner:
     def __init__(self) -> None:
         self.dialogue_engine = DialogueEngine()
         self.game_designer = GameDesigner()
-        self.llm_designer = LLMGameDesigner()
         self.code_generator = CodeGenerator(llm_mode=settings.LLM_MODE)
         self.qa_pipeline = QAPipeline()
         self.quality_scorer = QualityScorer()
         self.code_reviewer = CodeReviewer()
         self.pre_gen_validator = PreGenerationValidator()
+        self.code_preflight = CodePreflightValidator()
 
     @staticmethod
     def _current_task_id() -> Optional[str]:
@@ -252,6 +253,197 @@ class V2PipelineRunner:
         current_tier = CodeGenerator._resolve_generation_tier(spec)
         min_tier = str(getattr(settings, "LLM_CODE_REVIEW_MIN_TIER", "showcase") or "showcase")
         return self._generation_tier_rank(current_tier) >= self._generation_tier_rank(min_tier)
+
+    def _select_generation_budget_override(self, spec: GameSpec) -> str:
+        return CodeGenerator._resolve_budget_profile(spec)
+
+    @classmethod
+    def _build_create_generation_attempt_plan(cls, budget_override: Optional[str]) -> tuple[str, ...]:
+        normalized = str(budget_override or "standard").strip().lower() or "standard"
+        plan_by_budget: dict[str, tuple[str, ...]] = {
+            "safe": ("safe", "simple"),
+            "simple": ("simple", "standard"),
+            "standard": ("standard", "standard"),
+            "complex": ("complex", "standard"),
+            "showcase": ("showcase", "complex"),
+        }
+        return plan_by_budget.get(normalized, ("standard", "standard"))[:DEFAULT_CREATE_FULL_GENERATION_ATTEMPTS]
+
+    @staticmethod
+    def _normalize_provider_exclusions(excluded_provider_ids: Optional[list[str]]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw_provider_id in excluded_provider_ids or []:
+            provider_id = str(raw_provider_id or "").strip()
+            if not provider_id or provider_id in seen:
+                continue
+            seen.add(provider_id)
+            normalized.append(provider_id)
+        return normalized
+
+    @classmethod
+    def _advance_generation_provider_exclusions(
+        cls,
+        route_snapshot: Optional[dict[str, Any]],
+        excluded_provider_ids: Optional[list[str]],
+    ) -> list[str] | None:
+        snapshot = route_snapshot or {}
+        current_provider_id = str(snapshot.get("provider_id") or "").strip()
+        active_exclusions = cls._normalize_provider_exclusions(excluded_provider_ids)
+        ordered_candidates = cls._normalize_provider_exclusions([
+            current_provider_id,
+            *(snapshot.get("fallback_provider_ids") or []),
+        ])
+        if not current_provider_id or current_provider_id in active_exclusions:
+            return None
+        remaining_candidates = [
+            provider_id
+            for provider_id in ordered_candidates
+            if provider_id not in active_exclusions and provider_id != current_provider_id
+        ]
+        if not remaining_candidates:
+            return None
+        return cls._normalize_provider_exclusions([*active_exclusions, current_provider_id])
+
+    @staticmethod
+    def _build_quality_regeneration_guidance(
+        *,
+        stage: str,
+        message: Optional[str] = None,
+        errors: Optional[list[QACheckError]] = None,
+    ) -> str:
+        issue_lines: list[str] = []
+        seen: set[str] = set()
+        for error in errors or []:
+            normalized = str(getattr(error, "message", "") or "").strip()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                issue_lines.append(normalized)
+        fallback_message = str(message or "").strip()
+        if not issue_lines and fallback_message:
+            issue_lines.append(fallback_message)
+        if not issue_lines:
+            return ""
+        lines = [
+            "QUALITY GATE CORRECTIONS (MUST FIX BEFORE RETURNING HTML):",
+            f"- The previous candidate failed during {stage}.",
+        ]
+        for issue in issue_lines[:6]:
+            lines.append(f"- Fix this explicitly in code: {issue}")
+        normalized_issue_blob = "\n".join(issue_lines).lower()
+        extra_recipes: list[str] = []
+
+        def _append_recipe(text: str) -> None:
+            if text not in extra_recipes:
+                extra_recipes.append(text)
+
+        if "short-edge ui scaling" in normalized_issue_blob:
+            _append_recipe(
+                "- In init/resize, set non-zero canvas.width/canvas.height and declare short-edge layout aliases such as "
+                "`viewWidth`, `viewHeight`, `scaleX`, `scaleY`, and `uiScale` before any HUD or draw code runs."
+            )
+        if "landscape-first short-edge ui scaling" in normalized_issue_blob:
+            _append_recipe(
+                "- For landscape-first contracts, declare `const REF_W = 640; const REF_H = 360;` and compute "
+                "`scaleX = canvas.width / REF_W`, `scaleY = canvas.height / REF_H`, `uiScale = Math.min(scaleX, scaleY)` "
+                "before HUD/gameplay layout. Keep gameplay coordinates and HUD anchoring aligned to that landscape reference, "
+                "and also declare `const viewWidth = canvas.width; const viewHeight = canvas.height;` inside the same resize/init path."
+            )
+        if "portrait-first short-edge ui scaling" in normalized_issue_blob:
+            _append_recipe(
+                "- For portrait-first contracts, declare `const REF_W = 360; const REF_H = 640;` and compute "
+                "`scaleX = canvas.width / REF_W`, `scaleY = canvas.height / REF_H`, `uiScale = Math.min(scaleX, scaleY)` "
+                "before HUD/gameplay layout. Keep gameplay coordinates and HUD anchoring aligned to that portrait reference, "
+                "and also declare `const viewWidth = canvas.width; const viewHeight = canvas.height;` inside the same resize/init path."
+            )
+        if "restart entry point" in normalized_issue_blob:
+            _append_recipe(
+                "- Provide an explicit restart entry such as `restartGame()`, `resetGame()`, or `restart()` and wire it to "
+                "the visible settlement/restart UI."
+            )
+        if (
+            "primary touch or pointer gameplay handlers" in normalized_issue_blob
+            or "no registered user input handlers" in normalized_issue_blob
+        ):
+            _append_recipe(
+                "- Register gameplay pointer/touch handlers on the main canvas or primary play surface during boot; do not "
+                "wait for a later overlay flow before binding real gameplay input."
+            )
+        if "no visible state change after user interaction" in normalized_issue_blob:
+            _append_recipe(
+                "- The first tap or pointerdown on the main play surface must immediately call `startGame()` / enter "
+                "`playing` or mutate visible HUD/canvas state so runtime QA can observe a state change without using an "
+                "overlay-only start button."
+            )
+        if "returns unless the game is already in `playing`" in normalized_issue_blob or "returns unless the game is already in 'playing'" in normalized_issue_blob:
+            _append_recipe(
+                "- Rewrite the primary input handler so boot/ready input can call `startGame()` or switch state into "
+                "`playing` before any early return; do not gate the first gameplay interaction behind `if (state !== 'playing') return`."
+            )
+        if "generatebackgroundlayers" in normalized_issue_blob:
+            _append_recipe(
+                "- Declare `generateBackgroundLayers()` before the first call, or inline the background layer array creation "
+                "during top-level init."
+            )
+        if "initialized as null" in normalized_issue_blob and "ctx" in normalized_issue_blob:
+            _append_recipe(
+                "- Do not keep `ctx` as `null` while boot, resize, or the main loop can run. Acquire the 2D context during "
+                "top-level init, store it in a non-null variable, and guard any fallback path before calling `ctx.*`."
+            )
+        if "cannot read properties of undefined" in normalized_issue_blob and any(
+            axis_token in normalized_issue_blob for axis_token in ("reading 'x'", 'reading "x"', "reading 'y'", 'reading "y"')
+        ):
+            _append_recipe(
+                "- Never read `.x` / `.y` from optional runtime objects before they exist. Initialize moving entities, touch state, "
+                "drag state, and targets to safe defaults during boot, or guard with `if (!obj) return;` before reading coordinates."
+            )
+        if any(alias in normalized_issue_blob for alias in ("viewwidth", "viewheight", "scalex", "scaley", "uiscale")):
+            _append_recipe(
+                "- If render/layout code uses `viewWidth`, `viewHeight`, `scaleX`, `scaleY`, or `uiScale`, declare those "
+                "aliases from `canvas.width` / `canvas.height` inside init/resize before the first render."
+            )
+        if "lanex" in normalized_issue_blob:
+            _append_recipe(
+                "- For lane games, compute lane coordinates from a declared helper like `function laneX(index) { ... }` or "
+                "a lane-position array; never call undefined helpers such as `player.laneX()`."
+            )
+        if "dot" in normalized_issue_blob:
+            _append_recipe(
+                "- When rendering dots or particles, declare the current alias in the same scope, for example "
+                "`const dot = dots[i];`, before reading `dot.x`, `dot.y`, or `dot.alpha`."
+            )
+            _append_recipe(
+                "- Prefer a concrete loop scaffold such as `for (let i = 0; i < dots.length; i += 1) { const dot = dots[i]; if (!dot) continue; ... }` "
+                "and never read `dot.*` outside the block that declares `const dot`."
+            )
+        if any(token in normalized_issue_blob for token in ("touchx", "clientx", "touches[0]", "changedtouches[0]")):
+            _append_recipe(
+                "- Guard touch extraction before reading `clientX` / `clientY`, for example "
+                "`const point = (e.touches && e.touches.length ? e.touches[0] : (e.changedTouches && e.changedTouches.length ? e.changedTouches[0] : e)); "
+                "if (!point || point.clientX == null || point.clientY == null) return;`, and reuse that exact helper in touchstart/touchmove/touchend."
+            )
+            _append_recipe(
+                "- Prefer a dedicated helper such as "
+                "`function getInputPoint(e) { const point = (e.touches && e.touches.length ? e.touches[0] : (e.changedTouches && e.changedTouches.length ? e.changedTouches[0] : e)); "
+                "if (!point || point.clientX == null || point.clientY == null) return null; return { x: point.clientX, y: point.clientY }; }` "
+                "and never read `e.touches[0]` or `e.changedTouches[0]` directly anywhere else."
+            )
+        if "cannot read properties of undefined" in normalized_issue_blob and "grid" in normalized_issue_blob:
+            _append_recipe(
+                "- Replace raw nested grid reads with a guarded helper such as `const rowBucket = grid[row]; const cell = "
+                "rowBucket && rowBucket[col]; if (!cell) return;` before reading cell properties."
+            )
+        if "grid[row][col]" in normalized_issue_blob or "unsafe_nested_grid_read" in normalized_issue_blob:
+            _append_recipe(
+                "- Define `function getCell(grid, row, col) { const rowBucket = grid[row]; return rowBucket ? rowBucket[col] : null; }` "
+                "before any match, gravity, hint, or render logic, and route every `cell.type`, `cell.fruit`, `cell.anim`, `cell.animProgress`, or neighbor read through "
+                "`const cell = getCell(grid, row, col); if (!cell) continue;`."
+            )
+        lines.extend(extra_recipes)
+        lines.append(
+            "- Regenerate the full HTML so these issues are resolved in executable code, not comments, placeholders, or implied behavior."
+        )
+        return "\n".join(lines)
 
     async def _remember_spec(self, spec: Optional[GameSpec]) -> None:
         await task_memory.remember_spec(self._current_task_id(), spec)
@@ -381,14 +573,7 @@ class V2PipelineRunner:
         await self._remember_runtime_contract(runtime_profile=runtime_profile, contract=runtime_contract)
         gdd = await self._build_gdd(spec, runtime_contract)
 
-        if settings.ENABLE_LLM_DESIGN_PASS:
-            self._notify(progress_cb, "llm_design", 50, "Enriching game design with LLM", {
-                "gameId": request.game_id,
-                "userId": request.user_id,
-                "runtimeProfile": runtime_profile,
-            })
-            stage_context["stage"] = "llm_design"
-            gdd = await self.llm_designer.design(spec, gdd, runtime_contract)
+        initial_budget_override = self._select_generation_budget_override(spec)
 
         pre_issues = self.pre_gen_validator.validate(spec, gdd, runtime_contract)
         if pre_issues:
@@ -399,46 +584,151 @@ class V2PipelineRunner:
             "gameId": request.game_id,
             "userId": request.user_id,
             "runtimeProfile": runtime_profile,
+            "budgetProfile": initial_budget_override,
         })
         stage_context["stage"] = "logic_generate"
-        generated = await self._generate_create_code(request, spec, gdd, runtime_contract)
-        await self._remember_code(generated.html_code, label="generated_candidate")
         allow_runtime_qa_unavailable = self._should_allow_runtime_qa_unavailable(spec)
+        attempt_plan = self._build_create_generation_attempt_plan(initial_budget_override)
+        provider_exclusions: list[str] = []
+        generated = None
+        last_route_snapshot: Optional[dict[str, Any]] = None
+        qa_result = None
+        runtime_qa = None
+        runtime_retries = 0
+        qa_warnings: list[dict[str, Any]] = []
+        last_quality_exc: Exception | None = None
+        generation_guidance: Optional[str] = None
 
-        qa_result, runtime_qa, runtime_retries, qa_warnings = await self._run_contract_and_runtime_flow(
-            code=generated.html_code,
-            spec=spec,
-            runtime_contract=runtime_contract,
-            prompt_bundle_snapshot=request.prompt_bundle_snapshot.model_dump(),
-            progress_cb=progress_cb,
-            game_id=request.game_id,
-            user_id=request.user_id,
-            stage_context=stage_context,
-            allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
-        )
+        for quality_attempt, attempt_budget in enumerate(attempt_plan, start=1):
+            generated = None
+            try:
+                generated, preflight_issues = await self._generate_create_code(
+                    request,
+                    spec,
+                    gdd,
+                    runtime_contract,
+                    budget_override=attempt_budget,
+                    excluded_provider_ids=provider_exclusions,
+                    generation_guidance=generation_guidance,
+                )
+                last_route_snapshot = generated.route_snapshot if generated is not None else None
+                await self._remember_code(generated.html_code, label=f"generated_candidate_{quality_attempt}")
+                if preflight_issues:
+                    generation_guidance = self.code_preflight.render_guidance(preflight_issues)
+                    last_quality_exc = PipelineExecutionError(
+                        "Generated code failed preflight: "
+                        + "; ".join(issue.message for issue in preflight_issues),
+                        stage="logic_generate",
+                        retry_count=max(0, quality_attempt - 1),
+                        failure_family="code_generation",
+                    )
+                    if quality_attempt >= len(attempt_plan):
+                        raise last_quality_exc
+                    self._notify(
+                        progress_cb,
+                        "logic_generate",
+                        66,
+                        "Regenerating with consolidated preflight guidance",
+                        {
+                            "gameId": request.game_id,
+                            "userId": request.user_id,
+                            "runtimeProfile": runtime_profile,
+                            "attempt": quality_attempt,
+                            "maxAttempts": len(attempt_plan),
+                            "failedProviderId": (last_route_snapshot or {}).get("provider_id"),
+                        },
+                    )
+                    await asyncio.sleep(min(quality_attempt, 2))
+                    continue
 
-        if qa_result.needs_regeneration:
-            logger.info("QA signaled regeneration needed; retrying code generation with complex budget")
-            self._notify(progress_cb, "logic_generate", 65, "Regenerating with higher token budget", {
-                "gameId": request.game_id,
-                "userId": request.user_id,
-                "runtimeProfile": runtime_profile,
-            })
-            stage_context["stage"] = "logic_generate"
-            generated = await self._generate_create_code(
-                request, spec, gdd, runtime_contract, budget_override="complex",
-            )
-            await self._remember_code(generated.html_code, label="regenerated_candidate")
-            qa_result, runtime_qa, runtime_retries, qa_warnings = await self._run_contract_and_runtime_flow(
-                code=generated.html_code,
-                spec=spec,
-                runtime_contract=runtime_contract,
-                prompt_bundle_snapshot=request.prompt_bundle_snapshot.model_dump(),
-                progress_cb=progress_cb,
-                game_id=request.game_id,
-                user_id=request.user_id,
-                stage_context=stage_context,
-                allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
+                qa_result, runtime_qa, runtime_retries, qa_warnings = await self._run_contract_and_runtime_flow(
+                    code=generated.html_code,
+                    spec=spec,
+                    runtime_contract=runtime_contract,
+                    prompt_bundle_snapshot=request.prompt_bundle_snapshot.model_dump(),
+                    progress_cb=progress_cb,
+                    game_id=request.game_id,
+                    user_id=request.user_id,
+                    stage_context=stage_context,
+                    allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
+                )
+                if qa_result.needs_regeneration:
+                    error_messages = "; ".join(error.message for error in qa_result.last_errors[:5])
+                    last_quality_exc = PipelineExecutionError(
+                        f"Generated code failed contract QA: {error_messages}",
+                        stage="contract_qa",
+                        retry_count=qa_result.retries,
+                        failure_family="contract_qa",
+                    )
+                    if quality_attempt >= len(attempt_plan):
+                        raise last_quality_exc
+                    generation_guidance = self._build_quality_regeneration_guidance(
+                        stage="contract_qa",
+                        errors=qa_result.last_errors,
+                        message=str(last_quality_exc),
+                    )
+                    self._notify(
+                        progress_cb,
+                        "logic_generate",
+                        66,
+                        "Regenerating with contract quality guidance",
+                        {
+                            "gameId": request.game_id,
+                            "userId": request.user_id,
+                            "runtimeProfile": runtime_profile,
+                            "attempt": quality_attempt,
+                            "maxAttempts": len(attempt_plan),
+                            "failedProviderId": (last_route_snapshot or {}).get("provider_id"),
+                        },
+                    )
+                    await asyncio.sleep(min(quality_attempt, 2))
+                    continue
+                break
+            except PipelineExecutionError as exc:
+                last_quality_exc = exc
+                last_route_snapshot = getattr(exc, "route_snapshot", None) or last_route_snapshot
+                if quality_attempt >= len(attempt_plan) or exc.stage not in {"logic_generate", "contract_qa", "runtime_simulation_qa"}:
+                    raise
+                generation_guidance = self._build_quality_regeneration_guidance(
+                    stage=exc.stage,
+                    message=str(exc),
+                )
+                if exc.stage == "logic_generate":
+                    next_provider_exclusions = self._advance_generation_provider_exclusions(
+                        last_route_snapshot,
+                        provider_exclusions,
+                    )
+                    if next_provider_exclusions is not None:
+                        provider_exclusions = next_provider_exclusions
+                logger.warning(
+                    "Create quality attempt %s/%s for game %s failed during %s; retrying one final full regeneration",
+                    quality_attempt,
+                    len(attempt_plan),
+                    request.game_id,
+                    exc.stage,
+                )
+                self._notify(
+                    progress_cb,
+                    "logic_generate",
+                    66,
+                    "Retrying one final full generation after quality gate failure",
+                    {
+                        "gameId": request.game_id,
+                        "userId": request.user_id,
+                        "runtimeProfile": runtime_profile,
+                        "failedStage": exc.stage,
+                        "failedProviderId": (last_route_snapshot or {}).get("provider_id"),
+                        "attempt": quality_attempt,
+                        "maxAttempts": len(attempt_plan),
+                    },
+                )
+                await asyncio.sleep(min(quality_attempt, 2))
+                continue
+
+        if qa_result is None or runtime_qa is None or generated is None:
+            raise last_quality_exc or PipelineExecutionError(
+                "Create generation failed before QA completed",
+                stage=stage_context.get("stage", "logic_generate"),
             )
 
         elapsed = int(time.time() * 1000) - start_ms
@@ -1243,30 +1533,45 @@ class V2PipelineRunner:
         gdd: GDD,
         runtime_contract: GameRuntimeContract,
         budget_override: Optional[str] = None,
-    ):
-        last_exc: Exception | None = None
-        for attempt in range(1, DEFAULT_STAGE_TOTAL_ATTEMPTS + 1):
-            try:
-                return await self.code_generator.generate(
-                    spec=spec,
-                    gdd=gdd,
-                    description=request.raw_user_input,
-                    runtime_contract=runtime_contract,
-                    runtime_profile=runtime_contract.runtime_profile,
-                    prompt_bundle_snapshot=request.prompt_bundle_snapshot.model_dump(),
-                    budget_override=budget_override,
-                )
-            except Exception as exc:
-                last_exc = exc
-                if attempt == DEFAULT_STAGE_TOTAL_ATTEMPTS or not self._is_retryable_generation_error(exc):
-                    break
-                await asyncio.sleep(min(attempt, 2))
-
-        raise PipelineExecutionError(
-            f"Logic generation failed after {attempt} attempts: {last_exc}",
-            stage="logic_generate",
-            retry_count=max(0, attempt - 1),
+        excluded_provider_ids: Optional[list[str]] = None,
+        generation_guidance: Optional[str] = None,
+    ) -> tuple[Any, list[Any]]:
+        try:
+            generated = await self.code_generator.generate(
+                spec=spec,
+                gdd=gdd,
+                description=request.raw_user_input,
+                runtime_contract=runtime_contract,
+                runtime_profile=runtime_contract.runtime_profile,
+                prompt_bundle_snapshot=request.prompt_bundle_snapshot.model_dump(),
+                budget_override=budget_override,
+                generation_guidance=generation_guidance,
+                excluded_provider_ids=self._normalize_provider_exclusions(excluded_provider_ids),
+            )
+        except Exception as exc:
+            wrapped = PipelineExecutionError(
+                f"Full LLM generation failed: {exc}",
+                stage="logic_generate",
+                failure_family="code_generation",
+            )
+            route_snapshot = getattr(exc, "route_snapshot", None)
+            if route_snapshot is not None:
+                try:
+                    setattr(wrapped, "route_snapshot", route_snapshot)
+                except Exception:
+                    pass
+            raise wrapped from exc
+        repaired_html = self.code_preflight.auto_repair(
+            generated.html_code,
+            runtime_contract=runtime_contract,
         )
+        if repaired_html != generated.html_code:
+            generated = generated.model_copy(update={"html_code": repaired_html})
+        preflight_issues = self.code_preflight.validate(
+            generated.html_code,
+            runtime_contract=runtime_contract,
+        )
+        return generated, preflight_issues
 
     async def _generate_iteration_code(
         self,
@@ -1339,9 +1644,7 @@ class V2PipelineRunner:
             })
             final_code, runtime_qa, runtime_retries, qa_warnings = await self._run_runtime_qa_loop(
                 code=qa_result.code,
-                spec=spec,
                 runtime_contract=runtime_contract,
-                prompt_bundle_snapshot=prompt_bundle_snapshot,
                 progress_cb=progress_cb,
                 game_id=game_id,
                 user_id=user_id,
@@ -1401,9 +1704,7 @@ class V2PipelineRunner:
         })
         final_code, runtime_qa, runtime_retries, qa_warnings = await self._run_runtime_qa_loop(
             code=qa_result.code,
-            spec=spec,
             runtime_contract=runtime_contract,
-            prompt_bundle_snapshot=prompt_bundle_snapshot,
             progress_cb=progress_cb,
             game_id=game_id,
             user_id=user_id,
@@ -1428,242 +1729,158 @@ class V2PipelineRunner:
         user_id: str,
         max_retries: Optional[int] = None,
     ) -> QAResult:
-        retries_allowed = settings.QA_MAX_RETRIES if max_retries is None else max_retries
-        retries_allowed = min(max(0, int(retries_allowed)), 1)
         current_code = self.qa_pipeline._apply_deterministic_repairs(code)
+        errors = self._validate_contract_bundle(current_code, runtime_contract)
         repair_attempts = 0
-
-        for attempt in range(retries_allowed + 1):
-            errors = self._validate_contract_bundle(current_code, runtime_contract)
-            if not errors:
-                return QAResult(
-                    success=True,
-                    code=current_code,
-                    retries=repair_attempts,
-                    issue_list=self.qa_pipeline.build_issue_list([], []),
+        if errors:
+            syntax_errors = [
+                error
+                for error in errors
+                if self.qa_pipeline._classify_error_family(error) == SYNTAX_REPAIR_FAMILY
+            ]
+            if syntax_errors:
+                repaired_code = await self.qa_pipeline.repair_code(
+                    current_code,
+                    syntax_errors,
+                    game_spec=spec,
+                    runtime_contract=runtime_contract,
+                    prompt_bundle_snapshot=prompt_bundle_snapshot,
+                    fix_round=1,
+                    max_fix_rounds=1,
                 )
+                repaired_code = self.qa_pipeline._apply_deterministic_repairs(repaired_code)
+                repaired_errors = self._validate_contract_bundle(repaired_code, runtime_contract)
+                if len(repaired_errors) < len(errors):
+                    current_code = repaired_code
+                    errors = repaired_errors
+                    repair_attempts = 1
+                elif repaired_code != current_code:
+                    current_code = repaired_code
+                    errors = repaired_errors
+                    repair_attempts = 1
 
-            if attempt >= 1 and self.qa_pipeline._errors_look_like_truncation(errors):
-                logger.warning("Contract QA: truncation persists after %d repair(s); signaling regeneration", repair_attempts)
-                return QAResult(
-                    success=False,
-                    code=current_code,
-                    retries=repair_attempts,
-                    last_errors=errors,
-                    needs_regeneration=True,
-                    issue_list=self.qa_pipeline.build_issue_list(errors, []),
-                )
-
-            if attempt == retries_allowed:
-                return QAResult(
-                    success=False,
-                    code=current_code,
-                    retries=repair_attempts,
-                    last_errors=errors,
-                    issue_list=self.qa_pipeline.build_issue_list(errors, []),
-                )
-
-            self._notify(progress_cb, "targeted_remediation", 84, f"Contract QA failed, applying targeted remediation ({attempt + 1}/{retries_allowed})", {
-                "gameId": game_id,
-                "userId": user_id,
-                "retry": attempt + 1,
-                "maxRetries": retries_allowed,
-                "errorCount": len(errors),
-                "errors": [error.message for error in errors[:3]],
-            })
-            current_code = await self.qa_pipeline.repair_code(
-                current_code,
-                errors,
-                game_spec=spec,
-                runtime_contract=runtime_contract,
-                prompt_bundle_snapshot=prompt_bundle_snapshot,
-                fix_round=attempt + 1,
-                max_fix_rounds=retries_allowed,
+        if not errors:
+            return QAResult(
+                success=True,
+                code=current_code,
+                retries=repair_attempts,
+                issue_list=self.qa_pipeline.build_issue_list([], []),
             )
-            repair_attempts += 1
 
+        logger.info(
+            "Contract QA found %s issue(s); contract-stage remediation is disabled, signaling full regeneration",
+            len(errors),
+        )
         return QAResult(
             success=False,
             code=current_code,
             retries=repair_attempts,
-            issue_list=self.qa_pipeline.build_issue_list([], []),
+            last_errors=errors,
+            needs_regeneration=True,
+            issue_list=self.qa_pipeline.build_issue_list(errors, []),
         )
 
     async def _run_runtime_qa_loop(
         self,
         *,
         code: str,
-        spec: GameSpec,
         runtime_contract: GameRuntimeContract,
-        prompt_bundle_snapshot: Optional[dict[str, Any]],
         progress_cb: ProgressCallback,
         game_id: str,
         user_id: str,
         allow_runtime_qa_unavailable: bool = False,
     ) -> tuple[str, Any, int, list[dict[str, Any]]]:
-        current_code = code
-        remediation_attempts = max(0, int(settings.RUNTIME_QA_REMEDIATION_MAX_RETRIES or 1))
-        remediation_attempts = min(remediation_attempts, 1)
-        total_retries = 0
         qa_warnings: list[dict[str, Any]] = []
-
-        for attempt in range(remediation_attempts + 1):
-            runtime_qa_timeout_s = self._resolve_runtime_qa_timeout(current_code, attempt=attempt)
-            runtime_qa = await run_runtime_qa(current_code, timeout_s=runtime_qa_timeout_s)
-            if not runtime_qa.ran:
-                unavailable_reason = getattr(runtime_qa, "unavailable_reason", None)
-                unavailable_kind = getattr(runtime_qa, "unavailable_kind", None)
-                unavailable_phase = getattr(runtime_qa, "unavailable_phase", None)
-                if allow_runtime_qa_unavailable and unavailable_kind in {"timeout", "infra_unavailable", "exception"}:
-                    qa_warning = self._build_runtime_qa_warning(runtime_qa)
-                    qa_warnings = [qa_warning]
-                    self._notify(
-                        progress_cb,
-                        "runtime_simulation_qa",
-                        98,
-                        qa_warning["message"],
-                        {
-                            "gameId": game_id,
-                            "userId": user_id,
-                            "warningType": qa_warning["type"],
-                            "unavailableKind": unavailable_kind,
-                            "unavailablePhase": unavailable_phase,
-                            "softFailed": True,
-                        },
-                    )
-                    return current_code, runtime_qa, total_retries, qa_warnings
-                unavailable_errors = self._runtime_qa_unavailable_errors(runtime_qa, current_code)
-                if unavailable_errors:
-                    errors = unavailable_errors
-                else:
-                    runtime_qa_report = self._serialize_runtime_qa(runtime_qa, [])
-                    if settings.RUNTIME_QA_REQUIRED or settings.ENVIRONMENT == "production":
-                        raise PipelineExecutionError(
-                            "Runtime QA unavailable: {}".format(
-                                unavailable_reason or "Playwright is not installed or browser launch failed"
-                            ),
-                            stage="runtime_simulation_qa",
-                            retry_count=total_retries,
-                            failure_family="qa_infra_unavailable",
-                            artifacts=[
-                                self._build_text_artifact(
-                                    artifact_type="failed_runtime_candidate",
-                                    payload=current_code,
-                                    metadata={
-                                        "stage": "runtime_simulation_qa",
-                                        "retryCount": total_retries,
-                                        "attempt": attempt,
-                                        "timeoutS": runtime_qa_timeout_s,
-                                        "unavailableReason": unavailable_reason,
-                                    },
-                                ),
-                                self._build_json_artifact(
-                                    artifact_type="runtime_qa_report",
-                                    payload={
-                                        **runtime_qa_report,
-                                        "retryCount": total_retries,
-                                        "attempt": attempt,
-                                        "timeoutS": runtime_qa_timeout_s,
-                                    },
-                                    metadata={"stage": "runtime_simulation_qa"},
-                                ),
-                            ],
-                        )
-                    return current_code, runtime_qa, total_retries, qa_warnings
+        runtime_qa_timeout_s = self._resolve_runtime_qa_timeout(code)
+        runtime_qa = await run_runtime_qa(code, timeout_s=runtime_qa_timeout_s)
+        if not runtime_qa.ran:
+            unavailable_reason = getattr(runtime_qa, "unavailable_reason", None)
+            unavailable_kind = getattr(runtime_qa, "unavailable_kind", None)
+            unavailable_phase = getattr(runtime_qa, "unavailable_phase", None)
+            if allow_runtime_qa_unavailable and unavailable_kind in {"timeout", "infra_unavailable", "exception"}:
+                qa_warning = self._build_runtime_qa_warning(runtime_qa)
+                qa_warnings = [qa_warning]
+                self._notify(
+                    progress_cb,
+                    "runtime_simulation_qa",
+                    98,
+                    qa_warning["message"],
+                    {
+                        "gameId": game_id,
+                        "userId": user_id,
+                        "warningType": qa_warning["type"],
+                        "unavailableKind": unavailable_kind,
+                        "unavailablePhase": unavailable_phase,
+                        "softFailed": True,
+                    },
+                )
+                return code, runtime_qa, 0, qa_warnings
+            unavailable_errors = self._runtime_qa_unavailable_errors(runtime_qa, code)
+            if unavailable_errors:
+                errors = unavailable_errors
             else:
-                errors = self._runtime_qa_errors(runtime_qa, current_code)
-            if not errors:
-                return current_code, runtime_qa, total_retries, qa_warnings
-
-            if attempt == remediation_attempts:
-                error_messages = "; ".join(error.message for error in errors[:5])
-                raise PipelineExecutionError(
-                    f"Generated code failed runtime QA: {error_messages}",
-                    stage="runtime_simulation_qa",
-                    retry_count=total_retries,
-                    failure_family="runtime_qa",
-                    artifacts=[
-                        self._build_text_artifact(
-                            artifact_type="failed_runtime_candidate",
-                            payload=current_code,
-                            metadata={
-                                "stage": "runtime_simulation_qa",
-                                "retryCount": total_retries,
-                            },
+                runtime_qa_report = self._serialize_runtime_qa(runtime_qa, [])
+                if settings.RUNTIME_QA_REQUIRED or settings.ENVIRONMENT == "production":
+                    raise PipelineExecutionError(
+                        "Runtime QA unavailable: {}".format(
+                            unavailable_reason or "Playwright is not installed or browser launch failed"
                         ),
-                        self._build_json_artifact(
-                            artifact_type="runtime_qa_report",
-                            payload=self._serialize_runtime_qa(runtime_qa, errors),
-                            metadata={"stage": "runtime_simulation_qa"},
-                        ),
-                    ],
-                )
+                        stage="runtime_simulation_qa",
+                        retry_count=0,
+                        failure_family="qa_infra_unavailable",
+                        artifacts=[
+                            self._build_text_artifact(
+                                artifact_type="failed_runtime_candidate",
+                                payload=code,
+                                metadata={
+                                    "stage": "runtime_simulation_qa",
+                                    "retryCount": 0,
+                                    "timeoutS": runtime_qa_timeout_s,
+                                    "unavailableReason": unavailable_reason,
+                                },
+                            ),
+                            self._build_json_artifact(
+                                artifact_type="runtime_qa_report",
+                                payload={
+                                    **runtime_qa_report,
+                                    "retryCount": 0,
+                                    "timeoutS": runtime_qa_timeout_s,
+                                },
+                                metadata={"stage": "runtime_simulation_qa"},
+                            ),
+                        ],
+                    )
+                return code, runtime_qa, 0, qa_warnings
+        else:
+            errors = self._runtime_qa_errors(runtime_qa, code)
 
-            self._notify(progress_cb, "targeted_remediation", 95, f"Runtime QA failed, applying targeted remediation ({attempt + 1}/{remediation_attempts})", {
-                "gameId": game_id,
-                "userId": user_id,
-                "errorCount": len(errors),
-                "errors": [error.message for error in errors[:3]],
-            })
-            repaired_code = await self.qa_pipeline.repair_code(
-                current_code,
-                errors,
-                game_spec=spec,
-                runtime_contract=runtime_contract,
-                prompt_bundle_snapshot=prompt_bundle_snapshot,
-                fix_round=attempt + 1,
-                max_fix_rounds=remediation_attempts,
-            )
-            contract_qa = await self._run_contract_qa_loop(
-                code=repaired_code,
-                spec=spec,
-                runtime_contract=runtime_contract,
-                prompt_bundle_snapshot=prompt_bundle_snapshot,
-                progress_cb=progress_cb,
-                game_id=game_id,
-                user_id=user_id,
-                max_retries=1,
-            )
-            if not contract_qa.success:
-                error_messages = "; ".join(error.message for error in contract_qa.last_errors[:5])
-                raise PipelineExecutionError(
-                    f"Runtime remediation regressed contract QA: {error_messages}",
-                    stage="contract_qa",
-                    retry_count=total_retries + contract_qa.retries,
-                    failure_family="contract_qa",
-                    artifacts=[
-                        self._build_text_artifact(
-                            artifact_type="failed_runtime_candidate",
-                            payload=contract_qa.code,
-                            metadata={
-                                "stage": "contract_qa",
-                                "retryCount": total_retries + contract_qa.retries,
-                                "reason": "runtime_remediation_regression",
-                            },
-                        ),
-                        self._build_json_artifact(
-                            artifact_type="contract_qa_report",
-                            payload={
-                                "passed": False,
-                                "retryCount": contract_qa.retries,
-                                "errors": self._serialize_errors(contract_qa.last_errors),
-                                "regressedFromRuntimeRemediation": True,
-                            },
-                            metadata={"stage": "contract_qa"},
-                        ),
-                    ],
-                )
+        if not errors:
+            return code, runtime_qa, 0, qa_warnings
 
-            current_code = contract_qa.code
-            total_retries += 1 + contract_qa.retries
-
+        error_messages = "; ".join(error.message for error in errors[:5])
         raise PipelineExecutionError(
-            "Generated code failed runtime QA after targeted remediation",
+            f"Generated code failed runtime QA: {error_messages}",
             stage="runtime_simulation_qa",
-            retry_count=total_retries,
+            retry_count=0,
+            failure_family="runtime_qa",
+            artifacts=[
+                self._build_text_artifact(
+                    artifact_type="failed_runtime_candidate",
+                    payload=code,
+                    metadata={
+                        "stage": "runtime_simulation_qa",
+                        "retryCount": 0,
+                    },
+                ),
+                self._build_json_artifact(
+                    artifact_type="runtime_qa_report",
+                    payload=self._serialize_runtime_qa(runtime_qa, errors),
+                    metadata={"stage": "runtime_simulation_qa"},
+                ),
+            ],
         )
 
-    def _resolve_runtime_qa_timeout(self, code: str, *, attempt: int) -> float:
+    def _resolve_runtime_qa_timeout(self, code: str) -> float:
         base_timeout = max(
             get_timeout_float(
                 "timeout.ai_engine.runtime_qa.base_s",
@@ -1683,20 +1900,9 @@ class V2PipelineRunner:
             complexity_bonus += get_timeout_float("timeout.ai_engine.runtime_qa.bonus_ge_32000_s", 10.0, min_value=0.0)
         if code_size_bytes >= 40_000:
             complexity_bonus += get_timeout_float("timeout.ai_engine.runtime_qa.bonus_ge_40000_s", 4.0, min_value=0.0)
-
-        remediation_bonus = min(
-            get_timeout_float("timeout.ai_engine.runtime_qa.remediation_bonus_max_s", 8.0, min_value=0.0),
-            max(0, attempt)
-            * get_timeout_float("timeout.ai_engine.runtime_qa.remediation_bonus_per_attempt_s", 4.0, min_value=0.0),
-        )
-        if code_size_bytes >= 32_000 and attempt > 0:
-            remediation_bonus = max(
-                remediation_bonus,
-                get_timeout_float("timeout.ai_engine.runtime_qa.remediation_large_code_floor_s", 8.0, min_value=0.0),
-            )
         return min(
             get_timeout_float("timeout.ai_engine.runtime_qa.max_s", 30.0, min_value=0.1),
-            base_timeout + complexity_bonus + remediation_bonus,
+            base_timeout + complexity_bonus,
         )
 
     def _validate_contract_bundle(
@@ -1725,12 +1931,12 @@ class V2PipelineRunner:
         errors: list[QACheckError] = []
         lower = (code or "").lower()
         has_canvas_2d_context = re.search(
-            r"getcontext\s*\(\s*['\"]2d['\"]\s*\)",
+            r"getcontext\s*\(\s*['\"]2d['\"](?:\s*,[^\)]*)?\)",
             code,
             re.IGNORECASE,
         ) is not None
         has_webgl_context = re.search(
-            r"getcontext\s*\(\s*['\"](?:webgl|webgl2)['\"]\s*\)",
+            r"getcontext\s*\(\s*['\"](?:webgl|webgl2)['\"](?:\s*,[^\)]*)?\)",
             code,
             re.IGNORECASE,
         ) is not None

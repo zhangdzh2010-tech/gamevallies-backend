@@ -95,4 +95,63 @@ describe('CreationSessionRealtimeService', () => {
     expect(events[events.length - 1].type).toBe('snapshot');
     expect(events[events.length - 1].data).not.toHaveProperty('legacyEventType');
   });
+
+  it('uses the latest cached snapshot for bootstrap after an early publish', () => {
+    const service = new CreationSessionRealtimeService();
+    const initialSnapshot = {
+      id: 'session-2',
+      streamPath: '/api/v1/games/creation-sessions/session-2/events',
+      status: 'initializing',
+      entryMode: 'create',
+      initialPrompt: 'build a fruit merge game',
+      titleDraft: null,
+      revision: 1,
+      slotState: {},
+      missingRequired: [],
+      skippedSlots: [],
+      currentQuestion: null,
+      conversation: [],
+      slotFillPct: 0,
+      readyToGenerate: false,
+      generatedGameId: null,
+      generationTaskId: null,
+      sourceGameId: null,
+      orientation: 'portrait',
+      generationTier: 'standard',
+      questionBudget: 4,
+      planDraft: null,
+      confidenceSummary: null,
+      questionStrategy: null,
+      intentBuild: null,
+      metadata: null,
+    } as any;
+    const updatedSnapshot = {
+      ...initialSnapshot,
+      status: 'collecting',
+      revision: 2,
+      currentQuestion: {
+        slotKey: 'theme',
+        label: 'Theme',
+        prompt: 'What world should this puzzle use?',
+        skippable: true,
+      },
+      slotFillPct: 0.67,
+    } as any;
+
+    service.publishSnapshot('user-2', 'session-2', updatedSnapshot);
+
+    const events: any[] = [];
+    const subscription = service
+      .streamSession('user-2', 'session-2', initialSnapshot)
+      .subscribe((event) => {
+        events.push(event);
+      });
+
+    subscription.unsubscribe();
+
+    expect(events[0].type).toBe('bootstrap');
+    expect(events[0].data.session.status).toBe('collecting');
+    expect(events[0].data.session.revision).toBe(2);
+    expect(events[0].data.session.currentQuestion?.slotKey).toBe('theme');
+  });
 });

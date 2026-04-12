@@ -476,7 +476,7 @@ const DEFAULT_LLM_STEP_CATALOG = [
     id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411001',
     stepKey: 'dialogue.slot_extract',
     stepOrder: 10,
-    stageLabel: 'Stage 01',
+    stageLabel: 'Flow 01 - Creation Session',
     displayName: '对话槽位提取',
     description: '在对话模式下从用户输入中抽取结构化槽位',
   },
@@ -484,7 +484,7 @@ const DEFAULT_LLM_STEP_CATALOG = [
     id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411002',
     stepKey: 'dialogue.reply',
     stepOrder: 20,
-    stageLabel: 'Stage 01',
+    stageLabel: 'Flow 01 - Creation Session',
     displayName: '对话回复生成',
     description: '在对话模式下生成追问或确认回复',
   },
@@ -492,71 +492,79 @@ const DEFAULT_LLM_STEP_CATALOG = [
     id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411003',
     stepKey: 'intent_parse',
     stepOrder: 30,
-    stageLabel: 'Stage 02',
+    stageLabel: 'Flow 02 - Structured Intent',
     displayName: '意图解析',
     description: '将自然语言描述解析成 GameSpec',
   },
   {
     id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411005',
     stepKey: 'code_generate.full',
-    stepOrder: 50,
-    stageLabel: 'Stage 05',
+    stepOrder: 40,
+    stageLabel: 'Flow 03 - Create Generation',
     displayName: '代码生成（Full LLM）',
     description: '完全依赖 LLM 生成首版代码',
   },
   {
     id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411006',
     stepKey: 'qa_fix',
-    stepOrder: 60,
-    stageLabel: 'Stage 06',
+    stepOrder: 110,
+    stageLabel: 'Flow 05 - QA Repair Families',
     displayName: 'QA 自动修复',
     description: '在静态或运行时 QA 失败后进行自动修复',
   },
   {
     id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411007',
     stepKey: 'code_review',
-    stepOrder: 70,
-    stageLabel: 'Stage 06',
+    stepOrder: 50,
+    stageLabel: 'Flow 03 - Create Generation',
     displayName: '代码审查',
     description: 'LLM 对生成结果进行完整性与可玩性审查',
   },
   {
     id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411008',
     stepKey: 'iterate.classify',
-    stepOrder: 80,
-    stageLabel: 'Stage 07',
+    stepOrder: 70,
+    stageLabel: 'Flow 04 - Iterate Generation',
     displayName: '迭代反馈分类',
     description: '判断用户反馈属于哪类迭代修改',
   },
   {
     id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411009',
     stepKey: 'iterate.param_adjust',
-    stepOrder: 90,
-    stageLabel: 'Stage 07',
+    stepOrder: 80,
+    stageLabel: 'Flow 04 - Iterate Generation',
     displayName: '迭代参数调整',
     description: '通过 LLM 调整游戏数值和参数',
   },
   {
     id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411010',
     stepKey: 'iterate.element_change',
-    stepOrder: 100,
-    stageLabel: 'Stage 07',
+    stepOrder: 90,
+    stageLabel: 'Flow 04 - Iterate Generation',
     displayName: '迭代元素修改',
     description: '通过 LLM 修改视觉元素和对象结构',
   },
   {
     id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411011',
     stepKey: 'iterate.mechanic_change',
-    stepOrder: 110,
-    stageLabel: 'Stage 07',
+    stepOrder: 100,
+    stageLabel: 'Flow 04 - Iterate Generation',
     displayName: '迭代机制改写',
     description: '通过 LLM 改写游戏核心机制',
   },
   {
-    id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411012',
-    stepKey: 'expand_prompt',
+    id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411020',
+    stepKey: 'qa_fix.syntax_structural',
     stepOrder: 120,
-    stageLabel: 'Auxiliary',
+    stageLabel: 'Flow 05 - QA Repair Families',
+    displayName: 'QA Fix / Syntax Structural',
+    description: 'Only remaining QA repair path: full-document syntax and structural recovery.',
+  },
+  {
+    id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411021',
+    stepKey: 'expand_prompt',
+    stepOrder: 130,
+    stageLabel: 'Flow 90 - Auxiliary',
     displayName: 'Prompt 扩写',
     description: '将用户短描述扩写为详细设计提示词',
   },
@@ -596,6 +604,46 @@ const DEFAULT_PROMPT_CATALOG = Array.isArray(promptCatalog)
 
 const REMOVED_PROMPT_CONFIG_KEYS = [
   'prompt.iteration_mobile_layout_guardrails',
+  'prompt.qa_fix',
+  'prompt.qa_fix_fast',
+  'prompt.qa_instruction_input_handlers',
+  'prompt.qa_instruction_visible_feedback',
+  'prompt.qa_instruction_terminal_state',
+  'prompt.qa_instruction_storage',
+  'prompt.qa_instruction_blank_screen',
+  'prompt.qa_instruction_runtime_js_error',
+  'prompt.qa_instruction_mobile_layout',
+  'prompt.qa_instruction_forbidden_api',
+  'prompt.qa_instruction_generic',
+  'bundle.repair.input_contract',
+  'bundle.repair.terminal_state',
+  'bundle.repair.mobile_layout',
+  'bundle.repair.forbidden_api',
+  'bundle.repair.runtime_startup',
+  'bundle.repair.generic',
+];
+
+const REMOVED_LLM_STEP_KEYS = [
+  'code_generate.hybrid',
+  'llm_design.enrich',
+  'qa_fix',
+  'qa_fix.input_contract',
+  'qa_fix.score_feedback',
+  'qa_fix.terminal_state',
+  'qa_fix.mobile_layout',
+  'qa_fix.runtime_startup',
+  'qa_fix.forbidden_api',
+  'qa_fix.generic',
+  'qa_fix.syntax_rebuild',
+];
+
+const MANAGED_LLM_ROUTE_ALIASES = [
+  {
+    targetStepKey: 'qa_fix.syntax_structural',
+    sourceStepKey: 'code_generate.full',
+    requestTimeoutS: 90,
+    connectTimeoutS: 15,
+  },
 ];
 
 const DEFAULT_RUNTIME_PROFILE_CATALOG = Array.isArray(runtimeProfileCatalog)
@@ -805,6 +853,62 @@ export class GameSchemaBootstrapService implements OnModuleInit {
         });
       }
     }
+
+    await this.syncManagedLlmRouteAliases();
+  }
+
+  private async syncManagedLlmRouteAliases() {
+    if (!MANAGED_LLM_ROUTE_ALIASES.length) {
+      return;
+    }
+
+    const existingRoutes = await this.prisma.llmStepRoute.findMany({
+      select: {
+        id: true,
+        stepKey: true,
+        region: true,
+        providerId: true,
+        fallbackProviderIds: true,
+        modelOverride: true,
+        fastModelOverride: true,
+        enabled: true,
+      },
+    });
+
+    for (const binding of MANAGED_LLM_ROUTE_ALIASES) {
+      const sourceRoutes = existingRoutes.filter((route) => route.stepKey === binding.sourceStepKey);
+      for (const sourceRoute of sourceRoutes) {
+        await this.prisma.llmStepRoute.upsert({
+          where: {
+            llm_step_routes_step_key_region_key: {
+              stepKey: binding.targetStepKey,
+              region: sourceRoute.region,
+            },
+          },
+          create: {
+            id: randomUUID(),
+            stepKey: binding.targetStepKey,
+            region: sourceRoute.region,
+            providerId: sourceRoute.providerId,
+            fallbackProviderIds: sourceRoute.fallbackProviderIds || [],
+            modelOverride: sourceRoute.modelOverride || null,
+            fastModelOverride: sourceRoute.fastModelOverride || null,
+            requestTimeoutS: binding.requestTimeoutS,
+            connectTimeoutS: binding.connectTimeoutS,
+            enabled: sourceRoute.enabled !== false,
+          },
+          update: {
+            providerId: sourceRoute.providerId,
+            fallbackProviderIds: sourceRoute.fallbackProviderIds || [],
+            modelOverride: sourceRoute.modelOverride || null,
+            fastModelOverride: sourceRoute.fastModelOverride || null,
+            requestTimeoutS: binding.requestTimeoutS,
+            connectTimeoutS: binding.connectTimeoutS,
+            enabled: sourceRoute.enabled !== false,
+          },
+        });
+      }
+    }
   }
 
   async onModuleInit(): Promise<void> {
@@ -956,6 +1060,20 @@ export class GameSchemaBootstrapService implements OnModuleInit {
           step.stageLabel,
           step.displayName,
           step.description,
+        );
+      }
+
+      if (REMOVED_LLM_STEP_KEYS.length) {
+        const stepPlaceholders = REMOVED_LLM_STEP_KEYS.map(() => '?').join(', ');
+        await this.prisma.$executeRawUnsafe(
+          `DELETE FROM llm_step_routes
+           WHERE step_key IN (${stepPlaceholders})`,
+          ...REMOVED_LLM_STEP_KEYS,
+        );
+        await this.prisma.$executeRawUnsafe(
+          `DELETE FROM llm_step_catalog
+           WHERE step_key IN (${stepPlaceholders})`,
+          ...REMOVED_LLM_STEP_KEYS,
         );
       }
 

@@ -94,7 +94,7 @@ describe('GenerationTaskService', () => {
     expect(result).toBe(runningTask);
   });
 
-  it('suppresses heartbeat activity notes at the service layer', async () => {
+  it('persists heartbeat activity as liveness without appending timeline noise', async () => {
     const runningTask = {
       id: 'task-1',
       gameId: 'game-1',
@@ -106,6 +106,12 @@ describe('GenerationTaskService', () => {
       progressMessage: 'QA running',
     };
     prisma.generationTask.findUnique.mockResolvedValue(runningTask);
+    prisma.generationTask.update.mockResolvedValue({
+      ...runningTask,
+      progressStage: 'qa_checking',
+      progressPct: 78,
+      progressMessage: 'qa_fix is still running',
+    });
 
     const result = await service.recordActivity({
       taskId: 'task-1',
@@ -119,9 +125,19 @@ describe('GenerationTaskService', () => {
       },
     });
 
-    expect(prisma.generationTask.update).not.toHaveBeenCalled();
+    expect(prisma.generationTask.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'task-1' },
+      data: expect.objectContaining({
+        progressStage: 'qa_checking',
+        progressPct: 78,
+        progressMessage: 'qa_fix is still running',
+      }),
+    }));
     expect(prisma.generationTaskEvent.create).not.toHaveBeenCalled();
-    expect(result).toBe(runningTask);
+    expect(result).toEqual(expect.objectContaining({
+      id: 'task-1',
+      progressMessage: 'qa_fix is still running',
+    }));
   });
 
   it('syncs selected runtime profile and game type from progress details', async () => {

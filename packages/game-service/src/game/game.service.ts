@@ -77,6 +77,8 @@ const STAGE_PCT: Record<string, number> = {
   failed: -1,
 };
 
+const MAX_ACTIVE_TASK_SWEEP_INTERVAL_MS = 5_000;
+
 type RuntimeOrientation = 'portrait_first' | 'landscape_first';
 type GenerationTier = CreateGameGenerationTier;
 
@@ -171,15 +173,9 @@ interface SourceBundleContextPayload {
   recent_revisions?: SourceBundleRevisionPayload[];
 }
 
-interface DirectIntentAnalyzeResponsePayload {
-  slots?: Record<string, unknown>;
-  missing_required?: string[];
-  slot_fill_pct?: number;
-  ready_to_generate?: boolean;
-}
-
-interface DirectIntentSpecResponsePayload {
+interface DirectIntentParseResponsePayload {
   spec?: Record<string, unknown> | null;
+  confidence?: number;
   missing_required?: string[];
   slot_fill_pct?: number;
 }
@@ -483,12 +479,20 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   }
 
   private getActiveTaskSweepIntervalMs(): number {
-    return this.resolveTimeoutCatalogValue('timeout.game_service.active_task_sweep_interval_ms', { min: 1_000 });
+    return Math.min(
+      this.resolveTimeoutCatalogValue('timeout.game_service.active_task_sweep_interval_ms', { min: 1_000 }),
+      MAX_ACTIVE_TASK_SWEEP_INTERVAL_MS,
+    );
   }
 
   public async getExpandPromptRequestTimeoutMs(): Promise<number> {
     await this.ensureTimeoutConfigCache();
     return this.resolveTimeoutCatalogValue('timeout.game_service.expand_prompt_request_ms', { min: 1_000 });
+  }
+
+  public async getSourceSpecParseTimeoutMs(): Promise<number> {
+    const expandPromptTimeoutMs = await this.getExpandPromptRequestTimeoutMs();
+    return Math.max(expandPromptTimeoutMs, 90_000);
   }
 
   public async getCreationSessionInitTimeoutMs(): Promise<number> {
@@ -530,6 +534,10 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
 
   private getUpstreamDeadlineGraceMs(): number {
     return this.resolveTimeoutCatalogValue('timeout.game_service.upstream_deadline_grace_ms', { min: 0 });
+  }
+
+  private getMissingUpstreamTaskGraceMs(): number {
+    return Math.max(this.getUpstreamPollIntervalMs() * 10, 45_000);
   }
 
   private async reconcileActiveTasksInBackground(): Promise<void> {
@@ -1342,58 +1350,23 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  private async analyzeCreateIntentTurn(params: {
+  private async compileCreateSourceSpecFromDescription(params: {
     userId: string;
     description: string;
     title?: string;
     generationTier: GenerationTier;
-    entryMode?: string | null;
     executionRegion?: string;
-  }): Promise<DirectIntentAnalyzeResponsePayload> {
+    variationSeed: string;
+  }): Promise<DirectIntentParseResponsePayload> {
     const aiEngineUrl = await this.getAiEngineBaseUrl(params.executionRegion);
-    const timeoutMs = await this.getExpandPromptRequestTimeoutMs();
+    const timeoutMs = await this.getSourceSpecParseTimeoutMs();
     const response = await axios.post(
-      `${aiEngineUrl}/api/v1/ai/dialogue/analyze-turn`,
+      `${aiEngineUrl}/api/v1/ai/parse-intent`,
       {
         user_id: params.userId,
-        conversation: [
-          {
-            role: 'user',
-            content: params.description,
-            kind: 'prompt',
-          },
-        ],
-        current_slots: {},
-        skipped_slots: [],
-        entry_mode: this.normalizeOptionalString(params.entryMode) || 'create',
-        generation_tier: params.generationTier,
-        ...(params.title ? { title: params.title } : {}),
-        initial_prompt: params.description,
-      },
-      { timeout: timeoutMs },
-    );
-    return response.data || {};
-  }
-
-  private async buildCreateSpecFromPrompt(params: {
-    userId: string;
-    description: string;
-    title?: string;
-    generationTier: GenerationTier;
-    executionRegion?: string;
-    slots: Record<string, unknown>;
-    variationSeed: string;
-  }): Promise<DirectIntentSpecResponsePayload> {
-    const aiEngineUrl = await this.getAiEngineBaseUrl(params.executionRegion);
-    const timeoutMs = await this.getExpandPromptRequestTimeoutMs();
-    const response = await axios.post(
-      `${aiEngineUrl}/api/v1/ai/dialogue/spec-from-slots`,
-      {
-        slots: params.slots,
-        source_description: params.description,
+        description: params.description,
         ...(params.title ? { title: params.title } : {}),
         generation_tier: params.generationTier,
-        skipped_slots: [],
         variation_seed: params.variationSeed,
       },
       { timeout: timeoutMs },
@@ -1493,34 +1466,14 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       })).catch(() => undefined);
     }
 
-    let analysis: DirectIntentAnalyzeResponsePayload;
+    let parseResponse: DirectIntentParseResponsePayload;
     try {
-      analysis = await this.analyzeCreateIntentTurn({
-        userId: params.userId,
-        description: params.description,
-        title: params.title,
-        generationTier: params.generationTier,
-        entryMode: params.entryMode,
-        executionRegion: params.executionRegion,
-      });
-    } catch (error) {
-      throw this.buildAiGatewayStageError(
-        error,
-        'Create intent analysis failed',
-        'spec_build',
-        'intent_analysis',
-      );
-    }
-
-    let specResponse: DirectIntentSpecResponsePayload;
-    try {
-      specResponse = await this.buildCreateSpecFromPrompt({
+      parseResponse = await this.compileCreateSourceSpecFromDescription({
         userId: params.userId,
         description: params.description,
         title: params.title,
         generationTier: params.generationTier,
         executionRegion: params.executionRegion,
-        slots: analysis.slots || {},
         variationSeed,
       });
     } catch (error) {
@@ -1532,11 +1485,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       );
     }
 
-    const missingRequired = Array.isArray(specResponse.missing_required)
-      ? specResponse.missing_required
+    const missingRequired = Array.isArray(parseResponse.missing_required)
+      ? parseResponse.missing_required
       : [];
-    const compiledSpec = specResponse.spec && typeof specResponse.spec === 'object' && !Array.isArray(specResponse.spec)
-      ? specResponse.spec
+    const compiledSpec = parseResponse.spec && typeof parseResponse.spec === 'object' && !Array.isArray(parseResponse.spec)
+      ? parseResponse.spec
       : null;
     if (!compiledSpec || missingRequired.length > 0) {
       const details = missingRequired.length > 0
@@ -1561,9 +1514,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         intentBuild,
         sourceSpecBuild: {
           source: 'zero_question',
+          parser: 'description_parse',
           variationSeed,
-          readyToGenerate: Boolean(analysis.ready_to_generate),
-          slotFillPct: Number(specResponse.slot_fill_pct ?? analysis.slot_fill_pct ?? 0) || 0,
+          readyToGenerate: true,
+          slotFillPct: Number(parseResponse.slot_fill_pct ?? 1) || 1,
+          confidence: Number(parseResponse.confidence ?? 0) || 0,
           missingRequired,
           builtAt: new Date().toISOString(),
         },
@@ -1578,8 +1533,10 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         metadata: {
           source: 'zero_question',
           variationSeed,
-          readyToGenerate: Boolean(analysis.ready_to_generate),
-          slotFillPct: Number(specResponse.slot_fill_pct ?? analysis.slot_fill_pct ?? 0) || 0,
+          parser: 'description_parse',
+          readyToGenerate: true,
+          slotFillPct: Number(parseResponse.slot_fill_pct ?? 1) || 1,
+          confidence: Number(parseResponse.confidence ?? 0) || 0,
           missingRequired,
           intentFingerprint: intentBuild.intentFingerprint,
           specFingerprint: intentBuild.specFingerprint,
@@ -3197,6 +3154,15 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           return recovered;
         }
       }
+      const recoveredFailure = await this.recoverMissingUpstreamTaskFromLocalSignals(task).catch((error) => {
+        this.logger.warn(
+          `Failed to recover task ${task.id} from local llm failure signals after missing upstream snapshot: ${this.extractErrorMessage(error)}`,
+        );
+        return null;
+      });
+      if (recoveredFailure) {
+        return recoveredFailure;
+      }
       return null;
     }
 
@@ -3257,6 +3223,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           taskId: task.id,
           responseData: snapshot.result || {},
           orientation: this.normalizeRequestedOrientation(task.metadata?.orientation),
+          generationTier: this.normalizeRequestedGenerationTier(task.metadata?.generationTier) || undefined,
+          runtimeContract: this.extractTaskMetadataObject<RuntimeContractPayload>(
+            this.normalizeTaskMetadataRecord(task.metadata),
+            'runtimeContract',
+          ),
         });
       } else {
         const latestBundle = await Promise.resolve(this.bundleService.getLatestBundle(task.gameId))
@@ -3271,6 +3242,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           currentCode: latestBundle?.htmlCode || '',
           responseData: snapshot.result || {},
           orientation: this.normalizeRequestedOrientation(task.metadata?.orientation),
+          generationTier: this.normalizeRequestedGenerationTier(task.metadata?.generationTier) || undefined,
+          runtimeContract: this.extractTaskMetadataObject<RuntimeContractPayload>(
+            this.normalizeTaskMetadataRecord(task.metadata),
+            'runtimeContract',
+          ),
         });
       }
       return this.prisma.generationTask.findUnique({ where: { id: task.id } });
@@ -3284,6 +3260,159 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       }
       throw error;
     }
+  }
+
+  private inferFailedStageFromLlmSignal(
+    stepKey?: string | null,
+    stage?: string | null,
+    fallbackStage?: string | null,
+  ): string {
+    const normalizedStepKey = String(stepKey || '').trim().toLowerCase();
+    const normalizedStage = String(stage || '').trim().toLowerCase();
+    if (normalizedStepKey === 'code_generate.full' || normalizedStage === 'code_generating') {
+      return 'logic_generate';
+    }
+    if (normalizedStepKey.startsWith('qa_fix.') || normalizedStage === 'qa_checking') {
+      return 'qa_checking';
+    }
+    return fallbackStage || 'pipeline_run';
+  }
+
+  private inferFailureFamilyFromLlmSignal(
+    failedStage: string,
+    stepKey?: string | null,
+    errorCode?: string | null,
+    errorMessage?: string | null,
+  ): string {
+    const normalizedStepKey = String(stepKey || '').trim().toLowerCase();
+    const normalizedErrorCode = String(errorCode || '').trim().toLowerCase();
+    const normalizedMessage = String(errorMessage || '').trim().toLowerCase();
+    if (normalizedStepKey === 'code_generate.full' || failedStage === 'logic_generate') {
+      return 'code_generation';
+    }
+    if (normalizedStepKey.startsWith('qa_fix.') || failedStage === 'qa_checking') {
+      return 'qa_validation';
+    }
+    if (normalizedErrorCode.includes('timeout') || normalizedMessage.includes('timed out')) {
+      return 'timeout';
+    }
+    return 'pipeline';
+  }
+
+  private buildLlmFailureMessage(signal: {
+    stepKey?: string | null;
+    errorCode?: string | null;
+    errorMessage?: string | null;
+  }): string {
+    const stepKey = String(signal.stepKey || '').trim() || 'llm';
+    const rawMessage = String(signal.errorMessage || '').trim();
+    if (rawMessage) {
+      return `${stepKey} failed: ${rawMessage}`;
+    }
+    const rawCode = String(signal.errorCode || '').trim();
+    if (rawCode) {
+      return `${stepKey} failed: ${rawCode}`;
+    }
+    return `${stepKey} failed before completion`;
+  }
+
+  private inferFailedStageFromTaskProgress(progressStage?: string | null): string {
+    return this.inferFailedStageFromLlmSignal(undefined, progressStage, progressStage || 'pipeline_run');
+  }
+
+  private isMissingUpstreamTaskStale(task: { updatedAt?: Date | string | null; createdAt?: Date | string | null }): boolean {
+    const anchor = task.updatedAt || task.createdAt;
+    if (!anchor) {
+      return false;
+    }
+    const anchorMs = new Date(anchor).getTime();
+    if (!Number.isFinite(anchorMs)) {
+      return false;
+    }
+    return (Date.now() - anchorMs) >= this.getMissingUpstreamTaskGraceMs();
+  }
+
+  private async failMissingUpstreamTaskIfStale(task: any): Promise<any | null> {
+    if (!this.isMissingUpstreamTaskStale(task)) {
+      return null;
+    }
+
+    const failedStage = this.inferFailedStageFromTaskProgress(task.progressStage);
+    const errorMessage = `Upstream AI task state was lost before completion during ${failedStage}`;
+
+    await this.reconcileRelayedTaskFailure({
+      taskId: task.id,
+      failedStage,
+      errorMessage,
+      retryCount: task.retryCount || 0,
+      failureFamily: 'pipeline',
+    });
+
+    return this.prisma.generationTask.findUnique({ where: { id: task.id } });
+  }
+
+  private async recoverMissingUpstreamTaskFromLocalSignals(task: any): Promise<any | null> {
+    if (!task?.id || this.isFinalTaskStatus(task.status)) {
+      return null;
+    }
+
+    const latestFailure = await this.prisma.llmCallLog.findFirst({
+      where: {
+        taskId: task.id,
+        success: false,
+      },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        stepKey: true,
+        stage: true,
+        errorCode: true,
+        errorMessage: true,
+        createdAt: true,
+      },
+    });
+
+    if (!latestFailure) {
+      return this.failMissingUpstreamTaskIfStale(task);
+    }
+
+    const laterSuccess = await this.prisma.llmCallLog.findFirst({
+      where: {
+        taskId: task.id,
+        success: true,
+        createdAt: { gt: latestFailure.createdAt },
+      },
+      select: { id: true },
+    });
+
+    if (laterSuccess) {
+      return this.failMissingUpstreamTaskIfStale(task);
+    }
+
+    const failedStage = this.inferFailedStageFromLlmSignal(
+      latestFailure.stepKey,
+      latestFailure.stage,
+      task.progressStage,
+    );
+    const errorMessage = this.buildLlmFailureMessage(latestFailure);
+    const failureFamily = this.inferFailureFamilyFromLlmSignal(
+      failedStage,
+      latestFailure.stepKey,
+      latestFailure.errorCode,
+      latestFailure.errorMessage,
+    );
+    const timedOut = /timeout/i.test(String(latestFailure.errorCode || ''))
+      || /timed out/i.test(String(latestFailure.errorMessage || ''));
+
+    await this.reconcileRelayedTaskFailure({
+      taskId: task.id,
+      failedStage,
+      errorMessage,
+      retryCount: task.retryCount || 0,
+      timedOut,
+      failureFamily,
+    });
+
+    return this.prisma.generationTask.findUnique({ where: { id: task.id } });
   }
 
   async reconcileGenerationTask(taskOrId: any): Promise<any> {
@@ -3867,27 +3996,50 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       accessGrantSubscriptionId: (metadata.accessGrantSubscriptionId || task.game?.accessGrantSubscriptionId || null) as string | null,
     };
 
-    await this.executePipelineTask(
-      task.gameId,
-      task.userId,
-      String(metadata.description || task.game?.description || ''),
-      task.timeoutS ?? undefined,
-      task.id,
-      task.region || undefined,
-      {
-        pipelineVersion: metadata.pipelineVersion === 'v1' ? 'v1' : 'v2',
-        title: String(metadata.title || task.game?.title || '').trim() || undefined,
-        orientation: this.normalizeRequestedOrientation(metadata.orientation),
-        generationTier: this.normalizeRequestedGenerationTier(metadata.generationTier) || 'standard',
-        access,
-        sourceSpec: this.extractTaskMetadataObject<Record<string, unknown>>(metadata, 'sourceSpec'),
-        creationSessionId: typeof metadata.creationSessionId === 'string' ? metadata.creationSessionId : null,
-        entryMode: typeof metadata.entryMode === 'string' ? metadata.entryMode : null,
-        sourceGameId: typeof metadata.sourceGameId === 'string' ? metadata.sourceGameId : null,
-        promptBundleSnapshot: this.extractTaskMetadataObject<PromptBundleSnapshotPayload>(metadata, 'promptBundleSnapshot'),
-        runtimeContract: this.extractTaskMetadataObject<RuntimeContractPayload>(metadata, 'runtimeContract'),
-      },
-    );
+    try {
+      await this.launchPipelineTask(
+        task.gameId,
+        task.userId,
+        String(metadata.description || task.game?.description || ''),
+        task.timeoutS ?? undefined,
+        task.id,
+        task.region || undefined,
+        {
+          pipelineVersion: metadata.pipelineVersion === 'v1' ? 'v1' : 'v2',
+          title: String(metadata.title || task.game?.title || '').trim() || undefined,
+          orientation: this.normalizeRequestedOrientation(metadata.orientation),
+          generationTier: this.normalizeRequestedGenerationTier(metadata.generationTier) || 'standard',
+          access,
+          sourceSpec: this.extractTaskMetadataObject<Record<string, unknown>>(metadata, 'sourceSpec'),
+          creationSessionId: typeof metadata.creationSessionId === 'string' ? metadata.creationSessionId : null,
+          entryMode: typeof metadata.entryMode === 'string' ? metadata.entryMode : null,
+          sourceGameId: typeof metadata.sourceGameId === 'string' ? metadata.sourceGameId : null,
+          promptBundleSnapshot: this.extractTaskMetadataObject<PromptBundleSnapshotPayload>(metadata, 'promptBundleSnapshot'),
+          runtimeContract: this.extractTaskMetadataObject<RuntimeContractPayload>(metadata, 'runtimeContract'),
+        },
+      );
+    } catch (error) {
+      if (error instanceof TaskSupersededError) {
+        await this.persistTaskCancellation({
+          id: task.id,
+          gameId: task.gameId,
+          userId: task.userId,
+          taskType: task.taskType,
+          progressPct: STAGE_PCT.publishing,
+        }, error.message);
+        return;
+      }
+      if (error instanceof TaskAbortedError) {
+        this.logger.warn(`Queued pipeline dispatch discarded for task ${task.id}: ${error.message}`);
+        return;
+      }
+      await this.failPipelineTask({
+        gameId: task.gameId,
+        userId: task.userId,
+        taskId: task.id,
+        error,
+      });
+    }
   }
 
   async processQueuedIterationTask(taskId: string): Promise<void> {
@@ -3902,267 +4054,64 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
 
     const metadata = this.normalizeTaskMetadataRecord(task.metadata);
     const currentCode = await this.restoreQueuedIterationSourceCode(task.id, task.gameId, metadata);
-    await this.executeIterationTask(
-      task.gameId,
-      task.userId,
-      String(metadata.feedback || ''),
-      task.version || 1,
-      this.normalizeConversationHistory(metadata.conversation),
-      currentCode,
-      task.timeoutS ?? undefined,
-      task.id,
-      task.region || undefined,
-      {
-        pipelineVersion: metadata.pipelineVersion === 'v1' ? 'v1' : 'v2',
-        promptBundleSnapshot: this.extractTaskMetadataObject<PromptBundleSnapshotPayload>(metadata, 'promptBundleSnapshot'),
-        runtimeContract: this.extractTaskMetadataObject<RuntimeContractPayload>(metadata, 'runtimeContract'),
-        orientation: this.normalizeRequestedOrientation(metadata.orientation),
-        generationTier: this.normalizeRequestedGenerationTier(metadata.generationTier) || 'standard',
-        game: task.game ? {
-          gameType: task.game.gameType ?? null,
-          status: task.game.status ?? null,
-          visibility: task.game.visibility ?? null,
-          version: task.game.version ?? null,
-          canPlay: task.game.canPlay ?? null,
-          requireSubscription: task.game.requireSubscription ?? null,
-          accessGrantSource: task.game.accessGrantSource ?? null,
-          accessGrantSubscriptionId: task.game.accessGrantSubscriptionId ?? null,
-          forkedFrom: task.game.forkedFrom ?? null,
-        } : undefined,
-        sourceSpec: this.extractTaskMetadataObject<Record<string, unknown>>(metadata, 'sourceSpec'),
-        sourceBundleContext: this.extractTaskMetadataObject<SourceBundleContextPayload>(metadata, 'sourceBundleContext'),
-      },
-    );
+    try {
+      await this.launchIterationTask(
+        task.gameId,
+        task.userId,
+        String(metadata.feedback || ''),
+        this.normalizeConversationHistory(metadata.conversation),
+        currentCode,
+        task.timeoutS ?? undefined,
+        task.id,
+        task.region || undefined,
+        {
+          pipelineVersion: metadata.pipelineVersion === 'v1' ? 'v1' : 'v2',
+          promptBundleSnapshot: this.extractTaskMetadataObject<PromptBundleSnapshotPayload>(metadata, 'promptBundleSnapshot'),
+          runtimeContract: this.extractTaskMetadataObject<RuntimeContractPayload>(metadata, 'runtimeContract'),
+          orientation: this.normalizeRequestedOrientation(metadata.orientation),
+          generationTier: this.normalizeRequestedGenerationTier(metadata.generationTier) || 'standard',
+          game: task.game ? {
+            gameType: task.game.gameType ?? null,
+            status: task.game.status ?? null,
+            visibility: task.game.visibility ?? null,
+            version: task.game.version ?? null,
+            canPlay: task.game.canPlay ?? null,
+            requireSubscription: task.game.requireSubscription ?? null,
+            accessGrantSource: task.game.accessGrantSource ?? null,
+            accessGrantSubscriptionId: task.game.accessGrantSubscriptionId ?? null,
+            forkedFrom: task.game.forkedFrom ?? null,
+          } : undefined,
+          sourceSpec: this.extractTaskMetadataObject<Record<string, unknown>>(metadata, 'sourceSpec'),
+          sourceBundleContext: this.extractTaskMetadataObject<SourceBundleContextPayload>(metadata, 'sourceBundleContext'),
+        },
+      );
+    } catch (error) {
+      if (error instanceof TaskSupersededError) {
+        await this.persistTaskCancellation({
+          id: task.id,
+          gameId: task.gameId,
+          userId: task.userId,
+          taskType: task.taskType,
+          version: task.version || 1,
+          progressPct: STAGE_PCT.publishing,
+        }, error.message);
+        return;
+      }
+      if (error instanceof TaskAbortedError) {
+        this.logger.warn(`Queued iteration dispatch discarded for task ${task.id}: ${error.message}`);
+        return;
+      }
+      await this.failIterationTask({
+        gameId: task.gameId,
+        userId: task.userId,
+        taskId: task.id,
+        error,
+      });
+    }
   }
 
   async processQueuedActiveTaskSweep(): Promise<void> {
     await this.reconcileActiveTasksInBackground();
-  }
-
-  /**
-   * Calls the AI engine's full pipeline (stages 02-06).
-   * Emits fine-grained WebSocket progress for each pipeline stage.
-   */
-  private async runPipeline(
-    gameId: string,
-    userId: string,
-    description: string,
-    timeoutS?: number,
-    taskId?: string,
-    executionRegion?: string,
-  ): Promise<void> {
-    return this.executePipelineTask(gameId, userId, description, timeoutS, taskId, executionRegion);
-    /*
-    try {
-      const resolvedTimeoutS = this.resolvePipelineTimeout(timeoutS);
-      const aiEngineBaseUrl = await this.resolveAiEngineEndpoint(executionRegion);
-      if (taskId) {
-        await this.generationTaskService.markRunning(taskId!);
-      }
-      const response = await withRetry(() =>
-        axios.post(
-          `${aiEngineBaseUrl}/api/v1/ai/pipeline/run`,
-          {
-            game_id: gameId,
-            description,
-            user_id: userId,
-            platform: 'wechat_webview',
-            region: this.resolveExecutionRegion(executionRegion),
-            timeout_s: resolvedTimeoutS,
-            task_id: taskId,
-          },
-          { timeout: this.buildUpstreamTimeoutMs(resolvedTimeoutS) },
-        ),
-        {
-          maxAttempts: 3,
-          delayMs: 3000,
-          retryOnHttpResponse: false,
-          onRetry: async ({ retry, maxRetries, attempt, maxAttempts, error }) => {
-            this.emitProgress(
-              userId,
-              gameId,
-              `AI 生成服务请求失败，重试中（${retry}/${maxRetries}）`,
-              STAGE_PCT.code_generating,
-              {
-                stage: 'code_generating',
-                retry,
-                maxRetries,
-                attempt,
-                maxAttempts,
-                error: this.extractErrorMessage(error),
-                taskId,
-              },
-            );
-            if (taskId) {
-              await this.generationTaskService.recordProgress({
-                taskId,
-                gameId,
-                userId,
-                stage: 'code_generating',
-                percentage: STAGE_PCT.code_generating,
-                message: `AI 生成服务请求失败，重试中（${retry}/${maxRetries}）`,
-                details: {
-                  retry,
-                  maxRetries,
-                  attempt,
-                  maxAttempts,
-                  error: this.extractErrorMessage(error),
-                },
-              });
-            }
-          },
-        },
-      );
-
-      const {
-        html_code: htmlCode = '',
-        strategy = 'llm',
-        qa_passed: qaPassed = false,
-        qa_retries: qaRetries = 0,
-        game_spec: gameSpec = {},
-        generation_time_ms: genTimeMs = 0,
-        code_size_bytes: codeSizeBytes = 0,
-        quality_score: qualityScore = 0,
-        quality_breakdown: qualityBreakdown = {},
-      } = response.data;
-      this.ensurePersistableGeneratedHtml(htmlCode);
-      await this.assertTaskCanPersistResult(taskId, gameId);
-
-      const bundlePreviewUrl = this.buildPreviewUrl(gameId);
-
-      // Extract <title> from HTML; fallback to type-based deriveTitle
-      const htmlTitleMatch = htmlCode.match(/<title>([^<]{1,60})<\/title>/i);
-      const aiTitle = htmlTitleMatch ? htmlTitleMatch[1].trim() : null;
-      const gameTitle = (aiTitle && aiTitle.length > 2) ? aiTitle : this.deriveTitle(gameSpec, description);
-      const normalizedGameType = normalizeGameType(
-        gameSpec?.game_type,
-        gameTitle,
-        description,
-      );
-
-      // Only overwrite title if it's still the auto-generated placeholder (Game [id])
-      const currentGame = await this.prisma.game.findUnique({ where: { id: gameId }, select: { title: true } });
-      const isPlaceholderTitle = /^Game\s+[0-9a-f]{8}$/i.test(currentGame?.title || '');
-
-      this.emitStage(userId, gameId, 'publishing', {
-        stage: 'publishing',
-        attempt: 1,
-        maxAttempts: 3,
-      });
-
-      await this.persistGeneratedGameResult({
-        gameId,
-        userId,
-        version: 1,
-        htmlCode,
-        previewUrl: bundlePreviewUrl,
-        metadata: {
-          strategy,
-          qaPassed,
-          qaRetries,
-          gameSpec,
-          gameType: normalizedGameType,
-          genTimeMs,
-          codeSizeBytes,
-          qualityScore,
-          qualityBreakdown,
-        },
-        gameTitle: isPlaceholderTitle ? gameTitle : undefined,
-        updateData: {
-          status: 'draft',
-          version: 1,
-          gameType: normalizedGameType,
-          qualityScore,
-          failedStage: null,
-          failedReason: null,
-          retryCount: 0,
-          lastErrorAt: null,
-        },
-      });
-
-      if (taskId) {
-        await this.generationTaskService.markSucceeded({
-          taskId: taskId!,
-          previewUrl: bundlePreviewUrl,
-          resultSummary: {
-            strategy,
-            qaPassed,
-            qaRetries,
-            gameType: normalizedGameType,
-            generationTimeMs: genTimeMs,
-            codeSizeBytes,
-            qualityScore,
-          },
-        });
-      }
-
-      this.emitStage(userId, gameId, 'completed', {
-        stage: 'completed',
-        qaRetries,
-      });
-    } catch (error) {
-      if (error instanceof TaskSupersededError) {
-        if (taskId) {
-          await this.persistTaskCancellation({
-            id: taskId,
-            gameId,
-            userId,
-            taskType: GenerationTaskType.pipeline_run,
-            progressPct: STAGE_PCT.publishing,
-          }, error.message);
-        }
-        return;
-      }
-      if (error instanceof TaskAbortedError) {
-        this.logger.warn(`Pipeline result discarded for task ${taskId || 'n/a'}: ${error.message}`);
-        return;
-      }
-
-      const failure = this.extractFailureContext(error);
-      const errorMessage = failure.message;
-      this.logger.error(`Pipeline failed for game ${gameId}: ${errorMessage}`);
-      this.logStructuredFailure('PIPELINE_RUN_FAILURE', {
-        gameId,
-        userId,
-        stage: failure.failedStage || 'failed',
-        retryCount: failure.retryCount,
-        error: errorMessage,
-      });
-
-      await this.persistFailureState({
-        gameId,
-        failedStage: failure.failedStage || 'pipeline_run',
-        failedReason: errorMessage,
-        retryCount: failure.retryCount,
-        status: 'failed',
-        refundConsumedAccess: true,
-      });
-
-      if (taskId) {
-        await this.generationTaskService.markFailed({
-          taskId: taskId!,
-          failedStage: failure.failedStage || 'pipeline_run',
-          errorMessage,
-          retryCount: failure.retryCount,
-          fallback: failure.fallback,
-          timedOut: this.isTimeoutError(error),
-        }).catch((taskError) => {
-          this.logger.warn(`Failed to update generation task ${taskId}: ${taskError.message}`);
-        });
-      }
-
-      this.wsGateway.emitGenerationError(userId, gameId, errorMessage, {
-        stage: failure.failedStage || 'pipeline_run',
-        retryCount: failure.retryCount,
-        fallback: failure.fallback,
-      });
-      this.wsGateway.emitNotification(userId, {
-        type: 'error',
-        message: `Game generation failed: ${errorMessage}`,
-        gameId,
-      });
-    }
-    */
   }
 
   private async completePipelineTask(params: {
@@ -4919,6 +4868,186 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  private async launchPipelineTask(
+    gameId: string,
+    userId: string,
+    description: string,
+    timeoutS?: number,
+    taskId?: string,
+    executionRegion?: string,
+    options: CreateExecutionOptions = {},
+  ): Promise<{
+    generationTier: GenerationTier;
+    resolvedTimeoutS: number;
+    handle: ResolvedUpstreamAsyncTaskHandle;
+    runtimeContract: RuntimeContractPayload | null;
+  }> {
+    const generationTier = this.normalizeRequestedGenerationTier(options.generationTier) || 'standard';
+    const resolvedTimeoutS = this.resolvePipelineTimeout(timeoutS);
+    const aiEngineBaseUrls = await this.resolveAiEngineEndpointCandidates(executionRegion);
+    const resolvedRegion = this.resolveExecutionRegion(executionRegion);
+    const pipelineVersion = options.pipelineVersion === 'v1' ? 'v1' : 'v2';
+    const normalizedTitle = this.normalizeOptionalString(options.title);
+
+    if (taskId) {
+      await this.generationTaskService.markRunning(taskId);
+    }
+
+    const resolvedSourceSpec = pipelineVersion === 'v2'
+      ? await this.ensureCreateSourceSpec({
+        gameId,
+        userId,
+        description,
+        taskId,
+        executionRegion: resolvedRegion,
+        title: normalizedTitle,
+        generationTier,
+        entryMode: options.entryMode,
+        sourceSpec: options.sourceSpec,
+      })
+      : (options.sourceSpec ?? null);
+    const runtimeProfileHint = this.inferRuntimeProfileHint(
+      this.resolveRuntimeHintGameType(resolvedSourceSpec, null),
+      description,
+      normalizedTitle,
+    );
+    const promptBundleSnapshot = pipelineVersion === 'v2'
+      ? (options.promptBundleSnapshot ?? await this.buildPromptBundleSnapshot('create', runtimeProfileHint, generationTier))
+      : null;
+    const runtimeContract = pipelineVersion === 'v2'
+      ? (options.runtimeContract ?? await this.buildDefaultRuntimeContract('create', runtimeProfileHint, options.orientation, generationTier))
+      : null;
+
+    const handle = await this.requestUpstreamAsyncTask({
+      aiEngineBaseUrls,
+      endpoint: pipelineVersion === 'v2'
+        ? '/api/v1/ai/pipeline/v2/run/async'
+        : '/api/v1/ai/pipeline/run/async',
+      payload: pipelineVersion === 'v2'
+        ? this.buildCreateV2Payload({
+          gameId,
+          userId,
+          title: options.title,
+          description,
+          executionRegion: resolvedRegion,
+          timeoutS: resolvedTimeoutS,
+          taskId,
+          orientation: options.orientation,
+          generationTier,
+          access: options.access,
+          sourceSpec: resolvedSourceSpec,
+          creationSessionId: options.creationSessionId,
+          entryMode: options.entryMode,
+          sourceGameId: options.sourceGameId,
+          promptBundleSnapshot: promptBundleSnapshot!,
+          runtimeContract: runtimeContract!,
+        })
+        : {
+          game_id: gameId,
+          description,
+          user_id: userId,
+          platform: 'wechat_webview',
+          region: resolvedRegion,
+          timeout_s: resolvedTimeoutS,
+          task_id: taskId,
+        },
+      taskId,
+      userId,
+      gameId,
+    });
+
+    return {
+      generationTier,
+      resolvedTimeoutS,
+      handle,
+      runtimeContract,
+    };
+  }
+
+  private async launchIterationTask(
+    gameId: string,
+    userId: string,
+    feedback: string,
+    conversationHistory: Array<{ role: string; content: string }>,
+    currentCode: string,
+    timeoutS?: number,
+    taskId?: string,
+    executionRegion?: string,
+    options: IterateExecutionOptions = {},
+  ): Promise<{
+    generationTier: GenerationTier;
+    resolvedTimeoutS: number;
+    handle: ResolvedUpstreamAsyncTaskHandle;
+    runtimeContract: RuntimeContractPayload | null;
+  }> {
+    const generationTier = this.normalizeRequestedGenerationTier(options.generationTier)
+      ?? this.normalizeRequestedGenerationTier(options.sourceBundleContext?.latest_generation_tier)
+      ?? 'standard';
+    const resolvedTimeoutS = this.resolvePipelineTimeout(timeoutS);
+    const aiEngineBaseUrls = await this.resolveAiEngineEndpointCandidates(executionRegion);
+    const resolvedRegion = this.resolveExecutionRegion(executionRegion);
+    const pipelineVersion = options.pipelineVersion === 'v1' ? 'v1' : 'v2';
+    const runtimeProfileHint = this.inferRuntimeProfileHint(
+      this.resolveRuntimeHintGameType(options.sourceSpec, options.game),
+      feedback,
+    );
+    const promptBundleSnapshot = pipelineVersion === 'v2'
+      ? (options.promptBundleSnapshot ?? await this.buildPromptBundleSnapshot('iterate', runtimeProfileHint, generationTier))
+      : null;
+    const runtimeContract = pipelineVersion === 'v2'
+      ? (options.runtimeContract ?? await this.buildDefaultRuntimeContract('iterate', runtimeProfileHint, options.orientation, generationTier))
+      : null;
+
+    if (taskId) {
+      await this.generationTaskService.markRunning(taskId);
+    }
+
+    const handle = await this.requestUpstreamAsyncTask({
+      aiEngineBaseUrls,
+      endpoint: pipelineVersion === 'v2'
+        ? '/api/v1/ai/pipeline/v2/iterate/async'
+        : '/api/v1/ai/pipeline/iterate/async',
+      payload: pipelineVersion === 'v2'
+        ? this.buildIterateV2Payload({
+          gameId,
+          userId,
+          feedback,
+          conversationHistory,
+          currentCode,
+          executionRegion: resolvedRegion,
+          timeoutS: resolvedTimeoutS,
+          taskId,
+          game: options.game,
+          orientation: options.orientation,
+          generationTier,
+          sourceSpec: options.sourceSpec,
+          sourceBundleContext: options.sourceBundleContext,
+          promptBundleSnapshot: promptBundleSnapshot!,
+          runtimeContract: runtimeContract!,
+        })
+        : {
+          game_id: gameId,
+          feedback,
+          user_id: userId,
+          conversation: conversationHistory,
+          current_code: currentCode,
+          region: resolvedRegion,
+          timeout_s: resolvedTimeoutS,
+          task_id: taskId,
+        },
+      taskId,
+      userId,
+      gameId,
+    });
+
+    return {
+      generationTier,
+      resolvedTimeoutS,
+      handle,
+      runtimeContract,
+    };
+  }
+
   private async executePipelineTask(
     gameId: string,
     userId: string,
@@ -4928,78 +5057,22 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     executionRegion?: string,
     options: CreateExecutionOptions = {},
   ): Promise<void> {
-    const generationTier = this.normalizeRequestedGenerationTier(options.generationTier) || 'standard';
+    const fallbackGenerationTier = this.normalizeRequestedGenerationTier(options.generationTier) || 'standard';
     try {
-      const resolvedTimeoutS = this.resolvePipelineTimeout(timeoutS);
-      const aiEngineBaseUrls = await this.resolveAiEngineEndpointCandidates(executionRegion);
-      const resolvedRegion = this.resolveExecutionRegion(executionRegion);
-      const pipelineVersion = options.pipelineVersion === 'v1' ? 'v1' : 'v2';
-      const normalizedTitle = this.normalizeOptionalString(options.title);
-      if (taskId) {
-        await this.generationTaskService.markRunning(taskId!);
-      }
-      const resolvedSourceSpec = pipelineVersion === 'v2'
-        ? await this.ensureCreateSourceSpec({
-          gameId,
-          userId,
-          description,
-          taskId,
-          executionRegion: resolvedRegion,
-          title: normalizedTitle,
-          generationTier,
-          entryMode: options.entryMode,
-          sourceSpec: options.sourceSpec,
-        })
-        : (options.sourceSpec ?? null);
-      const runtimeProfileHint = this.inferRuntimeProfileHint(
-        this.resolveRuntimeHintGameType(resolvedSourceSpec, null),
-        description,
-        normalizedTitle,
-      );
-      const promptBundleSnapshot = pipelineVersion === 'v2'
-        ? (options.promptBundleSnapshot ?? await this.buildPromptBundleSnapshot('create', runtimeProfileHint, generationTier))
-        : null;
-      const runtimeContract = pipelineVersion === 'v2'
-        ? (options.runtimeContract ?? await this.buildDefaultRuntimeContract('create', runtimeProfileHint, options.orientation, generationTier))
-        : null;
-
-      const handle = await this.requestUpstreamAsyncTask({
-        aiEngineBaseUrls,
-        endpoint: pipelineVersion === 'v2'
-          ? '/api/v1/ai/pipeline/v2/run/async'
-          : '/api/v1/ai/pipeline/run/async',
-        payload: pipelineVersion === 'v2'
-            ? this.buildCreateV2Payload({
-              gameId,
-              userId,
-              title: options.title,
-              description,
-            executionRegion: resolvedRegion,
-            timeoutS: resolvedTimeoutS,
-            taskId,
-              orientation: options.orientation,
-              generationTier,
-              access: options.access,
-              sourceSpec: resolvedSourceSpec,
-              creationSessionId: options.creationSessionId,
-              entryMode: options.entryMode,
-              sourceGameId: options.sourceGameId,
-              promptBundleSnapshot: promptBundleSnapshot!,
-              runtimeContract: runtimeContract!,
-            })
-          : {
-            game_id: gameId,
-            description,
-            user_id: userId,
-            platform: 'wechat_webview',
-            region: resolvedRegion,
-            timeout_s: resolvedTimeoutS,
-            task_id: taskId,
-          },
-        taskId,
-        userId,
+      const {
+        generationTier,
+        resolvedTimeoutS,
+        handle,
+        runtimeContract,
+      } = await this.launchPipelineTask(
         gameId,
-      });
+        userId,
+        description,
+        timeoutS,
+        taskId,
+        executionRegion,
+        options,
+      );
       const snapshot = await this.waitForUpstreamTaskTerminal({
         aiEngineBaseUrl: handle.aiEngineBaseUrl,
         upstreamTaskId: handle.task_id,
@@ -5063,7 +5136,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
             metadata: {
               description,
               orientation: options.orientation ?? null,
-              generationTier,
+              generationTier: fallbackGenerationTier,
             },
           },
         }).catch((recoveryError) => {
@@ -5098,65 +5171,26 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     executionRegion?: string,
     options: IterateExecutionOptions = {},
   ): Promise<void> {
-    const generationTier = this.normalizeRequestedGenerationTier(options.generationTier)
+    const fallbackGenerationTier = this.normalizeRequestedGenerationTier(options.generationTier)
       ?? this.normalizeRequestedGenerationTier(options.sourceBundleContext?.latest_generation_tier)
       ?? 'standard';
     try {
-      const resolvedTimeoutS = this.resolvePipelineTimeout(timeoutS);
-      const aiEngineBaseUrls = await this.resolveAiEngineEndpointCandidates(executionRegion);
-      const resolvedRegion = this.resolveExecutionRegion(executionRegion);
-      const pipelineVersion = options.pipelineVersion === 'v1' ? 'v1' : 'v2';
-      const runtimeProfileHint = this.inferRuntimeProfileHint(
-        this.resolveRuntimeHintGameType(options.sourceSpec, options.game),
-        feedback,
-      );
-      const promptBundleSnapshot = pipelineVersion === 'v2'
-        ? (options.promptBundleSnapshot ?? await this.buildPromptBundleSnapshot('iterate', runtimeProfileHint, generationTier))
-        : null;
-      const runtimeContract = pipelineVersion === 'v2'
-        ? (options.runtimeContract ?? await this.buildDefaultRuntimeContract('iterate', runtimeProfileHint, options.orientation, generationTier))
-        : null;
-      if (taskId) {
-        await this.generationTaskService.markRunning(taskId!);
-      }
-
-      const handle = await this.requestUpstreamAsyncTask({
-        aiEngineBaseUrls,
-        endpoint: pipelineVersion === 'v2'
-          ? '/api/v1/ai/pipeline/v2/iterate/async'
-          : '/api/v1/ai/pipeline/iterate/async',
-        payload: pipelineVersion === 'v2'
-          ? this.buildIterateV2Payload({
-            gameId,
-            userId,
-            feedback,
-            conversationHistory,
-            currentCode,
-            executionRegion: resolvedRegion,
-            timeoutS: resolvedTimeoutS,
-            taskId,
-            game: options.game,
-            orientation: options.orientation,
-            generationTier,
-            sourceSpec: options.sourceSpec,
-            sourceBundleContext: options.sourceBundleContext,
-            promptBundleSnapshot: promptBundleSnapshot!,
-            runtimeContract: runtimeContract!,
-          })
-          : {
-            game_id: gameId,
-            feedback,
-            user_id: userId,
-            conversation: conversationHistory,
-            current_code: currentCode,
-            region: resolvedRegion,
-            timeout_s: resolvedTimeoutS,
-            task_id: taskId,
-          },
-        taskId,
-        userId,
+      const {
+        generationTier,
+        resolvedTimeoutS,
+        handle,
+        runtimeContract,
+      } = await this.launchIterationTask(
         gameId,
-      });
+        userId,
+        feedback,
+        conversationHistory,
+        currentCode,
+        timeoutS,
+        taskId,
+        executionRegion,
+        options,
+      );
       const snapshot = await this.waitForUpstreamTaskTerminal({
         aiEngineBaseUrl: handle.aiEngineBaseUrl,
         upstreamTaskId: handle.task_id,
@@ -5235,7 +5269,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
               conversation: conversationHistory,
               baseStatus: options.game?.status || null,
               orientation: options.orientation ?? null,
-              generationTier,
+              generationTier: fallbackGenerationTier,
             },
           },
         }).catch((recoveryError) => {
@@ -6249,167 +6283,6 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       this.logger.error(`Failed to iterate game: ${error.message}`);
       throw error;
     }
-  }
-
-  /**
-   * Calls Stage 07: iteration engine (incremental code modification).
-   */
-  private async runIteration(
-    gameId: string,
-    userId: string,
-    feedback: string,
-    nextVersion: number,
-    conversationHistory: any[],
-    currentCode: string,
-    timeoutS?: number,
-    taskId?: string,
-    executionRegion?: string,
-  ): Promise<void> {
-    return this.executeIterationTask(
-      gameId,
-      userId,
-      feedback,
-      nextVersion,
-      conversationHistory,
-      currentCode,
-      timeoutS,
-      taskId,
-      executionRegion,
-    );
-    /*
-    try {
-      const resolvedTimeoutS = this.resolvePipelineTimeout(timeoutS);
-      const aiEngineBaseUrl = await this.resolveAiEngineEndpoint(executionRegion);
-      if (taskId) {
-        await this.generationTaskService.markRunning(taskId!);
-      }
-      const response = await withRetry(() =>
-        axios.post(
-          `${aiEngineBaseUrl}/api/v1/ai/pipeline/iterate`,
-          {
-            game_id: gameId,
-            feedback,
-            user_id: userId,
-            conversation: conversationHistory,
-            current_code: currentCode,
-            region: this.resolveExecutionRegion(executionRegion),
-            timeout_s: resolvedTimeoutS,
-            task_id: taskId,
-          },
-          { timeout: this.buildUpstreamTimeoutMs(resolvedTimeoutS) },
-        )
-        ,
-        {
-          retryOnHttpResponse: false,
-        }
-      );
-
-      const {
-        html_code: htmlCode = currentCode,
-        iteration_type: iterationType = 'element_change',
-        generation_time_ms: genTimeMs = 0,
-        qa_retries: qaRetries = 0,
-        iteration_retries: iterationRetries = 0,
-      } = response.data;
-      this.ensurePersistableGeneratedHtml(htmlCode);
-      await this.assertTaskCanPersistResult(taskId, gameId);
-
-      const bundlePreviewUrl = this.buildPreviewUrl(gameId);
-
-      this.emitStage(userId, gameId, 'publishing', {
-        stage: 'publishing',
-        attempt: 1,
-        maxAttempts: 3,
-      });
-
-      await this.persistGeneratedGameResult({
-        gameId,
-        userId,
-        version: nextVersion,
-        htmlCode,
-        previewUrl: bundlePreviewUrl,
-        metadata: {
-          feedback,
-          iterationType,
-          genTimeMs,
-          qaRetries,
-          iterationRetries,
-          aiConversation: [
-            ...conversationHistory,
-            { role: 'user', content: feedback },
-          ],
-        },
-        updateData: {
-          version: nextVersion,
-          status: 'draft',
-          failedStage: null,
-          failedReason: null,
-          retryCount: 0,
-          lastErrorAt: null,
-        },
-      });
-
-      if (taskId) {
-        await this.generationTaskService.markSucceeded({
-          taskId: taskId!,
-          previewUrl: bundlePreviewUrl,
-          resultSummary: {
-            feedback,
-            iterationType,
-            generationTimeMs: genTimeMs,
-            qaRetries,
-            iterationRetries,
-            version: nextVersion,
-          },
-        });
-      }
-
-      this.wsGateway.emitGenerationProgress(userId, gameId, '迭代完成', 100);
-    } catch (error) {
-      if (error instanceof TaskAbortedError) {
-        this.logger.warn(`Iteration result discarded for task ${taskId || 'n/a'}: ${error.message}`);
-        return;
-      }
-
-      const failure = this.extractFailureContext(error);
-      this.logger.error(`Iteration failed for game ${gameId}: ${failure.message}`);
-      this.logStructuredFailure('PIPELINE_ITERATION_FAILURE', {
-        gameId,
-        userId,
-        stage: failure.failedStage || 'iteration',
-        retryCount: failure.retryCount,
-        error: failure.message,
-      });
-      await this.persistFailureState({
-        gameId,
-        failedStage: failure.failedStage || 'iteration',
-        failedReason: failure.message,
-        retryCount: failure.retryCount,
-      });
-      if (taskId) {
-        await this.generationTaskService.markFailed({
-          taskId: taskId!,
-          failedStage: failure.failedStage || 'iteration',
-          errorMessage: failure.message,
-          retryCount: failure.retryCount,
-          fallback: failure.fallback,
-          timedOut: this.isTimeoutError(error),
-        }).catch((taskError) => {
-          this.logger.warn(`Failed to update iteration task ${taskId}: ${taskError.message}`);
-        });
-      }
-      this.wsGateway.emitGenerationError(userId, gameId, failure.message, {
-        stage: failure.failedStage || 'iteration',
-        retryCount: failure.retryCount,
-        fallback: failure.fallback,
-      });
-      this.wsGateway.emitNotification(userId, {
-        type: 'error',
-        message: `Game iteration failed: ${failure.message}`,
-        gameId,
-      });
-    }
-    */
   }
 
   async getGenerationStatus(id: string, userId: string): Promise<any> {

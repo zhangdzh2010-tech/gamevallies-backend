@@ -235,6 +235,7 @@ function openSse(url, headers, metrics, options = {}) {
   const state = {
     buffer: '',
     closed: false,
+    manualClose: false,
   };
   const listeners = {
     event: new Set(),
@@ -310,12 +311,20 @@ function openSse(url, headers, metrics, options = {}) {
 
     response.on('error', (error) => {
       state.closed = true;
+      if (state.manualClose) {
+        emit('close');
+        return;
+      }
       emit('error', error);
     });
   });
 
   request.on('error', (error) => {
     state.closed = true;
+    if (state.manualClose) {
+      emit('close');
+      return;
+    }
     emit('error', error);
   });
 
@@ -330,9 +339,69 @@ function openSse(url, headers, metrics, options = {}) {
       if (state.closed) {
         return;
       }
+      state.manualClose = true;
       state.closed = true;
       request.destroy();
     },
+  };
+}
+
+function inferSuspectedLayer(result) {
+  const authProbe = result.authProbe || {};
+  const authLongProbe = result.authLongProbe || {};
+  const sse = result.sse || {};
+  const sessionAfterFirstRound = result.sessionAfterFirstRound || {};
+  const readyReconnect = result.readyReconnect || {};
+  const readySnapshot = readyReconnect.readySnapshot || {};
+  const sessionProgressed = Boolean(
+    sessionAfterFirstRound.status
+    || readySnapshot.status
+    || (sessionAfterFirstRound.revision != null && sessionAfterFirstRound.revision >= 2)
+    || (readySnapshot.revision != null && readySnapshot.revision >= 2),
+  );
+  const hasCreationSessionTimeout = /timeout/i.test(String(sse.streamError || ''));
+  const hasLongProbeTimeout = /timeout/i.test(String(authLongProbe.streamError || ''));
+
+  if (sse.eventsArrivedIncrementally && authLongProbe.eventsArrivedIncrementally) {
+    return {
+      suspectedLayer: 'passed',
+      suspectedLayerReason: 'Short probe, long probe, and creation-session stream all arrived incrementally.',
+    };
+  }
+
+  if (
+    authProbe.responseStatus === 200
+    && authProbe.firstEventMs != null
+    && authProbe.eventsArrivedIncrementally === false
+    && (hasLongProbeTimeout || authLongProbe.responseStatus == null)
+  ) {
+    return {
+      suspectedLayer: 'gateway_transport',
+      suspectedLayerReason: 'Authenticated short probe is buffered while the long probe never establishes a usable live stream.',
+    };
+  }
+
+  if (
+    authLongProbe.eventsArrivedIncrementally
+    && (hasCreationSessionTimeout || sse.responseStatus == null)
+    && sessionProgressed
+  ) {
+    return {
+      suspectedLayer: 'game_service_stream',
+      suspectedLayerReason: 'Gateway-level probe streams, but creation-session SSE still times out while session state keeps progressing.',
+    };
+  }
+
+  if ((hasCreationSessionTimeout || sse.responseStatus == null) && !sessionProgressed) {
+    return {
+      suspectedLayer: 'session_or_ai_pipeline',
+      suspectedLayerReason: 'The creation session stream never became usable and the session itself did not progress to the next state.',
+    };
+  }
+
+  return {
+    suspectedLayer: 'unknown',
+    suspectedLayerReason: 'Signals are mixed; inspect the saved result JSON together with the gateway audit output.',
   };
 }
 
@@ -453,7 +522,7 @@ async function probeAuthenticatedSse(
   });
 
   const settled = await waitFor(
-    () => Boolean(metrics.responseStatus || metrics.streamError || metrics.probeDoneSeen),
+    () => Boolean(metrics.streamError || metrics.probeDoneSeen),
     Math.max(connectTimeoutMs, readTimeoutMs),
     100,
   );
@@ -473,6 +542,7 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const env = loadEnv(args['env-file'] || DEFAULT_ENV_PATH);
   const baseUrl = String(args['base-url'] || env.PUBLIC_API_BASE_URL || '').replace(/\/$/u, '');
+  const sessionBaseUrl = String(args['session-base-url'] || args['stream-base-url'] || baseUrl).replace(/\/$/u, '');
   const adminToken = String(args['admin-token'] || env.ADMIN_TOKEN || '');
   const outputPath = path.resolve(args.output || path.join(REPO_ROOT, `tmp_verify_creation_session_sse_${new Date().toISOString().replace(/[-:TZ.]/gu, '').slice(0, 14)}.json`));
   const connectTimeoutMs = Number(args['connect-timeout-ms'] || 10000);
@@ -487,6 +557,9 @@ async function main() {
   if (!baseUrl) {
     throw new Error('PUBLIC_API_BASE_URL is required');
   }
+  if (!sessionBaseUrl) {
+    throw new Error('session base URL is required');
+  }
 
   const suffix = `${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
   const username = String(args.username || `sse_verify_${suffix}`);
@@ -496,6 +569,7 @@ async function main() {
   const result = {
     startedAt: nowIso(),
     baseUrl,
+    sessionBaseUrl,
     username,
     createdTempUser: false,
     sessionId: null,
@@ -544,13 +618,13 @@ async function main() {
     token = await login(baseUrl, username, password);
     const jsonHeaders = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=utf-8' };
     result.authProbe = await probeAuthenticatedSse(
-      baseUrl,
+      sessionBaseUrl,
       token,
       connectTimeoutMs,
       Math.min(readTimeoutMs, 15000),
     );
     result.authLongProbe = await probeAuthenticatedSse(
-      baseUrl,
+      sessionBaseUrl,
       token,
       connectTimeoutMs,
       Math.max(connectTimeoutMs + 4000, Math.min(readTimeoutMs, 20000)),
@@ -573,7 +647,7 @@ async function main() {
       difficulty: 'medium',
     };
 
-    const createSessionResponse = await httpJson('POST', buildUrl(baseUrl, '/api/v1/games/creation-sessions'), {
+    const createSessionResponse = await httpJson('POST', buildUrl(sessionBaseUrl, '/api/v1/games/creation-sessions'), {
       headers: jsonHeaders,
       payload: {
         prompt: caseData.prompt,
@@ -602,7 +676,7 @@ async function main() {
     const bootstrapSeen = { value: false };
 
     result.sse.connectedAt = nowIso();
-    sseStream = openSse(buildUrl(baseUrl, `/api/v1/games/creation-sessions/${sessionId}/events`), {
+    sseStream = openSse(buildUrl(sessionBaseUrl, `/api/v1/games/creation-sessions/${sessionId}/events`), {
       Authorization: `Bearer ${token}`,
       Accept: 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -652,7 +726,7 @@ async function main() {
       250,
     );
 
-    let sessionAfterFirstRound = await getSession(baseUrl, token, sessionId);
+    let sessionAfterFirstRound = await getSession(sessionBaseUrl, token, sessionId);
     result.sessionAfterFirstRound = {
       status: sessionAfterFirstRound.status || null,
       revision: sessionAfterFirstRound.revision || null,
@@ -675,7 +749,7 @@ async function main() {
     };
 
     if (slotKey && revision && firstRoundDone.value) {
-      const messageResponse = await httpJson('POST', buildUrl(baseUrl, `/api/v1/games/creation-sessions/${sessionId}/messages`), {
+      const messageResponse = await httpJson('POST', buildUrl(sessionBaseUrl, `/api/v1/games/creation-sessions/${sessionId}/messages`), {
         headers: jsonHeaders,
         payload: {
           content: answer,
@@ -692,7 +766,7 @@ async function main() {
         250,
       );
     } else if (!result.sse.responseStatus) {
-      const readySnapshot = await waitForSessionReady(baseUrl, token, sessionId, readyPollMs, readyPollIntervalMs);
+      const readySnapshot = await waitForSessionReady(sessionBaseUrl, token, sessionId, readyPollMs, readyPollIntervalMs);
       result.readyReconnect = {
         readySnapshot: readySnapshot ? {
           status: readySnapshot.status || null,
@@ -705,7 +779,7 @@ async function main() {
       };
       if (readySnapshot) {
         result.readyReconnect.probe = await probeReadySessionSse(
-          baseUrl,
+          sessionBaseUrl,
           token,
           sessionId,
           readyReconnectTimeoutMs,
@@ -721,6 +795,7 @@ async function main() {
       && result.sse.firstEventMs < 10000
       && !('content-length' in result.sse.responseHeaders),
     );
+    Object.assign(result, inferSuspectedLayer(result));
   } finally {
     if (sseStream) {
       sseStream.close();
@@ -743,6 +818,7 @@ async function main() {
     sessionId: result.sessionId,
     username: result.username,
     createdTempUser: result.createdTempUser,
+    sessionBaseUrl: result.sessionBaseUrl,
     responseStatus: result.sse.responseStatus,
     headersReceivedMs: result.sse.headersReceivedMs,
     firstChunkMs: result.sse.firstChunkMs,
@@ -760,6 +836,8 @@ async function main() {
     readyReconnect: result.readyReconnect,
     eventCounts: result.sse.eventCounts,
     streamError: result.sse.streamError,
+    suspectedLayer: result.suspectedLayer || null,
+    suspectedLayerReason: result.suspectedLayerReason || null,
   }, null, 2));
 }
 
