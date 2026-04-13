@@ -1,57 +1,54 @@
 # Gamevallies Backend Docs
 
-当前 `docs/` 按用途收敛为 4 个目录，只保留仍在使用、职责明确的文档。
+`docs/` contains active backend design, integration, deployment, and testing documents.
 
-## 目录结构
+## Top-Level Plans
+
+- [`H5_TO_APP_DOWNLOAD_PROMO_PHASE1_PLAN_2026-04-13.md`](./H5_TO_APP_DOWNLOAD_PROMO_PHASE1_PLAN_2026-04-13.md)
+  Phase 1 plan for the H5-to-App download promo. This version does not depend on backend shell adoption and includes frontend integration, backend APIs, admin configuration, and Android release upload management.
+- [`H5_APP_DOWNLOAD_PROMO_PLAN_2026-04-03.md`](./H5_APP_DOWNLOAD_PROMO_PLAN_2026-04-03.md)
+  Earlier shell-based draft. For Phase 1 rollout, use the 2026-04-13 document as the source of truth.
+- [`backend_api_schema.md`](./backend_api_schema.md)
+  Backend API schema reference.
+
+## Directory Structure
 
 ### `deployment/`
 
 - [`deployment/DEPLOY_RUNBOOK.md`](./deployment/DEPLOY_RUNBOOK.md)
-  当前唯一有效的生产发布说明，包含发布步骤、域名校验和故障排查。
+  Production deployment runbook.
 - [`deployment/ENV_SYNC_GUIDE.md`](./deployment/ENV_SYNC_GUIDE.md)
-  当前唯一有效的环境变量字段说明与同步规则。
+  Environment variable sync and maintenance guide.
 
 ### `integration/`
 
 - [`integration/api-schema.md`](./integration/api-schema.md)
-  后端 API、数据模型、WebSocket 事件和兼容路由说明。
+  Backend API, data model, and WebSocket contract documentation.
 - [`integration/FRONTEND_ADAPTATION_P0_P2.md`](./integration/FRONTEND_ADAPTATION_P0_P2.md)
-  前端对接质量分、生成进度、创作者声誉等能力的适配说明。
+  Frontend adaptation plan for backend capabilities.
 - [`integration/GENERATION_PIPELINE_IMPROVEMENT_PLAN.md`](./integration/GENERATION_PIPELINE_IMPROVEMENT_PLAN.md)
-  游戏生成 8 阶段的重试、用户提示、失败日志与落库改造任务清单。
+  Generation pipeline improvement plan.
 - [`integration/LLM_GATEWAY_ASYNC_TASK_DESIGN.md`](./integration/LLM_GATEWAY_ASYNC_TASK_DESIGN.md)
-  LLM 网关、多 Region、末端错误日志与异步任务管理的详细设计文档。
+  Async task and LLM gateway design.
 - [`integration/DYNAMIC_CREATION_DIALOGUE_DESIGN.md`](./integration/DYNAMIC_CREATION_DIALOGUE_DESIGN.md)
-  创建页从前端固定补问改为后端按缺失槽位动态出题的设计方案，包含 API 契约、会话持久化与 Pipeline 改造。
-
+  Dynamic creation dialogue design.
 - [`integration/GAME_GENERATION_LOGIC_BREAKDOWN.md`](./integration/GAME_GENERATION_LOGIC_BREAKDOWN.md)
-  按当前真实代码复核游戏默认生成、对话补槽、迭代和 QA 修复链路，重点说明每个阶段的 prompt、输入、输出和跨服务接口。
-
+  Current generation logic breakdown.
 - [`integration/GAME_GENERATION_RUNTIME_REARCHITECTURE.md`](./integration/GAME_GENERATION_RUNTIME_REARCHITECTURE.md)
-  娓告垙鐢熸垚涓婚摼璺殑鏋舵瀯绾ч噸鏋勬柟妗堬紝鍥寸粫 Runtime Contract銆丳rompt Bundle銆丳ipeline 鍒嗗眰銆佸畾鍚戜慨澶嶅拰缁撹鍨嬫棩蹇?Artifact 璁捐銆?
+  Runtime rearchitecture design.
+
 ### `testing/`
 
 - [`testing/TEST_SUITE.md`](./testing/TEST_SUITE.md)
-  当前保留的测试说明文档，包含测试范围、运行方式和排查建议。
+  Test suite and execution notes.
 
 ### `reference/`
 
 - [`reference/config-file.json`](./reference/config-file.json)
-  历史配置样例文件，非发布入口。
+  Historical reference configuration sample.
 
-## 使用约定
+## Maintenance Notes
 
-- 生产部署只认 `docs/deployment/DEPLOY_RUNBOOK.md` 和 `docs/deployment/ENV_SYNC_GUIDE.md`
-- 不再新增“总览”“索引”“副本”“历史修复记录”类重复文档
-- 新增文档前，先判断是否能并入现有分类目录
-- 发现过期文档时，优先删除或合并，不继续堆叠
-
-## 已清理内容
-
-以下类型文档已从 `docs/` 中移除：
-
-- 重复的部署总览和 SOP
-- 旧的 Kubernetes / 多方案部署说明
-- Docker 修复历史和启动修复索引
-- 重复的测试索引、测试清单、实现总结
-- 前端适配文档副本
+- Prefer updating an existing document over creating near-duplicate plans.
+- When a newer plan supersedes an older draft, mark that clearly in the new document.
+- Keep deployment and integration docs current with the real running system rather than aspirational architecture.
