@@ -144,16 +144,25 @@ describe('AdminService', () => {
     service = new AdminService(prisma, configService, gameService);
   });
 
-  it('lists timeout configs by merging catalog defaults with db values', async () => {
+  it('lists timeout configs as business-facing virtual entries', async () => {
     prisma.systemConfig.findMany.mockResolvedValue([
       {
         id: 'cfg-1',
         configKey: 'timeout.pipeline.default_s',
-        configValue: '1800',
+        configValue: '1500',
         description: 'custom timeout',
         category: 'timeout',
         createdAt: new Date('2026-03-25T00:00:00.000Z'),
         updatedAt: new Date('2026-03-25T00:05:00.000Z'),
+      },
+      {
+        id: 'cfg-2',
+        configKey: 'timeout.ai_engine.iterate.element_change_overall_s',
+        configValue: '300',
+        description: 'iterate override',
+        category: 'timeout',
+        createdAt: new Date('2026-03-25T00:10:00.000Z'),
+        updatedAt: new Date('2026-03-25T00:15:00.000Z'),
       },
     ]);
 
@@ -163,28 +172,32 @@ describe('AdminService', () => {
       where: { category: 'timeout' },
       orderBy: [{ category: 'asc' }, { configKey: 'asc' }],
     });
+    expect(result).toHaveLength(7);
     expect(result).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        configKey: 'timeout.pipeline.default_s',
-        configValue: '1800',
+        configKey: 'timeout.business.pipeline_total_s',
+        configValue: '1500',
         category: 'timeout',
-        sectionId: 'infra_pipeline',
+        displayName: '全流程总超时',
         source: 'db',
         isDefault: false,
+        backingKeys: ['timeout.pipeline.default_s', 'timeout.pipeline.v2_min_s'],
       }),
       expect.objectContaining({
-        configKey: 'timeout.ai_engine.runtime_qa.max_s',
+        configKey: 'timeout.business.runtime_qa_s',
+        defaultValue: '30',
         category: 'timeout',
-        sectionId: 'step4_issue_repair',
+        sectionId: 'business_create_mainline',
         source: 'catalog',
         isDefault: true,
       }),
       expect.objectContaining({
-        configKey: 'timeout.ai_engine.iterate.element_change_request_s',
+        configKey: 'timeout.business.iterate_generation_s',
+        configValue: '300',
         category: 'timeout',
-        sectionId: 'extra_iterate',
-        source: 'catalog',
-        isDefault: true,
+        sectionId: 'business_iterate',
+        source: 'db',
+        isDefault: false,
       }),
     ]));
   });
@@ -346,6 +359,54 @@ describe('AdminService', () => {
       configKey: 'prompt.dialogue_reply_system',
       refreshResult: expect.objectContaining({
         refreshed: 2,
+        failed: 0,
+        partialFailure: false,
+      }),
+    }));
+
+    refreshSpy.mockRestore();
+  });
+
+  it('upserts business timeout configs by expanding to backing timeout keys', async () => {
+    prisma.systemConfig.upsert.mockResolvedValue({
+      id: 'cfg-timeout-virtual',
+      configKey: 'timeout.ai_engine.iterate.element_change_overall_s',
+      configValue: '240',
+      description: 'updated',
+      category: 'timeout',
+    });
+    const refreshSpy = jest
+      .spyOn(service, 'refreshTimeoutConfigs')
+      .mockResolvedValue({ refreshed: 1, failed: 0, partialFailure: false } as any);
+
+    const result = await service.upsertConfig('timeout.business.iterate_generation_s', {
+      value: '240',
+      category: 'timeout',
+    });
+
+    expect(prisma.systemConfig.upsert).toHaveBeenCalledTimes(6);
+    expect(prisma.systemConfig.upsert).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      where: { configKey: 'timeout.ai_engine.iterate.param_adjust_request_s' },
+      update: expect.objectContaining({ configValue: '90', category: 'timeout' }),
+      create: expect.objectContaining({ configKey: 'timeout.ai_engine.iterate.param_adjust_request_s', configValue: '90' }),
+    }));
+    expect(prisma.systemConfig.upsert).toHaveBeenNthCalledWith(4, expect.objectContaining({
+      where: { configKey: 'timeout.ai_engine.iterate.element_change_overall_s' },
+      update: expect.objectContaining({ configValue: '240', category: 'timeout' }),
+      create: expect.objectContaining({ configKey: 'timeout.ai_engine.iterate.element_change_overall_s', configValue: '240' }),
+    }));
+    expect(prisma.systemConfig.upsert).toHaveBeenNthCalledWith(6, expect.objectContaining({
+      where: { configKey: 'timeout.ai_engine.iterate.mechanic_change_overall_s' },
+      update: expect.objectContaining({ configValue: '270', category: 'timeout' }),
+      create: expect.objectContaining({ configKey: 'timeout.ai_engine.iterate.mechanic_change_overall_s', configValue: '270' }),
+    }));
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
+    expect(result).toEqual(expect.objectContaining({
+      configKey: 'timeout.business.iterate_generation_s',
+      configValue: '240',
+      category: 'timeout',
+      refreshResult: expect.objectContaining({
+        refreshed: 1,
         failed: 0,
         partialFailure: false,
       }),

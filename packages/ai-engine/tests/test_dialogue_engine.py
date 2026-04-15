@@ -38,6 +38,7 @@ from src.engine.dialogue_engine import (
     _intent_parse_request_timeout_s,
     _normalize_game_type_label,
     _normalize_slot_payload,
+    _normalize_slot_text_value,
     _safe_parse_json,
 )
 from src.main import app
@@ -262,6 +263,131 @@ class TestDialogueEngine(unittest.TestCase):
         self.assertIsNotNone(response.current_question)
         self.assertEqual(response.current_question.slot_key, "win_condition")
         self.assertTrue(response.ready_to_generate)
+
+    def test_normalize_slot_text_value_prefers_primary_control_and_progressive_difficulty(self):
+        self.assertEqual(
+            _normalize_slot_text_value(
+                "input_method",
+                "主要是点击选项，不做拖拽，滑动只是轻微辅助",
+            ),
+            "tap",
+        )
+        self.assertEqual(
+            _normalize_slot_text_value(
+                "difficulty",
+                "前几题比较轻松，后面逐步变难",
+            ),
+            "progressive",
+        )
+
+    def test_analyze_turn_multi_round_fixture_converges_after_control_and_difficulty_answers(self):
+        engine = DialogueEngine()
+        initial_prompt = "做一个教育游戏，把学习目标转成互动挑战，放在城市通勤场景里"
+
+        async def fake_extract_slots(session, *, source_text, title=None):
+            session.slots.game_type = "educational"
+            session.slots.core_mechanic = "把学习目标转成一个移动端友好的交互挑战，并立即给出反馈"
+            session.slots.theme = "city"
+            return ["game_type", "core_mechanic", "theme"]
+
+        with patch.object(engine._client, "is_enabled", return_value=True), patch.object(
+            engine,
+            "_extract_slots_from_conversation",
+            new=AsyncMock(side_effect=fake_extract_slots),
+        ):
+            turn1 = asyncio.run(
+                engine.analyze_turn(
+                    AnalyzeDialogueTurnRequest(
+                        session_id="creation-multi-fixture-1",
+                        user_id="user-fixture-1",
+                        conversation=[
+                            ConversationMessage(role="user", content=initial_prompt, kind="prompt"),
+                        ],
+                        initial_prompt=initial_prompt,
+                    )
+                )
+            )
+
+            self.assertEqual(turn1.current_question.slot_key, "win_condition")
+            self.assertEqual(turn1.current_question.prompt, "这一局里，玩家达成什么条件才算过关？")
+
+            turn2_answer = "玩家需要在一局里连续答对5道题，并在60秒内到达终点"
+            turn2 = asyncio.run(
+                engine.analyze_turn(
+                    AnalyzeDialogueTurnRequest(
+                        session_id="creation-multi-fixture-1",
+                        user_id="user-fixture-1",
+                        current_slots=turn1.slots,
+                        conversation=[
+                            ConversationMessage(role="user", content=initial_prompt, kind="prompt"),
+                            ConversationMessage(role="assistant", content=turn1.reply, kind="question"),
+                            ConversationMessage(role="user", content=turn2_answer, kind="answer"),
+                        ],
+                        initial_prompt=initial_prompt,
+                        answered_slot_key=turn1.current_question.slot_key,
+                        answered_slot_prompt=turn1.current_question.prompt,
+                        latest_user_answer=turn2_answer,
+                    )
+                )
+            )
+
+            self.assertEqual(turn2.current_question.slot_key, "input_method")
+
+            turn3_answer = "以点击选项为主，左右滑动切换车道"
+            turn3 = asyncio.run(
+                engine.analyze_turn(
+                    AnalyzeDialogueTurnRequest(
+                        session_id="creation-multi-fixture-1",
+                        user_id="user-fixture-1",
+                        current_slots=turn2.slots,
+                        conversation=[
+                            ConversationMessage(role="user", content=initial_prompt, kind="prompt"),
+                            ConversationMessage(role="assistant", content=turn1.reply, kind="question"),
+                            ConversationMessage(role="user", content=turn2_answer, kind="answer"),
+                            ConversationMessage(role="assistant", content=turn2.reply, kind="question"),
+                            ConversationMessage(role="user", content=turn3_answer, kind="answer"),
+                        ],
+                        initial_prompt=initial_prompt,
+                        answered_slot_key=turn2.current_question.slot_key,
+                        answered_slot_prompt=turn2.current_question.prompt,
+                        latest_user_answer=turn3_answer,
+                    )
+                )
+            )
+
+            self.assertEqual(turn3.slots.input_method, "tap")
+            self.assertEqual(turn3.current_question.slot_key, "difficulty")
+
+            turn4_answer = "前几题比较轻松，后面逐步变难"
+            turn4 = asyncio.run(
+                engine.analyze_turn(
+                    AnalyzeDialogueTurnRequest(
+                        session_id="creation-multi-fixture-1",
+                        user_id="user-fixture-1",
+                        current_slots=turn3.slots,
+                        conversation=[
+                            ConversationMessage(role="user", content=initial_prompt, kind="prompt"),
+                            ConversationMessage(role="assistant", content=turn1.reply, kind="question"),
+                            ConversationMessage(role="user", content=turn2_answer, kind="answer"),
+                            ConversationMessage(role="assistant", content=turn2.reply, kind="question"),
+                            ConversationMessage(role="user", content=turn3_answer, kind="answer"),
+                            ConversationMessage(role="assistant", content=turn3.reply, kind="question"),
+                            ConversationMessage(role="user", content=turn4_answer, kind="answer"),
+                        ],
+                        initial_prompt=initial_prompt,
+                        answered_slot_key=turn3.current_question.slot_key,
+                        answered_slot_prompt=turn3.current_question.prompt,
+                        latest_user_answer=turn4_answer,
+                    )
+                )
+            )
+
+            self.assertEqual(turn4.slots.difficulty, "progressive")
+            self.assertTrue(turn4.ready_to_generate)
+            self.assertIsNone(turn4.current_question)
+            self.assertNotIn("input_method:ambiguous", turn4.ambiguity_flags)
+            self.assertNotIn("difficulty:ambiguous", turn4.ambiguity_flags)
+            self.assertIn("想直接生成就可以", turn4.reply)
 
     def test_infer_slots_from_reference_game_applies_reference_defaults(self):
         inferred = _infer_slots_from_text("帮我创建一个类似羊了个羊的游戏")

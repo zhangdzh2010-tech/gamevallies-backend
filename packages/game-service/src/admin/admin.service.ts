@@ -23,6 +23,12 @@ import promptPipelineCatalog from '../game/catalogs/prompt-pipeline-catalog.json
 import { TIMEOUT_CONFIG_CATALOG, TIMEOUT_CONFIG_CATALOG_BY_KEY } from '../game/catalogs/timeout-catalog';
 import { normalizeGameType } from '../game/game-type-catalog';
 import { normalizeIntentBuildSnapshot } from '../game/intent-build.util';
+import {
+  expandBusinessTimeoutConfigUpdates,
+  getBusinessTimeoutConfig,
+  isBusinessTimeoutConfigKey,
+  listBusinessTimeoutConfigs,
+} from './timeout-admin-catalog';
 
 interface LegacyPreviewBackfillOptions {
   limit?: number;
@@ -4701,56 +4707,7 @@ export class AdminService {
     if (category !== 'timeout') {
       return configs;
     }
-
-    const existingMap = new Map(configs.map((config) => [config.configKey, config]));
-    const merged = TIMEOUT_CONFIG_CATALOG.map((entry) => {
-      const existing = existingMap.get(entry.key);
-      return {
-        id: existing?.id || `catalog:${entry.key}`,
-        configKey: entry.key,
-        configValue: existing?.configValue ?? entry.defaultValue,
-        description: existing?.description ?? entry.description,
-        category: 'timeout',
-        createdAt: existing?.createdAt ?? null,
-        updatedAt: existing?.updatedAt ?? null,
-        defaultValue: entry.defaultValue,
-        unit: entry.unit,
-        valueType: entry.valueType,
-        service: entry.service,
-        group: entry.group,
-        sectionId: entry.sectionId,
-        sectionKind: entry.sectionKind,
-        sectionOrder: entry.sectionOrder,
-        sectionTag: entry.sectionTag,
-        sectionTitle: entry.sectionTitle,
-        sectionDescription: entry.sectionDescription,
-        itemOrder: entry.itemOrder,
-        source: existing ? 'db' : 'catalog',
-        isDefault: !existing,
-      };
-    });
-
-    const extras = configs
-      .filter((config) => !TIMEOUT_CONFIG_CATALOG_BY_KEY.has(config.configKey))
-      .map((config) => ({
-        ...config,
-        defaultValue: null,
-        unit: null,
-        valueType: 'int',
-        service: 'game-service',
-        group: 'custom',
-        sectionId: 'infra_config',
-        sectionKind: 'infra',
-        sectionOrder: 999,
-        sectionTag: 'Custom',
-        sectionTitle: 'Custom Timeout Keys',
-        sectionDescription: 'Timeout keys that exist in DB but are not yet mapped into the five-step catalog.',
-        itemOrder: 999,
-        source: 'db',
-        isDefault: false,
-      }));
-
-    return [...merged, ...extras];
+    return listBusinessTimeoutConfigs(configs);
   }
 
   private async resolveTimeoutConfigValue(
@@ -4793,6 +4750,17 @@ export class AdminService {
   }
 
   async getConfig(key: string) {
+    if (isBusinessTimeoutConfigKey(key)) {
+      const configs = await this.prisma.systemConfig.findMany({
+        where: { category: 'timeout' },
+        orderBy: [{ category: 'asc' }, { configKey: 'asc' }],
+      });
+      const businessConfig = getBusinessTimeoutConfig(key, configs);
+      if (businessConfig) {
+        return businessConfig;
+      }
+    }
+
     const config = await this.prisma.systemConfig.findUnique({
       where: { configKey: key },
     });
@@ -4847,6 +4815,43 @@ export class AdminService {
   }
 
   async upsertConfig(key: string, data: { value: string; description?: string; category?: string }) {
+    if (isBusinessTimeoutConfigKey(key)) {
+      let updates;
+      try {
+        updates = expandBusinessTimeoutConfigUpdates(key, data.value);
+      } catch (error: any) {
+        throw new BadRequestException(error?.message || 'Invalid timeout value');
+      }
+
+      for (const update of updates) {
+        const timeoutCatalog = TIMEOUT_CONFIG_CATALOG_BY_KEY.get(update.key);
+        await this.prisma.systemConfig.upsert({
+          where: { configKey: update.key },
+          update: {
+            configValue: update.value,
+            description: timeoutCatalog?.description ?? null,
+            category: 'timeout',
+          },
+          create: {
+            id: randomUUID(),
+            configKey: update.key,
+            configValue: update.value,
+            description: timeoutCatalog?.description ?? null,
+            category: 'timeout',
+          },
+        });
+      }
+
+      const refreshResult = await this.refreshTimeoutConfigs();
+      return {
+        id: `business:${key}`,
+        configKey: key,
+        configValue: String(data.value),
+        category: 'timeout',
+        refreshResult,
+      };
+    }
+
     const timeoutCatalog = TIMEOUT_CONFIG_CATALOG_BY_KEY.get(key);
     const promptCatalogEntry = PROMPT_CATALOG_BY_KEY.get(key);
     const category = data.category || (timeoutCatalog ? 'timeout' : 'prompt');
