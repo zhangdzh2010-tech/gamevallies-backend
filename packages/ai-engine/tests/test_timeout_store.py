@@ -27,3 +27,15 @@ def test_timeout_store_cache_ttl_falls_back_to_catalog_default_not_env():
         ttl = timeout_store._cache_ttl_s()
 
     assert ttl == 10
+
+
+def test_timeout_store_exposes_step_level_generation_defaults():
+    with patch("src.config.timeout_store._ensure_loaded", return_value=None), patch.dict(
+        timeout_store._CACHE,
+        {},
+        clear=True,
+    ):
+        assert timeout_store.get_raw("timeout.ai_engine.dialogue.slot_extract_request_s", 999) == "4"
+        assert timeout_store.get_raw("timeout.ai_engine.intent_parse.request_s", 999) == "45"
+        assert timeout_store.get_raw("timeout.ai_engine.iterate.element_change_request_s", 999) == "120"
+        assert timeout_store.get_raw("timeout.ai_engine.iterate.element_change_overall_s", 999) == "240"

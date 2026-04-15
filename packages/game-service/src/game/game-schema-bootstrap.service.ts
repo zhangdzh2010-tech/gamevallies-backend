@@ -585,13 +585,6 @@ const DEFAULT_CLOUD_REGION_CATALOG = [
     regionName: '上海',
     regionGroup: 'cn_mainland',
   },
-  {
-    id: '9d5307f1-9ee8-4f45-8b18-4e29c0011002',
-    vendor: 'volcengine',
-    regionCode: 'ap-southeast-johor',
-    regionName: '柔佛',
-    regionGroup: 'overseas',
-  },
 ];
 
 const DEFAULT_PROMPT_BUNDLES = Array.isArray(promptBundleCatalog)
@@ -657,27 +650,14 @@ export class GameSchemaBootstrapService implements OnModuleInit {
   constructor(private readonly prisma: PrismaService) {}
 
   private resolveLegacyExecutionRegion(): string {
-    const explicit = (process.env.AI_ENGINE_DEFAULT_REGION || process.env.SERVICE_REGION || '').trim();
-    if (explicit === 'ap_southeast_johor' || explicit === 'cn_shanghai') {
-      return explicit;
-    }
-
-    const cloudRegion = (process.env.VOLCENGINE_REGION || '').trim();
-    if (cloudRegion === 'ap-southeast-johor') {
-      return 'ap_southeast_johor';
-    }
-
     return 'cn_shanghai';
   }
 
   private buildDefaultRegionTargets() {
     const namespace = process.env.VOLCENGINE_REGISTRY_NAMESPACE || 'gamevallies';
     const legacyExecutionRegion = this.resolveLegacyExecutionRegion();
-    const legacyCloudRegion =
-      legacyExecutionRegion === 'ap_southeast_johor' ? 'ap-southeast-johor' : 'cn-shanghai';
     const legacyUrl = (process.env.AI_ENGINE_URL || '').trim();
     const shanghaiUrl = (process.env.AI_ENGINE_URL_CN_SHANGHAI || '').trim();
-    const johorUrl = (process.env.AI_ENGINE_URL_AP_SOUTHEAST_JOHOR || '').trim();
 
     return [
       {
@@ -692,28 +672,13 @@ export class GameSchemaBootstrapService implements OnModuleInit {
         registryNamespace: namespace,
         imageRepository: 'gv-ai-engine-cn',
         serviceRegionEnv: 'cn_shanghai',
-        aiEngineUrl: shanghaiUrl || (legacyExecutionRegion === 'cn_shanghai' && legacyCloudRegion === 'cn-shanghai' ? legacyUrl : ''),
-      },
-      {
-        id: '9d5307f1-9ee8-4f45-8b18-4e29c0012002',
-        regionCatalogId: DEFAULT_CLOUD_REGION_CATALOG[1].id,
-        vendor: 'volcengine',
-        cloudRegionCode: 'ap-southeast-johor',
-        executionRegion: 'ap_southeast_johor',
-        displayName: 'AI Engine 柔佛主实例',
-        functionName: 'gv-ai-engine-global',
-        registry: process.env.VOLCENGINE_REGISTRY_AP_SOUTHEAST_JOHOR || process.env.VOLCENGINE_REGISTRY || 'gamevallies-repo-ap-southeast-johor.cr.volces.com',
-        registryNamespace: namespace,
-        imageRepository: 'gv-ai-engine-global',
-        serviceRegionEnv: 'ap_southeast_johor',
-        aiEngineUrl: johorUrl || (legacyExecutionRegion === 'ap_southeast_johor' && legacyCloudRegion === 'ap-southeast-johor' ? legacyUrl : ''),
+        aiEngineUrl: shanghaiUrl || (legacyExecutionRegion === 'cn_shanghai' ? legacyUrl : ''),
       },
     ];
   }
 
   private async normalizeLegacyLlmGatewayData(defaultTargets: ReturnType<GameSchemaBootstrapService['buildDefaultRegionTargets']>) {
     const shanghaiTarget = defaultTargets.find((target) => target.executionRegion === 'cn_shanghai');
-    const johorTarget = defaultTargets.find((target) => target.executionRegion === 'ap_southeast_johor');
 
     if (shanghaiTarget) {
       await this.prisma.llmGatewayProvider.updateMany({
@@ -736,30 +701,6 @@ export class GameSchemaBootstrapService implements OnModuleInit {
       await this.prisma.llmStepRoute.updateMany({
         where: { region: 'cn-shanghai' },
         data: { region: 'cn_shanghai' },
-      });
-    }
-
-    if (johorTarget) {
-      await this.prisma.llmGatewayProvider.updateMany({
-        where: { region: 'ap-southeast-johor' },
-        data: {
-          region: 'ap_southeast_johor',
-          regionTargetId: johorTarget.id,
-          cloudVendor: 'volcengine',
-          cloudRegionCode: johorTarget.cloudRegionCode,
-        },
-      });
-      await this.prisma.llmGatewayProvider.updateMany({
-        where: { region: 'ap_southeast_johor', regionTargetId: null },
-        data: {
-          regionTargetId: johorTarget.id,
-          cloudVendor: 'volcengine',
-          cloudRegionCode: johorTarget.cloudRegionCode,
-        },
-      });
-      await this.prisma.llmStepRoute.updateMany({
-        where: { region: 'ap-southeast-johor' },
-        data: { region: 'ap_southeast_johor' },
       });
     }
   }
@@ -808,7 +749,7 @@ export class GameSchemaBootstrapService implements OnModuleInit {
     ]);
 
     const defaultProviders = new Map<string, { id: string }>();
-    for (const region of ['cn_shanghai', 'ap_southeast_johor']) {
+    for (const region of ['cn_shanghai']) {
       const candidates = providers.filter((provider) => provider.region === region);
       const selected = this.pickDefaultProviderForRegion(candidates);
       if (selected) {

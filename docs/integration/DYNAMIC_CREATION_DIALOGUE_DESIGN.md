@@ -379,7 +379,7 @@ model GameCreationSession {
   - 长度建议 `0..64`
 - `regionHint`
   - 选填
-  - `cn_shanghai | ap_southeast_johor`
+  - `cn_shanghai`
 - `locale`
   - 选填
   - 如 `zh-CN`

@@ -799,6 +799,70 @@ model SystemConfig {
   @@map("system_configs")
 }
 
+enum AppReleasePlatform {
+  ios
+  android
+}
+
+enum AppReleaseSourceType {
+  upload
+  external_url
+  app_store
+}
+
+enum AppReleaseStatus {
+  draft
+  published
+  archived
+}
+
+model AppRelease {
+  id             String               @id @default(uuid()) @db.VarChar(36)
+  platform       AppReleasePlatform
+  channel        String               @default("production") @db.VarChar(32)
+  versionName    String               @map("version_name") @db.VarChar(64)
+  buildNumber    String?              @map("build_number") @db.VarChar(64)
+  releaseNotes   String?              @map("release_notes") @db.LongText
+  downloadUrl    String?              @map("download_url") @db.VarChar(512)
+  qrCodeUrl      String?              @map("qr_code_url") @db.VarChar(512)
+  fileName       String?              @map("file_name") @db.VarChar(255)
+  fileSize       BigInt?              @map("file_size")
+  mimeType       String?              @map("mime_type") @db.VarChar(128)
+  storageKey     String?              @map("storage_key") @db.VarChar(512)
+  checksumSha256 String?              @map("checksum_sha256") @db.VarChar(64)
+  sourceType     AppReleaseSourceType @default(external_url) @map("source_type")
+  status         AppReleaseStatus     @default(draft)
+  isActive       Boolean              @default(false) @map("is_active")
+  publishedAt    DateTime?            @map("published_at") @db.DateTime(3)
+  createdBy      String?              @map("created_by") @db.VarChar(64)
+  createdAt      DateTime             @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt      DateTime             @updatedAt @map("updated_at") @db.DateTime(3)
+
+  @@index([platform, channel, status])
+  @@index([platform, channel, isActive])
+  @@map("app_releases")
+}
+
+model AppPromoEvent {
+  id        String   @id @default(uuid()) @db.VarChar(36)
+  scene     String   @db.VarChar(64)
+  eventType String   @map("event_type") @db.VarChar(64)
+  userId    String?  @map("user_id") @db.VarChar(36)
+  gameId    String?  @map("game_id") @db.VarChar(36)
+  deviceId  String   @map("device_id") @db.VarChar(128)
+  platform  String?  @db.VarChar(32)
+  channel   String?  @db.VarChar(64)
+  userAgent String?  @map("user_agent") @db.VarChar(512)
+  ipHash    String?  @map("ip_hash") @db.VarChar(128)
+  extraJson Json?    @map("extra_json")
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  @@index([scene, eventType, createdAt])
+  @@index([platform, createdAt])
+  @@index([deviceId, createdAt])
+  @@map("app_promo_events")
+}
+
 model GenerationArtifact {
   id           String          @id @default(uuid()) @db.VarChar(36)
   taskId       String?         @map("task_id") @db.VarChar(36)

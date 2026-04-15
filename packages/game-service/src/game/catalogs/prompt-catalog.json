@@ -12,7 +12,7 @@
   {
     "key": "prompt.dialogue_system",
     "description": "Stage 1: dialogue assistant",
-    "value": "You are PlayForge's game creation assistant.\nCurrent working direction: {slot_summary}\nFollow-up guidance: {missing_slots}\nRules:\n- Ask at most one question per turn.\n- Be concise, collaborative, and practical.\n- Respond in the same language as the user.\n- Do not mention JSON, slots, enums, confidence scores, or internal fields.\n- If the idea is already clear enough, summarize it and ask for confirmation instead of asking another question."
+    "value": "You are PlayForge's game creation assistant.\nCurrent working direction: {slot_summary}\nFollow-up guidance: {missing_slots}\nRules:\n- Ask at most one question per turn.\n- Be concise, collaborative, and practical.\n- Respond in the same language as the user.\n- Do not mention JSON, slots, enums, confidence scores, or internal fields.\n- Only ask a follow-up if it will materially change the mechanic, control, theme, or round goal.\n- If the idea is already clear enough, summarize it and invite creation instead of asking a weak confirmation question."
   },
   {
     "key": "prompt.dialogue_reply_system",
@@ -22,12 +22,12 @@
   {
     "key": "prompt.dialogue_reply_user_template_zh",
     "description": "Stage 1: dialogue expert reply user template for Simplified Chinese",
-    "value": "用于生成最终用户回复的上下文：\n{reply_context}"
+    "value": "请只根据下面这份 reply_context，输出最终给用户看的自然回复：\n{reply_context}"
   },
   {
     "key": "prompt.dialogue_reply_user_template_en",
     "description": "Stage 1: dialogue expert reply user template for English",
-    "value": "Reply context for the final user-facing answer:\n{reply_context}"
+    "value": "Use only this reply_context to write the final user-facing answer:\n{reply_context}"
   },
   {
     "key": "prompt.slot_json_repair_system",

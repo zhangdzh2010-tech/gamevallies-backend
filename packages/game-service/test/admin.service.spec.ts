@@ -124,7 +124,6 @@ describe('AdminService', () => {
         const values: Record<string, string> = {
           AI_ENGINE_URL: 'http://ai-engine.test',
           AI_ENGINE_URL_CN_SHANGHAI: 'https://ai-cn.test',
-          AI_ENGINE_URL_AP_SOUTHEAST_JOHOR: 'https://ai-jh.test',
           PUBLIC_API_BASE_URL: 'https://gamevallies.com',
           APP_URL: 'https://gamevallies.com',
         };
@@ -169,12 +168,21 @@ describe('AdminService', () => {
         configKey: 'timeout.pipeline.default_s',
         configValue: '1800',
         category: 'timeout',
+        sectionId: 'infra_pipeline',
         source: 'db',
         isDefault: false,
       }),
       expect.objectContaining({
         configKey: 'timeout.ai_engine.runtime_qa.max_s',
         category: 'timeout',
+        sectionId: 'step4_issue_repair',
+        source: 'catalog',
+        isDefault: true,
+      }),
+      expect.objectContaining({
+        configKey: 'timeout.ai_engine.iterate.element_change_request_s',
+        category: 'timeout',
+        sectionId: 'extra_iterate',
         source: 'catalog',
         isDefault: true,
       }),
@@ -224,7 +232,7 @@ describe('AdminService', () => {
     refreshSpy.mockRestore();
   });
 
-  it('refreshes timeout configs with partial success when one ai node is down', async () => {
+  it('refreshes timeout configs through the China ai node', async () => {
     const originalAdminToken = process.env.ADMIN_TOKEN;
     process.env.ADMIN_TOKEN = 'admin-test-token';
     prisma.systemConfig.findUnique.mockResolvedValue({
@@ -233,8 +241,7 @@ describe('AdminService', () => {
     prisma.aiEngineRegionTarget.findMany.mockResolvedValue([]);
     gameService.refreshTimeoutConfigCache.mockResolvedValue(undefined);
     const postSpy = jest.spyOn(axios, 'post')
-      .mockResolvedValueOnce({ data: { ok: true, refreshed: 12 } } as any)
-      .mockRejectedValueOnce(new Error('region unavailable'));
+      .mockResolvedValueOnce({ data: { ok: true, refreshed: 12 } } as any);
 
     try {
       const result = await service.refreshTimeoutConfigs();
@@ -244,19 +251,9 @@ describe('AdminService', () => {
         where: { configKey: 'timeout.game_service.admin_refresh_timeout_ms' },
         select: { configValue: true },
       });
-      expect(postSpy).toHaveBeenCalledTimes(2);
-      expect(postSpy).toHaveBeenNthCalledWith(
-        1,
+      expect(postSpy).toHaveBeenCalledTimes(1);
+      expect(postSpy).toHaveBeenCalledWith(
         'https://ai-cn.test/api/v1/ai/config/timeouts/refresh',
-        {},
-        expect.objectContaining({
-          timeout: 2500,
-          headers: { 'x-admin-token': 'admin-test-token' },
-        }),
-      );
-      expect(postSpy).toHaveBeenNthCalledWith(
-        2,
-        'https://ai-jh.test/api/v1/ai/config/timeouts/refresh',
         {},
         expect.objectContaining({
           timeout: 2500,
@@ -265,8 +262,8 @@ describe('AdminService', () => {
       );
       expect(result).toEqual(expect.objectContaining({
         refreshed: 2,
-        failed: 1,
-        partialFailure: true,
+        failed: 0,
+        partialFailure: false,
         gameService: { status: 'ok' },
       }));
       expect(result.aiEngine).toEqual([
@@ -274,11 +271,6 @@ describe('AdminService', () => {
           baseUrl: 'https://ai-cn.test',
           status: 'ok',
           data: { ok: true, refreshed: 12 },
-        }),
-        expect.objectContaining({
-          baseUrl: 'https://ai-jh.test',
-          status: 'error',
-          errorMessage: 'region unavailable',
         }),
       ]);
     } finally {
@@ -2473,11 +2465,11 @@ describe('AdminService', () => {
       service.upsertAiEngineRegionTarget(undefined, {
         accountId: 'account-1',
         regionCatalogId: 'region-1',
-        executionRegion: 'ap_southeast_johor',
-        displayName: 'AI Engine Johor',
-        functionName: 'gv-ai-engine-global',
+        executionRegion: 'legacy_region',
+        displayName: 'AI Engine Legacy',
+        functionName: 'gv-ai-engine-legacy',
       }),
-    ).rejects.toThrow('regionCatalogId does not match executionRegion=ap_southeast_johor');
+    ).rejects.toThrow('executionRegion must be cn_shanghai');
 
     expect(prisma.aiEngineRegionTarget.upsert).not.toHaveBeenCalled();
   });
@@ -2496,13 +2488,13 @@ describe('AdminService', () => {
       },
       {
         id: 'target-2',
-        displayName: 'AI Engine Johor',
-        executionRegion: 'ap_southeast_johor',
+        displayName: 'AI Engine Shanghai Pending',
+        executionRegion: 'cn_shanghai',
         deployEnabled: true,
         deployStatus: 'pending',
         aiEngineUrl: null,
         account: { id: 'account-1', accountKey: 'volc-default', displayName: 'Volcengine', vendor: 'volcengine' },
-        regionCatalog: { id: 'region-2', regionCode: 'ap-southeast-johor', regionName: 'Johor', regionGroup: 'overseas' },
+        regionCatalog: { id: 'region-2', regionCode: 'cn-shanghai', regionName: 'Shanghai', regionGroup: 'cn_mainland' },
       },
     ]);
 
@@ -2805,7 +2797,7 @@ describe('AdminService', () => {
       service.upsertLlmRoute(undefined, {
         stepKey: 'qa_fix',
         providerId: 'provider-1',
-        executionRegion: 'ap_southeast_johor',
+        executionRegion: 'legacy_region',
       }),
     ).rejects.toThrow('executionRegion must match the selected provider region');
 

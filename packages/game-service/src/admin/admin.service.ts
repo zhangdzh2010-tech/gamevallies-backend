@@ -743,7 +743,7 @@ export class AdminService {
   }
 
   private normalizeExecutionRegion(rawValue?: string | null): string {
-    return (rawValue || '').trim() === 'ap_southeast_johor' ? 'ap_southeast_johor' : 'cn_shanghai';
+    return 'cn_shanghai';
   }
 
   private getConfiguredAiEngineAdminBaseUrlForRegion(executionRegion?: string | null): string {
@@ -754,9 +754,7 @@ export class AdminService {
       || 'cn_shanghai',
     );
 
-    const regionSpecificUrl = normalizedRegion === 'ap_southeast_johor'
-      ? this.configService.get<string>('AI_ENGINE_URL_AP_SOUTHEAST_JOHOR', '')
-      : this.configService.get<string>('AI_ENGINE_URL_CN_SHANGHAI', '');
+    const regionSpecificUrl = this.configService.get<string>('AI_ENGINE_URL_CN_SHANGHAI', '');
     const normalizedSpecificUrl = (regionSpecificUrl || '').trim().replace(/\/$/, '');
     if (normalizedSpecificUrl) {
       return normalizedSpecificUrl;
@@ -770,12 +768,7 @@ export class AdminService {
   }
 
   private getDefaultExecutionRegion(): string {
-    const region = (
-      this.configService.get<string>('AI_ENGINE_DEFAULT_REGION')
-      || this.configService.get<string>('SERVICE_REGION')
-      || 'cn_shanghai'
-    ).trim();
-    return region === 'ap_southeast_johor' ? region : 'cn_shanghai';
+    return 'cn_shanghai';
   }
 
   private async getAiEngineAdminBaseUrls(regionTargetId?: string): Promise<string[]> {
@@ -804,10 +797,10 @@ export class AdminService {
       }
     } else {
       appendUrl(this.getConfiguredAiEngineAdminBaseUrlForRegion('cn_shanghai'));
-      appendUrl(this.getConfiguredAiEngineAdminBaseUrlForRegion('ap_southeast_johor'));
 
       const targets = await this.prisma.aiEngineRegionTarget.findMany({
         where: {
+          executionRegion: 'cn_shanghai',
           deployEnabled: true,
           deployStatus: 'deployed',
           aiEngineUrl: { not: null },
@@ -3459,6 +3452,9 @@ export class AdminService {
 
   async listCloudRegions() {
     return this.prisma.cloudRegionCatalog.findMany({
+      where: {
+        regionCode: 'cn-shanghai',
+      },
       include: {
         account: {
           select: {
@@ -3475,7 +3471,9 @@ export class AdminService {
   }
 
   async listAiEngineRegionTargets(params?: { providerSelectableOnly?: boolean }) {
-    const where: Prisma.AiEngineRegionTargetWhereInput = {};
+    const where: Prisma.AiEngineRegionTargetWhereInput = {
+      executionRegion: 'cn_shanghai',
+    };
     if (params?.providerSelectableOnly) {
       where.deployEnabled = true;
       where.deployStatus = 'deployed';
@@ -3554,12 +3552,10 @@ export class AdminService {
     if (regionCatalog.accountId !== account.id) {
       throw new BadRequestException('regionCatalogId does not belong to the selected account');
     }
-    if (!['cn_shanghai', 'ap_southeast_johor'].includes(body.executionRegion)) {
-      throw new BadRequestException('executionRegion must be cn_shanghai or ap_southeast_johor');
+    if (body.executionRegion !== 'cn_shanghai') {
+      throw new BadRequestException('executionRegion must be cn_shanghai');
     }
-    const expectedCloudRegionCode = body.executionRegion === 'ap_southeast_johor'
-      ? 'ap-southeast-johor'
-      : 'cn-shanghai';
+    const expectedCloudRegionCode = 'cn-shanghai';
     if (regionCatalog.regionCode !== expectedCloudRegionCode) {
       throw new BadRequestException(`regionCatalogId does not match executionRegion=${body.executionRegion}`);
     }
@@ -4722,6 +4718,13 @@ export class AdminService {
         valueType: entry.valueType,
         service: entry.service,
         group: entry.group,
+        sectionId: entry.sectionId,
+        sectionKind: entry.sectionKind,
+        sectionOrder: entry.sectionOrder,
+        sectionTag: entry.sectionTag,
+        sectionTitle: entry.sectionTitle,
+        sectionDescription: entry.sectionDescription,
+        itemOrder: entry.itemOrder,
         source: existing ? 'db' : 'catalog',
         isDefault: !existing,
       };
@@ -4736,6 +4739,13 @@ export class AdminService {
         valueType: 'int',
         service: 'game-service',
         group: 'custom',
+        sectionId: 'infra_config',
+        sectionKind: 'infra',
+        sectionOrder: 999,
+        sectionTag: 'Custom',
+        sectionTitle: 'Custom Timeout Keys',
+        sectionDescription: 'Timeout keys that exist in DB but are not yet mapped into the five-step catalog.',
+        itemOrder: 999,
         source: 'db',
         isDefault: false,
       }));
@@ -4820,6 +4830,13 @@ export class AdminService {
           valueType: timeoutCatalog.valueType,
           service: timeoutCatalog.service,
           group: timeoutCatalog.group,
+          sectionId: timeoutCatalog.sectionId,
+          sectionKind: timeoutCatalog.sectionKind,
+          sectionOrder: timeoutCatalog.sectionOrder,
+          sectionTag: timeoutCatalog.sectionTag,
+          sectionTitle: timeoutCatalog.sectionTitle,
+          sectionDescription: timeoutCatalog.sectionDescription,
+          itemOrder: timeoutCatalog.itemOrder,
           source: 'catalog',
           isDefault: true,
         };

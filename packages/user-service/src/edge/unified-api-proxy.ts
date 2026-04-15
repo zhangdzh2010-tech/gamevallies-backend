@@ -47,17 +47,17 @@ function normalizeBaseUrl(value: string | undefined): string | null {
   return trimmed || null;
 }
 
-function normalizeExecutionRegion(value: string | undefined): 'cn_shanghai' | 'ap_southeast_johor' {
-  return (value || '').trim() === 'ap_southeast_johor' ? 'ap_southeast_johor' : 'cn_shanghai';
+function normalizeExecutionRegion(_value: string | undefined): 'cn_shanghai' {
+  return 'cn_shanghai';
 }
 
 export function resolveAiEngineProxyBaseUrl(): string | null {
   const defaultRegion = normalizeExecutionRegion(
     process.env.AI_ENGINE_DEFAULT_REGION || process.env.SERVICE_REGION || 'cn_shanghai',
   );
-  const regionSpecificUrl = defaultRegion === 'ap_southeast_johor'
-    ? process.env.AI_ENGINE_URL_AP_SOUTHEAST_JOHOR
-    : process.env.AI_ENGINE_URL_CN_SHANGHAI;
+  const regionSpecificUrl = defaultRegion === 'cn_shanghai'
+    ? process.env.AI_ENGINE_URL_CN_SHANGHAI
+    : undefined;
 
   return normalizeBaseUrl(regionSpecificUrl) || normalizeBaseUrl(process.env.AI_ENGINE_URL);
 }
@@ -232,7 +232,7 @@ export function getProxyTargets(): ProxyTarget[] {
     },
     {
       name: 'ai-engine',
-      envKey: 'AI_ENGINE_URL_CN_SHANGHAI|AI_ENGINE_URL_AP_SOUTHEAST_JOHOR|AI_ENGINE_URL',
+      envKey: 'AI_ENGINE_URL_CN_SHANGHAI|AI_ENGINE_URL',
       upstreamBaseUrl: resolveAiEngineProxyBaseUrl(),
       prefixes: ['/api/v1/ai', '/ai'],
     },
