@@ -8,7 +8,6 @@
   python scripts/deploy.py                  # 部署所有服务
   python scripts/deploy.py user-service     # 部署单个服务
   python scripts/deploy.py ai-engine-cn     # 只部署中国区 ai-engine
-  python scripts/deploy.py ai-engine-global # 只部署海外区 ai-engine
 
 所需环境变量（参考 .env.deploy.example）:
   必填: VOLCENGINE_ACCESS_KEY, VOLCENGINE_SECRET_KEY
@@ -106,7 +105,7 @@ load_env_file(
 # svc key → function name in VeFaaS console (须与控制台函数名一致)
 # type="python" 表示 AI 引擎（独立 Dockerfile，不同构建参数）
 # 注意：ai-engine 在这里是逻辑服务入口，真正部署目标会在 resolve_target_services()
-# 中展开为 gv-ai-engine-cn / gv-ai-engine-global，旧 gv-ai-engine 不再作为默认发布目标。
+# 中展开为 gv-ai-engine-cn，海外分支已移除，后续只保留中国区部署。
 SERVICES = [
     {"svc": "user-service",   "name": "gv-user-service",   "port": 3001, "internet": True},
     {"svc": "game-service",   "name": "gv-game-service",   "port": 3002},
@@ -131,12 +130,8 @@ SECURITY_GROUP_ID = os.environ.get("VOLCENGINE_SECURITY_GROUP_ID",  "")
 VOLCENGINE_VPC_ID_CN_SHANGHAI = os.environ.get("VOLCENGINE_VPC_ID_CN_SHANGHAI", "").strip()
 VOLCENGINE_SUBNET_ID_CN_SHANGHAI = os.environ.get("VOLCENGINE_SUBNET_ID_CN_SHANGHAI", "").strip()
 VOLCENGINE_SECURITY_GROUP_ID_CN_SHANGHAI = os.environ.get("VOLCENGINE_SECURITY_GROUP_ID_CN_SHANGHAI", "").strip()
-VOLCENGINE_VPC_ID_AP_SOUTHEAST_JOHOR = os.environ.get("VOLCENGINE_VPC_ID_AP_SOUTHEAST_JOHOR", "").strip()
-VOLCENGINE_SUBNET_ID_AP_SOUTHEAST_JOHOR = os.environ.get("VOLCENGINE_SUBNET_ID_AP_SOUTHEAST_JOHOR", "").strip()
-VOLCENGINE_SECURITY_GROUP_ID_AP_SOUTHEAST_JOHOR = os.environ.get("VOLCENGINE_SECURITY_GROUP_ID_AP_SOUTHEAST_JOHOR", "").strip()
 AI_ENGINE_URL     = os.environ.get("AI_ENGINE_URL",                 "")
 AI_ENGINE_URL_CN_SHANGHAI = os.environ.get("AI_ENGINE_URL_CN_SHANGHAI", "").strip()
-AI_ENGINE_URL_AP_SOUTHEAST_JOHOR = os.environ.get("AI_ENGINE_URL_AP_SOUTHEAST_JOHOR", "").strip()
 AI_ENGINE_DEFAULT_REGION = os.environ.get("AI_ENGINE_DEFAULT_REGION", os.environ.get("SERVICE_REGION", "cn_shanghai")).strip()
 USER_SERVICE_URL  = os.environ.get("USER_SERVICE_URL",              "")
 GAME_SERVICE_URL  = os.environ.get("GAME_SERVICE_URL",              "")
@@ -145,11 +140,8 @@ PUBLIC_API_BASE_URL = os.environ.get("PUBLIC_API_BASE_URL",         "")
 GAME_SERVICE_UPSTREAM_URL = os.environ.get("GAME_SERVICE_UPSTREAM_URL", GAME_SERVICE_URL)
 FEED_SERVICE_UPSTREAM_URL = os.environ.get("FEED_SERVICE_UPSTREAM_URL", FEED_SERVICE_URL)
 VOLCENGINE_REGION_CN_SHANGHAI = os.environ.get("VOLCENGINE_REGION_CN_SHANGHAI", "cn-shanghai").strip()
-VOLCENGINE_REGION_AP_SOUTHEAST_JOHOR = os.environ.get("VOLCENGINE_REGION_AP_SOUTHEAST_JOHOR", "ap-southeast-johor").strip()
 VOLCENGINE_REGISTRY_CN_SHANGHAI = os.environ.get("VOLCENGINE_REGISTRY_CN_SHANGHAI", REGISTRY).strip()
-VOLCENGINE_REGISTRY_AP_SOUTHEAST_JOHOR = os.environ.get("VOLCENGINE_REGISTRY_AP_SOUTHEAST_JOHOR", REGISTRY).strip()
 AI_ENGINE_FUNCTION_NAME_CN_SHANGHAI = os.environ.get("AI_ENGINE_FUNCTION_NAME_CN_SHANGHAI", "gv-ai-engine-cn").strip()
-AI_ENGINE_FUNCTION_NAME_AP_SOUTHEAST_JOHOR = os.environ.get("AI_ENGINE_FUNCTION_NAME_AP_SOUTHEAST_JOHOR", "gv-ai-engine-global").strip()
 APIG_PATCH_SAFE_METHOD = "PATCH"
 DEFAULT_FUNCTION_REQUEST_TIMEOUT_S = 180
 AI_ENGINE_TIMEOUT_HEADROOM_S = 60
@@ -201,7 +193,6 @@ USER_SERVICE_MANAGED_ENV_KEYS = set(COMMON_RUNTIME_ENV_KEYS + [
     "CORS_ORIGIN",
     "ADMIN_TOKEN",
     "AI_ENGINE_URL_CN_SHANGHAI",
-    "AI_ENGINE_URL_AP_SOUTHEAST_JOHOR",
     "AI_ENGINE_DEFAULT_REGION",
     "SERVICE_REGION",
     "AI_ENGINE_URL",
@@ -236,7 +227,6 @@ GAME_SERVICE_MANAGED_ENV_KEYS = set(COMMON_RUNTIME_ENV_KEYS + [
     "CORS_ORIGIN",
     "ADMIN_TOKEN",
     "AI_ENGINE_URL_CN_SHANGHAI",
-    "AI_ENGINE_URL_AP_SOUTHEAST_JOHOR",
     "AI_ENGINE_DEFAULT_REGION",
     "SERVICE_REGION",
     "AI_ENGINE_URL",
@@ -249,7 +239,6 @@ FEED_SERVICE_MANAGED_ENV_KEYS = set(COMMON_RUNTIME_ENV_KEYS + [
     "CORS_ORIGIN",
     "ADMIN_TOKEN",
     "AI_ENGINE_URL_CN_SHANGHAI",
-    "AI_ENGINE_URL_AP_SOUTHEAST_JOHOR",
     "AI_ENGINE_DEFAULT_REGION",
     "SERVICE_REGION",
     "AI_ENGINE_URL",
@@ -319,7 +308,6 @@ def _registry_instance_name(registry_host: str) -> str:
     host = (registry_host or "").strip().split(".", 1)[0]
     for suffix in (
         "-cn-shanghai",
-        "-ap-southeast-johor",
         "-ap-southeast-1",
     ):
         if host.endswith(suffix):
@@ -459,17 +447,13 @@ def _desired_function_resource_config(svc: dict) -> dict[str, int]:
 
 
 def _normalize_execution_region(value: str | None) -> str:
-    return "ap_southeast_johor" if (value or "").strip() == "ap_southeast_johor" else "cn_shanghai"
+    return "cn_shanghai"
 
 
 def _default_ai_engine_url_for_region(execution_region: str) -> str:
-    if execution_region == "ap_southeast_johor":
-        return AI_ENGINE_URL_AP_SOUTHEAST_JOHOR or (
-            AI_ENGINE_URL if _normalize_execution_region(AI_ENGINE_DEFAULT_REGION) == execution_region else ""
-        )
-    return AI_ENGINE_URL_CN_SHANGHAI or (
-        AI_ENGINE_URL if _normalize_execution_region(AI_ENGINE_DEFAULT_REGION) == execution_region else ""
-    )
+    if execution_region != "cn_shanghai":
+        return ""
+    return AI_ENGINE_URL_CN_SHANGHAI or AI_ENGINE_URL
 
 
 def build_ai_engine_targets() -> list[dict]:
@@ -484,24 +468,12 @@ def build_ai_engine_targets() -> list[dict]:
             "execution_region": "cn_shanghai",
             "registry": VOLCENGINE_REGISTRY_CN_SHANGHAI or REGISTRY,
         },
-        {
-            "svc": "ai-engine",
-            "name": AI_ENGINE_FUNCTION_NAME_AP_SOUTHEAST_JOHOR or "gv-ai-engine-global",
-            "port": 8000,
-            "type": "python",
-            "internet": True,
-            "cloud_region": VOLCENGINE_REGION_AP_SOUTHEAST_JOHOR or "ap-southeast-johor",
-            "execution_region": "ap_southeast_johor",
-            "registry": VOLCENGINE_REGISTRY_AP_SOUTHEAST_JOHOR or REGISTRY,
-        },
     ]
 
 
 def resolve_target_services(target: str) -> list[dict]:
     if target == "ai-engine-cn":
         return [build_ai_engine_targets()[0]]
-    if target == "ai-engine-global":
-        return [build_ai_engine_targets()[1]]
 
     selected = SERVICES if target == "all" else [s for s in SERVICES if s["svc"] == target]
     resolved: list[dict] = []
@@ -556,7 +528,7 @@ def sync_ai_engine_region_target_deploy_state(svc: dict) -> bool:
     elif deploy_status == "deployed":
         print(
             "  ⚠️  未提供可回写的 ai-engine URL，Region Target 将保留现有 endpoint；"
-            "如需自动切流，请配置 AI_ENGINE_URL_CN_SHANGHAI / AI_ENGINE_URL_AP_SOUTHEAST_JOHOR"
+            "如需自动切流，请配置 AI_ENGINE_URL_CN_SHANGHAI"
         )
 
     request = urllib.request.Request(
@@ -917,8 +889,6 @@ def _env_vars(port: int, svc: dict | None = None) -> dict:
         env["PUBLIC_API_BASE_URL"] = PUBLIC_API_BASE_URL
     if AI_ENGINE_URL_CN_SHANGHAI:
         env["AI_ENGINE_URL_CN_SHANGHAI"] = AI_ENGINE_URL_CN_SHANGHAI
-    if AI_ENGINE_URL_AP_SOUTHEAST_JOHOR:
-        env["AI_ENGINE_URL_AP_SOUTHEAST_JOHOR"] = AI_ENGINE_URL_AP_SOUTHEAST_JOHOR
     if AI_ENGINE_DEFAULT_REGION:
         env["AI_ENGINE_DEFAULT_REGION"] = _normalize_execution_region(AI_ENGINE_DEFAULT_REGION)
     if svc and svc.get("execution_region"):
@@ -1048,13 +1018,6 @@ def _network_config_for_service(svc: dict) -> tuple[str, str, str]:
     if svc["svc"] != "ai-engine":
         return VPC_ID, SUBNET_ID, SECURITY_GROUP_ID
 
-    if execution_region == "ap_southeast_johor":
-        return (
-            VOLCENGINE_VPC_ID_AP_SOUTHEAST_JOHOR,
-            VOLCENGINE_SUBNET_ID_AP_SOUTHEAST_JOHOR,
-            VOLCENGINE_SECURITY_GROUP_ID_AP_SOUTHEAST_JOHOR,
-        )
-
     if execution_region == "cn_shanghai":
         return (
             VOLCENGINE_VPC_ID_CN_SHANGHAI or (VPC_ID if cloud_region == REGION else ""),
@@ -1133,14 +1096,6 @@ def validate_env(target_services: list[dict]) -> None:
                     missing.add("ALIPAY_PRIVATE_KEY or ALIPAY_PRIVATE_KEY_PATH")
                 if not has_alipay_public_key:
                     missing.add("ALIPAY_PUBLIC_KEY or ALIPAY_PUBLIC_KEY_PATH")
-
-        if svc["svc"] == "ai-engine" and svc.get("execution_region") == "ap_southeast_johor":
-            if not VOLCENGINE_VPC_ID_AP_SOUTHEAST_JOHOR:
-                missing.add("VOLCENGINE_VPC_ID_AP_SOUTHEAST_JOHOR")
-            if not VOLCENGINE_SUBNET_ID_AP_SOUTHEAST_JOHOR:
-                missing.add("VOLCENGINE_SUBNET_ID_AP_SOUTHEAST_JOHOR")
-            if not VOLCENGINE_SECURITY_GROUP_ID_AP_SOUTHEAST_JOHOR:
-                missing.add("VOLCENGINE_SECURITY_GROUP_ID_AP_SOUTHEAST_JOHOR")
 
     if missing:
         print("❌ 部署前环境变量校验失败，缺少以下字段：")
@@ -1413,7 +1368,7 @@ def main():
     for target in requested_targets:
         resolved = resolve_target_services(target)
         if not resolved:
-            print(f"❌ 未知服务: {target}，可选: {[s['svc'] for s in SERVICES]} | ai-engine-cn | ai-engine-global | all")
+            print(f"❌ 未知服务: {target}，可选: {[s['svc'] for s in SERVICES]} | ai-engine-cn | all")
             sys.exit(1)
         for svc in resolved:
             if svc["name"] in seen_service_names:
@@ -1422,7 +1377,7 @@ def main():
             services.append(svc)
 
     if not services:
-        print(f"❌ 未匹配到任何服务，可选: {[s['svc'] for s in SERVICES]} | ai-engine-cn | ai-engine-global | all")
+        print(f"❌ 未匹配到任何服务，可选: {[s['svc'] for s in SERVICES]} | ai-engine-cn | all")
         sys.exit(1)
 
     validate_env(services)
@@ -1436,11 +1391,9 @@ def main():
     print(f"   Subnet ID:        {SUBNET_ID or '未设置'}")
     print(f"   Security Group:   {SECURITY_GROUP_ID or '未设置（跳过 VPC 配置）'}")
     print(f"   上海 VPC:         {VOLCENGINE_VPC_ID_CN_SHANGHAI or VPC_ID or '未设置'}")
-    print(f"   柔佛 VPC:         {VOLCENGINE_VPC_ID_AP_SOUTHEAST_JOHOR or '未设置'}")
     print(f"   统一公网域名:     {PUBLIC_API_BASE_URL or '未设置（使用各服务默认域名）'}")
     print(f"   AI 默认执行 Region: {_normalize_execution_region(AI_ENGINE_DEFAULT_REGION)}")
     print(f"   AI 上海函数:      {AI_ENGINE_FUNCTION_NAME_CN_SHANGHAI} @ {VOLCENGINE_REGION_CN_SHANGHAI}")
-    print(f"   AI 柔佛函数:      {AI_ENGINE_FUNCTION_NAME_AP_SOUTHEAST_JOHOR} @ {VOLCENGINE_REGION_AP_SOUTHEAST_JOHOR}")
 
     print(f"\n🚀 开始部署 {len(services)} 个服务...")
     failed = []

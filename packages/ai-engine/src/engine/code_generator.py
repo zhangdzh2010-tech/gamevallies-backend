@@ -231,6 +231,63 @@ class CodeGenerator:
         request_timeout_s = cls._generation_request_timeout_budget_s(spec, budget_override)
         return max(request_timeout_s, capped.get(budget, base_timeout_s))
 
+    @staticmethod
+    def _step_timeout_override_key(step_key: str, timeout_kind: str) -> Optional[str]:
+        return {
+            "iterate.classify": f"timeout.ai_engine.iterate.classify_{timeout_kind}_s",
+            "iterate.param_adjust": f"timeout.ai_engine.iterate.param_adjust_{timeout_kind}_s",
+            "iterate.element_change": f"timeout.ai_engine.iterate.element_change_{timeout_kind}_s",
+            "iterate.mechanic_change": f"timeout.ai_engine.iterate.mechanic_change_{timeout_kind}_s",
+        }.get(str(step_key or "").strip())
+
+    @classmethod
+    def _resolve_step_request_timeout_s(
+        cls,
+        step_key: str,
+        *,
+        spec: Optional[GameSpec] = None,
+        budget_override: Optional[str] = None,
+        default_timeout_s: Optional[int] = None,
+    ) -> int:
+        fallback = max(
+            30,
+            int(default_timeout_s or cls._generation_request_timeout_budget_s(spec, budget_override)),
+        )
+        timeout_key = cls._step_timeout_override_key(step_key, "request")
+        if not timeout_key:
+            return fallback
+        return get_timeout_int(timeout_key, fallback, min_value=30)
+
+    @classmethod
+    def _resolve_step_overall_timeout_s(
+        cls,
+        step_key: str,
+        *,
+        spec: Optional[GameSpec] = None,
+        budget_override: Optional[str] = None,
+        request_timeout_s: Optional[int] = None,
+        default_timeout_s: Optional[int] = None,
+    ) -> int:
+        effective_request_timeout_s = max(
+            30,
+            int(
+                request_timeout_s
+                or cls._resolve_step_request_timeout_s(
+                    step_key,
+                    spec=spec,
+                    budget_override=budget_override,
+                )
+            ),
+        )
+        fallback = max(
+            effective_request_timeout_s,
+            int(default_timeout_s or cls._generation_overall_timeout_budget_s(spec, budget_override)),
+        )
+        timeout_key = cls._step_timeout_override_key(step_key, "overall")
+        if not timeout_key:
+            return fallback
+        return get_timeout_int(timeout_key, fallback, min_value=effective_request_timeout_s)
+
     @classmethod
     def _generation_provider_hedge_delay_s(
         cls,
@@ -2126,6 +2183,15 @@ class CodeGenerator:
 
     async def _classify_iteration(self, feedback: str) -> IterationType:
         try:
+            request_timeout_s = self._resolve_step_request_timeout_s(
+                "iterate.classify",
+                default_timeout_s=30,
+            )
+            overall_timeout_s = self._resolve_step_overall_timeout_s(
+                "iterate.classify",
+                request_timeout_s=request_timeout_s,
+                default_timeout_s=60,
+            )
             text = await self._client.complete_with_truncation_retry(
                 max_tokens=512,
                 messages=[{
@@ -2138,6 +2204,8 @@ class CodeGenerator:
                 response_size_hint="small",
                 context_scope="task",
                 compression_policy="iteration_classify",
+                request_timeout_s=request_timeout_s,
+                overall_timeout_s=overall_timeout_s,
                 truncation_retry_attempts=1,
                 truncation_retry_increment=256,
                 truncation_retry_max_tokens=1024,
@@ -2288,8 +2356,18 @@ class CodeGenerator:
             )
 
         try:
-            request_timeout_s = self._generation_request_timeout_budget_s(game_spec)
-            overall_timeout_s = self._generation_overall_timeout_budget_s(game_spec)
+            default_request_timeout_s = self._generation_request_timeout_budget_s(game_spec)
+            request_timeout_s = self._resolve_step_request_timeout_s(
+                step_key,
+                spec=game_spec,
+                default_timeout_s=default_request_timeout_s,
+            )
+            overall_timeout_s = self._resolve_step_overall_timeout_s(
+                step_key,
+                spec=game_spec,
+                request_timeout_s=request_timeout_s,
+                default_timeout_s=self._generation_overall_timeout_budget_s(game_spec),
+            )
             hedge_after_s = self._generation_provider_hedge_delay_s(game_spec)
             token_budget = self._select_token_budget(game_spec)
             truncation_retry_cap = self._select_truncation_retry_cap(game_spec)

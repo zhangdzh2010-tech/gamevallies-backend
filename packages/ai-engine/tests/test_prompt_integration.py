@@ -205,6 +205,47 @@ class TestPromptIntegration(unittest.TestCase):
         self.assertEqual(CodeGenerator._generation_overall_timeout_budget_s(complex_spec), 240)
         self.assertEqual(CodeGenerator._generation_provider_hedge_delay_s(complex_spec), 45)
 
+    def test_iterate_step_timeout_overrides_use_step_specific_keys(self):
+        def fake_get_timeout_int(key: str, default: int, *, min_value=None, max_value=None):
+            overrides = {
+                "timeout.ai_engine.iterate.classify_request_s": 35,
+                "timeout.ai_engine.iterate.classify_overall_s": 75,
+                "timeout.ai_engine.iterate.element_change_request_s": 150,
+                "timeout.ai_engine.iterate.element_change_overall_s": 300,
+            }
+            value = overrides.get(key, default)
+            if min_value is not None:
+                value = max(min_value, value)
+            if max_value is not None:
+                value = min(max_value, value)
+            return value
+
+        with patch("src.engine.code_generator.get_timeout_int", side_effect=fake_get_timeout_int):
+            self.assertEqual(
+                CodeGenerator._resolve_step_request_timeout_s("iterate.classify", default_timeout_s=30),
+                35,
+            )
+            self.assertEqual(
+                CodeGenerator._resolve_step_overall_timeout_s(
+                    "iterate.classify",
+                    request_timeout_s=35,
+                    default_timeout_s=60,
+                ),
+                75,
+            )
+            self.assertEqual(
+                CodeGenerator._resolve_step_request_timeout_s("iterate.element_change", default_timeout_s=120),
+                150,
+            )
+            self.assertEqual(
+                CodeGenerator._resolve_step_overall_timeout_s(
+                    "iterate.element_change",
+                    request_timeout_s=150,
+                    default_timeout_s=240,
+                ),
+                300,
+            )
+
     def test_param_adjust_llm_fallback_uses_prompt_config(self):
         generator = CodeGenerator(llm_mode="real")
 

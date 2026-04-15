@@ -9,24 +9,13 @@ import {
   Body,
   Res,
   Headers,
-  HttpException,
-  HttpStatus,
 } from '@nestjs/common';
 import { Response } from 'express';
 import { AdminService } from './admin.service';
 import { ok } from '../common/api-response';
+import { checkAdminToken } from '../common/admin-auth';
 import * as fs from 'fs';
 import * as path from 'path';
-
-function checkAdminToken(token: string | undefined): void {
-  const adminToken = (process.env.ADMIN_TOKEN || '').trim();
-  if (!adminToken) {
-    throw new HttpException('Admin token is not configured', HttpStatus.SERVICE_UNAVAILABLE);
-  }
-  if (!token || token !== adminToken) {
-    throw new HttpException('Unauthorized: Invalid admin token', HttpStatus.UNAUTHORIZED);
-  }
-}
 
 @Controller()
 export class AdminController {

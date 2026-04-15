@@ -63,7 +63,6 @@
 | 值 | 说明 |
 |------|------|
 | `cn-shanghai` | 火山引擎上海 Region |
-| `ap-southeast-johor` | 火山引擎柔佛 Region |
 
 ### 3.3 ExecutionRegion 枚举
 
@@ -76,7 +75,6 @@
 | 值 | 说明 |
 |------|------|
 | `cn_shanghai` | 国内 `ai-engine` 执行 Region，当前映射火山上海 |
-| `ap_southeast_johor` | 海外 `ai-engine` 执行 Region，当前映射火山柔佛 |
 
 说明：
 
@@ -189,7 +187,6 @@
 | ExecutionRegion | CloudVendor | CloudRegionCode | Function Name | 说明 |
 |------|------|------|------|------|
 | `cn_shanghai` | `volcengine` | `cn-shanghai` | `gv-ai-engine-cn` | 国内主实例 |
-| `ap_southeast_johor` | `volcengine` | `ap-southeast-johor` | `gv-ai-engine-global` | 海外主实例 |
 
 `game-service` 请求 `ai-engine` 时的 Region 选择顺序：
 
@@ -219,7 +216,7 @@
 
 - `scripts/deploy.py` 不再以单个 `VOLCENGINE_REGION` 作为 `ai-engine` 发布真源
 - `ai-engine` 的多 Region 目标改由 `ai_engine_region_targets` 驱动
-- `AI_ENGINE_URL_CN_SHANGHAI`、`AI_ENGINE_URL_AP_SOUTHEAST_JOHOR` 不再作为主输入手填，而是部署成功后回写到 `ai_engine_region_targets.ai_engine_url`
+- `AI_ENGINE_URL_CN_SHANGHAI` 不再作为主输入手填，而是部署成功后回写到 `ai_engine_region_targets.ai_engine_url`
 
 ### 4.2.2 Provider 的 Region 语义
 
@@ -388,7 +385,7 @@ Provider 创建时前端不再直接提交 `region`，而是提交 `regionTarget
 | `region_catalog_id` | `VARCHAR(36)` | 是 | `IDX(region_catalog_id)` | 对应云 Region 目录项 |
 | `vendor` | `ENUM('volcengine')` | 是 | `IDX(vendor, execution_region)` | 云厂商 |
 | `cloud_region_code` | `VARCHAR(64)` | 是 | `IDX(vendor, cloud_region_code)` | 云厂商原始 Region 编码 |
-| `execution_region` | `ENUM('cn_shanghai','ap_southeast_johor')` | 是 | `UNIQUE(execution_region)` | 系统内部执行 Region |
+| `execution_region` | `ENUM('cn_shanghai')` | 是 | `UNIQUE(execution_region)` | 系统内部执行 Region |
 | `display_name` | `VARCHAR(128)` | 是 |  | 如“AI Engine 上海主实例” |
 | `function_name` | `VARCHAR(128)` | 是 | `UNIQUE` | VeFaaS 函数名 |
 | `registry` | `VARCHAR(255)` | 是 |  | 该 Region 使用的镜像仓库 |
@@ -800,7 +797,7 @@ Query:
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `executionRegion` | string | 否 | `cn_shanghai` / `ap_southeast_johor` |
+| `executionRegion` | string | 否 | `cn_shanghai` |
 | `deployStatus` | string | 否 | `pending` / `ready` / `deployed` / `failed` |
 | `providerSelectableOnly` | boolean | 否 | 若为 `true`，仅返回可用于 Provider 选择的目标 |
 
@@ -853,7 +850,7 @@ Request:
 保存规则：
 
 - `regionCatalogId` 必须来自 `cloud_region_catalog`
-- `executionRegion` 一期只允许 `cn_shanghai` / `ap_southeast_johor`
+- `executionRegion` 一期只允许 `cn_shanghai`
 - 创建或更新 target 不等于触发部署
 - 真正部署仍由 `scripts/deploy.py` 执行
 
@@ -878,7 +875,7 @@ Query:
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `region` | string | 否 | `cn_shanghai` / `ap_southeast_johor` |
+| `region` | string | 否 | `cn_shanghai` |
 | `providerType` | string | 否 | Provider 类型 |
 | `enabled` | boolean | 否 | 是否启用 |
 | `page` | number | 否 | 默认 `1` |
@@ -1041,7 +1038,7 @@ Query:
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `executionRegion` | string | 是 | `cn_shanghai` / `ap_southeast_johor` |
+| `executionRegion` | string | 是 | `cn_shanghai` |
 
 Response `data.items[*]`：
 
@@ -1107,7 +1104,7 @@ Request:
 
 ```json
 {
-  "regions": ["cn_shanghai", "ap_southeast_johor"]
+  "regions": ["cn_shanghai"]
 }
 ```
 
@@ -1121,11 +1118,6 @@ Response:
       "success": true,
       "refreshedVersion": 12
     },
-    {
-      "region": "ap_southeast_johor",
-      "success": true,
-      "refreshedVersion": 12
-    }
   ]
 }
 ```
@@ -1329,7 +1321,7 @@ Request 字段：
 | `prompt` | string | 与 `description` 二选一 | 兼容字段 |
 | `title` | string | 否 | 初始标题 |
 | `taskTimeoutS` | number | 否 | 任务总超时，不传默认 `600` |
-| `regionHint` | string | 否 | `cn_shanghai` / `ap_southeast_johor` |
+| `regionHint` | string | 否 | `cn_shanghai` |
 
 Response:
 

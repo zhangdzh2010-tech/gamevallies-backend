@@ -570,14 +570,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   }
 
   private resolveExecutionRegion(rawValue?: unknown): string {
-    const normalized = String(
-      rawValue
-      ?? this.configService.get<string>('AI_ENGINE_DEFAULT_REGION')
-      ?? this.configService.get<string>('SERVICE_REGION')
-      ?? 'cn_shanghai',
-    ).trim();
-
-    return normalized === 'ap_southeast_johor' ? normalized : 'cn_shanghai';
+    return 'cn_shanghai';
   }
 
   private normalizeOptionalString(value: unknown): string | undefined {
@@ -1678,9 +1671,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       || 'cn_shanghai',
     );
 
-    const regionSpecificUrl = region === 'ap_southeast_johor'
-      ? this.configService.get<string>('AI_ENGINE_URL_AP_SOUTHEAST_JOHOR', '')
-      : this.configService.get<string>('AI_ENGINE_URL_CN_SHANGHAI', '');
+    const regionSpecificUrl = this.configService.get<string>('AI_ENGINE_URL_CN_SHANGHAI', '');
     const normalizedRegionSpecificUrl = (regionSpecificUrl || '').trim().replace(/\/$/, '');
     if (normalizedRegionSpecificUrl) {
       return normalizedRegionSpecificUrl;

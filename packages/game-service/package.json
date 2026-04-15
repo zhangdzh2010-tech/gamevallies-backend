@@ -31,6 +31,7 @@
     "@nestjs/platform-socket.io": "^10.0.0",
     "@nestjs/websockets": "^10.0.0",
     "@prisma/client": "^5.10.0",
+    "@volcengine/tos-sdk": "^2.9.1",
     "axios": "^1.6.0",
     "bcryptjs": "^2.4.3",
     "bullmq": "^5.58.5",
