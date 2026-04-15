@@ -36,6 +36,7 @@ from ..api.models import (
     VisualStyle,
 )
 from ..config.settings import settings
+from ..config.timeout_store import get_int as get_timeout_int
 from ..services.llm_client import LLMClient, LLMResponseTruncatedError
 from .prompt_format import safe_format_prompt
 from .prompt_store import require_prompt
@@ -45,22 +46,41 @@ logger = logging.getLogger(__name__)
 _sessions: Dict[str, DialogueSession] = {}
 
 CURATED_GAME_TYPES = ("casual", "puzzle", "educational", "funny")
-FAST_DIALOGUE_SLOT_REQUEST_TIMEOUT_S = max(
-    1,
-    int(getattr(settings, "DIALOGUE_SLOT_REQUEST_TIMEOUT_S", 4) or 4),
-)
-FAST_DIALOGUE_SLOT_OVERALL_TIMEOUT_S = max(
-    FAST_DIALOGUE_SLOT_REQUEST_TIMEOUT_S,
-    int(getattr(settings, "DIALOGUE_SLOT_OVERALL_TIMEOUT_S", 5) or 5),
-)
-INTENT_PARSE_REQUEST_TIMEOUT_S = max(
-    FAST_DIALOGUE_SLOT_REQUEST_TIMEOUT_S,
-    int(getattr(settings, "INTENT_PARSE_REQUEST_TIMEOUT_S", 45) or 45),
-)
-INTENT_PARSE_OVERALL_TIMEOUT_S = max(
-    INTENT_PARSE_REQUEST_TIMEOUT_S,
-    int(getattr(settings, "INTENT_PARSE_OVERALL_TIMEOUT_S", 90) or 90),
-)
+
+
+def _dialogue_slot_request_timeout_s() -> int:
+    return get_timeout_int(
+        "timeout.ai_engine.dialogue.slot_extract_request_s",
+        int(getattr(settings, "DIALOGUE_SLOT_REQUEST_TIMEOUT_S", 4) or 4),
+        min_value=1,
+    )
+
+
+def _dialogue_slot_overall_timeout_s() -> int:
+    request_timeout_s = _dialogue_slot_request_timeout_s()
+    return get_timeout_int(
+        "timeout.ai_engine.dialogue.slot_extract_overall_s",
+        max(request_timeout_s, int(getattr(settings, "DIALOGUE_SLOT_OVERALL_TIMEOUT_S", 5) or 5)),
+        min_value=request_timeout_s,
+    )
+
+
+def _intent_parse_request_timeout_s() -> int:
+    dialogue_slot_request_s = _dialogue_slot_request_timeout_s()
+    return get_timeout_int(
+        "timeout.ai_engine.intent_parse.request_s",
+        max(dialogue_slot_request_s, int(getattr(settings, "INTENT_PARSE_REQUEST_TIMEOUT_S", 45) or 45)),
+        min_value=dialogue_slot_request_s,
+    )
+
+
+def _intent_parse_overall_timeout_s() -> int:
+    request_timeout_s = _intent_parse_request_timeout_s()
+    return get_timeout_int(
+        "timeout.ai_engine.intent_parse.overall_s",
+        max(request_timeout_s, int(getattr(settings, "INTENT_PARSE_OVERALL_TIMEOUT_S", 90) or 90)),
+        min_value=request_timeout_s,
+    )
 
 LOCALIZED_GAME_TYPE_DEFAULTS: Dict[str, Dict[str, Dict[str, str]]] = {
     "casual": {
@@ -1008,29 +1028,29 @@ def _build_contextual_question_prompt(
             )
         if core_mechanic:
             return (
-                f"\u8fd9\u4e2a\u201c{core_mechanic}\u201d\u60f3\u653e\u5728\u4ec0\u4e48\u60c5\u5883\u91cc\u6700\u5bf9\u5473\uff1f"
+                "\u4f60\u60f3\u628a\u5b83\u653e\u5728\u4ec0\u4e48\u60c5\u5883\u3001\u4e16\u754c\u89c2\u6216\u9898\u6750\u91cc\uff1f"
                 if zh else
-                f"What setting would make the '{core_mechanic}' loop feel most interesting?"
+                "What setting, world, or theme should this version use?"
             )
     if slot_key == "win_condition":
         if reference_game:
             return (
-                f"\u5982\u679c\u53c2\u8003\u300a{reference_game}\u300b\u7684\u611f\u89c9\uff0c\u4f60\u66f4\u60f3\u8ba9\u73a9\u5bb6\u901a\u8fc7\u6e05\u7a7a\u3001\u8fbe\u6210\u76ee\u6807\uff0c\u8fd8\u662f\u6491\u8fc7\u4e00\u8f6e\u6765\u8fc7\u5173\uff1f"
+                f"\u5982\u679c\u53c2\u8003\u300a{reference_game}\u300b\uff0c\u4f60\u66f4\u60f3\u8fd9\u7248\u505a\u6210\u201c\u6e05\u7a7a\u578b\u201d\u3001\u201c\u8fbe\u6210\u76ee\u6807\u578b\u201d\uff0c\u8fd8\u662f\u201c\u6491\u8fc7\u4e00\u8f6e\u201d\u7684\u8fc7\u5173\u65b9\u5f0f\uff1f"
                 if zh else
-                f"If this nods to {reference_game}, what should count as clearing a round: clearing everything, hitting a target, or surviving the run?"
+                f"If this nods to {reference_game}, should a round be about clearing everything, hitting a target, or surviving the whole run?"
             )
         if core_mechanic:
             return (
-                f"\u56f4\u7ed5\u201c{core_mechanic}\u201d\uff0c\u8fd9\u4e00\u5c40\u91cc\u73a9\u5bb6\u600e\u6837\u624d\u7b97\u771f\u6b63\u8fc7\u5173\uff1f"
+                "\u8fd9\u4e00\u5c40\u91cc\uff0c\u73a9\u5bb6\u8fbe\u6210\u4ec0\u4e48\u6761\u4ef6\u624d\u7b97\u8fc7\u5173\uff1f"
                 if zh else
-                f"With '{core_mechanic}' as the loop, what exactly should count as a successful round?"
+                "What exactly should count as clearing a round?"
             )
     if slot_key == "core_mechanic":
         if reference_game:
             return (
-                f"\u5982\u679c\u53c2\u8003\u300a{reference_game}\u300b\uff0c\u4f60\u6700\u60f3\u4fdd\u7559\u7684\u6838\u5fc3\u4ea4\u4e92\u662f\u4ec0\u4e48\uff1f"
+                f"\u5982\u679c\u53c2\u8003\u300a{reference_game}\u300b\uff0c\u4f60\u6700\u60f3\u4fdd\u7559\u7684\u662f\u201c\u64cd\u4f5c\u624b\u611f\u201d\u3001\u201c\u5361\u5173\u538b\u529b\u201d\uff0c\u8fd8\u662f\u201c\u4e00\u5c40\u4e00\u5c40\u7684\u8282\u594f\u53cd\u9988\u201d\uff1f"
                 if zh else
-                f"If this takes inspiration from {reference_game}, what is the one interaction you most want to preserve?"
+                f"If this takes inspiration from {reference_game}, what do you most want to preserve: the input feel, the pressure curve, or the round-to-round payoff?"
             )
         if theme:
             return (
@@ -1047,9 +1067,9 @@ def _build_contextual_question_prompt(
             )
         if core_mechanic:
             return (
-                f"\u4e3a\u4e86\u8ba9\u201c{core_mechanic}\u201d\u66f4\u987a\u624b\uff0c\u73a9\u5bb6\u4e3b\u8981\u7528\u70b9\u51fb\u3001\u6ed1\u52a8\u8fd8\u662f\u62d6\u62fd\uff1f"
+                "\u73a9\u5bb6\u4e3b\u8981\u901a\u8fc7\u70b9\u51fb\u3001\u6ed1\u52a8\u8fd8\u662f\u62d6\u62fd\u6765\u64cd\u4f5c\uff1f"
                 if zh else
-                f"To make '{core_mechanic}' feel right on mobile, should the main control be tap, swipe, or drag?"
+                "Should the player mainly tap, swipe, or drag?"
             )
     if slot_key == "difficulty":
         if reference_game:
@@ -1906,13 +1926,15 @@ class DialogueEngine:
         effective_request_timeout_s = request_timeout_s
         effective_overall_timeout_s = overall_timeout_s
         if is_fast_dialogue_slot_extract:
+            slot_request_timeout_s = _dialogue_slot_request_timeout_s()
+            slot_overall_timeout_s = _dialogue_slot_overall_timeout_s()
             effective_request_timeout_s = (
-                FAST_DIALOGUE_SLOT_REQUEST_TIMEOUT_S
+                slot_request_timeout_s
                 if effective_request_timeout_s is None
                 else max(1, int(effective_request_timeout_s))
             )
             effective_overall_timeout_s = (
-                FAST_DIALOGUE_SLOT_OVERALL_TIMEOUT_S
+                slot_overall_timeout_s
                 if effective_overall_timeout_s is None
                 else max(
                     max(1, int(effective_request_timeout_s)),
@@ -2429,6 +2451,8 @@ class DialogueEngine:
             raise RuntimeError("Real LLM mode is required for intent parsing")
 
         parse_input = _build_intent_parse_input(description, title=title)
+        intent_parse_request_timeout_s = _intent_parse_request_timeout_s()
+        intent_parse_overall_timeout_s = _intent_parse_overall_timeout_s()
         text = await self._complete_slot_request(
             max_tokens=640,
             system=_with_slot_json_contract(
@@ -2437,11 +2461,11 @@ class DialogueEngine:
             messages=[{"role": "user", "content": parse_input}],
             step_key="intent_parse",
             stage="intent_parsing",
-            request_timeout_s=INTENT_PARSE_REQUEST_TIMEOUT_S,
-            overall_timeout_s=INTENT_PARSE_OVERALL_TIMEOUT_S,
+            request_timeout_s=intent_parse_request_timeout_s,
+            overall_timeout_s=intent_parse_overall_timeout_s,
             timeout_retry_attempts=1,
             timeout_retry_increment_s=30,
-            timeout_retry_max_s=max(INTENT_PARSE_OVERALL_TIMEOUT_S, INTENT_PARSE_REQUEST_TIMEOUT_S + 30),
+            timeout_retry_max_s=max(intent_parse_overall_timeout_s, intent_parse_request_timeout_s + 30),
         )
         slot_data = await self._extract_slot_payload_with_repair(
             raw_text=text,
@@ -3427,6 +3451,7 @@ def _build_dialogue_question(
     skipped = set(skipped_slots or [])
     blocked = set(blocked_slots or [])
     zh = _detect_ui_language(source_text).startswith("zh")
+    reference_game = _normalize_free_text(str(getattr(slots, "reference_game", "") or ""))
     required_slots = ["game_type", "core_mechanic", "theme", "input_method", "win_condition", "difficulty"]
     all_required_present = all(
         str(getattr(slots, slot_key, "") or "").strip()
@@ -3440,7 +3465,6 @@ def _build_dialogue_question(
         "input_method": 0.72,
         "difficulty": 0.64,
     }
-    fallback_refine_order = ["win_condition", "difficulty", "theme", "core_mechanic", "input_method", "game_type"]
     templates = {
         "game_type": (
             "这个游戏更偏益智、休闲、教育，还是恶搞方向？"
@@ -3480,6 +3504,13 @@ def _build_dialogue_question(
             continue
         value = str(getattr(slots, slot_key, "") or "").strip()
         impact = SLOT_IMPACT_WEIGHTS.get(slot_key, 0.4) + ENTRY_MODE_SLOT_BIAS.get(entry_mode, {}).get(slot_key, 0.0)
+        if reference_game:
+            if slot_key == "core_mechanic":
+                impact += 0.18
+            elif slot_key == "theme":
+                impact += 0.1
+            elif slot_key in {"win_condition", "difficulty"}:
+                impact -= 0.08
         confidence = float(confidence_by_slot.get(slot_key, 0.0) or 0.0)
         ambiguity_weight = 1.0 if f"{slot_key}:ambiguous" in ambiguity_flags else 0.0
         if not value:
@@ -3502,10 +3533,12 @@ def _build_dialogue_question(
             continue
         threshold = low_confidence_thresholds.get(slot_key)
         if threshold is not None and confidence < threshold:
+            if all_required_present and slot_key not in {"core_mechanic", "input_method", "win_condition"}:
+                continue
             mode = "ambiguity_resolution" if all_required_present else "low_confidence"
             score = impact + (threshold - confidence)
             reason = (
-                f"?{_slot_summary_label(slot_key, zh=zh)}???????????????"
+                f"「{_slot_summary_label(slot_key, zh=zh)}」已经有方向了，但还差最后一次确认才能更稳。"
                 if zh else
                 (
                     f'The {SLOT_LABELS.get(slot_key, slot_key)} exists, but it still needs one more confirmation pass.'
@@ -3516,30 +3549,6 @@ def _build_dialogue_question(
             candidates.append((score, slot_key, mode, impact, confidence, reason))
 
     if not candidates:
-        for slot_key in fallback_refine_order:
-            if slot_key in skipped or slot_key in blocked:
-                continue
-            if not str(getattr(slots, slot_key, "") or "").strip():
-                continue
-            question = DialogueQuestion(
-                slot_key=slot_key,
-                label=SLOT_LABELS.get(slot_key, slot_key),
-                prompt=templates.get(slot_key, templates["core_mechanic"]),
-                skippable=True,
-            )
-            strategy = QuestionStrategy(
-                mode="polish",
-                slot_key=slot_key,
-                reason=(
-                    f"?{_slot_summary_label(slot_key, zh=zh)}???????????????????"
-                    if zh else
-                    f'The {SLOT_LABELS.get(slot_key, slot_key)} is usable already, but still worth one more refinement pass.'
-                ),
-                impact=round(max(0.0, min(SLOT_IMPACT_WEIGHTS.get(slot_key, 0.4), 1.5)), 3),
-                confidence=round(max(0.0, min(float(confidence_by_slot.get(slot_key, 0.0) or 0.0), 1.0)), 3),
-                ambiguity_weight=0.0,
-            )
-            return question, strategy
         return None, None
 
     candidates.sort(key=lambda item: item[0], reverse=True)
@@ -3575,66 +3584,72 @@ def _compose_creation_session_reply_v2(
     language = _detect_ui_language(" ".join(part for part in [title or "", source_text] if part))
     zh = language.startswith("zh")
     reference_game = _normalize_free_text(str(getattr(slots, "reference_game", "") or ""))
-    game_type = _normalize_free_text(str(getattr(slots, "game_type", "") or ""))
-    theme = _shorten_text(str(getattr(slots, "theme", "") or ""), limit=18)
-    core_mechanic = _shorten_text(str(getattr(slots, "core_mechanic", "") or getattr(plan_draft, "interaction", "") or ""), limit=28)
-    objective = _shorten_text(str(getattr(slots, "win_condition", "") or getattr(plan_draft, "objective", "") or ""), limit=28)
     understanding_check = _looks_like_understanding_check(latest_user_answer or "")
 
-    if reference_game:
-        if zh:
-            opener = (
-                f"了解，我知道《{reference_game}》这种感觉。"
-                if understanding_check else
-                f"我会把这次方向理解成参考《{reference_game}》的核心体验。"
-            )
-        else:
-            opener = (
-                f"Yes, I know the feel of {reference_game}."
-                if understanding_check else
-                f"I am reading this as a game that takes inspiration from {reference_game}."
-            )
-    else:
-        summary_bits = [bit for bit in [game_type, theme, core_mechanic] if bit]
-        compact_summary = " / ".join(summary_bits) or ("这款游戏" if zh else "this game")
-        opener = (
-            f"我目前的理解是：{compact_summary}。"
-            if zh else
-            f"My read so far is: {compact_summary}."
-        )
+    def _join_reply_parts(*parts: str) -> str:
+        return " ".join(part.strip() for part in parts if part and part.strip()).strip()
 
-    if objective and not ready_to_generate:
-        opener += (
-            f" 目前的过关感更像是“{objective}”。"
+    if reference_game:
+        opener = (
+            f"可以，我知道《{reference_game}》那种感觉。"
+            if zh and understanding_check else
+            f"可以，我们先沿着《{reference_game}》那种感觉走。"
             if zh else
-            f" The current success beat feels like '{objective}'."
+            f"Yes, I know the feel of {reference_game}."
+            if understanding_check else
+            f"Okay, let's build around the feel of {reference_game}."
         )
+    elif understanding_check:
+        opener = (
+            "可以，我知道你说的是哪种感觉。"
+            if zh else
+            "Okay, I get the feel you're pointing to."
+        )
+    else:
+        opener = ""
 
     if ready_to_generate and current_question:
-        label = _slot_summary_label(question_strategy.slot_key, zh=zh) if question_strategy and question_strategy.slot_key else None
         if zh:
-            tail = "现在其实已经能开始生成了"
-            if label:
-                tail += f"，但我还想再确认一下「{label}」"
-            return f"{opener} {tail}：{current_question.prompt}"
-        tail = "This is already strong enough to generate"
-        if label:
-            tail += f", but I want to confirm the {label} once more"
-        return f"{opener} {tail}: {current_question.prompt}"
+            return _join_reply_parts(
+                opener,
+                f"最后再确认一个关键点：{current_question.prompt}",
+            )
+        return _join_reply_parts(
+            opener,
+            f"One last key detail to confirm: {current_question.prompt}",
+        )
 
     if ready_to_generate:
         if zh:
-            return f"{opener} 这些信息已经够我出第一版了，如果方向对了，可以直接开始创作。"
-        return f"{opener} I have enough to build a solid first version now, so you can start creating whenever this direction feels right."
+            return _join_reply_parts(
+                opener,
+                "方向已经差不多定了，想直接生成就可以；如果还想微调，再补一句你最在意的体验。",
+            )
+        return _join_reply_parts(
+            opener,
+            "The direction is basically there. You can generate now, or add one more detail about the experience you care about most.",
+        )
 
     if current_question:
         if zh:
-            return f"{opener} 为了别把关键体验做偏，我先追一个最重要的问题：{current_question.prompt}"
-        return f"{opener} To avoid drifting away from the core experience, let me lock one key detail first: {current_question.prompt}"
+            return _join_reply_parts(
+                opener,
+                f"我先确认一个关键点：{current_question.prompt}",
+            )
+        return _join_reply_parts(
+            opener,
+            f"Let me confirm one key detail first: {current_question.prompt}",
+        )
 
     if zh:
-        return f"{opener} 你可以再补一句你最在意的玩法或气质，我会继续帮你收口。"
-    return f"{opener} Give me one more sentence about the mechanic or feeling you care about most, and I will tighten the brief from there."
+        return _join_reply_parts(
+            opener,
+            "你可以再补一句你最在意的玩法或气质，我继续帮你把它具体化。",
+        )
+    return _join_reply_parts(
+        opener,
+        "Add one more sentence about the mechanic or feeling you care about most, and I'll help turn it into something concrete.",
+    )
 
 
 def _build_dialogue_public_direction_summary(
@@ -3677,16 +3692,16 @@ def _build_dialogue_public_direction_summary(
 
     if fragments:
         return (
-            "目前我会把这个方向理解成：" + "，".join(fragments) + "。"
+            "已知方向：" + "，".join(fragments) + "。"
             if zh else
             "Current working direction: " + ", ".join(fragments) + "."
         )
     if plan_summary:
         return plan_summary
     return (
-        "先顺着用户最新的想法继续收口，不要把语气写成内部分析报告。"
+        "请顺着用户最新的想法，把回复组织成一个自然、可落地的移动小游戏方向。"
         if zh else
-        "Stay grounded in the user's latest idea and avoid sounding like an internal analysis note."
+        "Keep the reply grounded in the user's latest idea and tighten it into a buildable mobile game."
     )
 
 
@@ -3700,19 +3715,19 @@ def _build_dialogue_public_follow_up_guidance(
     )
     if analysis.ready_to_generate and question_text:
         return (
-            f"已经足够开始创建了；如果继续追问，只能把“{question_text}”当成可选打磨。"
+            f"如果还要追问，只能把“{question_text}”当成可选微调。"
             if zh else
             f"The brief is already strong enough to build; if you ask anything else, treat '{question_text}' as an optional polish question."
         )
     if analysis.ready_to_generate:
         return (
-            "已经足够开始创建，不要再把语气写成还缺少必填信息。"
+            "方向已经够清楚了，不要把回复写成还在索取必填信息。"
             if zh else
             "The brief is ready to build, so do not frame the reply like required information is still missing."
         )
     if question_text:
         return (
-            f"如果要追问，只问这一个用户能直接回答的问题：{question_text}"
+            f"如果要追问，就只问这一句用户能直接回答的话：{question_text}"
             if zh else
             f"If you ask a follow-up, make it exactly one user-facing question: {question_text}"
         )
@@ -3720,48 +3735,6 @@ def _build_dialogue_public_follow_up_guidance(
         "只有在确实能明显帮助收口时才追问，而且一次只问一个问题。"
         if zh else
         "Only ask a follow-up if it clearly sharpens the brief, and never ask more than one question."
-    )
-
-
-def _build_dialogue_public_draft_summary(
-    analysis: AnalyzeDialogueTurnResponse,
-    *,
-    zh: bool,
-) -> str:
-    plan_draft = analysis.plan_draft
-    if not plan_draft:
-        return "暂无" if zh else "none yet"
-
-    pieces = [
-        _normalize_free_text(str(getattr(plan_draft, "summary", "") or "")),
-        _normalize_free_text(str(getattr(plan_draft, "interaction", "") or "")),
-        _normalize_free_text(str(getattr(plan_draft, "objective", "") or "")),
-    ]
-    compact = " / ".join(piece for piece in pieces if piece)
-    return compact or ("暂无" if zh else "none yet")
-
-
-def _build_dialogue_public_readiness_hint(
-    analysis: AnalyzeDialogueTurnResponse,
-    *,
-    zh: bool,
-) -> str:
-    if analysis.ready_to_generate and analysis.current_question:
-        return (
-            "可以开始创建了，但如果继续问，只能当成可选优化。"
-            if zh else
-            "Ready to build now; any follow-up must sound optional rather than required."
-        )
-    if analysis.ready_to_generate:
-        return (
-            "可以明确告诉用户：现在已经能开始创建。"
-            if zh else
-            "You can clearly tell the user the brief is ready and creation can start now."
-        )
-    return (
-        "还没完全收口，不要说已经可以直接生成。"
-        if zh else
-        "The brief is not fully locked yet, so do not say generation is ready yet."
     )
 
 
@@ -3788,6 +3761,9 @@ def _build_dialogue_reply_system_prompt_from_catalog(
     ).strip()
     guardrail = (
         "Critical guardrail:\n"
+        "- Never repeat the same idea twice with both a recap and a second paraphrase.\n"
+        "- If you ask a follow-up, make it a decision that materially changes the mechanic, control, theme, or round goal.\n"
+        "- Do not ask optional polish questions once the brief is already buildable.\n"
         "- Never narrate your own reasoning, drafting steps, or compliance checks.\n"
         "- Never say things like '用户现在要求我', '先理清楚', '调整下顺序', '2到4句', 'I should respond', or 'let me think'.\n"
         "- Say only the final user-facing reply."
@@ -3813,22 +3789,34 @@ def _build_dialogue_reply_context_payload(
     follow_up_question = _normalize_free_text(
         analysis.current_question.prompt if analysis.current_question else ""
     )
+    latest_user_message = _normalize_free_text(
+        request.latest_user_answer or _latest_user_answer_from_history(request.conversation or [])
+    )
+    next_action = (
+        {
+            "type": "optional_refinement",
+            "question": follow_up_question,
+        }
+        if analysis.ready_to_generate and follow_up_question else
+        {
+            "type": "ready_to_create",
+            "question": None,
+        }
+        if analysis.ready_to_generate else
+        {
+            "type": "ask_follow_up",
+            "question": follow_up_question or None,
+        }
+    )
     return {
         "language": "zh-CN" if zh else "en-US",
-        "initial_idea": _normalize_free_text(source_text) or ("暂无" if zh else "none yet"),
-        "latest_user_message": _normalize_free_text(
-            request.latest_user_answer or _latest_user_answer_from_history(request.conversation or [])
-        ) or ("暂无" if zh else "none yet"),
-        "recent_conversation": history,
-        "working_direction": _build_dialogue_public_direction_summary(analysis, zh=zh),
-        "public_brief": _build_dialogue_public_draft_summary(analysis, zh=zh),
-        "response_mode": (
-            "optional_refinement" if analysis.ready_to_generate and follow_up_question else
-            "ready_to_create" if analysis.ready_to_generate else
-            "ask_follow_up" if follow_up_question else
-            "tighten_brief"
-        ),
-        "follow_up_question": follow_up_question or None,
+        "latest_user_message": latest_user_message or ("暂无" if zh else "none yet"),
+        "recent_user_points": [
+            item["content"]
+            for item in history
+            if item["role"] == "user" and item["content"] != latest_user_message
+        ][-2:],
+        "next_action": next_action,
     }
 
 

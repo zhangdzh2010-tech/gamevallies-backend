@@ -24,15 +24,18 @@ from src.api.models import (
 from src.api.endpoints import generate as generate_api
 from src.engine.dialogue_engine import (
     DialogueEngine,
-    FAST_DIALOGUE_SLOT_OVERALL_TIMEOUT_S,
-    FAST_DIALOGUE_SLOT_REQUEST_TIMEOUT_S,
-    INTENT_PARSE_OVERALL_TIMEOUT_S,
-    INTENT_PARSE_REQUEST_TIMEOUT_S,
+    _build_contextual_question_prompt,
+    _build_dialogue_question,
     _build_dialogue_reply_system_prompt_from_catalog,
     _build_dialogue_reply_user_prompt_from_catalog,
+    _compose_creation_session_reply_v2,
+    _dialogue_slot_overall_timeout_s,
+    _dialogue_slot_request_timeout_s,
     _infer_game_type_from_sparse_context,
     _infer_slots_from_text,
     _infer_theme_from_context,
+    _intent_parse_overall_timeout_s,
+    _intent_parse_request_timeout_s,
     _normalize_game_type_label,
     _normalize_slot_payload,
     _safe_parse_json,
@@ -108,7 +111,62 @@ class TestDialogueEngine(unittest.TestCase):
         self.assertGreater(response.confidence_by_slot["core_mechanic"], 0.6)
         self.assertIsNotNone(response.plan_draft)
         self.assertTrue(response.plan_draft.summary)
-        self.assertIn("最重要的问题", response.reply)
+        self.assertIn("确认一个关键点", response.reply)
+
+    def test_contextual_win_condition_prompt_stays_user_facing(self):
+        prompt = _build_contextual_question_prompt(
+            "win_condition",
+            SlotState(
+                core_mechanic="把学习目标转成一个移动端友好的交互挑战，并立即给出反馈",
+            ),
+            zh=True,
+        )
+
+        self.assertEqual(prompt, "这一局里，玩家达成什么条件才算过关？")
+        self.assertNotIn("学习目标", prompt)
+        self.assertNotIn("交互挑战", prompt)
+
+    def test_compose_creation_reply_avoids_internal_workflow_phrasing_when_ready(self):
+        reply = _compose_creation_session_reply_v2(
+            slots=SlotState(
+                game_type="educational",
+                theme="city",
+                core_mechanic="把学习目标转成一个移动端友好的交互挑战，并立即给出反馈",
+            ),
+            current_question=DialogueQuestion(
+                slot_key="win_condition",
+                label="过关目标",
+                prompt="这一局里，玩家达成什么条件才算过关？",
+            ),
+            ready_to_generate=True,
+            source_text="做一个把学习目标转成互动挑战的教育游戏",
+        )
+
+        self.assertIn("最后再确认一个关键点", reply)
+        self.assertIn("这一局里，玩家达成什么条件才算过关？", reply)
+        self.assertNotIn("我目前的理解是", reply)
+        self.assertNotIn("现在其实已经能开始生成了", reply)
+        self.assertNotIn("过关感更像", reply)
+
+    def test_compose_creation_reply_uses_lightweight_followup_copy(self):
+        reply = _compose_creation_session_reply_v2(
+            slots=SlotState(
+                reference_game="Temple Run",
+            ),
+            current_question=DialogueQuestion(
+                slot_key="theme",
+                label="题材情境",
+                prompt="你想把它放在什么情境、世界观或题材里？",
+            ),
+            ready_to_generate=False,
+            source_text="做一个跑酷游戏",
+            latest_user_answer="Temple Run 那种感觉你知道吧",
+        )
+
+        self.assertIn("我先确认一个关键点", reply)
+        self.assertIn("Temple Run", reply)
+        self.assertNotIn("最重要的问题", reply)
+        self.assertNotIn("我会把这次方向理解成", reply)
 
     def test_draft_plan_from_input_returns_plan_and_confidence_metadata(self):
         engine = DialogueEngine()
@@ -246,7 +304,7 @@ class TestDialogueEngine(unittest.TestCase):
         self.assertEqual(response.slots.reference_game, "羊了个羊")
         self.assertNotEqual(response.slots.win_condition, "羊了个羊的游戏你了解吗")
         self.assertIn("羊了个羊", response.reply)
-        self.assertIn("了解", response.reply)
+        self.assertIn("我知道", response.reply)
         self.assertIsNotNone(response.current_question)
         self.assertEqual(response.current_question.slot_key, "theme")
         self.assertIn("羊了个羊", response.current_question.prompt)
@@ -458,8 +516,8 @@ class TestDialogueEngine(unittest.TestCase):
         self.assertEqual(kwargs["step_key"], "intent_parse")
         self.assertEqual(kwargs["stage"], "intent_parsing")
         self.assertFalse(kwargs["prefer_fast"])
-        self.assertEqual(kwargs["request_timeout_s"], INTENT_PARSE_REQUEST_TIMEOUT_S)
-        self.assertEqual(kwargs["overall_timeout_s"], INTENT_PARSE_OVERALL_TIMEOUT_S)
+        self.assertEqual(kwargs["request_timeout_s"], _intent_parse_request_timeout_s())
+        self.assertEqual(kwargs["overall_timeout_s"], _intent_parse_overall_timeout_s())
         self.assertIn("INTENT_PARSE_PROMPT_FROM_DB", kwargs["system"])
         self.assertIn("NON-NEGOTIABLE OUTPUT CONTRACT", kwargs["system"])
 
@@ -563,12 +621,14 @@ class TestDialogueEngine(unittest.TestCase):
         self.assertIn("DIALOGUE_REPLY_PROMPT_FROM_DB", system_prompt)
         self.assertIn("DIALOGUE_REPLY_STYLE_FROM_DB", system_prompt)
         self.assertIn("ZH_TEMPLATE_FROM_DB", user_prompt)
-        self.assertIn("\"working_direction\":", user_prompt)
-        self.assertIn("\"response_mode\":", user_prompt)
+        self.assertIn("\"latest_user_message\":", user_prompt)
+        self.assertIn("\"next_action\":", user_prompt)
         self.assertNotIn("- game_type:", user_prompt)
         self.assertNotIn("Need to lock the success beat.", user_prompt)
         self.assertNotIn(analysis.reply, user_prompt)
         self.assertNotIn("Safe fallback wording:", user_prompt)
+        self.assertNotIn("\"working_direction\":", user_prompt)
+        self.assertNotIn("\"public_brief\":", user_prompt)
 
     def test_dialogue_reply_prompt_ignores_legacy_db_template_without_reply_context(self):
         analysis = AnalyzeDialogueTurnResponse(
@@ -627,9 +687,39 @@ class TestDialogueEngine(unittest.TestCase):
 
         self.assertNotIn("ZH_LEGACY_TEMPLATE_FROM_DB", user_prompt)
         self.assertNotIn("Safe fallback wording:", user_prompt)
-        self.assertIn("\"working_direction\":", user_prompt)
-        self.assertIn("\"follow_up_question\":", user_prompt)
+        self.assertIn("\"latest_user_message\":", user_prompt)
+        self.assertIn("\"next_action\":", user_prompt)
         self.assertNotIn("Need to lock the success beat.", user_prompt)
+
+    def test_dialogue_question_builder_skips_polish_only_followups(self):
+        slots = SlotState(
+            game_type="casual",
+            core_mechanic="swipe to dodge traffic",
+            theme="city night",
+            input_method="swipe",
+            win_condition="survive for 45 seconds",
+            difficulty="progressive",
+        )
+
+        question, strategy = _build_dialogue_question(
+            slots,
+            skipped_slots=[],
+            blocked_slots=[],
+            source_text="做一个竖屏跑酷小游戏，玩家通过左右滑动躲避障碍，坚持45秒过关。",
+            entry_mode="create",
+            confidence_by_slot={
+                "game_type": 0.92,
+                "core_mechanic": 0.9,
+                "theme": 0.81,
+                "input_method": 0.88,
+                "win_condition": 0.91,
+                "difficulty": 0.63,
+            },
+            ambiguity_flags=[],
+        )
+
+        self.assertIsNone(question)
+        self.assertIsNone(strategy)
 
     def test_dialogue_slot_extract_fast_path_skips_truncation_retry_without_excerpt(self):
         engine = DialogueEngine()
@@ -695,8 +785,8 @@ class TestDialogueEngine(unittest.TestCase):
 
         kwargs = mock_complete.await_args.kwargs
         self.assertEqual(kwargs["step_key"], "dialogue.slot_extract")
-        self.assertEqual(kwargs["request_timeout_s"], FAST_DIALOGUE_SLOT_REQUEST_TIMEOUT_S)
-        self.assertEqual(kwargs["overall_timeout_s"], FAST_DIALOGUE_SLOT_OVERALL_TIMEOUT_S)
+        self.assertEqual(kwargs["request_timeout_s"], _dialogue_slot_request_timeout_s())
+        self.assertEqual(kwargs["overall_timeout_s"], _dialogue_slot_overall_timeout_s())
         self.assertGreater(response.slot_fill_pct, 0.0)
         self.assertTrue(response.slots_updated)
         self.assertEqual(response.slots.input_method, "tap")
@@ -893,8 +983,8 @@ class TestDialogueEngine(unittest.TestCase):
         self.assertEqual(spec.game_type, "casual")
         self.assertEqual(mock_complete.await_count, 1)
         retry_kwargs = mock_retry.await_args.kwargs
-        self.assertEqual(retry_kwargs["request_timeout_s"], INTENT_PARSE_REQUEST_TIMEOUT_S)
-        self.assertEqual(retry_kwargs["overall_timeout_s"], INTENT_PARSE_OVERALL_TIMEOUT_S)
+        self.assertEqual(retry_kwargs["request_timeout_s"], _intent_parse_request_timeout_s())
+        self.assertEqual(retry_kwargs["overall_timeout_s"], _intent_parse_overall_timeout_s())
         self.assertEqual(retry_kwargs["timeout_retry_attempts"], 1)
 
     def test_analyze_turn_stream_falls_back_to_full_reply_after_partial_stream_failure(self):
