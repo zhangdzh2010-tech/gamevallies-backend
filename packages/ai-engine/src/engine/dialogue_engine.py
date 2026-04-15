@@ -599,18 +599,100 @@ NULLISH_TEXT = {
 }
 
 NORMALIZED_INPUT_METHOD_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("swipe", ("swipe", "slide", "flick", "touch tap swipe", "touch swipe")),
-    ("drag", ("drag", "dragging", "pull")),
-    ("touch", ("touch only", "touch control", "touch")),
-    ("tap", ("tap", "click", "touch tap")),
-    ("hold", ("hold", "press", "long press")),
+    ("swipe", ("swipe", "slide", "flick", "touch tap swipe", "touch swipe", "滑动", "滑屏", "划动")),
+    ("drag", ("drag", "dragging", "pull", "拖拽", "拖动")),
+    ("touch", ("touch only", "touch control", "touch", "纯触摸", "触摸")),
+    ("tap", ("tap", "click", "touch tap", "点击", "点按", "轻触")),
+    ("hold", ("hold", "press", "long press", "长按")),
 )
 
 NORMALIZED_DIFFICULTY_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("easy", ("easy", "relaxed", "simple", "casual")),
-    ("medium", ("medium", "normal", "standard")),
-    ("hard", ("hard", "difficult", "challenging")),
-    ("progressive", ("progressive", "escalating", "ramping")),
+    ("easy", ("easy", "relaxed", "simple", "casual", "简单", "轻松", "休闲")),
+    ("medium", ("medium", "normal", "standard", "balanced", "标准", "适中", "普通", "中等")),
+    ("hard", ("hard", "difficult", "challenging", "brutal", "困难", "很难", "硬核", "挑战")),
+    ("progressive", ("progressive", "escalating", "ramping", "递进", "逐步升级", "越来越难", "逐步变难")),
+)
+
+INPUT_METHOD_PRIMARY_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("tap", (
+        "主要是点击",
+        "主要用点击",
+        "主要通过点击",
+        "以点击为主",
+        "点击为主",
+        "点击选项为主",
+        "点按为主",
+        "以点按为主",
+        "轻触为主",
+        "mainly tap",
+        "primarily tap",
+        "mainly click",
+        "primarily click",
+        "tap is the main control",
+        "click is the main control",
+    )),
+    ("swipe", (
+        "主要是滑动",
+        "主要用滑动",
+        "主要通过滑动",
+        "以滑动为主",
+        "滑动为主",
+        "mainly swipe",
+        "primarily swipe",
+        "swipe is the main control",
+    )),
+    ("drag", (
+        "主要是拖拽",
+        "主要用拖拽",
+        "主要通过拖拽",
+        "以拖拽为主",
+        "拖拽为主",
+        "mainly drag",
+        "primarily drag",
+        "drag is the main control",
+    )),
+    ("touch", (
+        "只用触摸",
+        "纯触摸",
+        "touch only",
+        "only touch",
+    )),
+)
+
+DIFFICULTY_PRIORITY_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("progressive", (
+        "逐步变难",
+        "越来越难",
+        "难度递进",
+        "递进变难",
+        "逐步升级",
+        "前松后紧",
+        "先简单后变难",
+        "前面轻松后面变难",
+        "后面逐步变难",
+        "越往后越难",
+        "ramping up",
+        "ramps up",
+        "gets harder over time",
+    )),
+)
+
+NEGATED_MARKER_PREFIXES: tuple[str, ...] = (
+    "不",
+    "别",
+    "无",
+    "非",
+    "没",
+    "不用",
+    "不要",
+    "不做",
+    "不是",
+    "无需",
+    "not ",
+    "no ",
+    "without ",
+    "dont ",
+    "don't ",
 )
 
 SPARSE_REQUEST_MARKERS = (
@@ -841,15 +923,14 @@ def _normalize_slot_text_value(field: str, value: str) -> str:
     if not text:
         return ""
 
-    lowered = text.lower()
     if field == "input_method":
-        for normalized, hints in NORMALIZED_INPUT_METHOD_HINTS:
-            if any(hint in lowered for hint in hints):
-                return normalized
+        normalized_input_method = _infer_input_method_from_text(text)
+        if normalized_input_method:
+            return normalized_input_method
     if field == "difficulty":
-        for normalized, hints in NORMALIZED_DIFFICULTY_HINTS:
-            if any(hint in lowered for hint in hints):
-                return normalized
+        normalized_difficulty = _infer_difficulty_from_text(text)
+        if normalized_difficulty:
+            return normalized_difficulty
     if field == "game_type":
         normalized_game_type = _normalize_game_type_label(text, "")
         if normalized_game_type:
@@ -1828,8 +1909,10 @@ def _coerce_authoritative_slot_value(
             title or "",
         )
         return normalized or None
-    if field in {"input_method", "difficulty"}:
-        return inferred_slot_data.get(field) or _normalize_slot_text_value(field, normalized_answer)
+    if field == "input_method":
+        return _normalize_slot_text_value(field, normalized_answer) or inferred_slot_data.get(field)
+    if field == "difficulty":
+        return _normalize_slot_text_value(field, normalized_answer) or inferred_slot_data.get(field)
     if field == "special_rules":
         return [normalized_answer]
     if field == "theme" and inferred_slot_data.get(field):
@@ -3270,32 +3353,92 @@ def _infer_explicit_game_type(text: str) -> Optional[str]:
     return None
 
 
-def _infer_input_method_from_text(text: str) -> Optional[str]:
-    lowered = (text or "").lower()
-    marker_map = {
-        "tap": ("tap", "click", "touch", "点击", "点按", "轻触"),
-        "touch": ("touch", "tap", "press", "触摸", "轻触"),
-        "swipe": ("swipe", "slide", "sliding", "滑动", "滑屏", "划动"),
-        "drag": ("drag", "move", "拖拽", "拖动"),
-    }
-    for input_method, markers in marker_map.items():
-        if any(marker.lower() in lowered for marker in markers):
-            return input_method
+def _match_priority_hint(
+    text: str,
+    hint_groups: tuple[tuple[str, tuple[str, ...]], ...],
+) -> Optional[str]:
+    for normalized, hints in hint_groups:
+        if any(hint.lower() in text for hint in hints):
+            return normalized
     return None
+
+
+def _match_exact_normalized_hint(
+    text: str,
+    hint_groups: tuple[tuple[str, tuple[str, ...]], ...],
+) -> Optional[str]:
+    normalized_text = re.sub(r"\s+", " ", text.strip().lower())
+    for normalized, hints in hint_groups:
+        if any(normalized_text == hint.lower() for hint in hints):
+            return normalized
+    return None
+
+
+def _count_affirmative_marker_occurrences(text: str, markers: tuple[str, ...]) -> int:
+    total = 0
+    for marker in markers:
+        lowered_marker = marker.lower()
+        start = 0
+        while True:
+            idx = text.find(lowered_marker, start)
+            if idx == -1:
+                break
+            prefix = text[max(0, idx - 8):idx]
+            if not any(prefix.endswith(token) for token in NEGATED_MARKER_PREFIXES):
+                total += 1
+            start = idx + len(lowered_marker)
+    return total
+
+
+def _pick_unique_top_signal(scores: Dict[str, int]) -> Optional[str]:
+    positive_scores = {key: value for key, value in scores.items() if value > 0}
+    if not positive_scores:
+        return None
+    top_score = max(positive_scores.values())
+    winners = [key for key, value in positive_scores.items() if value == top_score]
+    if len(winners) != 1:
+        return None
+    return winners[0]
+
+
+def _infer_input_method_from_text(text: str) -> Optional[str]:
+    lowered = _normalize_free_text(text).lower()
+    if not lowered:
+        return None
+
+    priority_match = _match_priority_hint(lowered, INPUT_METHOD_PRIMARY_HINTS)
+    if priority_match:
+        return priority_match
+
+    exact_match = _match_exact_normalized_hint(lowered, NORMALIZED_INPUT_METHOD_HINTS)
+    if exact_match:
+        return exact_match
+
+    signal_scores = {
+        input_method: _count_affirmative_marker_occurrences(lowered, markers)
+        for input_method, markers in NORMALIZED_INPUT_METHOD_HINTS
+    }
+    return _pick_unique_top_signal(signal_scores)
 
 
 def _infer_difficulty_from_text(text: str) -> Optional[str]:
-    lowered = (text or "").lower()
-    marker_map = {
-        "easy": ("easy", "simple", "relaxed", "casual", "简单", "轻松", "休闲"),
-        "medium": ("medium", "balanced", "normal", "moderate", "中等", "适中", "普通"),
-        "hard": ("hard", "challenging", "difficult", "brutal", "困难", "硬核", "挑战"),
-        "progressive": ("progressive", "ramping", "escalating", "ramp", "递进", "逐步升级", "越来越难"),
+    lowered = _normalize_free_text(text).lower()
+    if not lowered:
+        return None
+
+    priority_match = _match_priority_hint(lowered, DIFFICULTY_PRIORITY_HINTS)
+    if priority_match:
+        return priority_match
+
+    exact_match = _match_exact_normalized_hint(lowered, NORMALIZED_DIFFICULTY_HINTS)
+    if exact_match:
+        return exact_match
+
+    signal_scores = {
+        difficulty: _count_affirmative_marker_occurrences(lowered, markers)
+        for difficulty, markers in NORMALIZED_DIFFICULTY_HINTS
     }
-    for difficulty, markers in marker_map.items():
-        if any(marker.lower() in lowered for marker in markers):
-            return difficulty
-    return None
+    return _pick_unique_top_signal(signal_scores)
 
 
 def _build_plan_draft(
@@ -3533,7 +3676,7 @@ def _build_dialogue_question(
             continue
         threshold = low_confidence_thresholds.get(slot_key)
         if threshold is not None and confidence < threshold:
-            if all_required_present and slot_key not in {"core_mechanic", "input_method", "win_condition"}:
+            if all_required_present and slot_key not in {"input_method", "win_condition"}:
                 continue
             mode = "ambiguity_resolution" if all_required_present else "low_confidence"
             score = impact + (threshold - confidence)

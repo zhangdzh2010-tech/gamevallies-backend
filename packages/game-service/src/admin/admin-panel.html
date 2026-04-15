@@ -4964,12 +4964,9 @@ async function loadTimeoutConfigs() {
   const wrap = document.getElementById('timeoutConfigWrap');
   wrap.innerHTML = '<div style="color:#94a3b8;text-align:center;padding:40px">Loading timeout layout...</div>';
   try {
-    const [configs, pipeline] = await Promise.all([
-      api('/configs?category=timeout'),
-      api('/prompt-pipeline').catch(() => null),
-    ]);
+    const configs = await api('/configs?category=timeout');
     timeoutConfigList = Array.isArray(configs) ? configs : [];
-    timeoutPipelineData = pipeline && typeof pipeline === 'object' ? pipeline : null;
+    timeoutPipelineData = null;
     renderTimeoutConfigs();
   } catch (e) {
     wrap.innerHTML = `<div style="color:#dc2626;text-align:center;padding:40px">Failed to load timeout config: ${escHtml(e.message)}</div>`;
@@ -4983,77 +4980,81 @@ function renderTimeoutConfigs() {
     return;
   }
 
-  const sections = timeoutBuildSections(timeoutConfigList);
-  wrap.innerHTML = renderTimeoutOverview(sections, timeoutConfigList) + sections.map((section) => {
-    const sectionEntries = timeoutSectionEntries(timeoutConfigList, section.id);
-    const grouped = new Map();
-    sectionEntries.forEach((entry) => {
-      const group = entry.group || 'custom';
-      if (!grouped.has(group)) grouped.set(group, []);
-      grouped.get(group).push(entry);
-    });
+  const sectionMap = new Map();
+  timeoutConfigList.forEach((entry) => {
+    const sectionId = entry.sectionId || 'business_global';
+    if (!sectionMap.has(sectionId)) {
+      sectionMap.set(sectionId, {
+        id: sectionId,
+        title: entry.sectionTitle || 'Timeouts',
+        description: entry.sectionDescription || '',
+        tag: entry.sectionTag || 'Section',
+        order: Number(entry.sectionOrder || 999),
+        items: [],
+      });
+    }
+    sectionMap.get(sectionId).items.push(entry);
+  });
 
-    const groupHtml = sectionEntries.length
-      ? Array.from(grouped.entries()).map(([group, items]) => `
-          <div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:16px 18px">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px">
-              <div>
-                <div style="font-size:13px;font-weight:700;color:#0f172a">${escHtml(timeoutGroupLabel(group))}</div>
-                <div style="font-size:11px;color:#64748b;margin-top:4px">${escHtml(String(items.length))} keys</div>
-              </div>
-            </div>
-            <div style="display:grid;gap:12px">
-              ${items.map((entry) => `
-                <div style="border:1px solid #eef2f7;border-radius:12px;padding:14px 16px;background:${entry.source === 'db' ? '#ffffff' : '#f8fafc'}">
-                  <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
-                    <div style="min-width:0;flex:1">
-                      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-                        <code style="font-size:12px;font-weight:700;color:#1e293b;background:#f8fafc;border:1px solid #e2e8f0;padding:2px 8px;border-radius:6px">${escHtml(entry.configKey)}</code>
-                        <span class="badge ${entry.source === 'db' ? 'badge-published' : 'badge-draft'}">${escHtml(entry.source === 'db' ? 'DB' : 'Catalog')}</span>
-                        <span style="font-size:11px;color:#64748b;padding:2px 8px;border-radius:999px;background:#f8fafc;border:1px solid #e2e8f0">${escHtml(timeoutServiceLabel(entry.service))}</span>
-                        <span style="font-size:11px;color:#64748b">${escHtml(entry.valueType || 'int')} / ${escHtml(entry.unit || '-')}</span>
-                      </div>
-                      <div style="font-size:12px;color:#64748b;line-height:1.6;margin-top:8px">${escHtml(entry.description || '')}</div>
-                      <div style="font-size:11px;color:#94a3b8;margin-top:8px">Default: ${escHtml(String(entry.defaultValue ?? '-'))}${escHtml(timeoutUnitSuffix(entry))}</div>
+  const sections = Array.from(sectionMap.values())
+    .map((section) => ({
+      ...section,
+      items: section.items.sort((a, b) => Number(a.itemOrder || 999) - Number(b.itemOrder || 999)),
+    }))
+    .sort((a, b) => a.order - b.order);
+
+  wrap.innerHTML = `
+    <div style="margin-bottom:18px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:18px;padding:18px 20px">
+      <div style="font-size:16px;font-weight:700;color:#0f172a">只保留 6+1 个业务级超时项</div>
+      <div style="font-size:13px;color:#475569;line-height:1.7;margin-top:8px">
+        后台现在只展示会直接影响用户等待感、生成成功率和成本的关键节点。
+        request / overall、runtime QA phase、relay、cache、polling 等内部细项统一走默认值，不再放在这里手动调。
+      </div>
+    </div>
+    ${sections.map((section) => `
+      <div style="margin-bottom:18px;background:#fff;border:1px solid #e2e8f0;border-radius:18px;padding:18px">
+        <div style="margin-bottom:14px">
+          <div style="font-size:11px;font-weight:700;color:#2563eb;letter-spacing:0.04em;text-transform:uppercase">${escHtml(section.tag)}</div>
+          <div style="font-size:17px;font-weight:700;color:#0f172a;margin-top:6px">${escHtml(section.title)}</div>
+          <div style="font-size:12px;color:#64748b;line-height:1.6;margin-top:6px">${escHtml(section.description)}</div>
+        </div>
+        <div style="display:grid;gap:12px">
+          ${section.items.map((entry) => {
+            const backingKeys = Array.isArray(entry.backingKeys) ? entry.backingKeys : [];
+            return `
+              <div style="border:1px solid #e5e7eb;border-radius:14px;padding:16px;background:${entry.source === 'db' ? '#ffffff' : '#f8fafc'}">
+                <div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap">
+                  <div style="min-width:0;flex:1">
+                    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                      <div style="font-size:15px;font-weight:700;color:#0f172a">${escHtml(entry.displayName || entry.configKey)}</div>
+                      ${entry.optional ? '<span class="badge badge-draft">Optional</span>' : ''}
+                      <span class="badge ${entry.source === 'db' ? 'badge-published' : 'badge-draft'}">${escHtml(entry.source === 'db' ? 'Custom' : 'Default')}</span>
                     </div>
-                    <div style="display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap">
-                      <div>
-                        <label style="display:block;font-size:11px;color:#94a3b8;margin-bottom:4px">Current</label>
-                        <div style="display:flex;align-items:center;gap:6px">
-                          <input type="number" step="${entry.valueType === 'float' ? '0.01' : '1'}" id="${timeoutInputId(entry.configKey)}" value="${escAttr(String(entry.configValue ?? ''))}" style="width:140px;padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:13px">
-                          ${entry.unit && entry.unit !== 'ratio' ? `<span style="font-size:12px;color:#64748b">${escHtml(entry.unit)}</span>` : ''}
-                        </div>
-                      </div>
-                      <button class="btn btn-primary btn-sm" onclick="saveTimeoutConfig('${escAttr(entry.configKey)}')">Save</button>
+                    <div style="font-size:12px;color:#64748b;line-height:1.7;margin-top:8px">${escHtml(entry.description || '')}</div>
+                    <div style="font-size:11px;color:#94a3b8;margin-top:10px">
+                      默认值: ${escHtml(String(entry.defaultValue ?? '-'))}${escHtml(timeoutUnitSuffix(entry))}
+                      ${backingKeys.length ? ` · 关联 ${escHtml(String(backingKeys.length))} 个内部键` : ''}
                     </div>
+                    <div style="font-size:11px;color:#cbd5e1;margin-top:6px"><code>${escHtml(entry.configKey)}</code></div>
+                  </div>
+                  <div style="display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap">
+                    <div>
+                      <label style="display:block;font-size:11px;color:#94a3b8;margin-bottom:4px">当前值</label>
+                      <div style="display:flex;align-items:center;gap:6px">
+                        <input type="number" step="${entry.valueType === 'float' ? '0.01' : '1'}" id="${timeoutInputId(entry.configKey)}" value="${escAttr(String(entry.configValue ?? ''))}" style="width:140px;padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:13px">
+                        ${entry.unit && entry.unit !== 'ratio' ? `<span style="font-size:12px;color:#64748b">${escHtml(entry.unit)}</span>` : ''}
+                      </div>
+                    </div>
+                    <button class="btn btn-primary btn-sm" onclick="saveTimeoutConfig('${escAttr(entry.configKey)}')">Save</button>
                   </div>
                 </div>
-              `).join('')}
-            </div>
-          </div>
-        `).join('')
-      : `
-          <div style="background:#fff;border:1px dashed #cbd5e1;border-radius:14px;padding:18px 20px;color:#64748b;line-height:1.6">
-            ${escHtml(TIMEOUT_FLOW_EMPTY_HINTS[section.id] || 'No timeout key is currently mapped to this section.')}
-          </div>
-        `;
-
-    return `
-      <div style="margin-bottom:18px;background:${escHtml(section.bg || '#fff')};border:1px solid ${escHtml(section.border || '#e5e7eb')};border-radius:18px;padding:18px">
-        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px">
-          <div>
-            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-              <span style="font-size:11px;font-weight:700;color:${escHtml(section.color || '#2563eb')};letter-spacing:0.04em;text-transform:uppercase">${escHtml(section.tag || 'Section')}</span>
-              <span style="font-size:12px;color:#64748b">${escHtml(String(sectionEntries.length))} keys</span>
-            </div>
-            <div style="font-size:17px;font-weight:700;color:#0f172a;margin-top:6px">${escHtml(section.title || section.id)}</div>
-            <div style="font-size:12px;color:#64748b;line-height:1.6;margin-top:6px">${escHtml(section.description || '')}</div>
-          </div>
+              </div>
+            `;
+          }).join('')}
         </div>
-        <div style="display:grid;gap:12px">${groupHtml}</div>
       </div>
-    `;
-  }).join('');
+    `).join('')}
+  `;
 }
 
 async function saveTimeoutConfig(key) {
