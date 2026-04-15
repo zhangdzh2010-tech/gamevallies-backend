@@ -1536,6 +1536,54 @@ def test_generate_create_code_auto_repairs_nested_grid_reads_before_preflight_fa
     assert not any(issue.code == "unsafe_nested_grid_read" for issue in preflight_issues)
 
 
+def test_generate_create_code_auto_repairs_dynamic_alpha_suffix_before_preflight_failure():
+    runner = V2PipelineRunner()
+    request = RunPipelineV2Request(
+        game_id="game-preflight-alpha",
+        user_id="user-preflight-alpha",
+        raw_user_input="make a neon action game",
+    )
+    spec = GameSpec(game_type="casual", core_mechanics=[{"type": "tap_dodge"}])
+    runtime_contract = GameRuntimeContract(runtime_profile="casual_arcade")
+    generated = GenerateCodeResult(
+        html_code=(
+            "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas><script>"
+            "const canvas=document.getElementById('gameCanvas');"
+            "canvas.width=640; canvas.height=360;"
+            "const ctx=canvas.getContext('2d');"
+            "const light={color:'hsl(0, 80%, 60%)'};"
+            "function renderBeam(){"
+            "const gradient=ctx.createLinearGradient(0,0,0,canvas.height);"
+            "gradient.addColorStop(0, light.color + '80');"
+            "gradient.addColorStop(1, light.color + '00');"
+            "ctx.fillStyle=gradient;"
+            "}"
+            "</script></body></html>"
+        ),
+        strategy="llm",
+        generation_time_ms=10,
+        code_size_bytes=100,
+    )
+
+    with patch.object(
+        runner.code_generator,
+        "generate",
+        new=AsyncMock(return_value=generated),
+    ):
+        result, preflight_issues = asyncio.run(
+            runner._generate_create_code(
+                request,
+                spec,
+                GDD(),
+                runtime_contract,
+                budget_override="simple",
+            )
+        )
+
+    assert "__withAlpha(light.color, 0.502)" in result.html_code
+    assert not any(issue.code == "unsafe_color_alpha_concat" for issue in preflight_issues)
+
+
 def test_contract_qa_loop_signals_regeneration_when_only_non_syntax_errors_exist():
     runner = V2PipelineRunner()
     runtime_contract = GameRuntimeContract(runtime_profile="puzzle_grid")

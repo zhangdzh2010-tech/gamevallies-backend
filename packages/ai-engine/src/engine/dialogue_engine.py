@@ -448,9 +448,9 @@ CONTEXT_GAME_TYPE_RULES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
 CONTEXT_THEME_RULES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("space", ("space", "galaxy", "star", "planet", "\u592a\u7a7a", "\u5b87\u5b99", "\u661f")),
     ("zoo", ("animal", "zoo", "pig", "cat", "dog", "panda", "\u52a8\u7269", "\u5c0f\u732a", "\u732a", "\u732b", "\u72d7", "\u718a\u732b")),
-    ("ocean", ("ocean", "sea", "water", "fish", "\u6d77", "\u6d0b", "\u6c34", "\u9c7c")),
+    ("ocean", ("ocean", "sea", "underwater", "reef", "coast", "marine", "\u6d77", "\u6d0b", "\u6d77\u5e95", "\u6d77\u5cb8")),
     ("forest", ("forest", "jungle", "tree", "\u68ee\u6797", "\u4e1b\u6797", "\u6811")),
-    ("city", ("city", "street", "car", "traffic", "\u57ce\u5e02", "\u8857", "\u6c7d\u8f66", "\u4ea4\u901a")),
+    ("city", ("city", "urban", "metro", "subway", "street", "traffic", "commute", "\u57ce\u5e02", "\u8857", "\u4ea4\u901a", "\u901a\u52e4", "\u5730\u94c1", "\u90fd\u5e02")),
     ("food", ("food", "kitchen", "chef", "candy", "dessert", "\u98df\u7269", "\u53a8\u623f", "\u7cd6", "\u751c\u54c1")),
     ("toy", ("toy", "block", "brick", "\u73a9\u5177", "\u79ef\u6728", "\u65b9\u5757")),
     ("fantasy", ("fantasy", "magic", "dragon", "\u5947\u5e7b", "\u9b54\u6cd5", "\u9f99")),
@@ -973,16 +973,70 @@ def _canonical_reference_key(value: str) -> str:
     return normalized
 
 
+_REFERENCE_GAME_LOWERCASE_ARTICLES = {"a", "an", "the", "this", "that", "these", "those"}
+_REFERENCE_GAME_BANNED_PROSE_WORDS = {
+    "advanced",
+    "readable",
+    "mobile",
+    "prototype",
+    "premium",
+    "rough",
+    "jam",
+    "style",
+    "vibe",
+    "feel",
+    "feels",
+    "feeling",
+    "mechanic",
+    "mechanics",
+    "resource",
+    "resources",
+    "boost",
+    "checkpoint",
+    "checkpoints",
+    "mission",
+    "missions",
+    "objective",
+    "objectives",
+}
+
+
+def _sanitize_reference_game_candidate(candidate: str) -> Optional[str]:
+    normalized = _normalize_free_text(candidate)
+    if not normalized:
+        return None
+    canonical_key = _canonical_reference_key(normalized)
+    if any(canonical_key == _canonical_reference_key(name) for name in REFERENCE_GAME_HINTS):
+        return normalized
+
+    if re.search(r"[\u4e00-\u9fff]", normalized):
+        simplified = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", normalized)
+        if not simplified or len(simplified) > 16:
+            return None
+        return normalized
+
+    words = re.findall(r"[A-Za-z0-9]+", normalized)
+    if not words or len(words) > 4:
+        return None
+    if normalized == normalized.lower() and words[0].lower() in _REFERENCE_GAME_LOWERCASE_ARTICLES:
+        return None
+    if any(word.lower() in _REFERENCE_GAME_BANNED_PROSE_WORDS for word in words):
+        return None
+    return normalized
+
+
 def _extract_reference_game_from_text(text: str) -> Optional[str]:
     source = _normalize_free_text(text)
     if not source:
         return None
 
-    patterns = (
-        r"(?:\u7c7b\u4f3c|\u50cf|\u53c2\u8003|\u501f\u9274|\u81f4\u656c|inspired by|similar to|based on|like)\s*[\u300a\"\u201c]?([^\u300a\u300b\"\u201c\u201d\n,\uFF0C\u3002\uFF1F\uFF01]{2,28})[\u300b\"\u201d]?",
+    patterns = [
+        r"(?:\u7c7b\u4f3c|\u50cf|\u53c2\u8003|\u501f\u9274|\u81f4\u656c)\s*[\u300a\"\u201c]?([^\u300a\u300b\"\u201c\u201d\n,\uFF0C\u3002\uFF1F\uFF01]{2,28})[\u300b\"\u201d]?",
+        r"(?:^|[\s(\uff08])(?:inspired by|similar to|based on|like)\s+[\u300a\"\u201c]?([^\u300a\u300b\"\u201c\u201d\n,\uFF0C\u3002\uFF1F\uFF01;:]{2,32})[\u300b\"\u201d]?",
         r"[\u300a\"\u201c]([^\u300a\u300b\"\u201c\u201d\n,\uFF0C\u3002\uFF1F\uFF01]{2,28})[\u300b\"\u201d]\s*(?:\u8fd9\u6837\u7684)?\u6e38\u620f",
-        r"([^\u300a\u300b\"\u201c\u201d\n,\uFF0C\u3002\uFF1F\uFF01]{2,24})\s*\u7684\u6e38\u620f",
-    )
+    ]
+    if _looks_like_understanding_check(source):
+        patterns.append(r"([^\u300a\u300b\"\u201c\u201d\n,\uFF0C\u3002\uFF1F\uFF01]{2,24})\s*\u7684\u6e38\u620f")
     stop_words = {
         "\u6e38\u620f",
         "\u8fd9\u4e2a",
@@ -999,11 +1053,14 @@ def _extract_reference_game_from_text(text: str) -> Optional[str]:
             continue
         candidate = re.sub(r"^(?:\u50cf|\u7c7b\u4f3c|\u53c2\u8003|like|similar to|inspired by)\s+", "", match.group(1), flags=re.IGNORECASE)
         candidate = re.sub(r"\s*(?:\u90a3\u79cd|\u8fd9\u79cd|\u8fd9\u6b3e|\u90a3\u4e2a|\u7684\u6e38\u620f)$", "", candidate).strip(" \u300a\u300b\"\u201c\u201d.,;:!?")
+        candidate = re.sub(r"\s+(?:style|vibe|feel|prototype)\b.*$", "", candidate, flags=re.IGNORECASE)
         if len(candidate) < 2:
             continue
         if candidate.lower() in stop_words:
             continue
-        return candidate
+        sanitized = _sanitize_reference_game_candidate(candidate)
+        if sanitized:
+            return sanitized
     return None
 
 
@@ -1222,6 +1279,38 @@ def _contains_marker(text: str, marker: str) -> bool:
 
 def _contains_any_marker(text: str, markers: Tuple[str, ...]) -> bool:
     return any(_contains_marker(text, marker) for marker in markers)
+
+
+def _count_marker_matches(text: str, markers: Tuple[str, ...]) -> int:
+    return sum(1 for marker in markers if _contains_marker(text, marker))
+
+
+def _infer_contextual_game_type(text: str) -> Optional[str]:
+    normalized = _normalize_free_text(text)
+    if not normalized:
+        return None
+    explicit = _infer_explicit_game_type(normalized)
+    if explicit:
+        return explicit
+
+    best_game_type: Optional[str] = None
+    best_score = 0
+    best_priority = len(CURATED_GAME_TYPES)
+    for priority, game_type in enumerate(("educational", "funny", "casual", "puzzle")):
+        markers = {
+            "educational": EDUCATIONAL_REQUEST_MARKERS,
+            "funny": FUNNY_REQUEST_MARKERS,
+            "casual": CASUAL_REQUEST_MARKERS,
+            "puzzle": PUZZLE_REQUEST_MARKERS,
+        }[game_type]
+        score = _count_marker_matches(normalized, markers)
+        if score <= 0:
+            continue
+        if score > best_score or (score == best_score and priority < best_priority):
+            best_score = score
+            best_priority = priority
+            best_game_type = game_type
+    return best_game_type
 
 
 def _looks_like_sparse_request(text: str) -> bool:
@@ -1697,16 +1786,9 @@ def _infer_slots_from_text(text: str) -> Dict[str, Any]:
     inferred: Dict[str, Any] = {}
     ui_language = _detect_ui_language(source)
 
-    game_type_rules = (
-        ("educational", EDUCATIONAL_REQUEST_MARKERS),
-        ("funny", FUNNY_REQUEST_MARKERS),
-        ("puzzle", PUZZLE_REQUEST_MARKERS),
-        ("casual", CASUAL_REQUEST_MARKERS),
-    )
-    for game_type, markers in game_type_rules:
-        if any(_contains_marker(source, marker) or _contains_marker(lowered, marker) for marker in markers):
-            inferred["game_type"] = game_type
-            break
+    contextual_game_type = _infer_contextual_game_type(source)
+    if contextual_game_type:
+        inferred["game_type"] = contextual_game_type
 
     input_rules = (
         ("swipe", ("\u6ed1\u52a8", "\u5de6\u53f3\u79fb\u52a8", "swipe", "drag left and right")),
@@ -1727,34 +1809,23 @@ def _infer_slots_from_text(text: str) -> Dict[str, Any]:
         for field in ("game_type", "core_mechanic", "input_method", "win_condition", "difficulty"):
             if reference_hints.get(field) and not inferred.get(field):
                 inferred[field] = reference_hints[field]
-
-        theme_rules = (
-            ("space", ("\u592a\u7a7a", "\u5b87\u5b99", "space", "cosmic", "galaxy")),
-            ("zoo", ("\u52a8\u7269\u56ed", "zoo", "animal")),
-            ("neon", ("\u9713\u8679", "neon", "cyber")),
-            ("fantasy", ("\u5947\u5e7b", "fantasy", "magic")),
-            ("ocean", ("\u6d77\u6d0b", "ocean", "underwater", "water")),
-            ("forest", ("\u68ee\u6797", "forest", "jungle")),
-            ("city", ("\u57ce\u5e02", "city", "urban")),
-            ("garden", ("\u82b1\u56ed", "garden", "farm")),
-            ("food", ("\u98df\u7269", "\u53a8\u623f", "food", "kitchen", "chef")),
-            ("candy", ("\u7cd6\u679c", "\u751c\u54c1", "candy", "dessert")),
-            ("sports", ("\u8fd0\u52a8", "\u7403\u573a", "sports", "stadium")),
-            ("toy", ("\u73a9\u5177", "toy", "block")),
-        )
-        for theme, markers in theme_rules:
-            if any(_contains_marker(source, marker) or _contains_marker(lowered, marker) for marker in markers):
-                inferred["theme"] = theme
-                break
+    explicit_theme = _infer_theme_from_context(source)
+    if explicit_theme:
+        inferred["theme"] = explicit_theme
 
     game_type = inferred.get("game_type")
     defaults = _localized_game_type_defaults(str(game_type), ui_language) if game_type else {}
+    should_apply_generic_defaults = bool(game_type) and (
+        bool(reference_game)
+        or _looks_like_sparse_request(source)
+        or len(_normalize_free_text(source)) <= 120
+    )
 
-    if defaults.get("core_mechanic"):
+    if should_apply_generic_defaults and defaults.get("core_mechanic"):
         inferred.setdefault("core_mechanic", defaults["core_mechanic"])
-    if defaults.get("win_condition"):
+    if should_apply_generic_defaults and defaults.get("win_condition"):
         inferred.setdefault("win_condition", defaults["win_condition"])
-    if defaults.get("input_method"):
+    if should_apply_generic_defaults and defaults.get("input_method"):
         inferred.setdefault("input_method", defaults["input_method"])
     if "\u91cd\u65b0\u5f00\u59cb" in source or "restart" in lowered:
         inferred.setdefault("special_rules", [])

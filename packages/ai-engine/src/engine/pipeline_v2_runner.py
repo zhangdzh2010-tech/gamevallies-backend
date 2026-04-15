@@ -1571,6 +1571,18 @@ class V2PipelineRunner:
             generated.html_code,
             runtime_contract=runtime_contract,
         )
+        if preflight_issues:
+            issue_repaired_html = self.code_preflight.auto_repair(
+                generated.html_code,
+                runtime_contract=runtime_contract,
+                issues=preflight_issues,
+            )
+            if issue_repaired_html != generated.html_code:
+                generated = generated.model_copy(update={"html_code": issue_repaired_html})
+                preflight_issues = self.code_preflight.validate(
+                    generated.html_code,
+                    runtime_contract=runtime_contract,
+                )
         return generated, preflight_issues
 
     async def _generate_iteration_code(
