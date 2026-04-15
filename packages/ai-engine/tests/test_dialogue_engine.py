@@ -397,6 +397,38 @@ class TestDialogueEngine(unittest.TestCase):
         self.assertEqual(inferred["input_method"], "tap")
         self.assertIn("三消", inferred["core_mechanic"])
 
+    def test_infer_slots_from_long_action_prompt_stays_casual_without_false_reference_defaults(self):
+        inferred = _infer_slots_from_text(
+            "Create a landscape mobile web action game about a courier escaping through a flooded cyberpunk metro city at dusk. "
+            "The fantasy should mix rooftop parkour, mag-rail grinding, drone pursuit, package delivery checkpoints, "
+            "collapsing signs, and short slow-motion stunt moments, but it still needs to read clearly on a phone and "
+            "feel approachable in one sitting. I want layered systems instead of a one-note runner: the player should "
+            "manage health, a battery-like stamina resource for boost actions, combo score for stylish movement, and "
+            "mission checkpoints that make the run feel like a dramatic chase across several city districts."
+        )
+
+        self.assertEqual(inferred.get("game_type"), "casual")
+        self.assertEqual(inferred.get("theme"), "city")
+        self.assertNotIn("reference_game", inferred)
+        self.assertNotIn("core_mechanic", inferred)
+        self.assertNotIn("input_method", inferred)
+
+    def test_infer_slots_from_long_educational_prompt_ignores_prose_reference_and_weak_water_theme(self):
+        inferred = _infer_slots_from_text(
+            "Create a landscape educational challenge game where players pilot a mobile science rover through a chain of "
+            "live field missions, learning ecology, weather, energy, and habitat recovery concepts while still playing "
+            "something that feels game-first. I want a strong sense of progression: each mission should ask the player "
+            "to scan terrain, choose tools, react to hazards, and complete a local objective such as restoring soil "
+            "health, balancing water, or protecting a fragile species zone. The experience should feel like an advanced "
+            "but readable mobile prototype, not a quiz wrapped in a skin."
+        )
+
+        self.assertEqual(inferred.get("game_type"), "educational")
+        self.assertNotIn("reference_game", inferred)
+        self.assertNotEqual(inferred.get("theme"), "ocean")
+        self.assertNotIn("core_mechanic", inferred)
+        self.assertNotIn("input_method", inferred)
+
     def test_infer_theme_from_context_ignores_single_character_false_positive_markers(self):
         self.assertNotEqual(_infer_theme_from_context("做一个接水果游戏"), "ocean")
 

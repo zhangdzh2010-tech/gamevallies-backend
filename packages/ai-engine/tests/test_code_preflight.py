@@ -696,6 +696,38 @@ def test_code_preflight_flags_unsafe_gradient_alpha_suffix_concat():
     assert any(issue.code == "unsafe_color_alpha_concat" for issue in issues)
 
 
+def test_code_preflight_auto_repairs_unsafe_gradient_alpha_suffix_concat():
+    validator = CodePreflightValidator()
+    html = """
+    <!DOCTYPE html>
+    <html>
+      <body>
+        <canvas id="gameCanvas"></canvas>
+        <script>
+          const canvas = document.getElementById('gameCanvas');
+          canvas.width = 640;
+          canvas.height = 360;
+          const ctx = canvas.getContext('2d');
+          const light = { color: 'hsl(0, 80%, 60%)' };
+          function renderBeam() {
+            const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+            gradient.addColorStop(0, light.color + '80');
+            gradient.addColorStop(1, light.color + '00');
+            ctx.fillStyle = gradient;
+          }
+        </script>
+      </body>
+    </html>
+    """
+
+    repaired = validator.auto_repair(html, runtime_contract=GameRuntimeContract())
+    issues = validator.validate(repaired, runtime_contract=GameRuntimeContract())
+
+    assert "__withAlpha(light.color, 0.502)" in repaired
+    assert "__withAlpha(light.color, 0)" in repaired
+    assert not any(issue.code == "unsafe_color_alpha_concat" for issue in issues)
+
+
 def test_code_preflight_guidance_mentions_hsla_for_alpha_suffix_concat():
     validator = CodePreflightValidator()
     guidance = validator.render_guidance(

@@ -46,6 +46,9 @@ _CANVAS_PATH_CHAIN_RE = re.compile(
     re.IGNORECASE,
 )
 _COLOR_ALPHA_SUFFIX_RE = re.compile(r"\+\s*['\"][0-9a-fA-F]{2}['\"]")
+_DYNAMIC_COLOR_ALPHA_CONCAT_RE = re.compile(
+    r"(?P<expr>(?:[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*|\[[^\]]+\]|\([^()]*\))*|\([^()]+\)))\s*\+\s*['\"](?P<alpha>[0-9a-fA-F]{2})['\"]"
+)
 _PRIMARY_READY_INPUT_LISTENER_RE = re.compile(
     r"\b(?:canvas|document|window)\s*\.\s*addEventListener\(\s*['\"]"
     r"(?P<event>pointerdown|touchstart|mousedown|click)['\"]\s*,\s*(?P<handler>"
@@ -192,6 +195,39 @@ class CodePreflightValidator:
         "  };\n"
         "}\n"
     )
+    _SAFE_ALPHA_HELPER = (
+        "function __withAlpha(color, alpha) {\n"
+        "  const normalized = String(color || '').trim();\n"
+        "  const safeAlpha = Math.max(0, Math.min(1, Number(alpha)));\n"
+        "  if (!normalized) {\n"
+        "    return normalized;\n"
+        "  }\n"
+        "  const shortHex = normalized.match(/^#([0-9a-fA-F]{3})$/);\n"
+        "  const fullHex = normalized.match(/^#([0-9a-fA-F]{6})$/);\n"
+        "  if (shortHex || fullHex) {\n"
+        "    const hexBody = shortHex\n"
+        "      ? shortHex[1].split('').map((part) => part + part).join('')\n"
+        "      : fullHex[1];\n"
+        "    const alphaHex = Math.round(safeAlpha * 255).toString(16).padStart(2, '0');\n"
+        "    return `#${hexBody}${alphaHex}`;\n"
+        "  }\n"
+        "  const rgb = normalized.match(/^rgba?\\(([^)]+)\\)$/i);\n"
+        "  if (rgb) {\n"
+        "    const parts = rgb[1].split(',').map((part) => part.trim());\n"
+        "    if (parts.length >= 3) {\n"
+        "      return `rgba(${parts[0]}, ${parts[1]}, ${parts[2]}, ${safeAlpha})`;\n"
+        "    }\n"
+        "  }\n"
+        "  const hsl = normalized.match(/^hsla?\\(([^)]+)\\)$/i);\n"
+        "  if (hsl) {\n"
+        "    const parts = hsl[1].split(',').map((part) => part.trim());\n"
+        "    if (parts.length >= 3) {\n"
+        "      return `hsla(${parts[0]}, ${parts[1]}, ${parts[2]}, ${safeAlpha})`;\n"
+        "    }\n"
+        "  }\n"
+        "  return normalized;\n"
+        "}\n"
+    )
 
     def validate(
         self,
@@ -221,11 +257,15 @@ class CodePreflightValidator:
         html_code: str,
         *,
         runtime_contract: Optional[GameRuntimeContract] = None,
+        issues: Optional[Iterable[CodePreflightIssue]] = None,
     ) -> str:
         if not html_code or "<script" not in (html_code or "").lower():
             return html_code
+        seen_codes = {issue.code for issue in (issues or [])}
         repaired = self._repair_nullable_canvas_runtime_objects(html_code)
         repaired = self._repair_nested_grid_reads(repaired, runtime_contract)
+        if not seen_codes or "unsafe_color_alpha_concat" in seen_codes:
+            repaired = self._repair_unsafe_color_alpha_concat(repaired)
         return repaired or html_code
 
     def _repair_nullable_canvas_runtime_objects(self, html_code: str) -> str:
@@ -460,6 +500,55 @@ class CodePreflightValidator:
             return html_code
         if "__safeGridCell(" not in repaired_script:
             repaired_script = self._SAFE_GRID_HELPER + repaired_script.lstrip()
+
+        start, end = script_match.span("body")
+        return f"{html_code[:start]}{repaired_script}{html_code[end:]}"
+
+    def _repair_unsafe_color_alpha_concat(self, html_code: str) -> str:
+        script_match = _SCRIPT_BLOCK_RE.search(html_code or "")
+        if not script_match:
+            return html_code
+
+        script = script_match.group("body") or ""
+        if not _COLOR_ALPHA_SUFFIX_RE.search(script):
+            return html_code
+
+        replaced_any = False
+        repaired_lines: list[str] = []
+        for line in script.splitlines(keepends=True):
+            stripped = line.strip()
+            if (
+                not stripped
+                or not _COLOR_ALPHA_SUFFIX_RE.search(line)
+                or ("addColorStop" not in line and "fillStyle" not in line and "strokeStyle" not in line)
+            ):
+                repaired_lines.append(line)
+                continue
+            if re.search(
+                r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})['\"]\s*\+\s*['\"][0-9a-fA-F]{2}['\"]",
+                line,
+            ):
+                repaired_lines.append(line)
+                continue
+
+            def _replace(match: re.Match[str]) -> str:
+                nonlocal replaced_any
+                alpha = int(match.group("alpha"), 16) / 255.0
+                alpha_text = f"{alpha:.3f}".rstrip("0").rstrip(".")
+                expr = (match.group("expr") or "").strip()
+                if not expr:
+                    return match.group(0)
+                replaced_any = True
+                return f"__withAlpha({expr}, {alpha_text})"
+
+            repaired_lines.append(_DYNAMIC_COLOR_ALPHA_CONCAT_RE.sub(_replace, line))
+
+        if not replaced_any:
+            return html_code
+
+        repaired_script = "".join(repaired_lines)
+        if "function __withAlpha(" not in repaired_script:
+            repaired_script = self._SAFE_ALPHA_HELPER + repaired_script.lstrip()
 
         start, end = script_match.span("body")
         return f"{html_code[:start]}{repaired_script}{html_code[end:]}"
