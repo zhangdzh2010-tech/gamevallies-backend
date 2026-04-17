@@ -1,17 +1,28 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ForbiddenException,
+} from "@nestjs/common";
 import {
   GenerationTaskEventType,
   GenerationTaskStatus,
   GenerationTaskType,
   Prisma,
-} from '@prisma/client';
-import { createHash, randomUUID } from 'crypto';
-import { PrismaService } from '../prisma/prisma.service';
-import { normalizeIntentBuildSnapshot } from './intent-build.util';
+} from "@prisma/client";
+import { createHash, randomUUID } from "crypto";
+import { PrismaService } from "../prisma/prisma.service";
+import { normalizeIntentBuildSnapshot } from "./intent-build.util";
+import {
+  resolvePublicGenerationStage,
+} from "./generation-stage-contract";
 
 type JsonMap = Record<string, unknown>;
 
-type ArtifactStorageType = 'inline_json' | 'inline_text' | 'external' | 'omitted';
+type ArtifactStorageType =
+  | "inline_json"
+  | "inline_text"
+  | "external"
+  | "omitted";
 
 type CreateGenerationTaskParams = {
   gameId: string;
@@ -86,7 +97,7 @@ type StageSummaryParams = {
   stage: string;
   message: string;
   percentage?: number | null;
-  conclusionType?: 'summary' | 'warning' | 'failure';
+  conclusionType?: "summary" | "warning" | "failure";
   details?: JsonMap;
   artifactIds?: string[];
 };
@@ -120,66 +131,20 @@ type LlmCallLogParams = {
 
 const MAX_INLINE_JSON_BYTES = 20 * 1024;
 const MAX_INLINE_TEXT_BYTES = 512 * 1024;
-const SUPPRESSED_TASK_ACTIVITY_STATES = new Set(['started', 'completed']);
+const SUPPRESSED_TASK_ACTIVITY_STATES = new Set(["started", "completed"]);
 const SLOW_LLM_CALL_THRESHOLD_MS = 30_000;
-const DISPLAY_PIPELINE_STAGES = [
-  { key: 'submitting', label: '提交创作请求', pct: 5 },
-  { key: 'spec_build', label: '构建游戏规格', pct: 15 },
-  { key: 'runtime_profile_select', label: '选择运行时模板', pct: 30 },
-  { key: 'contract_compose', label: '组装运行时约束', pct: 40 },
-  { key: 'logic_generate', label: '生成游戏逻辑', pct: 60 },
-  { key: 'contract_qa', label: '合约校验与修复', pct: 76 },
-  { key: 'runtime_simulation_qa', label: '运行时模拟校验', pct: 92 },
-  { key: 'completed', label: '生成完成', pct: 100 },
-] as const;
-const DISPLAY_PIPELINE_STAGE_INDEX = new Map(
-  DISPLAY_PIPELINE_STAGES.map((stage, index) => [stage.key, index]),
-);
-const DISPLAY_STAGE_ALIASES: Record<string, string> = {
-  queued: 'submitting',
-  running: 'submitting',
-  started: 'submitting',
-  submitting: 'submitting',
-  request_normalized: 'submitting',
-  'dialogue.slot_extract': 'spec_build',
-  dialogue_slot_extract: 'spec_build',
-  'dialogue.reply': 'spec_build',
-  dialogue_reply: 'spec_build',
-  intent_parse: 'spec_build',
-  intent_parsing: 'spec_build',
-  spec_build: 'spec_build',
-  runtime_profile_select: 'runtime_profile_select',
-  template_match: 'runtime_profile_select',
-  template_matching: 'runtime_profile_select',
-  designing: 'contract_compose',
-  contract_compose: 'contract_compose',
-  code_generate: 'logic_generate',
-  code_generating: 'logic_generate',
-  'code_generate.full': 'logic_generate',
-  logic_generate: 'logic_generate',
-  qa_fix: 'contract_qa',
-  'qa_fix.syntax_structural': 'contract_qa',
-  qa_checking: 'contract_qa',
-  contract_qa: 'contract_qa',
-  targeted_remediation: 'contract_qa',
-  runtime_qa: 'runtime_simulation_qa',
-  runtime_qa_unavailable: 'runtime_simulation_qa',
-  runtime_simulation_qa: 'runtime_simulation_qa',
-  code_review: 'runtime_simulation_qa',
-  publishing: 'completed',
-  completed: 'completed',
-  succeeded: 'completed',
-};
 
 @Injectable()
 export class GenerationTaskService {
   constructor(private readonly prisma: PrismaService) {}
 
   private isFinalStatus(status?: GenerationTaskStatus | null): boolean {
-    return status === GenerationTaskStatus.succeeded
-      || status === GenerationTaskStatus.failed
-      || status === GenerationTaskStatus.canceled
-      || status === GenerationTaskStatus.timed_out;
+    return (
+      status === GenerationTaskStatus.succeeded ||
+      status === GenerationTaskStatus.failed ||
+      status === GenerationTaskStatus.canceled ||
+      status === GenerationTaskStatus.timed_out
+    );
   }
 
   async createTask(params: CreateGenerationTaskParams) {
@@ -201,29 +166,35 @@ export class GenerationTaskService {
         runtimeProfile: params.runtimeProfile ?? undefined,
         contractVersion: params.contractVersion ?? undefined,
         wsChannel: `game:${params.gameId}`,
-        metadata: (params.metadata || undefined) as Prisma.InputJsonValue | undefined,
+        metadata: (params.metadata || undefined) as
+          | Prisma.InputJsonValue
+          | undefined,
       },
     });
 
-    await this.appendEvent(task.id, {
-      gameId: task.gameId,
-      userId: task.userId,
-      eventType: GenerationTaskEventType.status,
-      stage: 'queued',
-      percentage: 0,
-      message: '任务已创建，等待执行',
-      details: {
-        taskType: task.taskType,
-        region: task.region,
-        timeoutS: task.timeoutS,
-        version: task.version,
-        pipelineVersion: task.pipelineVersion,
-        promptBundleId: task.promptBundleId,
-        promptBundleVersion: task.promptBundleVersion,
-        runtimeProfile: task.runtimeProfile,
-        contractVersion: task.contractVersion,
+    await this.appendEvent(
+      task.id,
+      {
+        gameId: task.gameId,
+        userId: task.userId,
+        eventType: GenerationTaskEventType.status,
+        stage: "queued",
+        percentage: 0,
+        message: "任务已创建，等待执行",
+        details: {
+          taskType: task.taskType,
+          region: task.region,
+          timeoutS: task.timeoutS,
+          version: task.version,
+          pipelineVersion: task.pipelineVersion,
+          promptBundleId: task.promptBundleId,
+          promptBundleVersion: task.promptBundleVersion,
+          runtimeProfile: task.runtimeProfile,
+          contractVersion: task.contractVersion,
+        },
       },
-    }, client);
+      client,
+    );
 
     return task;
   }
@@ -270,7 +241,11 @@ export class GenerationTaskService {
         progressStage: params.stage,
         progressPct: params.percentage,
         progressMessage: nextMessage,
-        ...this.buildTaskProgressMetadataUpdate(runningTask, params.stage, params.details),
+        ...this.buildTaskProgressMetadataUpdate(
+          runningTask,
+          params.stage,
+          params.details,
+        ),
       },
     });
 
@@ -384,11 +359,13 @@ export class GenerationTaskService {
       data: {
         status: GenerationTaskStatus.succeeded,
         completedAt: new Date(),
-        progressStage: 'completed',
+        progressStage: "completed",
         progressPct: 100,
-        progressMessage: '任务执行完成',
+        progressMessage: "任务执行完成",
         previewUrl: params.previewUrl ?? undefined,
-        resultSummary: (params.resultSummary || undefined) as Prisma.InputJsonValue | undefined,
+        resultSummary: (params.resultSummary || undefined) as
+          | Prisma.InputJsonValue
+          | undefined,
         primaryArtifactId: params.primaryArtifactId ?? undefined,
         errorMessage: null,
         failedStage: null,
@@ -400,9 +377,9 @@ export class GenerationTaskService {
       gameId: task.gameId,
       userId: task.userId,
       eventType: GenerationTaskEventType.status,
-      stage: 'completed',
+      stage: "completed",
       percentage: 100,
-      message: '任务执行完成',
+      message: "任务执行完成",
       details: params.resultSummary,
     });
 
@@ -421,7 +398,9 @@ export class GenerationTaskService {
     const task = await this.prisma.generationTask.update({
       where: { id: params.taskId },
       data: {
-        status: params.timedOut ? GenerationTaskStatus.timed_out : GenerationTaskStatus.failed,
+        status: params.timedOut
+          ? GenerationTaskStatus.timed_out
+          : GenerationTaskStatus.failed,
         completedAt: new Date(),
         failedStage: params.failedStage,
         errorMessage: params.errorMessage,
@@ -460,10 +439,12 @@ export class GenerationTaskService {
     });
 
     if (!task) {
-      throw new NotFoundException('Task not found');
+      throw new NotFoundException("Task not found");
     }
     if (task.userId !== userId) {
-      throw new ForbiddenException('You do not have permission to cancel this task');
+      throw new ForbiddenException(
+        "You do not have permission to cancel this task",
+      );
     }
 
     const updated = await this.prisma.generationTask.update({
@@ -477,9 +458,9 @@ export class GenerationTaskService {
       gameId: updated.gameId,
       userId: updated.userId,
       eventType: GenerationTaskEventType.note,
-      stage: updated.progressStage || 'running',
+      stage: updated.progressStage || "running",
       percentage: updated.progressPct ?? 0,
-      message: '已收到取消请求',
+      message: "已收到取消请求",
     });
 
     return updated;
@@ -491,7 +472,7 @@ export class GenerationTaskService {
       data: {
         status: GenerationTaskStatus.canceled,
         completedAt: new Date(),
-        progressMessage: '任务已取消',
+        progressMessage: "任务已取消",
       },
     });
 
@@ -499,9 +480,9 @@ export class GenerationTaskService {
       gameId: task.gameId,
       userId: task.userId,
       eventType: GenerationTaskEventType.status,
-      stage: task.progressStage || 'canceled',
+      stage: task.progressStage || "canceled",
       percentage: task.progressPct ?? 0,
-      message: '任务已取消',
+      message: "任务已取消",
     });
 
     return task;
@@ -540,20 +521,28 @@ export class GenerationTaskService {
         errorMessage: params.errorMessage ?? undefined,
         errorBodyExcerpt: params.errorBodyExcerpt ?? undefined,
         configVersion: params.configVersion ?? undefined,
-        routeSnapshot: (params.routeSnapshot || undefined) as Prisma.InputJsonValue | undefined,
+        routeSnapshot: (params.routeSnapshot || undefined) as
+          | Prisma.InputJsonValue
+          | undefined,
       },
     });
 
     if (taskId) {
-      await this.prisma.generationTask.update({
-        where: { id: taskId },
-        data: {
-          gatewayConfigVersion: params.configVersion ?? undefined,
-          routeSnapshot: (params.routeSnapshot || undefined) as Prisma.InputJsonValue | undefined,
-        },
-      }).catch(() => undefined);
+      await this.prisma.generationTask
+        .update({
+          where: { id: taskId },
+          data: {
+            gatewayConfigVersion: params.configVersion ?? undefined,
+            routeSnapshot: (params.routeSnapshot || undefined) as
+              | Prisma.InputJsonValue
+              | undefined,
+          },
+        })
+        .catch(() => undefined);
 
-      await this.appendLlmCallTimelineEvent(taskId, params).catch(() => undefined);
+      await this.appendLlmCallTimelineEvent(taskId, params).catch(
+        () => undefined,
+      );
     }
 
     return created;
@@ -594,15 +583,20 @@ export class GenerationTaskService {
 
     return this.prisma.generationArtifact.findMany({
       where: { taskId, userId },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
       take: Math.min(Math.max(limit, 1), 200),
     });
   }
 
-  async findLatestArtifactForTask(taskId: string, artifactTypes: string | string[]) {
+  async findLatestArtifactForTask(
+    taskId: string,
+    artifactTypes: string | string[],
+  ) {
     const types = Array.isArray(artifactTypes)
-      ? artifactTypes.filter((item) => typeof item === 'string' && item.trim())
-      : [artifactTypes].filter((item) => typeof item === 'string' && item.trim());
+      ? artifactTypes.filter((item) => typeof item === "string" && item.trim())
+      : [artifactTypes].filter(
+          (item) => typeof item === "string" && item.trim(),
+        );
 
     if (types.length === 0) {
       return null;
@@ -615,14 +609,19 @@ export class GenerationTaskService {
           in: types,
         },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
     });
   }
 
-  async findLatestArtifactForGame(gameId: string, artifactTypes: string | string[]) {
+  async findLatestArtifactForGame(
+    gameId: string,
+    artifactTypes: string | string[],
+  ) {
     const types = Array.isArray(artifactTypes)
-      ? artifactTypes.filter((item) => typeof item === 'string' && item.trim())
-      : [artifactTypes].filter((item) => typeof item === 'string' && item.trim());
+      ? artifactTypes.filter((item) => typeof item === "string" && item.trim())
+      : [artifactTypes].filter(
+          (item) => typeof item === "string" && item.trim(),
+        );
 
     if (types.length === 0) {
       return null;
@@ -635,12 +634,12 @@ export class GenerationTaskService {
           in: types,
         },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
     });
   }
 
   async findArtifactById(id: string) {
-    if (typeof id !== 'string' || !id.trim()) {
+    if (typeof id !== "string" || !id.trim()) {
       return null;
     }
 
@@ -659,7 +658,7 @@ export class GenerationTaskService {
 
     const nextPercentage = params.percentage ?? task.progressPct ?? 0;
     const details: JsonMap = {
-      conclusionType: params.conclusionType ?? 'summary',
+      conclusionType: params.conclusionType ?? "summary",
       artifactIds: params.artifactIds ?? [],
       ...(params.details || {}),
     };
@@ -676,9 +675,10 @@ export class GenerationTaskService {
     await this.appendEvent(task.id, {
       gameId: task.gameId,
       userId: task.userId,
-      eventType: params.conclusionType === 'failure'
-        ? GenerationTaskEventType.error
-        : GenerationTaskEventType.note,
+      eventType:
+        params.conclusionType === "failure"
+          ? GenerationTaskEventType.error
+          : GenerationTaskEventType.note,
       stage: params.stage,
       percentage: nextPercentage,
       message: params.message,
@@ -698,10 +698,12 @@ export class GenerationTaskService {
     });
 
     if (!task) {
-      throw new NotFoundException('Task not found');
+      throw new NotFoundException("Task not found");
     }
     if (task.userId !== userId) {
-      throw new ForbiddenException('You do not have permission to view this task');
+      throw new ForbiddenException(
+        "You do not have permission to view this task",
+      );
     }
 
     return task;
@@ -712,7 +714,7 @@ export class GenerationTaskService {
 
     return this.prisma.generationTaskEvent.findMany({
       where: { taskId, userId },
-      orderBy: { createdAt: 'asc' },
+      orderBy: { createdAt: "asc" },
       take: Math.min(Math.max(limit, 1), 500),
     });
   }
@@ -720,7 +722,7 @@ export class GenerationTaskService {
   async getLatestTaskForGame(gameId: string, userId: string) {
     return this.prisma.generationTask.findFirst({
       where: { gameId, userId },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
     });
   }
 
@@ -730,35 +732,33 @@ export class GenerationTaskService {
     failedStage?: string | null;
     progressPct?: number | null;
   }) {
-    const progressPct = Number(task.progressPct ?? 0) || 0;
     const rawStage = String(
-      task.failedStage
-      || task.progressStage
-      || (task.status === GenerationTaskStatus.succeeded ? 'completed' : task.status || 'submitting'),
+      task.failedStage ||
+        task.progressStage ||
+        (task.status === GenerationTaskStatus.succeeded
+          ? "completed"
+          : task.status || "submitting"),
     ).trim();
-
-    let displayStageKey = DISPLAY_STAGE_ALIASES[rawStage] || 'submitting';
-
-    if (rawStage === 'targeted_remediation') {
-      displayStageKey = progressPct >= 90 ? 'runtime_simulation_qa' : 'contract_qa';
-    }
-
-    const stage = DISPLAY_PIPELINE_STAGES.find((item) => item.key === displayStageKey) || DISPLAY_PIPELINE_STAGES[0];
+    const stage = resolvePublicGenerationStage(rawStage, task.progressPct);
 
     return {
-      displayStageKey: stage.key,
-      displayStageLabel: stage.label,
-      displayStageIndex: DISPLAY_PIPELINE_STAGE_INDEX.get(stage.key) ?? 0,
-      displayStagePct: stage.pct,
-      rawStage,
+      displayStageKey: stage.displayStageKey,
+      displayStageLabel: stage.displayStageLabel,
+      displayStageIndex: stage.displayStageIndex,
+      displayStagePct: stage.displayStagePct,
+      displayStageTotal: stage.displayStageTotal,
+      rawStage: stage.rawStage,
     };
   }
 
   toTaskSummary(task: any) {
     const displayStage = this.getDisplayStage(task);
-    const metadata = task?.metadata && typeof task.metadata === 'object' && !Array.isArray(task.metadata)
-      ? task.metadata as JsonMap
-      : {};
+    const metadata =
+      task?.metadata &&
+      typeof task.metadata === "object" &&
+      !Array.isArray(task.metadata)
+        ? (task.metadata as JsonMap)
+        : {};
     const intentBuild = normalizeIntentBuildSnapshot(metadata.intentBuild);
 
     return {
@@ -788,6 +788,7 @@ export class GenerationTaskService {
       displayStageLabel: displayStage.displayStageLabel,
       displayStageIndex: displayStage.displayStageIndex,
       displayStagePct: displayStage.displayStagePct,
+      displayStageTotal: displayStage.displayStageTotal,
       rawStage: displayStage.rawStage,
       failedStage: task.failedStage,
       errorMessage: task.errorMessage,
@@ -829,7 +830,9 @@ export class GenerationTaskService {
         stage: params.stage ?? undefined,
         percentage: params.percentage ?? undefined,
         message: params.message.slice(0, 255),
-        details: (params.details || undefined) as Prisma.InputJsonValue | undefined,
+        details: (params.details || undefined) as
+          | Prisma.InputJsonValue
+          | undefined,
       },
     });
   }
@@ -839,15 +842,19 @@ export class GenerationTaskService {
   }
 
   private shouldSuppressTaskActivity(details?: JsonMap | null): boolean {
-    return SUPPRESSED_TASK_ACTIVITY_STATES.has(this.getTaskActivityState(details));
+    return SUPPRESSED_TASK_ACTIVITY_STATES.has(
+      this.getTaskActivityState(details),
+    );
   }
 
   private isHeartbeatTaskActivity(details?: JsonMap | null): boolean {
-    return this.getTaskActivityState(details) === 'heartbeat';
+    return this.getTaskActivityState(details) === "heartbeat";
   }
 
   private getTaskActivityState(details?: JsonMap | null): string {
-    return typeof details?.activityState === 'string' ? details.activityState : '';
+    return typeof details?.activityState === "string"
+      ? details.activityState
+      : "";
   }
 
   private hasTaskSnapshotChanged(
@@ -860,9 +867,11 @@ export class GenerationTaskService {
     percentage: number,
     message: string,
   ): boolean {
-    return task.progressStage !== stage
-      || (task.progressPct ?? null) !== percentage
-      || (task.progressMessage || '') !== message;
+    return (
+      task.progressStage !== stage ||
+      (task.progressPct ?? null) !== percentage ||
+      (task.progressMessage || "") !== message
+    );
   }
 
   private async ensureTaskRunning(task: {
@@ -908,9 +917,9 @@ export class GenerationTaskService {
           gameId: runningTask.gameId,
           userId: runningTask.userId,
           eventType: GenerationTaskEventType.status,
-          stage: 'running',
+          stage: "running",
           percentage: 0,
-          message: '任务开始执行',
+          message: "任务开始执行",
         });
 
         return {
@@ -944,7 +953,10 @@ export class GenerationTaskService {
     return { task, transitioned: false };
   }
 
-  private async appendLlmCallTimelineEvent(taskId: string, params: LlmCallLogParams) {
+  private async appendLlmCallTimelineEvent(
+    taskId: string,
+    params: LlmCallLogParams,
+  ) {
     const summary = this.buildLlmCallTimelineSummary(params);
     if (!summary) {
       return;
@@ -961,27 +973,40 @@ export class GenerationTaskService {
     });
   }
 
-  private buildLlmCallTimelineSummary(params: LlmCallLogParams): { message: string; details: JsonMap } | null {
-    const providerLabel = params.providerName || params.providerType || 'LLM';
-    const httpStatus = typeof params.httpStatus === 'number' ? params.httpStatus : null;
-    const latencyMs = typeof params.latencyMs === 'number' ? params.latencyMs : null;
-    const inputTokens = typeof params.inputTokens === 'number' ? params.inputTokens : null;
-    const outputTokens = typeof params.outputTokens === 'number' ? params.outputTokens : null;
-    const totalTokens = typeof params.totalTokens === 'number'
-      ? params.totalTokens
-      : (inputTokens !== null && outputTokens !== null ? inputTokens + outputTokens : null);
-    const isFailure = params.success === false
-      || !!params.errorCode
-      || !!params.errorMessage
-      || (httpStatus !== null && httpStatus >= 400);
+  private buildLlmCallTimelineSummary(
+    params: LlmCallLogParams,
+  ): { message: string; details: JsonMap } | null {
+    const providerLabel = params.providerName || params.providerType || "LLM";
+    const httpStatus =
+      typeof params.httpStatus === "number" ? params.httpStatus : null;
+    const latencyMs =
+      typeof params.latencyMs === "number" ? params.latencyMs : null;
+    const inputTokens =
+      typeof params.inputTokens === "number" ? params.inputTokens : null;
+    const outputTokens =
+      typeof params.outputTokens === "number" ? params.outputTokens : null;
+    const totalTokens =
+      typeof params.totalTokens === "number"
+        ? params.totalTokens
+        : inputTokens !== null && outputTokens !== null
+          ? inputTokens + outputTokens
+          : null;
+    const isFailure =
+      params.success === false ||
+      !!params.errorCode ||
+      !!params.errorMessage ||
+      (httpStatus !== null && httpStatus >= 400);
 
     if (isFailure) {
-      const reason = (params.errorMessage || params.errorCode || (httpStatus !== null ? `HTTP ${httpStatus}` : 'unknown error'))
-        .slice(0, 180);
+      const reason = (
+        params.errorMessage ||
+        params.errorCode ||
+        (httpStatus !== null ? `HTTP ${httpStatus}` : "unknown error")
+      ).slice(0, 180);
       return {
         message: `${params.stepKey} 调用 ${providerLabel} 失败: ${reason}`,
         details: {
-          summaryType: 'failure',
+          summaryType: "failure",
           stepKey: params.stepKey,
           providerName: params.providerName ?? null,
           providerType: params.providerType ?? null,
@@ -998,13 +1023,14 @@ export class GenerationTaskService {
     }
 
     if (latencyMs !== null && latencyMs >= SLOW_LLM_CALL_THRESHOLD_MS) {
-      const durationLabel = latencyMs >= 100_000
-        ? `${Math.round(latencyMs / 1000)}s`
-        : `${(latencyMs / 1000).toFixed(1)}s`;
+      const durationLabel =
+        latencyMs >= 100_000
+          ? `${Math.round(latencyMs / 1000)}s`
+          : `${(latencyMs / 1000).toFixed(1)}s`;
       return {
         message: `${params.stepKey} 调用 ${providerLabel} 较慢（${durationLabel}）`,
         details: {
-          summaryType: 'slow_call',
+          summaryType: "slow_call",
           stepKey: params.stepKey,
           providerName: params.providerName ?? null,
           providerType: params.providerType ?? null,
@@ -1031,7 +1057,10 @@ export class GenerationTaskService {
     details?: JsonMap,
   ): Prisma.GenerationTaskUpdateInput {
     const data: Prisma.GenerationTaskUpdateInput = {};
-    const runtimeProfile = this.extractRuntimeProfileFromProgress(stage, details);
+    const runtimeProfile = this.extractRuntimeProfileFromProgress(
+      stage,
+      details,
+    );
     if (runtimeProfile && runtimeProfile !== (task.runtimeProfile || null)) {
       data.runtimeProfile = runtimeProfile;
     }
@@ -1048,32 +1077,43 @@ export class GenerationTaskService {
     return data;
   }
 
-  private extractRuntimeProfileFromProgress(stage: string, details?: JsonMap): string | undefined {
+  private extractRuntimeProfileFromProgress(
+    stage: string,
+    details?: JsonMap,
+  ): string | undefined {
     if (!details) {
       return undefined;
     }
-    if (stage !== 'runtime_profile_select' && stage !== 'contract_compose' && stage !== 'logic_generate') {
+    if (
+      stage !== "runtime_profile_select" &&
+      stage !== "contract_compose" &&
+      stage !== "logic_generate"
+    ) {
       return undefined;
     }
     const value = details.runtimeProfile;
-    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+    return typeof value === "string" && value.trim() ? value.trim() : undefined;
   }
 
-  private extractGameTypeFromProgress(stage: string, details?: JsonMap): string | undefined {
-    if (!details || stage !== 'runtime_profile_select') {
+  private extractGameTypeFromProgress(
+    stage: string,
+    details?: JsonMap,
+  ): string | undefined {
+    if (!details || stage !== "runtime_profile_select") {
       return undefined;
     }
     const value = details.gameType;
-    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+    return typeof value === "string" && value.trim() ? value.trim() : undefined;
   }
 
   private mergeTaskMetadata(
     current: Prisma.JsonValue | null | undefined,
     patch: JsonMap,
   ): JsonMap {
-    const base = current && typeof current === 'object' && !Array.isArray(current)
-      ? { ...(current as JsonMap) }
-      : {};
+    const base =
+      current && typeof current === "object" && !Array.isArray(current)
+        ? { ...(current as JsonMap) }
+        : {};
     return {
       ...base,
       ...patch,
@@ -1090,12 +1130,12 @@ export class GenerationTaskService {
     compression?: string;
     truncated: boolean;
   } {
-    if (typeof payload === 'string') {
-      const sizeBytes = Buffer.byteLength(payload, 'utf8');
-      const sha256 = createHash('sha256').update(payload).digest('hex');
+    if (typeof payload === "string") {
+      const sizeBytes = Buffer.byteLength(payload, "utf8");
+      const sha256 = createHash("sha256").update(payload).digest("hex");
       if (sizeBytes <= MAX_INLINE_TEXT_BYTES) {
         return {
-          storageType: 'inline_text',
+          storageType: "inline_text",
           payloadText: payload,
           sha256,
           sizeBytes,
@@ -1103,7 +1143,7 @@ export class GenerationTaskService {
         };
       }
       return {
-        storageType: 'omitted',
+        storageType: "omitted",
         payloadText: payload.slice(0, MAX_INLINE_TEXT_BYTES),
         sha256,
         sizeBytes,
@@ -1112,11 +1152,11 @@ export class GenerationTaskService {
     }
 
     const serialized = JSON.stringify(payload ?? null);
-    const sizeBytes = Buffer.byteLength(serialized, 'utf8');
-    const sha256 = createHash('sha256').update(serialized).digest('hex');
+    const sizeBytes = Buffer.byteLength(serialized, "utf8");
+    const sha256 = createHash("sha256").update(serialized).digest("hex");
     if (sizeBytes <= MAX_INLINE_JSON_BYTES) {
       return {
-        storageType: 'inline_json',
+        storageType: "inline_json",
         payloadJson: (payload ?? null) as Prisma.InputJsonValue,
         sha256,
         sizeBytes,
@@ -1126,7 +1166,7 @@ export class GenerationTaskService {
 
     if (sizeBytes <= MAX_INLINE_TEXT_BYTES) {
       return {
-        storageType: 'inline_text',
+        storageType: "inline_text",
         payloadText: serialized,
         sha256,
         sizeBytes,
@@ -1135,7 +1175,7 @@ export class GenerationTaskService {
     }
 
     return {
-      storageType: 'omitted',
+      storageType: "omitted",
       payloadText: serialized.slice(0, MAX_INLINE_TEXT_BYTES),
       sha256,
       sizeBytes,
@@ -1158,7 +1198,7 @@ export class GenerationTaskService {
           in: [GenerationTaskStatus.queued, GenerationTaskStatus.running],
         },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
     });
   }
 }

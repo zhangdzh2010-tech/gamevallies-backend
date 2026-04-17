@@ -31,11 +31,6 @@ _loaded: bool = False
 PROMPT_KEYS = [
     "prompt.intent_parse_system",
     "prompt.slot_json_repair_system",
-    "prompt.slot_extraction_system",
-    "prompt.dialogue_system",
-    "prompt.dialogue_reply_system",
-    "prompt.dialogue_reply_user_template_zh",
-    "prompt.dialogue_reply_user_template_en",
     "prompt.code_gen_system",
     "prompt.game_design_template",
     "prompt.platform_standard",

@@ -37,20 +37,19 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 | `LLM_MODE` | `mock` | `mock` (no API calls) or `real` (Claude API) |
 | `ANTHROPIC_API_KEY` | — | Required when `LLM_MODE=real` |
 | `CLAUDE_MODEL` | `claude-sonnet-4-5` | Model for full code generation |
-| `CLAUDE_FAST_MODEL` | `claude-haiku-4-5-20251001` | Model for slot extraction & quick tasks |
+| `CLAUDE_FAST_MODEL` | `claude-haiku-4-5-20251001` | Model for prompt expansion, iteration classification, and other fast auxiliary tasks |
 | `TEMPLATE_CONFIDENCE_THRESHOLD` | `0.8` | Confidence ≥ this → template-fill path |
 | `HYBRID_CONFIDENCE_THRESHOLD` | `0.5` | Confidence ≥ this → hybrid path |
 | `QA_MAX_RETRIES` | `3` | Max auto-fix retries after QA failure |
 | `PIPELINE_TIMEOUT_S` | `600` | Hard pipeline timeout (seconds) |
 | `MAX_ITERATIONS` | `20` | Max iteration rounds per game |
-| `SLOT_MIN_FILL_PCT` | `0.6` | Min slot fill % to enter clarifying state |
 | `CORS_ORIGINS` | `["*"]` | Allowed CORS origins (JSON array) |
 
 ### LLM Modes
 
 **mock** (default) – Uses keyword matching + pre-built templates. No API key required. Instant response. Use for local development and CI.
 
-**real** – Uses Claude Sonnet 4.5 for full generation and Claude Haiku for fast tasks (slot extraction, iteration classification). Set `ANTHROPIC_API_KEY` in `.env`.
+**real** – Uses Claude Sonnet 4.5 for full generation and Claude Haiku for fast tasks (prompt expansion and iteration classification). Set `ANTHROPIC_API_KEY` in `.env`.
 
 ---
 
@@ -59,8 +58,8 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 ```
 User description
       │
-  Stage 01 ─── Dialogue Engine      Multi-turn Slot Filling (10 slots)
-  Stage 02 ─── Intent Parser        SlotState → GameSpec JSON
+  Stage 01 ??? Prompt Expansion     Short brief ? user-confirmable design prompt
+  Stage 02 ??? Intent Parser        Confirmed brief ? GameSpec JSON
   Stage 03 ─── Game Designer        GameSpec → GDD (numerical parameters)
   Stage 04 ─── Template Matcher     GDD → template_id + confidence score
   Stage 05 ─── Code Generator       GDD + template → HTML5 code  (dual-path)
@@ -184,23 +183,28 @@ Response:
 3. 优先监听 WebSocket 进度，断线或冷启动时轮询 `GET /api/v1/ai/tasks/{task_id}`
 4. 任务进入 `succeeded` 后直接读取 `result`
 
-### Dialogue (Stage 01)
+### Create Brief Expansion
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/v1/ai/dialogue/chat` | One dialogue turn (Slot Filling) |
-| `GET` | `/api/v1/ai/dialogue/session/{id}` | Current session state + slots |
+| `POST` | `/api/v1/ai/expand-prompt` | Expand a short create brief into a user-confirmable design prompt |
+| `POST` | `/api/v1/ai/parse-intent` | Convert the confirmed brief into `GameSpec` |
 
-**POST /api/v1/ai/dialogue/chat**
+**POST /api/v1/ai/expand-prompt**
 ```json
 {
-  "session_id": "sess-uuid",
-  "content": "我想做个太空躲避游戏",
-  "user_id": "user-uuid"
+  "description": "?????????????????????"
 }
 ```
 
-Response includes `ready_to_generate: true` when all required slots are filled, signalling the client to call `/pipeline/run`.
+Response:
+```json
+{
+  "expanded_prompt": "Game Type: casual\nCore Mechanic: swipe left and right to dodge meteors\nTheme: neon space..."
+}
+```
+
+Recommended usage for the current creation-session flow: call `/expand-prompt`, show the returned brief back to the user for confirmation or edits, then pass the confirmed text into `/parse-intent` or the create pipeline.
 
 ### Legacy (backward compatible)
 

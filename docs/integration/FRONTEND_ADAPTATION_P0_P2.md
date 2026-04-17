@@ -136,11 +136,11 @@ socket.on('gen:progress', (data: GenProgressEvent) => {
 interface GenProgressEvent {
   type: 'gen:progress';
   gameId: string;
-  stage: string;           // 阶段标识（英文）
+  stage: string;           // 统一 5 阶段标识（英文）
   percentage: number;      // 0-100
   data: {
     progress: number;      // 同 percentage
-    message: string;       // 中文阶段描述
+    message: string;       // 中文阶段描述（统一 5 阶段）
   };
   timestamp: number;       // Unix 毫秒时间戳
 }
@@ -150,15 +150,14 @@ interface GenProgressEvent {
 
 | percentage | message（前端展示） | 说明 |
 |-----------|-------------------|------|
-| `0` | 开始生成 | HTTP 请求返回后立即触发 |
-| `15` | 解析游戏意图 | AI 分析用户描述 |
-| `30` | 设计游戏参数 | 确定游戏类型和规则 |
-| `40` | 匹配游戏模板 | 模板/混合/全生成路径 |
-| `60` | 生成游戏代码 | AI 生成 HTML5 代码 |
-| `80` | 质量检测 | **P1.1+P1.2**：Playwright 运行时 + LLM 审查（此阶段最长约 15s） |
-| `100` | 生成完成 | qualityScore 已写入 |
+| `15` | 理解游戏需求 | 接收请求并整理成可执行需求 |
+| `35` | 构建游戏设计 | 生成设计结构、参数和运行时约束 |
+| `60` | 生成游戏代码 | AI 生成 HTML5 游戏代码 |
+| `85` | 质量校验与修复 | **P1.1+P1.2**：Playwright 运行时 + LLM 审查与修复 |
+| `95` | 发布生成结果 | 保存 bundle、更新状态并准备交付 |
+| `100` | 发布生成结果 | 终态完成，qualityScore 已写入 |
 
-> **重要：** P1.1（Playwright 运行时检测）和 P1.2（LLM 语义审查）合并在「质量检测」阶段内执行，前端收到的 percentage 仍为 `80`，但该阶段耗时从原来的 1-2s 增加到最长约 15s。**建议在 80% 时显示「正在深度检测，请稍候...」动画。**
+> **重要：** 对外动画现在固定为 5 个 display stage。内部 raw stage 如 `intent_parsing`、`template_matching`、`contract_qa` 只保留在 `details.rawStage` 中用于排障，前端不要再直接拿 raw stage 驱动动画。
 
 ### 事件：`gen:complete` — 生成完成
 

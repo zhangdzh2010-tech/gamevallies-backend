@@ -26,6 +26,10 @@
   Backend API, data model, and WebSocket contract documentation.
 - [`integration/FRONTEND_ADAPTATION_P0_P2.md`](./integration/FRONTEND_ADAPTATION_P0_P2.md)
   Frontend adaptation plan for backend capabilities.
+- [`integration/FRONTEND_DYNAMIC_CREATION_DIALOGUE_ADAPTATION_PLAN_2026-03-31.md`](./integration/FRONTEND_DYNAMIC_CREATION_DIALOGUE_ADAPTATION_PLAN_2026-03-31.md)
+  Current frontend implementation guide for the creation-session confirm-and-generate flow.
+- [`integration/ARCHITECTURE_DEBT_AUDIT_2026-04-16.md`](./integration/ARCHITECTURE_DEBT_AUDIT_2026-04-16.md)
+  Audit of large-file and mixed-responsibility hotspots, plus the staged refactor plan.
 - [`integration/GENERATION_PIPELINE_IMPROVEMENT_PLAN.md`](./integration/GENERATION_PIPELINE_IMPROVEMENT_PLAN.md)
   Generation pipeline improvement plan.
 - [`integration/LLM_GATEWAY_ASYNC_TASK_DESIGN.md`](./integration/LLM_GATEWAY_ASYNC_TASK_DESIGN.md)

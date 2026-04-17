@@ -742,8 +742,9 @@ bundle metadata 会保存关键复盘信息：
 
 相关接口：
 
-- `POST /api/v1/ai/dialogue/chat`
-- `GET /api/v1/ai/dialogue/session/{session_id}`
+- `POST /api/v1/ai/dialogue/analyze-turn`
+- `POST /api/v1/ai/dialogue/analyze-turn/stream`
+- `POST /api/v1/ai/dialogue/spec-from-slots`
 
 每轮通常有两次 prompt：
 

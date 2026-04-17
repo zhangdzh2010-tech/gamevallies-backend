@@ -32,8 +32,6 @@ TIMEOUT_DEFAULTS: dict[str, str] = {
     "timeout.ai_engine.llm.http_max_connections": "100",
     "timeout.ai_engine.llm.http_max_keepalive_connections": "40",
     "timeout.ai_engine.llm.http_keepalive_expiry_s": "30",
-    "timeout.ai_engine.dialogue.slot_extract_request_s": "4",
-    "timeout.ai_engine.dialogue.slot_extract_overall_s": "5",
     "timeout.ai_engine.intent_parse.request_s": "45",
     "timeout.ai_engine.intent_parse.overall_s": "90",
     "timeout.ai_engine.iterate.classify_request_s": "30",

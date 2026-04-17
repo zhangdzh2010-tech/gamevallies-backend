@@ -53,6 +53,8 @@ export const DEFAULT_APP_PROMO_CONFIG = {
   },
   links: {
     universalUrl: '',
+    iosUrl: '',
+    androidUrl: '',
   },
   copy: DEFAULT_APP_PROMO_COPY,
 };

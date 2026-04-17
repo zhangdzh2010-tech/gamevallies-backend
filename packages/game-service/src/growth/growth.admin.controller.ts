@@ -118,8 +118,8 @@ export class GrowthAdminController {
   ) {
     checkAdminToken(token);
     return ok(
-      await this.growthService.uploadAndroidReleasePackage(id, file),
-      'Android release package uploaded',
+      await this.growthService.uploadReleasePackage(id, file),
+      'Release package uploaded',
     );
   }
 }

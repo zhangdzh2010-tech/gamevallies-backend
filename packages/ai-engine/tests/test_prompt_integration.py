@@ -142,7 +142,7 @@ class TestPromptIntegration(unittest.TestCase):
         self.assertEqual(kwargs["provider_retry_attempts"], 1)
         self.assertIs(kwargs["provider_retry_on_timeout_errors"], False)
 
-    def test_generation_timeout_budget_tracks_spec_complexity(self):
+    def test_generation_timeout_budget_follows_single_admin_budget(self):
         simple_spec = GameSpec(
             game_type="casual",
             source_description="make a simple dodge game",
@@ -195,13 +195,13 @@ class TestPromptIntegration(unittest.TestCase):
             ],
         )
 
-        self.assertEqual(CodeGenerator._generation_request_timeout_budget_s(simple_spec), 90)
-        self.assertEqual(CodeGenerator._generation_overall_timeout_budget_s(simple_spec), 180)
+        self.assertEqual(CodeGenerator._generation_request_timeout_budget_s(simple_spec), 240)
+        self.assertEqual(CodeGenerator._generation_overall_timeout_budget_s(simple_spec), 240)
         self.assertIsNone(CodeGenerator._generation_provider_hedge_delay_s(simple_spec))
-        self.assertEqual(CodeGenerator._generation_request_timeout_budget_s(standard_spec), 105)
-        self.assertEqual(CodeGenerator._generation_overall_timeout_budget_s(standard_spec), 210)
+        self.assertEqual(CodeGenerator._generation_request_timeout_budget_s(standard_spec), 240)
+        self.assertEqual(CodeGenerator._generation_overall_timeout_budget_s(standard_spec), 240)
         self.assertEqual(CodeGenerator._generation_provider_hedge_delay_s(standard_spec), 45)
-        self.assertEqual(CodeGenerator._generation_request_timeout_budget_s(complex_spec), 120)
+        self.assertEqual(CodeGenerator._generation_request_timeout_budget_s(complex_spec), 240)
         self.assertEqual(CodeGenerator._generation_overall_timeout_budget_s(complex_spec), 240)
         self.assertEqual(CodeGenerator._generation_provider_hedge_delay_s(complex_spec), 45)
 

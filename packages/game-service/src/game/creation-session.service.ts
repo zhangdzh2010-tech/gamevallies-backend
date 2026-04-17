@@ -6,114 +6,46 @@ import {
   Logger,
   NotFoundException,
   ServiceUnavailableException,
-} from '@nestjs/common';
-import axios from 'axios';
-import { PrismaService } from '../prisma/prisma.service';
-import { GameService } from './game.service';
-import { GameWebSocketGateway } from '../websocket/websocket.gateway';
-import { CreationSessionRealtimeService } from './creation-session-realtime.service';
+} from "@nestjs/common";
+import axios from "axios";
+import { PrismaService } from "../prisma/prisma.service";
+import { GameService } from "./game.service";
+import { GameWebSocketGateway } from "../websocket/websocket.gateway";
+import { CreationSessionRealtimeService } from "./creation-session-realtime.service";
 import {
   CreateCreationSessionDto,
   CreateCreationSessionMessageDto,
   GenerateCreationSessionDto,
   SkipCreationSessionQuestionDto,
-} from './dto';
+} from "./dto";
 import {
   CREATION_SESSION_GENERATING_EXPIRE_MS,
   CREATION_SESSION_INTERACTIVE_STATUSES,
   DEFAULT_CREATION_SESSION_QUESTION_BUDGET,
-} from './creation-session.constants';
+} from "./creation-session.constants";
 import {
-  CreationSessionConfidenceSummary,
   CreationSessionConversationMessage,
   CreationSessionPlanDraft,
   CreationSessionQuestion,
-  CreationSessionQuestionStrategy,
   CreationSessionSnapshot,
-} from './types/creation-session.types';
+} from "./types/creation-session.types";
 import {
   buildIntentBuildSnapshot,
   normalizeIntentBuildSnapshot,
-} from './intent-build.util';
+} from "./intent-build.util";
 
 const REQUIRED_SLOT_KEYS = [
-  'game_type',
-  'core_mechanic',
-  'theme',
-  'input_method',
-  'win_condition',
-  'difficulty',
+  "game_type",
+  "core_mechanic",
+  "theme",
+  "input_method",
+  "win_condition",
+  "difficulty",
 ] as const;
 
-type AnalyzeTurnResponsePayload = {
-  reply: string;
-  slots: Record<string, unknown>;
-  slots_updated: string[];
-  missing_required: string[];
-  slot_fill_pct: number;
-  ready_to_generate: boolean;
-  confidence_by_slot?: Record<string, unknown>;
-  evidence_by_slot?: Record<string, unknown>;
-  ambiguity_flags?: string[];
-  next_best_question_reason?: string | null;
-  question_strategy?: {
-    mode?: string;
-    slot_key?: string | null;
-    slotKey?: string | null;
-    reason?: string;
-    impact?: number;
-    confidence?: number;
-    ambiguity_weight?: number;
-    ambiguityWeight?: number;
-  } | null;
-  plan_draft?: {
-    title?: string;
-    summary?: string;
-    concept?: string;
-    interaction?: string;
-    objective?: string;
-    pacing?: string;
-    visual_direction?: string;
-    visualDirection?: string;
-    signature_moment?: string;
-    signatureMoment?: string;
-  } | null;
-  current_question?: {
-    slot_key?: string;
-    slotKey?: string;
-    label?: string;
-    prompt?: string;
-    skippable?: boolean;
-  } | null;
-};
-
-type AnalyzeTurnRequestPayload = {
-  session_id?: string;
-  user_id: string;
-  conversation: CreationSessionConversationMessage[];
-  current_slots: Record<string, unknown>;
-  skipped_slots: string[];
-  entry_mode: string;
-  generation_tier: string;
-  title?: string;
-  initial_prompt?: string;
-  answered_slot_key?: string;
-  answered_slot_prompt?: string;
-  latest_user_answer?: string;
-  advance_only?: boolean;
-};
-
-type SpecFromSlotsResponsePayload = {
-  spec: Record<string, unknown>;
-  missing_required: string[];
-  slot_fill_pct: number;
-};
-
-type AnalyzeTurnRealtimeOptions = {
-  regionHint?: string;
-  userId: string;
-  sessionId: string;
-  onFinal?: (analysis: AnalyzeTurnResponsePayload) => Promise<void> | void;
+type ExpandPromptResponsePayload = {
+  expanded_prompt?: string;
+  expandedPrompt?: string;
 };
 
 @Injectable()
@@ -127,24 +59,27 @@ export class CreationSessionService {
     private readonly realtimeService: CreationSessionRealtimeService,
   ) {}
 
-  async createSession(userId: string, dto: CreateCreationSessionDto): Promise<CreationSessionSnapshot> {
+  async createSession(
+    userId: string,
+    dto: CreateCreationSessionDto,
+  ): Promise<CreationSessionSnapshot> {
     const repo = this.getRepo();
-    const prompt = String(dto.prompt || '').trim();
+    const prompt = String(dto.prompt || "").trim();
     if (!prompt) {
-      throw new BadRequestException('prompt is required');
+      throw new BadRequestException("prompt is required");
     }
 
     const conversation: CreationSessionConversationMessage[] = [
-      this.userMessage(prompt, 'prompt'),
+      this.userMessage(prompt, "prompt"),
     ];
 
     // Phase 1: optimistic creation (synchronous, <200ms).
     // Create the session immediately with status='initializing' and
-    // return it to the client. AI analysis runs in the background.
+    // return it to the client. Prompt expansion runs in the background.
     const createData = {
       userId,
-      status: 'initializing' as const,
-      entryMode: dto.entryMode || 'create',
+      status: "initializing" as const,
+      entryMode: dto.entryMode || "create",
       initialPrompt: prompt,
       titleDraft: dto.title?.trim() || null,
       revision: 1,
@@ -157,20 +92,23 @@ export class CreationSessionService {
       questionBudget: DEFAULT_CREATION_SESSION_QUESTION_BUDGET,
       metadata: {
         orientation: dto.orientation || null,
-        generationTier: dto.generationTier || 'standard',
+        generationTier: dto.generationTier || "standard",
         regionHint: dto.regionHint || null,
+        expandedPrompt: null,
         readyToGenerate: false,
         slotFillPct: 0,
         intentBuild: this.buildSessionIntentBuild({
           initialPrompt: prompt,
           title: dto.title,
-          entryMode: dto.entryMode || 'create',
-          generationTier: dto.generationTier || 'standard',
+          entryMode: dto.entryMode || "create",
+          generationTier: dto.generationTier || "standard",
         }),
       },
     };
 
-    const generatingExpireCutoff = new Date(Date.now() - CREATION_SESSION_GENERATING_EXPIRE_MS);
+    const generatingExpireCutoff = new Date(
+      Date.now() - CREATION_SESSION_GENERATING_EXPIRE_MS,
+    );
 
     const created = this.prisma?.$transaction
       ? await this.prisma.$transaction(async (tx: any) => {
@@ -182,18 +120,18 @@ export class CreationSessionService {
               status: { in: [...CREATION_SESSION_INTERACTIVE_STATUSES] },
             },
             data: {
-              status: 'abandoned',
+              status: "abandoned",
             },
           });
           // Auto-abandon stale generating sessions (older than 10 min)
           await scopedRepo.updateMany({
             where: {
               userId,
-              status: 'generating',
+              status: "generating",
               updatedAt: { lt: generatingExpireCutoff },
             },
             data: {
-              status: 'abandoned',
+              status: "abandoned",
             },
           });
           return scopedRepo.create({ data: createData });
@@ -205,42 +143,38 @@ export class CreationSessionService {
               status: { in: [...CREATION_SESSION_INTERACTIVE_STATUSES] },
             },
             data: {
-              status: 'abandoned',
+              status: "abandoned",
             },
           });
           await repo.updateMany({
             where: {
               userId,
-              status: 'generating',
+              status: "generating",
               updatedAt: { lt: generatingExpireCutoff },
             },
             data: {
-              status: 'abandoned',
+              status: "abandoned",
             },
           });
           return repo.create({ data: createData });
         })();
 
-    // Phase 2: async analysis (fire-and-forget).
-    const analyzePayload = this.buildAnalyzeTurnPayload({
-      sessionId: created.id,
+    // Phase 2: async prompt expansion (fire-and-forget).
+    this._finalizeSessionInit(
+      created.id,
       userId,
-      conversation,
-      currentSlots: {},
-      skippedSlots: [],
-      entryMode: dto.entryMode || 'create',
-      title: dto.title,
-      generationTier: dto.generationTier || 'standard',
-      initialPrompt: prompt,
-    });
-
-    this._finalizeSessionInit(created.id, userId, analyzePayload, dto, dto.regionHint)
-      .catch((err) => this.logger.error(
+      prompt,
+      dto,
+      dto.regionHint,
+    ).catch((err) =>
+      this.logger.error(
         `Session init async phase failed: ${created.id} - ${err?.message}`,
         err?.stack,
-      ));
+      ),
+    );
 
-    const initTimeoutMs = await this.gameService.getCreationSessionInitTimeoutMs();
+    const initTimeoutMs =
+      await this.gameService.getCreationSessionInitTimeoutMs();
 
     // Timeout safety net: if analysis is still running after the init watchdog,
     // auto-abandon the session so it doesn't stay stuck in 'initializing'.
@@ -253,173 +187,151 @@ export class CreationSessionService {
   }
 
   /**
-   * Background async phase of session creation: run AI analysis and
-   * update the session from 'initializing' to 'collecting'/'ready'.
+   * Background async phase of session creation: expand the user's idea into
+   * a ready-to-edit generation prompt and persist it on the session.
    */
   private async _finalizeSessionInit(
     sessionId: string,
     userId: string,
-    analyzePayload: AnalyzeTurnRequestPayload,
+    initialPrompt: string,
     dto: CreateCreationSessionDto,
     regionHint?: string,
   ): Promise<void> {
     const repo = this.getRepo();
-    let initStateApplied = false;
-    let initialAssistantReply = '';
-
-    let analysis: AnalyzeTurnResponsePayload;
+    let expandedPrompt = "";
     try {
-      analysis = await this.analyzeTurnWithRealtime(analyzePayload, {
-        regionHint,
-        userId,
-        sessionId,
-        onFinal: async (finalAnalysis) => {
-          const resolution = this.buildInitSessionResolution({
-            analyzePayload,
-            dto,
-            analysis: finalAnalysis,
-          });
-          initialAssistantReply = resolution.assistantReply;
-          const earlyResult = await repo.updateMany({
-            where: { id: sessionId, userId, status: 'initializing', revision: 1 },
-            data: {
-              revision: { increment: 1 },
-              status: resolution.nextStatus,
-              slotState: resolution.slotState,
-              missingRequired: resolution.missingRequired,
-              currentQuestion: resolution.currentQuestion,
-              conversation: resolution.conversation,
-              metadata: resolution.metadata,
-            },
-          });
-          if (earlyResult.count === 1) {
-            initStateApplied = true;
-            await this.publishRealtimeSessionSnapshot(userId, sessionId);
-          }
-        },
-      });
+      expandedPrompt = await this.expandPrompt(initialPrompt, regionHint);
     } catch (error: any) {
-      // AI analysis failed, mark the session as abandoned with error info.
-      const initError = this.extractAiError(error, 'Creation session initialization failed');
+      const initError = this.extractAiError(
+        error,
+        "Creation session prompt expansion failed",
+      );
       await repo.updateMany({
-        where: { id: sessionId, userId, status: 'initializing' },
+        where: { id: sessionId, userId, status: "initializing" },
         data: {
-          status: 'abandoned',
+          status: "abandoned",
           metadata: {
             orientation: dto.orientation || null,
-            generationTier: dto.generationTier || 'standard',
+            generationTier: dto.generationTier || "standard",
             regionHint: dto.regionHint || null,
+            expandedPrompt: null,
             initError,
             abandonedAt: new Date().toISOString(),
           },
         },
       });
       this.wsGateway.emitSessionError(userId, sessionId, initError, {
-        reason: 'init_failed',
+        reason: "init_failed",
       });
       this.realtimeService.publishError(userId, sessionId, initError, {
-        reason: 'init_failed',
+        reason: "init_failed",
       });
       return;
     }
 
     const resolution = this.buildInitSessionResolution({
-      analyzePayload,
+      initialPrompt,
       dto,
-      analysis,
+      expandedPrompt,
     });
 
-    if (!initStateApplied) {
-      const result = await repo.updateMany({
-        where: { id: sessionId, userId, status: 'initializing', revision: 1 },
-        data: {
-          revision: { increment: 1 },
-          status: resolution.nextStatus,
-          slotState: resolution.slotState,
-          missingRequired: resolution.missingRequired,
-          currentQuestion: resolution.currentQuestion,
-          conversation: resolution.conversation,
-          metadata: resolution.metadata,
-        },
-      });
+    const result = await repo.updateMany({
+      where: { id: sessionId, userId, status: "initializing", revision: 1 },
+      data: {
+        revision: { increment: 1 },
+        status: resolution.nextStatus,
+        slotState: resolution.slotState,
+        missingRequired: resolution.missingRequired,
+        currentQuestion: resolution.currentQuestion,
+        conversation: resolution.conversation,
+        metadata: resolution.metadata,
+      },
+    });
 
-      if (result.count !== 1) {
-        // Session was already abandoned or modified by the user; discard stale analysis.
-        this.logger.warn(`Session init CAS miss: ${sessionId} (likely abandoned)`);
-        return;
-      }
-
-      await this.publishRealtimeSessionSnapshot(userId, sessionId);
+    if (result.count !== 1) {
+      this.logger.warn(
+        `Session init CAS miss: ${sessionId} (likely abandoned)`,
+      );
       return;
     }
 
-    if (resolution.assistantReply && resolution.assistantReply !== initialAssistantReply) {
-      const replyRepair = await repo.updateMany({
-        where: {
-          id: sessionId,
-          userId,
-          revision: 2,
-          status: resolution.nextStatus,
-        },
-        data: {
-          conversation: resolution.conversation,
-        },
-      });
-      if (replyRepair.count === 1) {
-        await this.publishRealtimeSessionSnapshot(userId, sessionId);
-      }
+    if (resolution.assistantReply) {
+      this.realtimeService.publishReplyDone(
+        userId,
+        sessionId,
+        resolution.assistantReply,
+        "summary",
+      );
     }
+
+    await this.publishRealtimeSessionSnapshot(userId, sessionId);
   }
   /**
    * Timeout safety: abandon sessions stuck in 'initializing' too long.
    */
   private async _expireStaleInit(sessionId: string): Promise<void> {
     const repo = this.getRepo();
-    // Look up the session first so we can get the userId for WS push
+    // Look up the session first so we can get the userId for WS push.
     const session = await repo.findUnique({ where: { id: sessionId } });
-    if (!session || session.status !== 'initializing') {
+    if (!session || session.status !== "initializing") {
       return; // Already transitioned; nothing to expire.
     }
 
     const existingMetadata = this.normalizeMetadata(session.metadata);
     const result = await repo.updateMany({
-      where: { id: sessionId, status: 'initializing' },
+      where: { id: sessionId, status: "initializing" },
       data: {
-        status: 'abandoned',
+        status: "abandoned",
         metadata: {
           ...existingMetadata,
-          initError: 'Session initialization timed out',
+          initError: "Session initialization timed out",
           abandonedAt: new Date().toISOString(),
         },
       },
     });
     if (result.count > 0) {
       this.logger.warn(`Session init expired: ${sessionId}`);
-      this.wsGateway.emitSessionError(session.userId, sessionId, 'Session initialization timed out', {
-        reason: 'init_timeout',
-      });
-      this.realtimeService.publishError(session.userId, sessionId, 'Session initialization timed out', {
-        reason: 'init_timeout',
-      });
+      this.wsGateway.emitSessionError(
+        session.userId,
+        sessionId,
+        "Session initialization timed out",
+        {
+          reason: "init_timeout",
+        },
+      );
+      this.realtimeService.publishError(
+        session.userId,
+        sessionId,
+        "Session initialization timed out",
+        {
+          reason: "init_timeout",
+        },
+      );
     }
   }
 
-  async getActiveSession(userId: string): Promise<CreationSessionSnapshot | null> {
+  async getActiveSession(
+    userId: string,
+  ): Promise<CreationSessionSnapshot | null> {
     const repo = this.getRepo();
-    // Return interactive sessions: initializing (AI analysis pending),
-    // collecting (asking questions), or ready (can generate).
+    // Return interactive sessions: initializing (prompt expansion pending),
+    // collecting (waiting for prompt confirmation, plus legacy question rows),
+    // or ready (can generate).
     // Generating sessions no longer occupy the active slot.
     const session = await repo.findFirst({
       where: {
         userId,
         status: { in: [...CREATION_SESSION_INTERACTIVE_STATUSES] },
       },
-      orderBy: { updatedAt: 'desc' },
+      orderBy: { updatedAt: "desc" },
     });
     return session ? this.toSnapshot(session) : null;
   }
 
-  async getSession(userId: string, sessionId: string): Promise<CreationSessionSnapshot> {
+  async getSession(
+    userId: string,
+    sessionId: string,
+  ): Promise<CreationSessionSnapshot> {
     const session = await this.requireOwnedSession(userId, sessionId);
     return this.toSnapshot(session);
   }
@@ -434,57 +346,28 @@ export class CreationSessionService {
     this.assertSessionMutable(session);
     this.assertRevision(session, dto.revision);
 
+    const nextExpandedPrompt = String(dto.content || "").trim();
+    if (!nextExpandedPrompt) {
+      throw new BadRequestException("content is required");
+    }
+
+    const metadata = this.normalizeMetadata(session.metadata);
+    const confirmationReply =
+      this.buildPromptConfirmedReply(nextExpandedPrompt);
     const conversation = [
       ...this.normalizeConversation(session.conversation),
-      this.userMessage(dto.content, 'answer'),
+      this.userMessage(nextExpandedPrompt, "prompt"),
+      this.assistantMessage(confirmationReply, "summary"),
     ];
-    const metadata = this.normalizeMetadata(session.metadata);
-    const skippedSlots = this.normalizeStringList(session.skippedSlots);
-    const currentQuestion = this.normalizeQuestion(session.currentQuestion);
-    const analysis = await this.analyzeTurnWithRealtime(
-      this.buildAnalyzeTurnPayload({
-        sessionId: session.id,
-        userId,
-        conversation,
-        currentSlots: this.normalizeSlotState(session.slotState),
-        skippedSlots,
-        entryMode: String(session.entryMode || 'create'),
-        title: session.titleDraft || undefined,
-        generationTier: String(metadata.generationTier || 'standard'),
-        initialPrompt: session.initialPrompt,
-        answeredSlot: currentQuestion,
-        latestUserAnswer: dto.content,
-      }),
-      {
-        regionHint: this.asOptionalString(metadata.regionHint),
-        userId,
-        sessionId: session.id,
-      },
-    );
-
-    const nextQuestion = this.normalizeQuestion(analysis.current_question);
-    const normalizedPlanDraft = this.normalizePlanDraft(analysis.plan_draft);
-    const normalizedQuestionStrategy = this.normalizeQuestionStrategy(analysis.question_strategy);
-    const confidenceSummary = this.buildConfidenceSummary(
-      analysis.confidence_by_slot,
-      analysis.ambiguity_flags,
-      analysis.missing_required,
-    );
     const intentBuild = this.buildSessionIntentBuild({
-      initialPrompt: session.initialPrompt,
+      initialPrompt: nextExpandedPrompt,
       title: session.titleDraft,
-      planDraft: normalizedPlanDraft,
-      slotState: analysis.slots || {},
-      skippedSlots,
-      entryMode: String(session.entryMode || 'create'),
-      generationTier: String(metadata.generationTier || 'standard'),
-      missingRequired: analysis.missing_required || [],
+      slotState: {},
+      skippedSlots: [],
+      entryMode: String(session.entryMode || "create"),
+      generationTier: String(metadata.generationTier || "standard"),
+      missingRequired: [],
     });
-    // Bug 4 fix: once a session reaches 'ready', it never reverts to 'collecting'.
-    // This prevents unstable oscillation near the AI engine's fill_pct threshold.
-    const nextStatus = analysis.ready_to_generate
-      ? 'ready'
-      : (session.status === 'ready' ? 'ready' : 'collecting');
 
     const updateResult = await repo.updateMany({
       where: {
@@ -494,36 +377,36 @@ export class CreationSessionService {
       },
       data: {
         revision: { increment: 1 },
-        status: nextStatus,
-        slotState: analysis.slots || {},
-        missingRequired: analysis.missing_required || [],
-        skippedSlots,
-        currentQuestion: nextQuestion,
-        conversation: [
-          ...conversation,
-          this.assistantMessage(analysis.reply),
-        ],
+        status: "ready",
+        slotState: {},
+        missingRequired: [],
+        skippedSlots: [],
+        currentQuestion: null,
+        conversation,
         metadata: {
           ...metadata,
-          readyToGenerate: Boolean(analysis.ready_to_generate || session.status === 'ready'),
-          slotFillPct: this.clampSlotFillPct(analysis.slot_fill_pct, analysis.slots || {}),
-          planDraft: normalizedPlanDraft,
-          confidenceSummary,
-          questionStrategy: normalizedQuestionStrategy,
+          expandedPrompt: nextExpandedPrompt,
+          readyToGenerate: true,
+          slotFillPct: 1,
+          planDraft: null,
           intentBuild,
-          confidenceBySlot: this.normalizeNumberMap(analysis.confidence_by_slot),
-          evidenceBySlot: this.normalizeStringMap(analysis.evidence_by_slot),
-          ambiguityFlags: this.normalizeStringList(analysis.ambiguity_flags),
-          nextBestQuestionReason: this.asOptionalString(analysis.next_best_question_reason) || normalizedQuestionStrategy?.reason || null,
         },
       },
     });
 
     if (updateResult.count !== 1) {
-      throw new ConflictException('Creation session was updated by another request');
+      throw new ConflictException(
+        "Creation session was updated by another request",
+      );
     }
 
     const next = await this.getSession(userId, session.id);
+    this.realtimeService.publishReplyDone(
+      userId,
+      session.id,
+      confirmationReply,
+      "summary",
+    );
     this.realtimeService.publishSnapshot(userId, session.id, next);
     return next;
   }
@@ -539,53 +422,25 @@ export class CreationSessionService {
     this.assertRevision(session, dto.revision);
 
     const metadata = this.normalizeMetadata(session.metadata);
-    const currentQuestion = this.normalizeQuestion(session.currentQuestion);
-    const skippedSlots = this.uniqueStrings([
-      ...this.normalizeStringList(session.skippedSlots),
-      ...(currentQuestion?.slotKey ? [currentQuestion.slotKey] : []),
-    ]);
-    const conversation = this.normalizeConversation(session.conversation);
-    const analysis = await this.analyzeTurnWithRealtime(
-      this.buildAnalyzeTurnPayload({
-        sessionId: session.id,
-        userId,
-        conversation,
-        currentSlots: this.normalizeSlotState(session.slotState),
-        skippedSlots,
-        entryMode: String(session.entryMode || 'create'),
-        title: session.titleDraft || undefined,
-        generationTier: String(metadata.generationTier || 'standard'),
-        initialPrompt: session.initialPrompt,
-        advanceOnly: true,
-      }),
-      {
-        regionHint: this.asOptionalString(metadata.regionHint),
-        userId,
-        sessionId: session.id,
-      },
+    const skippedSlots = this.normalizeStringList(session.skippedSlots);
+    const expandedPrompt = this.resolveSessionPrompt(session, metadata);
+    const confirmationReply = this.buildPromptConfirmedReply(
+      expandedPrompt || session.initialPrompt,
     );
-    const normalizedPlanDraft = this.normalizePlanDraft(analysis.plan_draft);
-    const normalizedQuestionStrategy = this.normalizeQuestionStrategy(analysis.question_strategy);
-    const confidenceSummary = this.buildConfidenceSummary(
-      analysis.confidence_by_slot,
-      analysis.ambiguity_flags,
-      analysis.missing_required,
-    );
+    const conversation = [
+      ...this.normalizeConversation(session.conversation),
+      this.assistantMessage(confirmationReply, "summary"),
+    ];
     const intentBuild = this.buildSessionIntentBuild({
-      initialPrompt: session.initialPrompt,
+      initialPrompt: expandedPrompt || session.initialPrompt,
       title: session.titleDraft,
-      planDraft: normalizedPlanDraft,
-      slotState: analysis.slots || {},
+      planDraft: null,
+      slotState: {},
       skippedSlots,
-      entryMode: String(session.entryMode || 'create'),
-      generationTier: String(metadata.generationTier || 'standard'),
-      missingRequired: analysis.missing_required || [],
+      entryMode: String(session.entryMode || "create"),
+      generationTier: String(metadata.generationTier || "standard"),
+      missingRequired: [],
     });
-
-    // Bug 4 fix: same single-direction locking as in appendMessage()
-    const nextStatus = analysis.ready_to_generate
-      ? 'ready'
-      : (session.status === 'ready' ? 'ready' : 'collecting');
 
     const updateResult = await repo.updateMany({
       where: {
@@ -595,35 +450,36 @@ export class CreationSessionService {
       },
       data: {
         revision: { increment: 1 },
-        status: nextStatus,
-        missingRequired: analysis.missing_required || [],
+        status: "ready",
+        slotState: {},
+        missingRequired: [],
         skippedSlots,
-        currentQuestion: this.normalizeQuestion(analysis.current_question),
-        conversation: [
-          ...conversation,
-          this.assistantMessage(analysis.reply, 'question'),
-        ],
+        currentQuestion: null,
+        conversation,
         metadata: {
           ...metadata,
-          readyToGenerate: Boolean(analysis.ready_to_generate || session.status === 'ready'),
-          slotFillPct: this.clampSlotFillPct(analysis.slot_fill_pct, session.slotState || {}),
-          planDraft: normalizedPlanDraft,
-          confidenceSummary,
-          questionStrategy: normalizedQuestionStrategy,
+          expandedPrompt: expandedPrompt || session.initialPrompt,
+          readyToGenerate: true,
+          slotFillPct: 1,
+          planDraft: null,
           intentBuild,
-          confidenceBySlot: this.normalizeNumberMap(analysis.confidence_by_slot),
-          evidenceBySlot: this.normalizeStringMap(analysis.evidence_by_slot),
-          ambiguityFlags: this.normalizeStringList(analysis.ambiguity_flags),
-          nextBestQuestionReason: this.asOptionalString(analysis.next_best_question_reason) || normalizedQuestionStrategy?.reason || null,
         },
       },
     });
 
     if (updateResult.count !== 1) {
-      throw new ConflictException('Creation session was updated by another request');
+      throw new ConflictException(
+        "Creation session was updated by another request",
+      );
     }
 
     const next = await this.getSession(userId, session.id);
+    this.realtimeService.publishReplyDone(
+      userId,
+      session.id,
+      confirmationReply,
+      "summary",
+    );
     this.realtimeService.publishSnapshot(userId, session.id, next);
     return next;
   }
@@ -636,37 +492,38 @@ export class CreationSessionService {
     const repo = this.getRepo();
     const session = await this.requireOwnedSession(userId, sessionId);
 
-    if (session.generatedGameId && session.generationTaskId && session.status === 'completed') {
-      throw new ConflictException('Creation session already generated a game');
+    if (
+      session.generatedGameId &&
+      session.generationTaskId &&
+      session.status === "completed"
+    ) {
+      throw new ConflictException("Creation session already generated a game");
     }
 
     this.assertSessionMutable(session);
     this.assertRevision(session, dto.revision);
+    if (session.status !== "ready") {
+      throw new ConflictException("Creation session is not ready to generate");
+    }
 
     const metadata = this.normalizeMetadata(session.metadata);
     const currentPlanDraft = this.normalizePlanDraft(metadata.planDraft);
-    const specResponse = await this.specFromSlots({
-      session_id: session.id,
-      slots: this.normalizeSlotState(session.slotState),
-      source_description: session.initialPrompt,
-      title: session.titleDraft || undefined,
-      generation_tier: String(metadata.generationTier || 'standard'),
-      skipped_slots: this.normalizeStringList(session.skippedSlots),
-      variation_seed: session.id,
-    }, this.asOptionalString(metadata.regionHint));
+    const finalPrompt = this.resolveSessionPrompt(session, metadata);
+    if (!finalPrompt) {
+      throw new ConflictException(
+        "Creation session does not have a confirmed prompt",
+      );
+    }
     const intentBuild = this.buildSessionIntentBuild({
-      initialPrompt: session.initialPrompt,
+      initialPrompt: finalPrompt,
       title: session.titleDraft,
       planDraft: currentPlanDraft,
-      slotState: this.normalizeSlotState(session.slotState),
-      skippedSlots: this.normalizeStringList(session.skippedSlots),
-      sourceSpec: specResponse.spec || null,
-      entryMode: String(session.entryMode || 'create'),
-      generationTier: String(metadata.generationTier || 'standard'),
-      missingRequired: specResponse.missing_required || [],
+      slotState: {},
+      skippedSlots: [],
+      entryMode: String(session.entryMode || "create"),
+      generationTier: String(metadata.generationTier || "standard"),
+      missingRequired: [],
     });
-
-    const rollbackStatus = session.status === 'collecting' ? 'collecting' : 'ready';
     const claimResult = await repo.updateMany({
       where: {
         id: session.id,
@@ -676,19 +533,22 @@ export class CreationSessionService {
       },
       data: {
         revision: { increment: 1 },
-        status: 'generating',
+        status: "generating",
         metadata: {
           ...metadata,
+          expandedPrompt: finalPrompt,
           readyToGenerate: true,
-          slotFillPct: specResponse.slot_fill_pct ?? this.computeSlotFillPct(session.slotState || {}),
-          lastTaskStatus: 'starting',
+          slotFillPct: 1,
+          lastTaskStatus: "starting",
           intentBuild,
         },
       },
     });
 
     if (claimResult.count !== 1) {
-      throw new ConflictException('Creation session was updated by another request');
+      throw new ConflictException(
+        "Creation session was updated by another request",
+      );
     }
 
     this.realtimeService.publishSnapshot(
@@ -697,12 +557,13 @@ export class CreationSessionService {
       this.toSnapshot({
         ...session,
         revision: Number(session.revision || 1) + 1,
-        status: 'generating',
+        status: "generating",
         metadata: {
           ...metadata,
+          expandedPrompt: finalPrompt,
           readyToGenerate: true,
-          slotFillPct: specResponse.slot_fill_pct ?? this.computeSlotFillPct(session.slotState || {}),
-          lastTaskStatus: 'starting',
+          slotFillPct: 1,
+          lastTaskStatus: "starting",
           intentBuild,
         },
       }),
@@ -711,12 +572,13 @@ export class CreationSessionService {
     try {
       const result = await this.gameService.create(userId, {
         title: session.titleDraft || undefined,
-        description: session.initialPrompt,
+        description: finalPrompt,
         timeoutS: dto.timeoutS,
         regionHint: this.asOptionalString(metadata.regionHint),
         orientation: this.normalizeOrientationValue(metadata.orientation),
-        generationTier: this.normalizeGenerationTierValue(metadata.generationTier),
-        sourceSpec: specResponse.spec || null,
+        generationTier: this.normalizeGenerationTierValue(
+          metadata.generationTier,
+        ),
         creationSessionId: session.id,
         entryMode: session.entryMode,
         sourceGameId: session.sourceGameId,
@@ -729,14 +591,15 @@ export class CreationSessionService {
       await repo.update({
         where: { id: session.id },
         data: {
-          status: 'completed',
+          status: "completed",
           generatedGameId: result.gameId || null,
           generationTaskId: result.generationTask?.taskId || null,
           metadata: {
             ...metadata,
+            expandedPrompt: finalPrompt,
             readyToGenerate: true,
-            slotFillPct: specResponse.slot_fill_pct ?? this.computeSlotFillPct(session.slotState || {}),
-            lastTaskStatus: 'queued',
+            slotFillPct: 1,
+            lastTaskStatus: "queued",
             completedAt: new Date().toISOString(),
             intentBuild,
           },
@@ -751,23 +614,33 @@ export class CreationSessionService {
         creationSession,
       };
     } catch (error) {
-      await Promise.resolve(repo.update({
-        where: { id: session.id },
-        data: {
-          status: rollbackStatus,
-          metadata: {
-            ...metadata,
-            readyToGenerate: true,
-            slotFillPct: specResponse.slot_fill_pct ?? this.computeSlotFillPct(session.slotState || {}),
-            lastTaskStatus: 'failed',
-            lastErrorMessage: this.extractAiError(error, 'Creation session generation failed'),
-            intentBuild,
+      await Promise.resolve(
+        repo.update({
+          where: { id: session.id },
+          data: {
+            status: "ready",
+            metadata: {
+              ...metadata,
+              expandedPrompt: finalPrompt,
+              readyToGenerate: true,
+              slotFillPct: 1,
+              lastTaskStatus: "failed",
+              lastErrorMessage: this.extractAiError(
+                error,
+                "Creation session generation failed",
+              ),
+              intentBuild,
+            },
           },
-        },
-      })).catch(() => undefined);
+        }),
+      ).catch(() => undefined);
       try {
         const rollbackSnapshot = await this.getSession(userId, session.id);
-        this.realtimeService.publishSnapshot(userId, session.id, rollbackSnapshot);
+        this.realtimeService.publishSnapshot(
+          userId,
+          session.id,
+          rollbackSnapshot,
+        );
       } catch {
         // Ignore publish failures on rollback.
       }
@@ -775,20 +648,23 @@ export class CreationSessionService {
     }
   }
 
-  async abandonSession(userId: string, sessionId: string): Promise<CreationSessionSnapshot> {
+  async abandonSession(
+    userId: string,
+    sessionId: string,
+  ): Promise<CreationSessionSnapshot> {
     const repo = this.getRepo();
     const session = await this.requireOwnedSession(userId, sessionId);
-    if (session.status === 'completed') {
-      throw new ConflictException('Creation session already completed');
+    if (session.status === "completed") {
+      throw new ConflictException("Creation session already completed");
     }
-    if (session.status === 'abandoned') {
-      throw new ConflictException('Creation session was already abandoned');
+    if (session.status === "abandoned") {
+      throw new ConflictException("Creation session was already abandoned");
     }
     const metadata = this.normalizeMetadata(session.metadata);
     const next = await repo.update({
       where: { id: session.id },
       data: {
-        status: 'abandoned',
+        status: "abandoned",
         metadata: {
           ...metadata,
           abandonedAt: new Date().toISOString(),
@@ -800,233 +676,44 @@ export class CreationSessionService {
     return snapshot;
   }
 
-  private async analyzeTurn(
-    payload: AnalyzeTurnRequestPayload,
+  private async expandPrompt(
+    description: string,
     regionHint?: string,
-  ): Promise<AnalyzeTurnResponsePayload> {
+  ): Promise<string> {
     const aiEngineUrl = await this.gameService.getAiEngineBaseUrl(regionHint);
     const timeoutMs = await this.gameService.getExpandPromptRequestTimeoutMs();
     try {
-      const response = await axios.post(
-        `${aiEngineUrl}/api/v1/ai/dialogue/analyze-turn`,
-        payload,
+      const response = await axios.post<ExpandPromptResponsePayload>(
+        `${aiEngineUrl}/api/v1/ai/expand-prompt`,
+        { description },
         { timeout: timeoutMs },
       );
-      return response.data;
-    } catch (error: any) {
-      const message = this.extractAiError(error, 'Creation session analyze-turn failed');
-      const status = error?.response?.status;
-      // AI engine returned a client error; treat as bad request.
-      if (status && status >= 400 && status < 500) {
-        throw new BadRequestException(message);
-      }
-      // Network timeout / connection refused / AI engine 5xx; upstream failure.
-      if (error?.code === 'ECONNABORTED' || error?.code === 'ECONNREFUSED' || error?.code === 'ETIMEDOUT') {
-        throw new ServiceUnavailableException(message);
-      }
-      throw new InternalServerErrorException(message);
-    }
-  }
-
-  private async analyzeTurnWithRealtime(
-    payload: AnalyzeTurnRequestPayload,
-    options: AnalyzeTurnRealtimeOptions,
-  ): Promise<AnalyzeTurnResponsePayload> {
-    const aiEngineUrl = await this.gameService.getAiEngineBaseUrl(options.regionHint);
-    const timeoutMs = await this.gameService.getExpandPromptRequestTimeoutMs();
-
-    try {
-      const response = await axios.post(
-        `${aiEngineUrl}/api/v1/ai/dialogue/analyze-turn/stream`,
-        payload,
-        {
-          timeout: timeoutMs,
-          responseType: 'stream',
-        },
+      const expandedPrompt = this.asOptionalString(
+        response.data?.expanded_prompt ?? response.data?.expandedPrompt,
       );
-      return await this.consumeAnalyzeTurnStream(response.data, options);
+      if (!expandedPrompt) {
+        throw new BadRequestException(
+          "Creation session prompt expansion returned an empty prompt",
+        );
+      }
+      return expandedPrompt;
     } catch (error: any) {
-      const status = error?.response?.status;
-      const message = this.extractAiError(error, 'Creation session analyze-turn failed');
-      if (this.shouldFallbackToNonStreamingAnalyzeTurn(status, error, message)) {
-        return await this.fallbackAnalyzeTurnWithoutRealtime(payload, options);
+      if (error instanceof BadRequestException) {
+        throw error;
       }
-      const isUpstreamFailure = error?.code === 'ECONNABORTED'
-        || error?.code === 'ECONNREFUSED'
-        || error?.code === 'ETIMEDOUT';
-      if (isUpstreamFailure) {
-        throw new ServiceUnavailableException(message);
-      }
-      if (status && status >= 400 && status < 500) {
-        throw new BadRequestException(message);
-      }
-      throw new InternalServerErrorException(message);
-    }
-  }
-
-  private shouldFallbackToNonStreamingAnalyzeTurn(
-    status: number | undefined,
-    error: any,
-    message: string,
-  ): boolean {
-    if (status === 404 || status === 405) {
-      return true;
-    }
-    const code = String(error?.code || '').trim().toUpperCase();
-    if (['ECONNRESET', 'ERR_STREAM_PREMATURE_CLOSE'].includes(code)) {
-      return true;
-    }
-    const normalized = String(message || '').trim().toLowerCase();
-    return normalized.includes('aborted')
-      || normalized.includes('socket hang up')
-      || normalized.includes('premature close')
-      || normalized.includes('stream missing final result');
-  }
-
-  private async fallbackAnalyzeTurnWithoutRealtime(
-    payload: AnalyzeTurnRequestPayload,
-    options: AnalyzeTurnRealtimeOptions,
-  ): Promise<AnalyzeTurnResponsePayload> {
-    const fallback = await this.analyzeTurn(payload, options.regionHint);
-    if (options.onFinal) {
-      await Promise.resolve(options.onFinal(fallback));
-    }
-    this.realtimeService.publishReplyDone(
-      options.userId,
-      options.sessionId,
-      fallback.reply,
-      this.resolveRealtimeReplyKind(fallback),
-    );
-    return fallback;
-  }
-
-  private async consumeAnalyzeTurnStream(
-    stream: any,
-    options: AnalyzeTurnRealtimeOptions,
-  ): Promise<AnalyzeTurnResponsePayload> {
-    let buffer = '';
-    let eventName = 'message';
-    let dataLines: string[] = [];
-    let finalResult: AnalyzeTurnResponsePayload | null = null;
-    let accumulatedReply = '';
-    let pendingFinalSideEffect: Promise<void> | null = null;
-
-    const dispatchEvent = (rawEventName: string, rawPayload: string) => {
-      const normalizedPayload = String(rawPayload || '').trim();
-      if (!normalizedPayload) {
-        return;
-      }
-      const payload = JSON.parse(normalizedPayload);
-      switch (rawEventName) {
-        case 'delta': {
-          const delta = String(payload?.delta || '');
-          accumulatedReply = String(payload?.accumulated || `${accumulatedReply}${delta}`);
-          this.realtimeService.publishReplyDelta(
-            options.userId,
-            options.sessionId,
-            delta,
-            accumulatedReply,
-            payload?.kind === 'summary' ? 'summary' : 'question',
-          );
-          break;
-        }
-        case 'done': {
-          const message = String(payload?.message || accumulatedReply || '');
-          accumulatedReply = message;
-          if (finalResult) {
-            finalResult.reply = message;
-          }
-          this.realtimeService.publishReplyDone(
-            options.userId,
-            options.sessionId,
-            message,
-            payload?.kind === 'summary' ? 'summary' : 'question',
-          );
-          break;
-        }
-        case 'final':
-          finalResult = payload as AnalyzeTurnResponsePayload;
-          if (!pendingFinalSideEffect && options.onFinal) {
-            pendingFinalSideEffect = Promise.resolve(options.onFinal(finalResult));
-          }
-          break;
-        case 'error':
-          throw new Error(
-            this.stringifyErrorDetail(payload?.message || payload?.detail || payload, 'Creation session analyze-turn failed'),
-          );
-        default:
-          break;
-      }
-    };
-
-    const flushEvent = () => {
-      if (!dataLines.length) {
-        eventName = 'message';
-        return;
-      }
-      const rawPayload = dataLines.join('\n');
-      dataLines = [];
-      const currentEvent = eventName || 'message';
-      eventName = 'message';
-      dispatchEvent(currentEvent, rawPayload);
-    };
-
-    for await (const chunk of stream) {
-      buffer += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
-      let newlineIndex = buffer.indexOf('\n');
-      while (newlineIndex >= 0) {
-        let line = buffer.slice(0, newlineIndex);
-        buffer = buffer.slice(newlineIndex + 1);
-        if (line.endsWith('\r')) {
-          line = line.slice(0, -1);
-        }
-        if (!line) {
-          flushEvent();
-        } else if (line.startsWith(':')) {
-          // heartbeat / comment
-        } else if (line.startsWith('event:')) {
-          eventName = line.slice(6).trim() || 'message';
-        } else if (line.startsWith('data:')) {
-          dataLines.push(line.slice(5).trimStart());
-        }
-        newlineIndex = buffer.indexOf('\n');
-      }
-    }
-
-    if (buffer.trim()) {
-      dataLines.push(buffer.trim());
-    }
-    flushEvent();
-
-    if (pendingFinalSideEffect) {
-      await pendingFinalSideEffect;
-    }
-    if (!finalResult) {
-      throw new Error('Creation session analyze-turn stream missing final result');
-    }
-    return finalResult;
-  }
-
-  private async specFromSlots(
-    payload: Record<string, unknown>,
-    regionHint?: string,
-  ): Promise<SpecFromSlotsResponsePayload> {
-    const aiEngineUrl = await this.gameService.getAiEngineBaseUrl(regionHint);
-    const timeoutMs = await this.gameService.getExpandPromptRequestTimeoutMs();
-    try {
-      const response = await axios.post(
-        `${aiEngineUrl}/api/v1/ai/dialogue/spec-from-slots`,
-        payload,
-        { timeout: timeoutMs },
+      const message = this.extractAiError(
+        error,
+        "Creation session prompt expansion failed",
       );
-      return response.data;
-    } catch (error: any) {
-      const message = this.extractAiError(error, 'Creation session spec compilation failed');
       const status = error?.response?.status;
       if (status && status >= 400 && status < 500) {
         throw new BadRequestException(message);
       }
-      if (error?.code === 'ECONNABORTED' || error?.code === 'ECONNREFUSED' || error?.code === 'ETIMEDOUT') {
+      if (
+        error?.code === "ECONNABORTED" ||
+        error?.code === "ECONNREFUSED" ||
+        error?.code === "ETIMEDOUT"
+      ) {
         throw new ServiceUnavailableException(message);
       }
       throw new InternalServerErrorException(message);
@@ -1034,10 +721,11 @@ export class CreationSessionService {
   }
 
   private extractAiError(error: any, fallback: string): string {
-    const raw = error?.response?.data?.detail
-      ?? error?.response?.data?.message
-      ?? error?.message
-      ?? fallback;
+    const raw =
+      error?.response?.data?.detail ??
+      error?.response?.data?.message ??
+      error?.message ??
+      fallback;
     return this.stringifyErrorDetail(raw, fallback);
   }
 
@@ -1045,18 +733,18 @@ export class CreationSessionService {
     if (value == null) {
       return fallback;
     }
-    if (typeof value === 'string') {
+    if (typeof value === "string") {
       const normalized = value.trim();
       return normalized || fallback;
     }
     if (Array.isArray(value)) {
       const rendered = value
-        .map((item) => this.stringifyErrorDetail(item, ''))
+        .map((item) => this.stringifyErrorDetail(item, ""))
         .map((item) => item.trim())
         .filter(Boolean);
-      return rendered.join('; ') || fallback;
+      return rendered.join("; ") || fallback;
     }
-    if (typeof value === 'object') {
+    if (typeof value === "object") {
       const record = value as Record<string, unknown>;
       const preferred = [
         record.detail,
@@ -1066,18 +754,18 @@ export class CreationSessionService {
         record.error,
       ];
       for (const item of preferred) {
-        const rendered = this.stringifyErrorDetail(item, '');
+        const rendered = this.stringifyErrorDetail(item, "");
         if (rendered.trim()) {
           return rendered;
         }
       }
       const parts = Object.entries(record)
         .map(([key, item]) => {
-          const rendered = this.stringifyErrorDetail(item, '');
-          return rendered ? `${key}=${rendered}` : '';
+          const rendered = this.stringifyErrorDetail(item, "");
+          return rendered ? `${key}=${rendered}` : "";
         })
         .filter(Boolean);
-      return parts.join(', ') || fallback;
+      return parts.join(", ") || fallback;
     }
     const normalized = String(value).trim();
     return normalized || fallback;
@@ -1086,38 +774,43 @@ export class CreationSessionService {
   private getRepo(): any {
     const repo = (this.prisma as any).gameCreationSession;
     if (!repo) {
-      throw new NotFoundException('Creation session store is unavailable');
+      throw new NotFoundException("Creation session store is unavailable");
     }
     return repo;
   }
 
-  private async requireOwnedSession(userId: string, sessionId: string): Promise<any> {
+  private async requireOwnedSession(
+    userId: string,
+    sessionId: string,
+  ): Promise<any> {
     const repo = this.getRepo();
     const session = await repo.findUnique({ where: { id: sessionId } });
     if (!session || session.userId !== userId) {
-      throw new NotFoundException('Creation session not found');
+      throw new NotFoundException("Creation session not found");
     }
     return session;
   }
 
   private assertSessionMutable(session: any): void {
-    if (session.status === 'initializing') {
-      throw new ConflictException('Creation session is still initializing');
+    if (session.status === "initializing") {
+      throw new ConflictException("Creation session is still initializing");
     }
-    if (session.status === 'abandoned') {
-      throw new ConflictException('Creation session was abandoned');
+    if (session.status === "abandoned") {
+      throw new ConflictException("Creation session was abandoned");
     }
-    if (session.status === 'completed') {
-      throw new ConflictException('Creation session already completed');
+    if (session.status === "completed") {
+      throw new ConflictException("Creation session already completed");
     }
-    if (session.status === 'generating') {
-      throw new ConflictException('Creation session is already generating');
+    if (session.status === "generating") {
+      throw new ConflictException("Creation session is already generating");
     }
   }
 
   private assertRevision(session: any, revision?: number): void {
     if (revision && Number(session.revision) !== Number(revision)) {
-      throw new ConflictException('Creation session was updated by another request');
+      throw new ConflictException(
+        "Creation session was updated by another request",
+      );
     }
   }
 
@@ -1139,8 +832,9 @@ export class CreationSessionService {
       slotState: params.slotState || {},
       skippedSlots: params.skippedSlots || [],
       sourceSpec: params.sourceSpec || null,
-      entryMode: this.asOptionalString(params.entryMode) || 'create',
-      generationTier: this.asOptionalString(params.generationTier) || 'standard',
+      entryMode: this.asOptionalString(params.entryMode) || "create",
+      generationTier:
+        this.asOptionalString(params.generationTier) || "standard",
       missingRequired: params.missingRequired || [],
     });
   }
@@ -1152,14 +846,20 @@ export class CreationSessionService {
     const currentQuestion = this.normalizeQuestion(session?.currentQuestion);
     const planDraft = this.normalizePlanDraft(metadata.planDraft);
     const intentBuild = normalizeIntentBuildSnapshot(metadata.intentBuild);
-    const sessionStatus = String(session.status || 'collecting');
+    const expandedPrompt =
+      this.asOptionalString(metadata.expandedPrompt) || null;
+    const sessionStatus = String(session.status || "collecting");
 
     // Bug 3 fix: when status is ready/generating/completed/initializing, clear currentQuestion.
     // - ready/generating/completed: "can generate", not "please answer more"
     // - initializing: AI analysis hasn't produced a question yet
-    const effectiveQuestion = (sessionStatus === 'initializing' || sessionStatus === 'ready' || sessionStatus === 'generating' || sessionStatus === 'completed')
-      ? null
-      : currentQuestion;
+    const effectiveQuestion =
+      sessionStatus === "initializing" ||
+      sessionStatus === "ready" ||
+      sessionStatus === "generating" ||
+      sessionStatus === "completed"
+        ? null
+        : currentQuestion;
 
     // Use effectiveQuestion (not raw currentQuestion) so that ready/completed
     // sessions always compute readyToGenerate=true even for legacy rows where
@@ -1171,9 +871,12 @@ export class CreationSessionService {
     return {
       id: String(session.id),
       streamPath: `/api/v1/games/creation-sessions/${String(session.id)}/events`,
-      status: sessionStatus as CreationSessionSnapshot['status'],
-      entryMode: String(session.entryMode || 'create') as CreationSessionSnapshot['entryMode'],
-      initialPrompt: String(session.initialPrompt || ''),
+      status: sessionStatus as CreationSessionSnapshot["status"],
+      entryMode: String(
+        session.entryMode || "create",
+      ) as CreationSessionSnapshot["entryMode"],
+      initialPrompt: String(session.initialPrompt || ""),
+      expandedPrompt,
       titleDraft: session.titleDraft ? String(session.titleDraft) : null,
       revision: Number(session.revision || 1),
       slotState,
@@ -1183,12 +886,20 @@ export class CreationSessionService {
       conversation: this.normalizeConversation(session.conversation),
       slotFillPct,
       readyToGenerate,
-      generatedGameId: session.generatedGameId ? String(session.generatedGameId) : null,
-      generationTaskId: session.generationTaskId ? String(session.generationTaskId) : null,
+      generatedGameId: session.generatedGameId
+        ? String(session.generatedGameId)
+        : null,
+      generationTaskId: session.generationTaskId
+        ? String(session.generationTaskId)
+        : null,
       sourceGameId: session.sourceGameId ? String(session.sourceGameId) : null,
-      orientation: metadata.orientation ? String(metadata.orientation) as any : null,
-      generationTier: String(metadata.generationTier || 'standard') as any,
-      questionBudget: Number(session.questionBudget || DEFAULT_CREATION_SESSION_QUESTION_BUDGET),
+      orientation: metadata.orientation
+        ? (String(metadata.orientation) as any)
+        : null,
+      generationTier: String(metadata.generationTier || "standard") as any,
+      questionBudget: Number(
+        session.questionBudget || DEFAULT_CREATION_SESSION_QUESTION_BUDGET,
+      ),
       planDraft,
       confidenceSummary: null,
       questionStrategy: null,
@@ -1197,7 +908,9 @@ export class CreationSessionService {
     };
   }
 
-  private toPublicIntentBuild(value: ReturnType<typeof normalizeIntentBuildSnapshot>) {
+  private toPublicIntentBuild(
+    value: ReturnType<typeof normalizeIntentBuildSnapshot>,
+  ) {
     if (!value?.brief) {
       return null;
     }
@@ -1206,7 +919,9 @@ export class CreationSessionService {
     };
   }
 
-  private toPublicMetadata(metadata: Record<string, unknown>): CreationSessionSnapshot['metadata'] {
+  private toPublicMetadata(
+    metadata: Record<string, unknown>,
+  ): CreationSessionSnapshot["metadata"] {
     const initError = this.asOptionalString(metadata.initError);
     const abandonedAt = this.asOptionalString(metadata.abandonedAt);
     if (!initError && !abandonedAt) {
@@ -1219,25 +934,34 @@ export class CreationSessionService {
   }
 
   private normalizeMetadata(value: unknown): Record<string, unknown> {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
       return {};
     }
     return value as Record<string, unknown>;
   }
 
-  private normalizeConversation(value: unknown): CreationSessionConversationMessage[] {
+  private normalizeConversation(
+    value: unknown,
+  ): CreationSessionConversationMessage[] {
     if (!Array.isArray(value)) {
       return [];
     }
 
     return value
-      .filter((item) => item && typeof item === 'object')
+      .filter((item) => item && typeof item === "object")
       .map((item: any) => {
-        const role: CreationSessionConversationMessage['role'] = item.role === 'assistant' ? 'assistant' : 'user';
+        const role: CreationSessionConversationMessage["role"] =
+          item.role === "assistant" ? "assistant" : "user";
         return {
           role,
-          content: String(item.content || ''),
-          ...(item.kind ? { kind: String(item.kind) as CreationSessionConversationMessage['kind'] } : {}),
+          content: String(item.content || ""),
+          ...(item.kind
+            ? {
+                kind: String(
+                  item.kind,
+                ) as CreationSessionConversationMessage["kind"],
+              }
+            : {}),
           ...(item.createdAt ? { createdAt: String(item.createdAt) } : {}),
         };
       })
@@ -1245,7 +969,7 @@ export class CreationSessionService {
   }
 
   private normalizeSlotState(value: unknown): Record<string, unknown> {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
       return {};
     }
     return value as Record<string, unknown>;
@@ -1255,18 +979,18 @@ export class CreationSessionService {
     if (!Array.isArray(value)) {
       return [];
     }
-    return value
-      .map((item) => String(item || '').trim())
-      .filter(Boolean);
+    return value.map((item) => String(item || "").trim()).filter(Boolean);
   }
 
   private normalizeQuestion(value: unknown): CreationSessionQuestion | null {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
       return null;
     }
 
-    const slotKey = String((value as any).slotKey || (value as any).slot_key || '').trim();
-    const prompt = String((value as any).prompt || '').trim();
+    const slotKey = String(
+      (value as any).slotKey || (value as any).slot_key || "",
+    ).trim();
+    const prompt = String((value as any).prompt || "").trim();
     if (!slotKey || !prompt) {
       return null;
     }
@@ -1280,19 +1004,32 @@ export class CreationSessionService {
   }
 
   private normalizePlanDraft(value: unknown): CreationSessionPlanDraft | null {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
       return null;
     }
 
-    const title = String((value as any).title || '').trim();
-    const summary = String((value as any).summary || '').trim();
-    const concept = String((value as any).concept || '').trim();
-    const interaction = String((value as any).interaction || '').trim();
-    const objective = String((value as any).objective || '').trim();
-    const pacing = String((value as any).pacing || '').trim();
-    const visualDirection = String((value as any).visualDirection || (value as any).visual_direction || '').trim();
-    const signatureMoment = String((value as any).signatureMoment || (value as any).signature_moment || '').trim();
-    if (!title && !summary && !concept && !interaction && !objective && !pacing && !visualDirection && !signatureMoment) {
+    const title = String((value as any).title || "").trim();
+    const summary = String((value as any).summary || "").trim();
+    const concept = String((value as any).concept || "").trim();
+    const interaction = String((value as any).interaction || "").trim();
+    const objective = String((value as any).objective || "").trim();
+    const pacing = String((value as any).pacing || "").trim();
+    const visualDirection = String(
+      (value as any).visualDirection || (value as any).visual_direction || "",
+    ).trim();
+    const signatureMoment = String(
+      (value as any).signatureMoment || (value as any).signature_moment || "",
+    ).trim();
+    if (
+      !title &&
+      !summary &&
+      !concept &&
+      !interaction &&
+      !objective &&
+      !pacing &&
+      !visualDirection &&
+      !signatureMoment
+    ) {
       return null;
     }
 
@@ -1308,84 +1045,10 @@ export class CreationSessionService {
     };
   }
 
-  private normalizeConfidenceSummary(value: unknown): CreationSessionConfidenceSummary | null {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return null;
-    }
-
-    const overallConfidence = this.clampRatio((value as any).overallConfidence ?? (value as any).overall_confidence);
-    return {
-      overallConfidence,
-      strongestSlots: this.normalizeStringList((value as any).strongestSlots || (value as any).strongest_slots),
-      weakestSlots: this.normalizeStringList((value as any).weakestSlots || (value as any).weakest_slots),
-      ambiguityFlags: this.normalizeStringList((value as any).ambiguityFlags || (value as any).ambiguity_flags),
-      missingCriticalSlots: this.normalizeStringList((value as any).missingCriticalSlots || (value as any).missing_critical_slots),
-    };
-  }
-
-  private normalizeQuestionStrategy(value: unknown): CreationSessionQuestionStrategy | null {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return null;
-    }
-    const reason = String((value as any).reason || '').trim();
-    const slotKey = this.asOptionalString((value as any).slotKey || (value as any).slot_key) || null;
-    if (!reason && !slotKey) {
-      return null;
-    }
-
-    return {
-      mode: String((value as any).mode || 'missing_required'),
-      slotKey,
-      reason,
-      impact: this.clampBoundedNumber((value as any).impact, 0, 1.5),
-      confidence: this.clampRatio((value as any).confidence),
-      ambiguityWeight: this.clampRatio((value as any).ambiguityWeight ?? (value as any).ambiguity_weight),
-    };
-  }
-
-  private normalizeStringMap(value: unknown): Record<string, string> {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return {};
-    }
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .map(([key, item]) => [String(key), String(item || '').trim()])
-        .filter(([, item]) => Boolean(item)),
-    );
-  }
-
-  private normalizeNumberMap(value: unknown): Record<string, number> {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return {};
-    }
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .map(([key, item]) => [String(key), this.clampRatio(item)])
-        .filter(([, item]) => Number.isFinite(item)),
-    );
-  }
-
-  private buildConfidenceSummary(
-    confidenceBySlot: unknown,
-    ambiguityFlags: unknown,
-    missingRequired: unknown,
-  ): CreationSessionConfidenceSummary {
-    const normalizedConfidence = this.normalizeNumberMap(confidenceBySlot);
-    const entries = Object.entries(normalizedConfidence);
-    const ranked = [...entries].sort((a, b) => b[1] - a[1]);
-    return {
-      overallConfidence: entries.length
-        ? entries.reduce((sum, [, value]) => sum + value, 0) / entries.length
-        : 0,
-      strongestSlots: ranked.slice(0, 2).map(([slot]) => slot),
-      weakestSlots: [...ranked].reverse().slice(0, 2).map(([slot]) => slot),
-      ambiguityFlags: this.normalizeStringList(ambiguityFlags),
-      missingCriticalSlots: this.normalizeStringList(missingRequired)
-        .filter((slot) => ['core_mechanic', 'win_condition', 'input_method', 'game_type'].includes(slot)),
-    };
-  }
-
-  private clampSlotFillPct(value: unknown, slotState: Record<string, unknown>): number {
+  private clampSlotFillPct(
+    value: unknown,
+    slotState: Record<string, unknown>,
+  ): number {
     const numeric = Number(value);
     if (Number.isFinite(numeric) && numeric >= 0 && numeric <= 1) {
       return numeric;
@@ -1399,133 +1062,119 @@ export class CreationSessionService {
       if (Array.isArray(value)) {
         return value.length > 0;
       }
-      return String(value || '').trim().length > 0;
+      return String(value || "").trim().length > 0;
     }).length;
     return filled / REQUIRED_SLOT_KEYS.length;
   }
 
-  private buildAnalyzeTurnPayload(params: {
-    sessionId?: string | null;
-    userId: string;
-    conversation: CreationSessionConversationMessage[];
-    currentSlots?: Record<string, unknown>;
-    skippedSlots?: string[];
-    entryMode?: string | null;
-    title?: string | null;
-    generationTier?: string | null;
-    initialPrompt?: string | null;
-    answeredSlot?: CreationSessionQuestion | null;
-    latestUserAnswer?: string | null;
-    advanceOnly?: boolean;
-  }): AnalyzeTurnRequestPayload {
-    const sessionId = this.asOptionalString(params.sessionId);
-    const title = this.asOptionalString(params.title);
-    const initialPrompt = this.asOptionalString(params.initialPrompt);
-    const answeredSlotKey = this.asOptionalString(params.answeredSlot?.slotKey);
-    const answeredSlotPrompt = this.asOptionalString(params.answeredSlot?.prompt);
-    const latestUserAnswer = this.asOptionalString(params.latestUserAnswer);
-
+  private userMessage(
+    content: string,
+    kind: CreationSessionConversationMessage["kind"],
+  ): CreationSessionConversationMessage {
     return {
-      ...(sessionId ? { session_id: sessionId } : {}),
-      user_id: params.userId,
-      conversation: params.conversation,
-      current_slots: params.currentSlots || {},
-      skipped_slots: params.skippedSlots || [],
-      entry_mode: this.asOptionalString(params.entryMode) || 'create',
-      generation_tier: this.asOptionalString(params.generationTier) || 'standard',
-      ...(title ? { title } : {}),
-      ...(initialPrompt ? { initial_prompt: initialPrompt } : {}),
-      ...(answeredSlotKey ? { answered_slot_key: answeredSlotKey } : {}),
-      ...(answeredSlotPrompt ? { answered_slot_prompt: answeredSlotPrompt } : {}),
-      ...(latestUserAnswer ? { latest_user_answer: latestUserAnswer } : {}),
-      ...(params.advanceOnly ? { advance_only: true } : {}),
-    };
-  }
-
-  private userMessage(content: string, kind: CreationSessionConversationMessage['kind']): CreationSessionConversationMessage {
-    return {
-      role: 'user',
-      content: String(content || '').trim(),
+      role: "user",
+      content: String(content || "").trim(),
       kind,
       createdAt: new Date().toISOString(),
     };
   }
 
-  private assistantMessage(content: string, kind: CreationSessionConversationMessage['kind'] = 'question'): CreationSessionConversationMessage {
+  private assistantMessage(
+    content: string,
+    kind: CreationSessionConversationMessage["kind"] = "question",
+  ): CreationSessionConversationMessage {
     return {
-      role: 'assistant',
-      content: String(content || '').trim(),
+      role: "assistant",
+      content: String(content || "").trim(),
       kind,
       createdAt: new Date().toISOString(),
     };
   }
 
-  private uniqueStrings(values: string[]): string[] {
-    return Array.from(new Set(values.map((item) => String(item || '').trim()).filter(Boolean)));
+  private buildPromptConfirmationQuestion(
+    expandedPrompt: string,
+  ): CreationSessionQuestion {
+    if (this.prefersChineseCopy(expandedPrompt)) {
+      return {
+        slotKey: "expanded_prompt",
+        label: "Prompt Confirmation",
+        prompt:
+          "我已经把你的想法扩写成一版包含游戏类型、核心玩法、操作方式、胜负条件和难度节奏的生成提示词。请直接确认，或修改这段提示词后再确认。",
+        skippable: true,
+      };
+    }
+
+    return {
+      slotKey: "expanded_prompt",
+      label: "Prompt Confirmation",
+      prompt:
+        "I expanded your idea into a generation prompt that covers game type, core mechanic, controls, win condition, and difficulty ramp. Confirm it as-is or edit the prompt before confirming.",
+      skippable: true,
+    };
+  }
+
+  private buildPromptConfirmedReply(expandedPrompt: string): string {
+    if (this.prefersChineseCopy(expandedPrompt)) {
+      return "这版生成提示词已确认，可以开始生成了。";
+    }
+    return "This prompt is confirmed and ready for generation.";
+  }
+
+  private prefersChineseCopy(value: string): boolean {
+    return /[\u3400-\u9fff]/.test(String(value || ""));
+  }
+
+  private resolveSessionPrompt(
+    session: any,
+    metadata?: Record<string, unknown>,
+  ): string | null {
+    const normalizedMetadata =
+      metadata || this.normalizeMetadata(session?.metadata);
+    return (
+      this.asOptionalString(normalizedMetadata.expandedPrompt) ||
+      this.asOptionalString(session?.initialPrompt) ||
+      null
+    );
   }
 
   private asOptionalString(value: unknown): string | undefined {
-    const normalized = String(value || '').trim();
+    const normalized = String(value || "").trim();
     return normalized || undefined;
   }
 
-  private clampRatio(value: unknown): number {
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric)) {
-      return 0;
+  private normalizeOrientationValue(
+    value: unknown,
+  ): "portrait" | "landscape" | undefined {
+    if (value === "portrait") {
+      return "portrait";
     }
-    if (numeric <= 0) {
-      return 0;
-    }
-    if (numeric >= 1) {
-      return 1;
-    }
-    return numeric;
-  }
-
-  private clampBoundedNumber(value: unknown, min: number, max: number): number {
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric)) {
-      return min;
-    }
-    if (numeric <= min) {
-      return min;
-    }
-    if (numeric >= max) {
-      return max;
-    }
-    return numeric;
-  }
-
-  private normalizeOrientationValue(value: unknown): 'portrait' | 'landscape' | undefined {
-    if (value === 'portrait') {
-      return 'portrait';
-    }
-    if (value === 'landscape') {
-      return 'landscape';
+    if (value === "landscape") {
+      return "landscape";
     }
     return undefined;
   }
 
-  private normalizeGenerationTierValue(value: unknown): 'safe' | 'standard' | 'showcase' | undefined {
-    if (value === 'safe') {
-      return 'safe';
+  private normalizeGenerationTierValue(
+    value: unknown,
+  ): "safe" | "standard" | "showcase" | undefined {
+    if (value === "safe") {
+      return "safe";
     }
-    if (value === 'showcase') {
-      return 'showcase';
+    if (value === "showcase") {
+      return "showcase";
     }
-    if (value === 'standard') {
-      return 'standard';
+    if (value === "standard") {
+      return "standard";
     }
     return undefined;
   }
 
   private buildInitSessionResolution(params: {
-    analyzePayload: AnalyzeTurnRequestPayload;
+    initialPrompt: string;
     dto: CreateCreationSessionDto;
-    analysis: AnalyzeTurnResponsePayload;
+    expandedPrompt: string;
   }): {
-    nextStatus: 'ready' | 'collecting';
+    nextStatus: "collecting";
     slotState: Record<string, unknown>;
     missingRequired: string[];
     currentQuestion: CreationSessionQuestion | null;
@@ -1533,72 +1182,55 @@ export class CreationSessionService {
     metadata: Record<string, unknown>;
     assistantReply: string;
   } {
-    const slotState = this.normalizeSlotState(params.analysis.slots || {});
-    const missingRequired = this.normalizeStringList(params.analysis.missing_required);
-    const currentQuestion = this.normalizeQuestion(params.analysis.current_question);
-    const normalizedPlanDraft = this.normalizePlanDraft(params.analysis.plan_draft);
-    const normalizedQuestionStrategy = this.normalizeQuestionStrategy(params.analysis.question_strategy);
-    const confidenceSummary = this.buildConfidenceSummary(
-      params.analysis.confidence_by_slot,
-      params.analysis.ambiguity_flags,
-      missingRequired,
-    );
     const intentBuild = this.buildSessionIntentBuild({
-      initialPrompt: params.analyzePayload.initial_prompt,
+      initialPrompt: params.expandedPrompt,
       title: params.dto.title,
-      planDraft: normalizedPlanDraft,
-      slotState,
-      entryMode: params.dto.entryMode || 'create',
-      generationTier: params.dto.generationTier || 'standard',
-      missingRequired,
+      planDraft: null,
+      slotState: {},
+      entryMode: params.dto.entryMode || "create",
+      generationTier: params.dto.generationTier || "standard",
+      missingRequired: [],
     });
-    const assistantReply = String(params.analysis.reply || '').trim();
+    const assistantReply = params.expandedPrompt;
     return {
-      nextStatus: params.analysis.ready_to_generate ? 'ready' : 'collecting',
-      slotState,
-      missingRequired,
-      currentQuestion,
+      nextStatus: "collecting",
+      slotState: {},
+      missingRequired: [],
+      currentQuestion: this.buildPromptConfirmationQuestion(
+        params.expandedPrompt,
+      ),
       conversation: [
-        this.userMessage(String(params.analyzePayload.initial_prompt || ''), 'prompt'),
-        this.assistantMessage(assistantReply, this.resolveRealtimeReplyKind(params.analysis)),
+        this.userMessage(params.initialPrompt, "prompt"),
+        this.assistantMessage(assistantReply, "summary"),
       ],
       metadata: {
         orientation: params.dto.orientation || null,
-        generationTier: params.dto.generationTier || 'standard',
+        generationTier: params.dto.generationTier || "standard",
         regionHint: params.dto.regionHint || null,
-        readyToGenerate: Boolean(params.analysis.ready_to_generate),
-        slotFillPct: this.clampSlotFillPct(params.analysis.slot_fill_pct, slotState),
-        planDraft: normalizedPlanDraft,
-        confidenceSummary,
-        questionStrategy: normalizedQuestionStrategy,
+        expandedPrompt: params.expandedPrompt,
+        readyToGenerate: false,
+        slotFillPct: 1,
+        planDraft: null,
         intentBuild,
-        confidenceBySlot: this.normalizeNumberMap(params.analysis.confidence_by_slot),
-        evidenceBySlot: this.normalizeStringMap(params.analysis.evidence_by_slot),
-        ambiguityFlags: this.normalizeStringList(params.analysis.ambiguity_flags),
-        nextBestQuestionReason: this.asOptionalString(params.analysis.next_best_question_reason)
-          || normalizedQuestionStrategy?.reason
-          || null,
       },
       assistantReply,
     };
   }
 
-  private async publishRealtimeSessionSnapshot(userId: string, sessionId: string): Promise<void> {
+  private async publishRealtimeSessionSnapshot(
+    userId: string,
+    sessionId: string,
+  ): Promise<void> {
     try {
-      const updatedSession = await this.getRepo().findUnique({ where: { id: sessionId } });
+      const updatedSession = await this.getRepo().findUnique({
+        where: { id: sessionId },
+      });
       if (!updatedSession) {
         return;
       }
       const snapshot = this.toSnapshot(updatedSession);
       this.wsGateway.emitSessionUpdate(userId, sessionId, snapshot);
       this.realtimeService.publishSnapshot(userId, sessionId, snapshot);
-    } catch (wsError: any) {
-    }
-  }
-
-  private resolveRealtimeReplyKind(
-    analysis: Pick<AnalyzeTurnResponsePayload, 'current_question' | 'ready_to_generate'>,
-  ): 'question' | 'summary' {
-    return analysis.current_question ? 'question' : 'summary';
+    } catch (wsError: any) {}
   }
 }

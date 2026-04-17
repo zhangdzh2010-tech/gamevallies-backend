@@ -60,13 +60,19 @@ describe('InternalGenerationController', () => {
     expect(wsGateway.emitGenerationProgress).toHaveBeenCalledWith(
       'user-1',
       'game-1',
-      'retrying code generation',
+      '生成游戏代码',
       60,
-      {
+      expect.objectContaining({
+        rawMessage: 'retrying code generation',
+        rawStage: 'code_generating',
+        stage: 'generating',
+        displayStageKey: 'generating',
+        displayStageLabel: '生成游戏代码',
+        displayStagePct: 60,
+        displayStageTotal: 5,
         retry: 1,
         maxRetries: 2,
-        stage: 'code_generating',
-      },
+      }),
     );
     expect(result).toEqual(
       expect.objectContaining({

@@ -88,6 +88,7 @@ describe('GrowthService', () => {
         buildNumber: '200',
         downloadUrl: 'https://cdn.gamevallies.com/app.apk',
         qrCodeUrl: 'https://cdn.gamevallies.com/app-qr.png',
+        storageKey: 'tos:app-releases/android/android-1/app.apk',
         sourceType: 'upload',
         publishedAt: new Date('2026-04-13T11:00:00.000Z'),
       },
@@ -99,6 +100,11 @@ describe('GrowthService', () => {
     expect(result.scenes.playNudge.minSessions).toBe(5);
     expect(result.copy.playNudge.title).toBe('继续玩就去 APP');
     expect(result.copy.playNudge.primaryCta).toBeTruthy();
+    expect(result.links).toEqual(expect.objectContaining({
+      iosUrl: 'https://apps.apple.com/app/id123',
+      androidUrl: 'https://api.gamevallies.com/api/v1/growth/app-releases/android-1/download',
+      universalUrl: 'https://apps.apple.com/app/id123',
+    }));
     expect(result.releases.ios).toEqual(expect.objectContaining({
       id: 'ios-1',
       versionName: '1.2.3',
@@ -115,7 +121,6 @@ describe('GrowthService', () => {
     prisma.systemConfig.findMany.mockResolvedValue([
       { configKey: 'growth.app_promo.enabled', configValue: 'false' },
       { configKey: 'growth.app_promo.play_nudge_min_sessions', configValue: '4' },
-      { configKey: 'growth.app_promo.universal_url', configValue: 'https://app.gamevallies.com/open' },
       {
         configKey: 'growth.app_promo.copy_json',
         configValue: JSON.stringify({
@@ -133,9 +138,6 @@ describe('GrowthService', () => {
         playNudge: {
           minSessions: 4,
         },
-      },
-      links: {
-        universalUrl: 'https://app.gamevallies.com/open',
       },
       copy: {
         playNudge: {
@@ -157,17 +159,33 @@ describe('GrowthService', () => {
         configValue: '4',
       }),
     }));
-    expect(result.links.universalUrl).toBe('https://app.gamevallies.com/open');
+    expect(result.links.universalUrl).toBe('');
     expect(result.copy.playNudge.title).toBe('去 APP 继续玩');
     expect(result.copy.playNudge.secondaryCta).toBeTruthy();
   });
 
-  it('rejects iOS upload releases in phase 1', async () => {
-    await expect(service.createAppRelease({
+  it('defaults new releases to upload sourcing when sourceType is omitted', async () => {
+    prisma.appRelease.create.mockImplementation(async ({ data }: any) => ({
+      id: 'release-ios',
+      ...data,
+    }));
+
+    const result = await service.createAppRelease({
+      platform: 'ios',
+      versionName: '1.0.0',
+    });
+
+    expect(prisma.appRelease.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        platform: 'ios',
+        sourceType: 'upload',
+      }),
+    }));
+    expect(result).toEqual(expect.objectContaining({
       platform: 'ios',
       sourceType: 'upload',
-      versionName: '1.0.0',
-    })).rejects.toBeInstanceOf(BadRequestException);
+      downloadUrl: null,
+    }));
   });
 
   it('requires android upload releases to remain draft until the apk is uploaded', async () => {
@@ -239,7 +257,7 @@ describe('GrowthService', () => {
       ...data,
     }));
 
-    const result = await service.uploadAndroidReleasePackage('release-android', {
+    const result = await service.uploadReleasePackage('release-android', {
       originalname: 'GameVallies.apk',
       mimetype: 'application/vnd.android.package-archive',
       size: 8,
@@ -312,7 +330,7 @@ describe('GrowthService', () => {
       putObject,
     });
 
-    const result = await service.uploadAndroidReleasePackage('release-android', {
+    const result = await service.uploadReleasePackage('release-android', {
       originalname: 'GameVallies.apk',
       mimetype: 'application/vnd.android.package-archive',
       buffer: Buffer.from('apk-data'),
@@ -329,6 +347,33 @@ describe('GrowthService', () => {
       }),
     }));
     expect(result.downloadUrl).toBe('https://api.gamevallies.com/api/v1/growth/app-releases/release-android/download');
+  });
+
+  it('stores uploaded ios packages and returns the backend download url', async () => {
+    prisma.appRelease.findUnique.mockResolvedValue({
+      id: 'release-ios',
+      platform: 'ios',
+    });
+    prisma.appRelease.update.mockImplementation(async ({ data }: any) => ({
+      id: 'release-ios',
+      ...data,
+    }));
+
+    const result = await service.uploadReleasePackage('release-ios', {
+      originalname: 'GameVallies.ipa',
+      mimetype: 'application/octet-stream',
+      buffer: Buffer.from('ipa-data'),
+    });
+
+    expect(prisma.appRelease.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'release-ios' },
+      data: expect.objectContaining({
+        sourceType: 'upload',
+        fileName: 'GameVallies.ipa',
+        downloadUrl: 'https://api.gamevallies.com/api/v1/growth/app-releases/release-ios/download',
+      }),
+    }));
+    expect(result.downloadUrl).toBe('https://api.gamevallies.com/api/v1/growth/app-releases/release-ios/download');
   });
 
   it('resolves tos uploads to signed download urls', async () => {

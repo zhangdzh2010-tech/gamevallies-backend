@@ -202,16 +202,11 @@ class CodeGenerator:
         spec: Optional[GameSpec] = None,
         budget_override: Optional[str] = None,
     ) -> int:
-        base_timeout_s = CodeGenerator._long_generation_timeout_s()
-        budget = str(budget_override or CodeGenerator._resolve_budget_profile(spec)).strip().lower() or "standard"
-        capped = {
-            "safe": min(base_timeout_s, 75),
-            "simple": min(base_timeout_s, 90),
-            "standard": min(base_timeout_s, 105),
-            "complex": min(base_timeout_s, 120),
-            "showcase": min(base_timeout_s, 135),
-        }
-        return max(30, capped.get(budget, base_timeout_s))
+        # Keep create-generation timeout semantics aligned with the single
+        # coarse-grained admin control. If the configured value is 300s, the
+        # create mainline should really get 300s instead of being silently
+        # clipped down by hidden budget-profile caps like 105s.
+        return max(30, CodeGenerator._long_generation_timeout_s())
 
     @classmethod
     def _generation_overall_timeout_budget_s(
@@ -219,17 +214,8 @@ class CodeGenerator:
         spec: Optional[GameSpec] = None,
         budget_override: Optional[str] = None,
     ) -> int:
-        budget = str(budget_override or cls._resolve_budget_profile(spec)).strip().lower() or "standard"
-        base_timeout_s = cls._long_generation_timeout_s()
-        capped = {
-            "safe": min(base_timeout_s, 150),
-            "simple": min(base_timeout_s, 180),
-            "standard": min(base_timeout_s, 210),
-            "complex": min(base_timeout_s, 240),
-            "showcase": min(base_timeout_s, 270),
-        }
         request_timeout_s = cls._generation_request_timeout_budget_s(spec, budget_override)
-        return max(request_timeout_s, capped.get(budget, base_timeout_s))
+        return max(request_timeout_s, cls._long_generation_timeout_s())
 
     @staticmethod
     def _step_timeout_override_key(step_key: str, timeout_kind: str) -> Optional[str]:

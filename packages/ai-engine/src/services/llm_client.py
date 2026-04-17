@@ -529,8 +529,6 @@ _LEGACY_HINT_TO_OUTPUT_CLASS: dict[str, str] = {
 
 # Hardcoded step→output_class fallback when DB catalog is unavailable
 STEP_OUTPUT_CLASS_DEFAULTS: dict[str, str] = {
-    "dialogue.reply": "small_text",
-    "dialogue.slot_extract": "small_json",
     "intent_parse": "small_json",
     "iterate.classify": "small_json",
     "generate_game_spec": "small_json",

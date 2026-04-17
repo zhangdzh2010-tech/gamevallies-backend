@@ -4,6 +4,24 @@
   "compilerOptions": {
     "deleteOutDir": true,
     "builder": "tsc",
-    "typeCheck": true
+    "typeCheck": true,
+    "assets": [
+      {
+        "include": "admin/**/*.html",
+        "watchAssets": true
+      },
+      {
+        "include": "admin/**/*.css",
+        "watchAssets": true
+      },
+      {
+        "include": "admin/**/*.js",
+        "watchAssets": true
+      },
+      {
+        "include": "game/**/*.html",
+        "watchAssets": true
+      }
+    ]
   }
 }

@@ -224,7 +224,7 @@ export class GrowthService implements OnModuleInit {
         \`mime_type\` VARCHAR(128) NULL,
         \`storage_key\` VARCHAR(512) NULL,
         \`checksum_sha256\` VARCHAR(64) NULL,
-        \`source_type\` ENUM('upload', 'external_url', 'app_store') NOT NULL DEFAULT 'external_url',
+        \`source_type\` ENUM('upload', 'external_url', 'app_store') NOT NULL DEFAULT 'upload',
         \`status\` ENUM('draft', 'published', 'archived') NOT NULL DEFAULT 'draft',
         \`is_active\` TINYINT(1) NOT NULL DEFAULT 0,
         \`published_at\` DATETIME(3) NULL,
@@ -383,6 +383,42 @@ export class GrowthService implements OnModuleInit {
     return `${this.getPublicBaseUrl()}/api/v1/growth/app-releases/${releaseId}/download`;
   }
 
+  private getResolvedReleaseDownloadUrl(release: any): string | null {
+    if (!release) {
+      return null;
+    }
+
+    if (release.sourceType === AppReleaseSourceType.upload) {
+      return normalizeString(release.storageKey)
+        ? this.getPublicReleaseDownloadUrl(release.id)
+        : null;
+    }
+
+    return normalizeString(release.downloadUrl) || null;
+  }
+
+  private serializeAppRelease(release: any) {
+    if (!release) {
+      return release;
+    }
+
+    return {
+      ...release,
+      downloadUrl: this.getResolvedReleaseDownloadUrl(release),
+    };
+  }
+
+  private buildReleaseLinks(releases: Record<string, any>) {
+    const iosUrl = normalizeString(releases?.ios?.downloadUrl);
+    const androidUrl = normalizeString(releases?.android?.downloadUrl);
+
+    return {
+      universalUrl: iosUrl || androidUrl || '',
+      iosUrl,
+      androidUrl,
+    };
+  }
+
   private async getPromoConfigRows() {
     return this.prisma.systemConfig.findMany({
       where: {
@@ -452,6 +488,8 @@ export class GrowthService implements OnModuleInit {
         universalUrl: normalizeString(
           map.get(GROWTH_PROMO_CONFIG_KEYS.universalUrl),
         ) || DEFAULT_APP_PROMO_CONFIG.links.universalUrl,
+        iosUrl: DEFAULT_APP_PROMO_CONFIG.links.iosUrl,
+        androidUrl: DEFAULT_APP_PROMO_CONFIG.links.androidUrl,
       },
       copy,
     };
@@ -500,7 +538,9 @@ export class GrowthService implements OnModuleInit {
         },
       },
       links: {
-        universalUrl: normalizeString(input?.links?.universalUrl),
+        universalUrl: DEFAULT_APP_PROMO_CONFIG.links.universalUrl,
+        iosUrl: DEFAULT_APP_PROMO_CONFIG.links.iosUrl,
+        androidUrl: DEFAULT_APP_PROMO_CONFIG.links.androidUrl,
       },
       copy: mergePromoCopy(input?.copy, DEFAULT_APP_PROMO_COPY),
     };
@@ -517,12 +557,10 @@ export class GrowthService implements OnModuleInit {
     throw new BadRequestException('Invalid release platform');
   }
 
-  private normalizeSourceType(value: unknown, platform: AppReleasePlatform): AppReleaseSourceType {
+  private normalizeSourceType(value: unknown, _platform: AppReleasePlatform): AppReleaseSourceType {
     const raw = normalizeString(value).toLowerCase();
     if (!raw) {
-      return platform === AppReleasePlatform.ios
-        ? AppReleaseSourceType.app_store
-        : AppReleaseSourceType.external_url;
+      return AppReleaseSourceType.upload;
     }
     if (raw === 'upload') {
       return AppReleaseSourceType.upload;
@@ -562,10 +600,6 @@ export class GrowthService implements OnModuleInit {
       throw new BadRequestException('versionName is required');
     }
 
-    if (payload.platform === AppReleasePlatform.ios && payload.sourceType === AppReleaseSourceType.upload) {
-      throw new BadRequestException('iOS releases do not support package upload in phase 1');
-    }
-
     if (
       [AppReleaseSourceType.external_url, AppReleaseSourceType.app_store].includes(payload.sourceType)
       && !normalizeString(payload.downloadUrl)
@@ -592,7 +626,6 @@ export class GrowthService implements OnModuleInit {
       [GROWTH_PROMO_CONFIG_KEYS.playNudgeMinSeconds, String(normalized.scenes.playNudge.minSeconds)],
       [GROWTH_PROMO_CONFIG_KEYS.playNudgeCooldownHours, String(normalized.scenes.playNudge.cooldownHours)],
       [GROWTH_PROMO_CONFIG_KEYS.playNudgeMaxImpressions30d, String(normalized.scenes.playNudge.maxImpressions30d)],
-      [GROWTH_PROMO_CONFIG_KEYS.universalUrl, normalized.links.universalUrl],
       [GROWTH_PROMO_CONFIG_KEYS.copyJson, JSON.stringify(normalized.copy)],
     ] as const;
 
@@ -635,20 +668,22 @@ export class GrowthService implements OnModuleInit {
     ]);
 
     const releases = activeReleases.reduce((acc: Record<string, any>, release: any) => {
+      const normalizedRelease = this.serializeAppRelease(release);
       acc[release.platform] = {
-        id: release.id,
-        versionName: release.versionName,
-        buildNumber: release.buildNumber,
-        downloadUrl: release.downloadUrl,
-        qrCodeUrl: release.qrCodeUrl,
-        sourceType: release.sourceType,
-        publishedAt: release.publishedAt,
+        id: normalizedRelease.id,
+        versionName: normalizedRelease.versionName,
+        buildNumber: normalizedRelease.buildNumber,
+        downloadUrl: normalizedRelease.downloadUrl,
+        qrCodeUrl: normalizedRelease.qrCodeUrl,
+        sourceType: normalizedRelease.sourceType,
+        publishedAt: normalizedRelease.publishedAt,
       };
       return acc;
     }, {} as Record<string, any>);
 
     return {
       ...config,
+      links: this.buildReleaseLinks(releases),
       releases,
     };
   }
@@ -718,7 +753,7 @@ export class GrowthService implements OnModuleInit {
     ]);
 
     return {
-      items,
+      items: items.map((item: any) => this.serializeAppRelease(item)),
       page,
       limit,
       total,
@@ -773,7 +808,7 @@ export class GrowthService implements OnModuleInit {
     if (!release) {
       throw new NotFoundException('App release not found');
     }
-    return release;
+    return this.serializeAppRelease(release);
   }
 
   async createAppRelease(input: AppReleaseInput, createdBy = 'admin') {
@@ -813,10 +848,11 @@ export class GrowthService implements OnModuleInit {
     }
 
     if (!shouldActivate) {
-      return this.appReleaseDelegate.create({ data: releaseData });
+      const created = await this.appReleaseDelegate.create({ data: releaseData });
+      return this.serializeAppRelease(created);
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const created = await this.prisma.$transaction(async (tx) => {
       await (tx as any).appRelease.updateMany({
         where: {
           platform,
@@ -830,6 +866,7 @@ export class GrowthService implements OnModuleInit {
 
       return (tx as any).appRelease.create({ data: releaseData });
     });
+    return this.serializeAppRelease(created);
   }
 
   async updateAppRelease(id: string, input: AppReleaseInput) {
@@ -896,13 +933,14 @@ export class GrowthService implements OnModuleInit {
     }
 
     if (!nextIsActive) {
-      return this.appReleaseDelegate.update({
+      const updated = await this.appReleaseDelegate.update({
         where: { id },
         data: updateData,
       });
+      return this.serializeAppRelease(updated);
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.$transaction(async (tx) => {
       await (tx as any).appRelease.updateMany({
         where: {
           platform,
@@ -920,6 +958,7 @@ export class GrowthService implements OnModuleInit {
         data: updateData,
       });
     });
+    return this.serializeAppRelease(updated);
   }
 
   async publishAppRelease(id: string) {
@@ -931,7 +970,7 @@ export class GrowthService implements OnModuleInit {
     }
 
     if (existing.sourceType === AppReleaseSourceType.upload && !existing.storageKey) {
-      throw new BadRequestException('Uploaded Android package is required before publishing');
+      throw new BadRequestException('Uploaded release package is required before publishing');
     }
     if (
       [AppReleaseSourceType.external_url, AppReleaseSourceType.app_store].includes(existing.sourceType)
@@ -963,10 +1002,11 @@ export class GrowthService implements OnModuleInit {
       });
     });
 
-    return this.appReleaseDelegate.findUnique({ where: { id } });
+    const release = await this.appReleaseDelegate.findUnique({ where: { id } });
+    return this.serializeAppRelease(release);
   }
 
-  async uploadAndroidReleasePackage(
+  async uploadReleasePackage(
     releaseId: string,
     file: UploadedReleaseFile,
   ) {
@@ -983,13 +1023,10 @@ export class GrowthService implements OnModuleInit {
     if (!release) {
       throw new NotFoundException('App release not found');
     }
-    if (release.platform !== AppReleasePlatform.android) {
-      throw new BadRequestException('Only Android releases support package upload');
-    }
-
     const extension = path.extname(file.originalname || '').toLowerCase();
-    if (extension !== '.apk') {
-      throw new BadRequestException('Only .apk files are supported');
+    const expectedExtension = release.platform === AppReleasePlatform.ios ? '.ipa' : '.apk';
+    if (extension !== expectedExtension) {
+      throw new BadRequestException(`Only ${expectedExtension} files are supported for ${release.platform} releases`);
     }
 
     const fileBuffer = file.buffer || (file.path ? fs.readFileSync(file.path) : null);
@@ -1001,7 +1038,10 @@ export class GrowthService implements OnModuleInit {
     const finalName = `${Date.now()}-${safeName}`;
     const checksumSha256 = createHash('sha256').update(fileBuffer).digest('hex');
     const downloadUrl = this.getPublicReleaseDownloadUrl(release.id);
-    const contentType = normalizeString(file.mimetype) || 'application/vnd.android.package-archive';
+    const contentType = normalizeString(file.mimetype)
+      || (release.platform === AppReleasePlatform.ios
+        ? 'application/octet-stream'
+        : 'application/vnd.android.package-archive');
     const tosConfig = this.getAppReleaseTosConfig();
     let storageKey = '';
 
@@ -1033,7 +1073,7 @@ export class GrowthService implements OnModuleInit {
       storageKey = this.encodeLocalStorageKey(path.posix.join(relativeDir, finalName));
     }
 
-    return this.appReleaseDelegate.update({
+    const updated = await this.appReleaseDelegate.update({
       where: { id: release.id },
       data: {
         sourceType: AppReleaseSourceType.upload,
@@ -1045,6 +1085,7 @@ export class GrowthService implements OnModuleInit {
         downloadUrl,
       },
     });
+    return this.serializeAppRelease(updated);
   }
 
   async resolveReleaseDownload(id: string) {

@@ -30,69 +30,29 @@ section() { echo -e "\n${CYAN}▶ $1${NC}"; }
 py() { python3 -c "$1" 2>/dev/null || echo "?"; }
 
 # ────────────────────────────────────────────────────────────
-section "阶段 0: 服务健康检查"
-# ────────────────────────────────────────────────────────────
+section "?? 1: ????? - expand-prompt (Create Entry)"
+# ============================================================
 
-HEALTH=$(curl -sf "$BASE/health")
-check "服务在线" "$HEALTH" "healthy"
-
-DETAILED=$(curl -sf -X POST "$BASE/api/v1/ai/health")
-check "详细健康检查" "$DETAILED" "llm_mode"
-LLM_MODE=$(py "import sys,json; d=json.loads('$DETAILED'); print(d.get('llm_mode','?'))")
-ENV_MODE=$(py "import sys,json; d=json.loads('$DETAILED'); print(d.get('environment','?'))")
-echo "  → LLM 模式: $LLM_MODE, 运行环境: $ENV_MODE"
-
-if [ "$LLM_MODE" = "real" ]; then
-  echo -e "  ${GREEN}✓${NC} 已确认使用真实 DeepSeek LLM"
-  PASS=$((PASS+1))
-else
-  echo -e "  ${RED}✗${NC} LLM 模式不是 real，当前: $LLM_MODE"
-  FAIL=$((FAIL+1))
-fi
-
-# ────────────────────────────────────────────────────────────
-section "阶段 1: 对话引擎 - Slot Filling (Stage 01)"
-# ────────────────────────────────────────────────────────────
-
-SESSION_ID="test-session-$(date +%s)"
 USER_ID="test-user-001"
+PROMPT_TEXT="???????????????????????????"
 
-echo "  [1/2] 用户描述游戏需求..."
-CHAT1=$(curl -sf -X POST "$BASE/api/v1/ai/dialogue/chat" \
-  -H "Content-Type: application/json" \
-  -d "{\"session_id\":\"$SESSION_ID\",\"user_id\":\"$USER_ID\",\"content\":\"我想做一个太空射击游戏，玩家控制飞船躲避陨石并击败敌人\"}")
+echo "  [1/1] ???????..."
+EXPAND=$(curl -sf -X POST "$BASE/api/v1/ai/expand-prompt" -H "Content-Type: application/json" -d "{\"description\":\"$PROMPT_TEXT\"}")
 
-check "对话第1轮响应" "$CHAT1" "session_id"
-check "AI 有回复内容" "$CHAT1" "reply"
-SLOT1=$(py "import json; d=json.loads('''$CHAT1'''); print('{:.0%}'.format(d['slot_fill_pct']))")
-echo "  → Slot 填充率: $SLOT1"
-REPLY1=$(py "import json; d=json.loads('''$CHAT1'''); r=d['reply']; print(r[:80]+'...' if len(r)>80 else r)")
-echo "  → AI 回复: $REPLY1"
+check "expand-prompt ??" "$EXPAND" "expanded_prompt"
+EXPANDED_PROMPT=$(py "import json; d=json.loads('''$EXPAND'''); print(d['expanded_prompt'])")
+EXPANDED_PREVIEW=$(py "import json; d=json.loads('''$EXPAND'''); text=d['expanded_prompt']; print(text[:120]+'...' if len(text)>120 else text)")
+echo "  ? ????: $EXPANDED_PREVIEW"
 
-echo "  [2/2] 用户补充细节..."
-CHAT2=$(curl -sf -X POST "$BASE/api/v1/ai/dialogue/chat" \
-  -H "Content-Type: application/json" \
-  -d "{\"session_id\":\"$SESSION_ID\",\"user_id\":\"$USER_ID\",\"content\":\"难度渐进式，触控操控，消灭所有敌机就胜利，像素风格\"}")
-
-check "对话第2轮响应" "$CHAT2" "slot_fill_pct"
-SLOT2=$(py "import json; d=json.loads('''$CHAT2'''); print('{:.0%}'.format(d['slot_fill_pct']))")
-READY=$(py "import json; d=json.loads('''$CHAT2'''); print(d['ready_to_generate'])")
-echo "  → Slot 填充率: $SLOT2, 准备生成: $READY"
-
-SESSION_STATE=$(curl -sf "$BASE/api/v1/ai/dialogue/session/$SESSION_ID")
-check "Session 状态可查询" "$SESSION_STATE" "slots"
-STATE=$(py "import json; d=json.loads('''$SESSION_STATE'''); print(d['state'])")
-echo "  → Session 状态: $STATE"
-
-# ────────────────────────────────────────────────────────────
-section "阶段 2: 意图解析 - parse-intent (Stage 02)"
+# ============================================================
+section "?? 2: ???? - parse-intent (Stage 02)"
 # ────────────────────────────────────────────────────────────
 
 echo "  调用 DeepSeek 解析游戏意图..."
 T0=$(now_ms)
 PARSE=$(curl -sf -X POST "$BASE/api/v1/ai/parse-intent" \
   -H "Content-Type: application/json" \
-  -d "{\"description\":\"一个横版跑酷游戏，角色不断向前跑，玩家点击跳跃躲避障碍，收集金币得分，撞到障碍就结束\",\"user_id\":\"$USER_ID\"}")
+  -d "{\"description\":\"$EXPANDED_PROMPT\",\"user_id\":\"$USER_ID\"}")
 T1=$(now_ms)
 PARSE_MS=$((T1-T0))
 
