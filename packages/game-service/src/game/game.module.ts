@@ -8,14 +8,14 @@ import { GameShellController } from './game-shell.controller';
 import { GameSchemaBootstrapService } from './game-schema-bootstrap.service';
 import { InternalGenerationController } from './internal-generation.controller';
 import { CreatorReputationService } from './creator-reputation.service';
-import { GenerationTaskService } from './generation-task.service';
-import { GenerationQueueService } from './generation-queue.service';
 import { GenerationQueueWorkerService } from './generation-queue.worker';
 import { CreationSessionService } from './creation-session.service';
 import { CreationSessionRealtimeService } from './creation-session-realtime.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { BundleModule } from '../bundle/bundle.module';
 import { StatsModule } from '../stats/stats.module';
+import { PlatformConfigModule } from '../platform/config/config.module';
+import { TaskingModule } from '../platform/tasking/tasking.module';
 import { WebSocketModule } from '../websocket/websocket.module';
 
 @Module({
@@ -23,6 +23,8 @@ import { WebSocketModule } from '../websocket/websocket.module';
     PrismaModule,
     BundleModule,
     StatsModule,
+    PlatformConfigModule,
+    TaskingModule,
     WebSocketModule,
     JwtModule.registerAsync({
       useFactory: (configService: ConfigService) => ({
@@ -36,8 +38,6 @@ import { WebSocketModule } from '../websocket/websocket.module';
     GameService,
     CreatorReputationService,
     GameSchemaBootstrapService,
-    GenerationTaskService,
-    GenerationQueueService,
     GenerationQueueWorkerService,
     CreationSessionService,
     CreationSessionRealtimeService,

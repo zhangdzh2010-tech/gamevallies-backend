@@ -1,0 +1,12 @@
+{
+  "name": "@gamevallies/platform-config",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "node -e \"process.exit(0)\"",
+    "test": "node -e \"process.exit(0)\"",
+    "test:cov": "node -e \"process.exit(0)\""
+  },
+  "main": "index.js",
+  "types": "index.d.ts"
+}

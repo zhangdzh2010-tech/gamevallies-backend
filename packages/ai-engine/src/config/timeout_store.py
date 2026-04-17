@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import re
 import time
+import json
+from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
@@ -18,64 +20,23 @@ _CACHE: dict[str, str] = {}
 _LOADED_AT: float = 0.0
 _LOAD_ERROR_BACKOFF_S = 5.0
 
+def _contract_path(name: str) -> Path:
+    candidates = (
+        Path(__file__).resolve().parents[4] / "contracts" / "generation" / name,
+        Path(__file__).resolve().parents[2] / "contracts" / "generation" / name,
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    checked = ", ".join(str(candidate) for candidate in candidates)
+    raise FileNotFoundError(f"Unable to locate generation contract {name!r}. Checked: {checked}")
+
+
+_TIMEOUT_CONTRACT = json.loads(_contract_path("timeout-keys.json").read_text(encoding="utf-8"))
+
 TIMEOUT_DEFAULTS: dict[str, str] = {
-    "timeout.pipeline.default_s": "1800",
-    "timeout.pipeline.v2_min_s": "1800",
-    "timeout.ai_engine.progress_relay_s": "3",
-    "timeout.ai_engine.artifact_relay_s": "5",
-    "timeout.ai_engine.stage_summary_relay_s": "5",
-    "timeout.ai_engine.task_failure_relay_s": "5",
-    "timeout.ai_engine.llm_call_log_relay_s": "3",
-    "timeout.ai_engine.task_activity_relay_s": "3",
-    "timeout.ai_engine.llm_long_generation_s": "240",
-    "timeout.ai_engine.llm.max_concurrency": "10",
-    "timeout.ai_engine.llm.http_max_connections": "100",
-    "timeout.ai_engine.llm.http_max_keepalive_connections": "40",
-    "timeout.ai_engine.llm.http_keepalive_expiry_s": "30",
-    "timeout.ai_engine.intent_parse.request_s": "45",
-    "timeout.ai_engine.intent_parse.overall_s": "90",
-    "timeout.ai_engine.iterate.classify_request_s": "30",
-    "timeout.ai_engine.iterate.classify_overall_s": "60",
-    "timeout.ai_engine.iterate.param_adjust_request_s": "90",
-    "timeout.ai_engine.iterate.param_adjust_overall_s": "180",
-    "timeout.ai_engine.iterate.element_change_request_s": "120",
-    "timeout.ai_engine.iterate.element_change_overall_s": "240",
-    "timeout.ai_engine.iterate.mechanic_change_request_s": "135",
-    "timeout.ai_engine.iterate.mechanic_change_overall_s": "270",
-    "timeout.ai_engine.qa_repair_s": "180",
-    "timeout.ai_engine.qa_fast_repair_s": "120",
-    "timeout.ai_engine.runtime_qa.base_s": "8",
-    "timeout.ai_engine.runtime_qa.max_s": "30",
-    "timeout.ai_engine.runtime_qa.phase_launch_s": "8",
-    "timeout.ai_engine.runtime_qa.phase_content_load_s": "15",
-    "timeout.ai_engine.runtime_qa.phase_interaction_s": "6",
-    "timeout.ai_engine.runtime_qa.phase_collect_s": "5",
-    "timeout.ai_engine.runtime_qa.phase_total_headroom_s": "3",
-    "timeout.ai_engine.runtime_qa.max_concurrency": "10",
-    "timeout.ai_engine.runtime_qa.bonus_ge_16000_s": "2",
-    "timeout.ai_engine.runtime_qa.bonus_ge_24000_s": "2",
-    "timeout.ai_engine.runtime_qa.bonus_ge_32000_s": "10",
-    "timeout.ai_engine.runtime_qa.bonus_ge_40000_s": "4",
-    "timeout.ai_engine.runtime_qa.remediation_bonus_per_attempt_s": "4",
-    "timeout.ai_engine.runtime_qa.remediation_bonus_max_s": "8",
-    "timeout.ai_engine.runtime_qa.remediation_large_code_floor_s": "8",
-    "timeout.ai_engine.runtime_qa.load_wait_factor_ms_per_s": "250",
-    "timeout.ai_engine.runtime_qa.load_wait_min_ms": "250",
-    "timeout.ai_engine.runtime_qa.initial_wait_ratio": "0.25",
-    "timeout.ai_engine.runtime_qa.initial_wait_min_s": "0.35",
-    "timeout.ai_engine.runtime_qa.initial_wait_max_s": "2",
-    "timeout.ai_engine.runtime_qa.post_wait_ratio": "0.15",
-    "timeout.ai_engine.runtime_qa.post_wait_min_s": "0.15",
-    "timeout.ai_engine.runtime_qa.post_wait_max_s": "0.8",
-    "timeout.ai_engine.llm_activity_heartbeat_s": "15",
-    "timeout.ai_engine.llm_fallback_connect_s": "15",
-    "timeout.ai_engine.llm_gateway_cache_ttl_s": "10",
-    "timeout.ai_engine.timeout_store_cache_ttl_s": "10",
-    "timeout.ai_engine.prompt_store_db_connect_s": "5",
-    "timeout.ai_engine.prompt_store_db_read_s": "5",
-    "timeout.ai_engine.gateway_db_connect_s": "5",
-    "timeout.ai_engine.gateway_db_read_s": "5",
-    "timeout.ai_engine.async_task_completed_ttl_s": "86400",
+    str(entry["key"]): str(entry["defaultValue"])
+    for entry in _TIMEOUT_CONTRACT
 }
 
 

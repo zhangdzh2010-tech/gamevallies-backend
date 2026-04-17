@@ -1,14 +1,13 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY package.json package-lock.json* ./
-COPY packages/shared ./packages/shared
 COPY packages/feed-service ./packages/feed-service
+COPY packages/platform-config ./packages/platform-config
 COPY tsconfig.base.json ./
+COPY contracts ./contracts
 COPY prisma ./prisma
 RUN npm install --legacy-peer-deps
 RUN npx prisma generate
-WORKDIR /app/packages/shared
-RUN npx tsc
 WORKDIR /app/packages/feed-service
 RUN npx nest build
 
@@ -16,11 +15,11 @@ FROM node:20-alpine
 RUN apk add --no-cache openssl
 WORKDIR /app
 COPY package.json package-lock.json* ./
-COPY packages/shared/package.json ./packages/shared/
 COPY packages/feed-service/package.json ./packages/feed-service/
+COPY packages/platform-config ./packages/platform-config
+COPY contracts ./contracts
 RUN npm install --omit=dev --legacy-peer-deps
 COPY --from=builder /app/packages/feed-service/dist ./packages/feed-service/dist
-COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY prisma ./prisma
 WORKDIR /app/packages/feed-service

@@ -181,14 +181,12 @@ export class GrowthService implements OnModuleInit {
     await this.ensureGrowthSchema({ throwOnError: false });
   }
 
-  // The workspace keeps an older generated Prisma TS cache under packages/game-service/node_modules/.prisma.
-  // Casting through `any` lets us use the current runtime client until the shared generation path is cleaned up.
   private get appReleaseDelegate(): any {
-    return (this.prisma as any).appRelease;
+    return this.prisma.appRelease;
   }
 
   private get appPromoEventDelegate(): any {
-    return (this.prisma as any).appPromoEvent;
+    return this.prisma.appPromoEvent;
   }
 
   private async ensureGrowthSchema(options: { throwOnError?: boolean } = {}) {

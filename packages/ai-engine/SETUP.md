@@ -285,7 +285,7 @@ Check that all template HTML files exist in `src/templates/`
 
 ### Performance Issues
 - Enable Redis caching for template engine
-- Use MongoDB for game history storage
+- Use MySQL-backed prompt and timeout stores
 - Consider using gunicorn with multiple workers:
   ```bash
   gunicorn -w 4 -k uvicorn.workers.UvicornWorker src.main:app
@@ -294,7 +294,7 @@ Check that all template HTML files exist in `src/templates/`
 ## Next Steps
 
 1. **Add Database Integration**
-   - Connect to MongoDB for game persistence
+   - Expand MySQL-backed configuration persistence
    - Use Redis for caching
 
 2. **Real LLM Integration**

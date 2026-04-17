@@ -39,16 +39,7 @@ import {
   GENERATION_QUEUE_JOB_PIPELINE_ITERATE,
   GENERATION_QUEUE_JOB_PIPELINE_RUN,
 } from './generation-queue.types';
-import {
-  TIMEOUT_CONFIG_CATALOG,
-  TIMEOUT_CONFIG_CATALOG_BY_KEY,
-} from './catalogs/timeout-catalog';
 import { normalizeGameType } from './game-type-catalog';
-import {
-  DEFAULT_RUNTIME_PROFILE_ID,
-  normalizeRuntimeProfileId,
-  runtimeProfileLookupCandidates,
-} from './runtime-profile-ids';
 import {
   buildIntentBuildSnapshot,
   normalizeIntentBuildSnapshot,
@@ -57,6 +48,9 @@ import {
   buildPublicGenerationStageDetails,
   resolvePublicGenerationStage,
 } from './generation-stage-contract';
+import { RuntimeProfileService } from '../platform/config/runtime-profile.service';
+import { SystemConfigRepository } from '../platform/config/system-config.repository';
+import { TimeoutConfigService } from '../platform/config/timeout-config.service';
 
 const STAGE_PCT: Record<string, number> = {
   intent_parsing: 15,
@@ -322,17 +316,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   private aiEngineTargetCache = new Map<string, { url: string; cachedAt: number }>();
   private activeTaskSweepTimer: NodeJS.Timeout | null = null;
   private activeTaskSweepInFlight = false;
-  private timeoutConfigCache = new Map<string, string>();
-  private timeoutConfigLoadedAt = 0;
-  private timeoutConfigRefreshPromise: Promise<void> | null = null;
   private currentSweepIntervalMs = 0;
-  // PR-02: short-TTL cache for prompt bundle identity / runtime profile catalog lookups
-  // These are read on every generation request but change at most a few times per day.
-  // TTL = 30s keeps tail-latency low while still picking up catalog updates quickly.
-  private static readonly PROMPT_BUNDLE_CACHE_TTL_MS = 30_000;
-  private static readonly RUNTIME_PROFILE_CACHE_TTL_MS = 30_000;
-  private promptBundleIdentityCache: { value: { id: string; version: number }; cachedAt: number } | null = null;
-  private runtimeProfileCache = new Map<string, { value: { id: string; contractSchema?: Prisma.JsonValue | null; metadata?: Prisma.JsonValue | null }; cachedAt: number }>();
 
   constructor(
     private prisma: PrismaService,
@@ -343,6 +327,9 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     private wsGateway: GameWebSocketGateway,
     private generationTaskService: GenerationTaskService,
     private generationQueueService: GenerationQueueService,
+    private timeoutConfigService: TimeoutConfigService,
+    private runtimeProfileService: RuntimeProfileService,
+    private systemConfigRepository: SystemConfigRepository,
   ) {
     this.aiEngineUrl = this.configService.get<string>(
       'AI_ENGINE_URL',
@@ -354,7 +341,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     await this.refreshTimeoutConfigCache().catch((error) => {
       this.logger.warn(`Failed to warm timeout config cache on init: ${error?.message || error}`);
     });
-    if (!this.timeoutConfigLoadedAt) {
+    if (!this.timeoutConfigService.isWarm()) {
       await this.syncBackgroundExecutionMode().catch((error) => {
         this.logger.warn(`Failed to initialize background execution mode on init: ${error?.message || error}`);
       });
@@ -409,130 +396,56 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   }
 
   public async refreshTimeoutConfigCache(): Promise<void> {
-    if (!this.timeoutConfigRefreshPromise) {
-      this.timeoutConfigRefreshPromise = (async () => {
-        const rows = await this.prisma.systemConfig.findMany({
-          where: { category: 'timeout' },
-          select: {
-            configKey: true,
-            configValue: true,
-          },
-        });
-
-        const nextCache = new Map<string, string>();
-        for (const row of rows) {
-          nextCache.set(row.configKey, row.configValue);
-        }
-
-        this.timeoutConfigCache = nextCache;
-        this.timeoutConfigLoadedAt = Date.now();
-        await this.syncBackgroundExecutionMode();
-      })().finally(() => {
-        this.timeoutConfigRefreshPromise = null;
-      });
-    }
-
-    await this.timeoutConfigRefreshPromise;
-  }
-
-  private async ensureTimeoutConfigCache(): Promise<void> {
-    if (this.timeoutConfigLoadedAt > 0) {
-      return;
-    }
-    await this.refreshTimeoutConfigCache();
-  }
-
-  private resolveTimeoutCatalogValue(
-    key: string,
-    options?: {
-      min?: number;
-      max?: number;
-    },
-  ): number {
-    const catalogEntry = TIMEOUT_CONFIG_CATALOG_BY_KEY.get(key);
-    if (!catalogEntry) {
-      throw new Error(`Unknown timeout config key: ${key}`);
-    }
-
-    const fallback = catalogEntry.defaultValue;
-    const raw = this.timeoutConfigCache.has(key)
-      ? this.timeoutConfigCache.get(key)
-      : fallback;
-    const parseValue = (value: string): number => (
-      catalogEntry.valueType === 'float'
-        ? Number.parseFloat(value)
-        : Number.parseInt(value, 10)
-    );
-    const parsed = parseValue(String(raw));
-    if (!Number.isFinite(parsed)) {
-      return parseValue(String(fallback));
-    }
-
-    const min = options?.min ?? Number.NEGATIVE_INFINITY;
-    const max = options?.max ?? Number.POSITIVE_INFINITY;
-    return Math.min(max, Math.max(min, parsed));
+    await this.timeoutConfigService.refresh();
+    await this.syncBackgroundExecutionMode();
   }
 
   private getAiEngineTargetCacheTtlMs(): number {
-    return this.resolveTimeoutCatalogValue('timeout.game_service.ai_target_cache_ttl_ms', { min: 0 });
+    return this.timeoutConfigService.getAiEngineTargetCacheTtlMs();
   }
 
   private getActiveTaskSweepIntervalMs(): number {
-    return Math.min(
-      this.resolveTimeoutCatalogValue('timeout.game_service.active_task_sweep_interval_ms', { min: 1_000 }),
-      MAX_ACTIVE_TASK_SWEEP_INTERVAL_MS,
-    );
+    return this.timeoutConfigService.getActiveTaskSweepIntervalMs(MAX_ACTIVE_TASK_SWEEP_INTERVAL_MS);
   }
 
   public async getExpandPromptRequestTimeoutMs(): Promise<number> {
-    await this.ensureTimeoutConfigCache();
-    return this.resolveTimeoutCatalogValue('timeout.game_service.expand_prompt_request_ms', { min: 1_000 });
+    return this.timeoutConfigService.getExpandPromptRequestTimeoutMs();
   }
 
   public async getSourceSpecParseTimeoutMs(): Promise<number> {
-    const expandPromptTimeoutMs = await this.getExpandPromptRequestTimeoutMs();
-    return Math.max(expandPromptTimeoutMs, 90_000);
+    return this.timeoutConfigService.getSourceSpecParseTimeoutMs();
   }
 
   public async getCreationSessionInitTimeoutMs(): Promise<number> {
-    await this.ensureTimeoutConfigCache();
-    const analyzeTurnTimeoutMs = this.resolveTimeoutCatalogValue(
-      'timeout.game_service.expand_prompt_request_ms',
-      { min: 1_000 },
-    );
-    const configuredInitTimeoutMs = this.resolveTimeoutCatalogValue(
-      'timeout.game_service.creation_session_init_ms',
-      { min: 1_000 },
-    );
-    return Math.max(configuredInitTimeoutMs, analyzeTurnTimeoutMs + 5_000);
+    return this.timeoutConfigService.getCreationSessionInitTimeoutMs();
   }
 
   private getUpstreamRequestTimeoutMs(): number {
-    return this.resolveTimeoutCatalogValue('timeout.game_service.upstream_request_ms', { min: 1_000 });
+    return this.timeoutConfigService.getUpstreamRequestTimeoutMs();
   }
 
   private getUpstreamRequestRetryDelayMs(): number {
-    return this.resolveTimeoutCatalogValue('timeout.game_service.upstream_request_retry_delay_ms', { min: 0 });
+    return this.timeoutConfigService.getUpstreamRequestRetryDelayMs();
   }
 
   private getUpstreamSnapshotTimeoutMs(): number {
-    return this.resolveTimeoutCatalogValue('timeout.game_service.upstream_snapshot_ms', { min: 1_000 });
+    return this.timeoutConfigService.getUpstreamSnapshotTimeoutMs();
   }
 
   private getUpstreamCancelTimeoutMs(): number {
-    return this.resolveTimeoutCatalogValue('timeout.game_service.upstream_cancel_ms', { min: 1_000 });
+    return this.timeoutConfigService.getUpstreamCancelTimeoutMs();
   }
 
   private getUpstreamPollIntervalMs(): number {
-    return this.resolveTimeoutCatalogValue('timeout.game_service.upstream_poll_interval_ms', { min: 100 });
+    return this.timeoutConfigService.getUpstreamPollIntervalMs();
   }
 
   private getUpstreamTimeoutBufferS(): number {
-    return this.resolveTimeoutCatalogValue('timeout.game_service.upstream_timeout_buffer_s', { min: 0 });
+    return this.timeoutConfigService.getUpstreamTimeoutBufferS();
   }
 
   private getUpstreamDeadlineGraceMs(): number {
-    return this.resolveTimeoutCatalogValue('timeout.game_service.upstream_deadline_grace_ms', { min: 0 });
+    return this.timeoutConfigService.getUpstreamDeadlineGraceMs();
   }
 
   private getMissingUpstreamTaskGraceMs(): number {
@@ -674,25 +587,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async resolveActivePromptBundleIdentity(): Promise<{ id: string; version: number }> {
-    // PR-02: TTL cache to avoid hitting promptBundle table on every generation request.
-    const now = Date.now();
-    const cached = this.promptBundleIdentityCache;
-    if (cached && (now - cached.cachedAt) < GameService.PROMPT_BUNDLE_CACHE_TTL_MS) {
-      return cached.value;
-    }
-    const bundle = await this.prisma.promptBundle.findFirst({
-      where: { status: 'active' },
-      orderBy: [{ updatedAt: 'desc' }, { version: 'desc' }],
-      select: {
-        id: true,
-        version: true,
-      },
-    });
-    if (!bundle) {
-      throw new ServiceUnavailableException('No active prompt bundle is configured');
-    }
-    this.promptBundleIdentityCache = { value: bundle, cachedAt: now };
-    return bundle;
+    return this.runtimeProfileService.resolveActivePromptBundleIdentity();
   }
 
   private inferRuntimeProfileHint(...inputs: Array<string | null | undefined>): string | undefined {
@@ -728,53 +623,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     contractSchema?: Prisma.JsonValue | null;
     metadata?: Prisma.JsonValue | null;
   }> {
-    // PR-02: TTL cache keyed by profileHint (undefined hint → "__default__").
-    const cacheKey = profileHint && profileHint.trim() ? profileHint.trim() : '__default__';
-    const now = Date.now();
-    const cached = this.runtimeProfileCache.get(cacheKey);
-    if (cached && (now - cached.cachedAt) < GameService.RUNTIME_PROFILE_CACHE_TTL_MS) {
-      return cached.value;
-    }
-    const profiles = await this.prisma.runtimeProfileCatalog.findMany({
-      where: { enabled: true },
-      select: {
-        id: true,
-        contractSchema: true,
-        metadata: true,
-      },
-      orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
-    });
-    if (profiles.length === 0) {
-      throw new ServiceUnavailableException('No enabled runtime profile is configured');
-    }
-
-    const defaultProfile = profiles.find((profile) => {
-      const metadata = profile.metadata;
-      return typeof metadata === 'object' && metadata !== null && (metadata as Record<string, unknown>).default === true;
-    });
-
-    const normalizedHint = normalizeRuntimeProfileId(profileHint);
-    if (normalizedHint) {
-      for (const candidate of runtimeProfileLookupCandidates(normalizedHint)) {
-        const hintedProfile = profiles.find((profile) => profile.id === candidate);
-        if (hintedProfile) {
-          const resolved = {
-            ...hintedProfile,
-            id: normalizeRuntimeProfileId(hintedProfile.id) || DEFAULT_RUNTIME_PROFILE_ID,
-          };
-          this.runtimeProfileCache.set(cacheKey, { value: resolved, cachedAt: now });
-          return resolved;
-        }
-      }
-    }
-
-    const selected = defaultProfile || profiles[0];
-    const resolved = {
-      ...selected,
-      id: normalizeRuntimeProfileId(selected.id) || DEFAULT_RUNTIME_PROFILE_ID,
-    };
-    this.runtimeProfileCache.set(cacheKey, { value: resolved, cachedAt: now });
-    return resolved;
+    return this.runtimeProfileService.resolveRuntimeProfile(profileHint);
   }
 
   private normalizeRuntimeContractSchema(
@@ -1687,7 +1536,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async getDeployedAiEngineTargetUrl(executionRegion?: string): Promise<string> {
-    await this.ensureTimeoutConfigCache();
+    await this.timeoutConfigService.ensureLoaded();
     const region = this.resolveExecutionRegion(executionRegion);
     const cached = this.aiEngineTargetCache.get(region);
     const now = Date.now();
@@ -1731,7 +1580,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     executionRegion?: string,
     preferredBaseUrl?: string | null,
   ): Promise<string[]> {
-    await this.ensureTimeoutConfigCache();
+    await this.timeoutConfigService.ensureLoaded();
     const region = this.resolveExecutionRegion(executionRegion);
     const urls: string[] = [];
     this.appendAiEngineBaseUrl(urls, preferredBaseUrl);
@@ -2160,11 +2009,10 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       return envValue;
     }
 
-    const config = await client.systemConfig.findUnique({
-      where: { configKey: 'billing.default_free_quota' },
-      select: { configValue: true },
-    });
-    const configValue = Number.parseInt(config?.configValue || '', 10);
+    const configValue = Number.parseInt(
+      await this.systemConfigRepository.findValueByKey('billing.default_free_quota', client) || '',
+      10,
+    );
 
     if (Number.isFinite(configValue) && configValue >= 0) {
       return configValue;
@@ -2174,17 +2022,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   }
 
   private resolvePipelineTimeout(rawValue?: unknown): number {
-    const fallback = this.resolveTimeoutCatalogValue('timeout.pipeline.default_s', {
-      min: 30,
-      max: 3600,
-    });
-    const parsed = Number.parseInt(String(rawValue ?? fallback), 10);
-
-    if (!Number.isFinite(parsed)) {
-      return fallback;
-    }
-
-    return Math.min(3600, Math.max(30, parsed));
+    return this.timeoutConfigService.resolvePipelineTimeout(rawValue);
   }
 
   private resolveTaskTimeoutForPipelineVersion(
@@ -2196,11 +2034,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       return resolved;
     }
 
-    const configuredDefault = this.resolveTimeoutCatalogValue('timeout.pipeline.default_s', {
+    const configuredDefault = this.timeoutConfigService.resolveCatalogValue('timeout.pipeline.default_s', {
       min: 30,
       max: 3600,
     });
-    const v2Minimum = this.resolveTimeoutCatalogValue('timeout.pipeline.v2_min_s', {
+    const v2Minimum = this.timeoutConfigService.resolveCatalogValue('timeout.pipeline.v2_min_s', {
       min: 30,
       max: 3600,
     });
@@ -2489,7 +2327,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     userId: string;
     gameId: string;
   }): Promise<ResolvedUpstreamAsyncTaskHandle> {
-    await this.ensureTimeoutConfigCache();
+    await this.timeoutConfigService.ensureLoaded();
     const candidateUrls = params.aiEngineBaseUrls
       .map((value) => this.normalizeAiEngineBaseUrl(value))
       .filter(Boolean)
@@ -2586,7 +2424,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     aiEngineBaseUrl: string,
     upstreamTaskId: string,
   ): Promise<UpstreamAsyncTaskSnapshot | null> {
-    await this.ensureTimeoutConfigCache();
+    await this.timeoutConfigService.ensureLoaded();
     try {
       const response = await axios.get(
         `${aiEngineBaseUrl}/api/v1/ai/tasks/${upstreamTaskId}`,
@@ -2644,7 +2482,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     taskId?: string;
     gameId?: string;
   }): Promise<UpstreamAsyncTaskSnapshot> {
-    await this.ensureTimeoutConfigCache();
+    await this.timeoutConfigService.ensureLoaded();
     const deadlineMs = Date.now() + this.buildUpstreamTimeoutMs(params.timeoutS) + this.getUpstreamDeadlineGraceMs();
     let runningMarked = false;
     let consecutiveSnapshotFailures = 0;
@@ -2822,7 +2660,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    await this.ensureTimeoutConfigCache();
+    await this.timeoutConfigService.ensureLoaded();
     const baseUrls = await this.resolveAiEngineEndpointCandidates(
       task.region || undefined,
       this.getPersistedUpstreamBaseUrl(task),

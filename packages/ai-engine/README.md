@@ -31,8 +31,7 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 |---|---|---|
 | `ENVIRONMENT` | `development` | `development` / `production` / `testing` |
 | `PORT` | `8000` | HTTP server port |
-| `MONGO_URL` | — | MongoDB connection string |
-| `MONGO_DB_NAME` | `playforge` | MongoDB database name |
+| `DATABASE_URL` | `mysql://gamevallies_user:change_me@localhost:3306/gamevallies` | MySQL connection string |
 | `REDIS_URL` | — | Redis connection string |
 | `LLM_MODE` | `mock` | `mock` (no API calls) or `real` (Claude API) |
 | `ANTHROPIC_API_KEY` | — | Required when `LLM_MODE=real` |
@@ -308,7 +307,7 @@ docker run -p 8000:8000 \
   -e ENVIRONMENT=production \
   -e LLM_MODE=real \
   -e ANTHROPIC_API_KEY=sk-ant-... \
-  -e MONGO_URL=mongodb://... \
+  -e DATABASE_URL=mysql://gamevallies_user:change_me@mysql:3306/gamevallies \
   -e REDIS_URL=redis://... \
   gamevallies-ai-engine:latest
 ```

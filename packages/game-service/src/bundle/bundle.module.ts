@@ -1,9 +1,9 @@
 import { Module } from '@nestjs/common';
-import { MongoModule } from '../mongo/mongo.module';
+import { BundleStorageModule } from '../bundle-storage/bundle-storage.module';
 import { BundleService } from './bundle.service';
 
 @Module({
-  imports: [MongoModule],
+  imports: [BundleStorageModule],
   providers: [BundleService],
   exports: [BundleService],
 })
