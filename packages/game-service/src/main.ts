@@ -14,6 +14,7 @@ async function bootstrap() {
   app.setGlobalPrefix('api/v1', {
     exclude: [
       { path: 'admin', method: RequestMethod.GET },
+      { path: 'admin/assets/:fileName', method: RequestMethod.GET },
       { path: 'games/:id/preview', method: RequestMethod.GET },
       { path: 'games/:id/index.html', method: RequestMethod.GET },
       { path: 'game-shell/index.html', method: RequestMethod.GET },
