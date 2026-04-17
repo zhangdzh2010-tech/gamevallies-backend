@@ -836,11 +836,11 @@ export class CreationSessionService {
       }
 
       const forked = await this.forkService.forkGame(session.sourceGameId, userId);
-      gameId = forked.id;
+      gameId = forked.gameId;
 
       const conversation = (session.conversation as any[]) ?? [];
       const feedback = buildFeedbackFromConversation(conversation, session.initialPrompt, 2);
-      const result = await this.gameService.iterate(forked.id, userId, {
+      const result = await this.gameService.iterate(forked.gameId, userId, {
         feedback,
         regionHint: session.regionHint || undefined,
         timeoutS: 1200,

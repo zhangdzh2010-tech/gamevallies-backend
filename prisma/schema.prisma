@@ -321,6 +321,9 @@ model GameCreationSession {
   entryMode        String   @default("create") @map("entry_mode") @db.VarChar(32)
   initialPrompt    String   @map("initial_prompt") @db.LongText
   titleDraft       String?  @map("title_draft") @db.VarChar(64)
+  regionHint       String?  @map("region_hint") @db.VarChar(32)
+  locale           String?  @db.VarChar(16)
+  aiState          String?  @map("ai_state") @db.VarChar(32)
   revision         Int      @default(1)
   slotState        Json     @map("slot_state")
   missingRequired  Json     @map("missing_required")
@@ -331,6 +334,11 @@ model GameCreationSession {
   generationTaskId String?  @map("generation_task_id") @db.VarChar(36)
   sourceGameId     String?  @map("source_game_id") @db.VarChar(36)
   questionBudget   Int      @default(4) @map("question_budget")
+  questionsAsked   Int      @default(0) @map("questions_asked")
+  expiresAt        DateTime? @map("expires_at") @db.DateTime(3)
+  lastClientRequestId String? @map("last_client_request_id") @db.VarChar(64)
+  lastClientMessageId String? @map("last_client_message_id") @db.VarChar(64)
+  lastGenerateKey  String?  @map("last_generate_key") @db.VarChar(64)
   metadata         Json?
   createdAt        DateTime @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt        DateTime @updatedAt @map("updated_at") @db.DateTime(3)
