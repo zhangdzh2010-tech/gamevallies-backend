@@ -1,12 +1,10 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { randomUUID } from 'crypto';
-import { PrismaService } from '../prisma/prisma.service';
-import promptCatalog from './catalogs/prompt-catalog.json';
-import promptBundleCatalog from './catalogs/prompt-bundle-catalog.json';
-import runtimeProfileCatalog from './catalogs/runtime-profile-catalog.json';
-import {
-  LEGACY_TO_CANONICAL_RUNTIME_PROFILE_IDS,
-} from './runtime-profile-ids';
+import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
+import { randomUUID } from "crypto";
+import { PrismaService } from "../prisma/prisma.service";
+import promptCatalog from "./catalogs/prompt-catalog.json";
+import promptBundleCatalog from "./catalogs/prompt-bundle-catalog.json";
+import runtimeProfileCatalog from "./catalogs/runtime-profile-catalog.json";
+import { LEGACY_TO_CANONICAL_RUNTIME_PROFILE_IDS } from "./runtime-profile-ids";
 
 type ColumnPatch = {
   table: string;
@@ -16,133 +14,133 @@ type ColumnPatch = {
 
 const TABLE_COLUMN_PATCHES: ColumnPatch[] = [
   {
-    table: 'games',
-    name: 'can_play',
-    sql: 'ALTER TABLE games ADD COLUMN can_play BOOLEAN NOT NULL DEFAULT TRUE',
+    table: "games",
+    name: "can_play",
+    sql: "ALTER TABLE games ADD COLUMN can_play BOOLEAN NOT NULL DEFAULT TRUE",
   },
   {
-    table: 'games',
-    name: 'require_subscription',
-    sql: 'ALTER TABLE games ADD COLUMN require_subscription BOOLEAN NOT NULL DEFAULT FALSE',
+    table: "games",
+    name: "require_subscription",
+    sql: "ALTER TABLE games ADD COLUMN require_subscription BOOLEAN NOT NULL DEFAULT FALSE",
   },
   {
-    table: 'games',
-    name: 'access_grant_source',
+    table: "games",
+    name: "access_grant_source",
     sql: "ALTER TABLE games ADD COLUMN access_grant_source ENUM('none', 'free_quota', 'subscription_quota', 'subscription_unlock') NOT NULL DEFAULT 'none'",
   },
   {
-    table: 'games',
-    name: 'access_grant_subscription_id',
-    sql: 'ALTER TABLE games ADD COLUMN access_grant_subscription_id VARCHAR(36) NULL',
+    table: "games",
+    name: "access_grant_subscription_id",
+    sql: "ALTER TABLE games ADD COLUMN access_grant_subscription_id VARCHAR(36) NULL",
   },
   {
-    table: 'llm_gateway_providers',
-    name: 'region_target_id',
-    sql: 'ALTER TABLE llm_gateway_providers ADD COLUMN region_target_id VARCHAR(36) NULL',
+    table: "llm_gateway_providers",
+    name: "region_target_id",
+    sql: "ALTER TABLE llm_gateway_providers ADD COLUMN region_target_id VARCHAR(36) NULL",
   },
   {
-    table: 'llm_gateway_providers',
-    name: 'cloud_vendor',
+    table: "llm_gateway_providers",
+    name: "cloud_vendor",
     sql: "ALTER TABLE llm_gateway_providers ADD COLUMN cloud_vendor VARCHAR(32) NULL",
   },
   {
-    table: 'llm_gateway_providers',
-    name: 'cloud_region_code',
+    table: "llm_gateway_providers",
+    name: "cloud_region_code",
     sql: "ALTER TABLE llm_gateway_providers ADD COLUMN cloud_region_code VARCHAR(64) NULL",
   },
   {
-    table: 'generation_tasks',
-    name: 'region',
+    table: "generation_tasks",
+    name: "region",
     sql: "ALTER TABLE generation_tasks ADD COLUMN region VARCHAR(32) NOT NULL DEFAULT 'cn_shanghai' AFTER task_type",
   },
   {
-    table: 'generation_tasks',
-    name: 'pipeline_version',
+    table: "generation_tasks",
+    name: "pipeline_version",
     sql: "ALTER TABLE generation_tasks ADD COLUMN pipeline_version VARCHAR(16) NULL AFTER version",
   },
   {
-    table: 'generation_tasks',
-    name: 'prompt_bundle_id',
-    sql: 'ALTER TABLE generation_tasks ADD COLUMN prompt_bundle_id VARCHAR(64) NULL AFTER pipeline_version',
+    table: "generation_tasks",
+    name: "prompt_bundle_id",
+    sql: "ALTER TABLE generation_tasks ADD COLUMN prompt_bundle_id VARCHAR(64) NULL AFTER pipeline_version",
   },
   {
-    table: 'generation_tasks',
-    name: 'prompt_bundle_version',
-    sql: 'ALTER TABLE generation_tasks ADD COLUMN prompt_bundle_version INT NULL AFTER prompt_bundle_id',
+    table: "generation_tasks",
+    name: "prompt_bundle_version",
+    sql: "ALTER TABLE generation_tasks ADD COLUMN prompt_bundle_version INT NULL AFTER prompt_bundle_id",
   },
   {
-    table: 'generation_tasks',
-    name: 'runtime_profile',
-    sql: 'ALTER TABLE generation_tasks ADD COLUMN runtime_profile VARCHAR(64) NULL AFTER prompt_bundle_version',
+    table: "generation_tasks",
+    name: "runtime_profile",
+    sql: "ALTER TABLE generation_tasks ADD COLUMN runtime_profile VARCHAR(64) NULL AFTER prompt_bundle_version",
   },
   {
-    table: 'generation_tasks',
-    name: 'contract_version',
-    sql: 'ALTER TABLE generation_tasks ADD COLUMN contract_version VARCHAR(32) NULL AFTER runtime_profile',
+    table: "generation_tasks",
+    name: "contract_version",
+    sql: "ALTER TABLE generation_tasks ADD COLUMN contract_version VARCHAR(32) NULL AFTER runtime_profile",
   },
   {
-    table: 'generation_tasks',
-    name: 'failure_family',
-    sql: 'ALTER TABLE generation_tasks ADD COLUMN failure_family VARCHAR(64) NULL AFTER contract_version',
+    table: "generation_tasks",
+    name: "failure_family",
+    sql: "ALTER TABLE generation_tasks ADD COLUMN failure_family VARCHAR(64) NULL AFTER contract_version",
   },
   {
-    table: 'generation_tasks',
-    name: 'primary_artifact_id',
-    sql: 'ALTER TABLE generation_tasks ADD COLUMN primary_artifact_id VARCHAR(36) NULL AFTER failure_family',
+    table: "generation_tasks",
+    name: "primary_artifact_id",
+    sql: "ALTER TABLE generation_tasks ADD COLUMN primary_artifact_id VARCHAR(36) NULL AFTER failure_family",
   },
   {
-    table: 'llm_call_logs',
-    name: 'input_tokens',
-    sql: 'ALTER TABLE llm_call_logs ADD COLUMN input_tokens INT NULL AFTER http_status',
+    table: "llm_call_logs",
+    name: "input_tokens",
+    sql: "ALTER TABLE llm_call_logs ADD COLUMN input_tokens INT NULL AFTER http_status",
   },
   {
-    table: 'llm_call_logs',
-    name: 'output_tokens',
-    sql: 'ALTER TABLE llm_call_logs ADD COLUMN output_tokens INT NULL AFTER input_tokens',
+    table: "llm_call_logs",
+    name: "output_tokens",
+    sql: "ALTER TABLE llm_call_logs ADD COLUMN output_tokens INT NULL AFTER input_tokens",
   },
   {
-    table: 'llm_call_logs',
-    name: 'total_tokens',
-    sql: 'ALTER TABLE llm_call_logs ADD COLUMN total_tokens INT NULL AFTER output_tokens',
+    table: "llm_call_logs",
+    name: "total_tokens",
+    sql: "ALTER TABLE llm_call_logs ADD COLUMN total_tokens INT NULL AFTER output_tokens",
   },
   {
-    table: 'llm_call_logs',
-    name: 'output_class',
-    sql: 'ALTER TABLE llm_call_logs ADD COLUMN output_class VARCHAR(32) NULL',
+    table: "llm_call_logs",
+    name: "output_class",
+    sql: "ALTER TABLE llm_call_logs ADD COLUMN output_class VARCHAR(32) NULL",
   },
   {
-    table: 'llm_call_logs',
-    name: 'is_primary_provider',
-    sql: 'ALTER TABLE llm_call_logs ADD COLUMN is_primary_provider BOOLEAN DEFAULT TRUE',
+    table: "llm_call_logs",
+    name: "is_primary_provider",
+    sql: "ALTER TABLE llm_call_logs ADD COLUMN is_primary_provider BOOLEAN DEFAULT TRUE",
   },
   {
-    table: 'llm_call_logs',
-    name: 'failover_reason',
-    sql: 'ALTER TABLE llm_call_logs ADD COLUMN failover_reason VARCHAR(255) NULL',
+    table: "llm_call_logs",
+    name: "failover_reason",
+    sql: "ALTER TABLE llm_call_logs ADD COLUMN failover_reason VARCHAR(255) NULL",
   },
   {
-    table: 'llm_call_logs',
-    name: 'provider_verified',
-    sql: 'ALTER TABLE llm_call_logs ADD COLUMN provider_verified BOOLEAN DEFAULT NULL',
+    table: "llm_call_logs",
+    name: "provider_verified",
+    sql: "ALTER TABLE llm_call_logs ADD COLUMN provider_verified BOOLEAN DEFAULT NULL",
   },
   {
-    table: 'llm_step_catalog',
-    name: 'output_class',
+    table: "llm_step_catalog",
+    name: "output_class",
     sql: "ALTER TABLE llm_step_catalog ADD COLUMN output_class VARCHAR(32) DEFAULT 'medium_structured'",
   },
   {
-    table: 'llm_step_catalog',
-    name: 'min_output_tokens',
-    sql: 'ALTER TABLE llm_step_catalog ADD COLUMN min_output_tokens INT DEFAULT NULL',
+    table: "llm_step_catalog",
+    name: "min_output_tokens",
+    sql: "ALTER TABLE llm_step_catalog ADD COLUMN min_output_tokens INT DEFAULT NULL",
   },
   {
-    table: 'llm_step_catalog',
-    name: 'max_output_tokens',
-    sql: 'ALTER TABLE llm_step_catalog ADD COLUMN max_output_tokens INT DEFAULT NULL',
+    table: "llm_step_catalog",
+    name: "max_output_tokens",
+    sql: "ALTER TABLE llm_step_catalog ADD COLUMN max_output_tokens INT DEFAULT NULL",
   },
   {
-    table: 'llm_gateway_providers',
-    name: 'capability_flags',
+    table: "llm_gateway_providers",
+    name: "capability_flags",
     sql: "ALTER TABLE llm_gateway_providers ADD COLUMN capability_flags JSON DEFAULT ('{}')",
   },
 ];
@@ -473,117 +471,102 @@ const GAME_SCHEMA_STATEMENTS = [
 
 const DEFAULT_LLM_STEP_CATALOG = [
   {
-    id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411001',
-    stepKey: 'dialogue.slot_extract',
-    stepOrder: 10,
-    stageLabel: 'Flow 01 - Creation Session',
-    displayName: '对话槽位提取',
-    description: '在对话模式下从用户输入中抽取结构化槽位',
-  },
-  {
-    id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411002',
-    stepKey: 'dialogue.reply',
-    stepOrder: 20,
-    stageLabel: 'Flow 01 - Creation Session',
-    displayName: '对话回复生成',
-    description: '在对话模式下生成追问或确认回复',
-  },
-  {
-    id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411003',
-    stepKey: 'intent_parse',
+    id: "1e0207d2-a7de-4d49-b4bb-fcdbf0411003",
+    stepKey: "intent_parse",
     stepOrder: 30,
-    stageLabel: 'Flow 02 - Structured Intent',
-    displayName: '意图解析',
-    description: '将自然语言描述解析成 GameSpec',
+    stageLabel: "Flow 02 - Structured Intent",
+    displayName: "意图解析",
+    description: "将自然语言描述解析成 GameSpec",
   },
   {
-    id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411005',
-    stepKey: 'code_generate.full',
+    id: "1e0207d2-a7de-4d49-b4bb-fcdbf0411005",
+    stepKey: "code_generate.full",
     stepOrder: 40,
-    stageLabel: 'Flow 03 - Create Generation',
-    displayName: '代码生成（Full LLM）',
-    description: '完全依赖 LLM 生成首版代码',
+    stageLabel: "Flow 03 - Create Generation",
+    displayName: "代码生成（Full LLM）",
+    description: "完全依赖 LLM 生成首版代码",
   },
   {
-    id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411006',
-    stepKey: 'qa_fix',
+    id: "1e0207d2-a7de-4d49-b4bb-fcdbf0411006",
+    stepKey: "qa_fix",
     stepOrder: 110,
-    stageLabel: 'Flow 05 - QA Repair Families',
-    displayName: 'QA 自动修复',
-    description: '在静态或运行时 QA 失败后进行自动修复',
+    stageLabel: "Flow 05 - QA Repair Families",
+    displayName: "QA 自动修复",
+    description: "在静态或运行时 QA 失败后进行自动修复",
   },
   {
-    id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411007',
-    stepKey: 'code_review',
+    id: "1e0207d2-a7de-4d49-b4bb-fcdbf0411007",
+    stepKey: "code_review",
     stepOrder: 50,
-    stageLabel: 'Flow 03 - Create Generation',
-    displayName: '代码审查',
-    description: 'LLM 对生成结果进行完整性与可玩性审查',
+    stageLabel: "Flow 03 - Create Generation",
+    displayName: "代码审查",
+    description: "LLM 对生成结果进行完整性与可玩性审查",
   },
   {
-    id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411008',
-    stepKey: 'iterate.classify',
+    id: "1e0207d2-a7de-4d49-b4bb-fcdbf0411008",
+    stepKey: "iterate.classify",
     stepOrder: 70,
-    stageLabel: 'Flow 04 - Iterate Generation',
-    displayName: '迭代反馈分类',
-    description: '判断用户反馈属于哪类迭代修改',
+    stageLabel: "Flow 04 - Iterate Generation",
+    displayName: "迭代反馈分类",
+    description: "判断用户反馈属于哪类迭代修改",
   },
   {
-    id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411009',
-    stepKey: 'iterate.param_adjust',
+    id: "1e0207d2-a7de-4d49-b4bb-fcdbf0411009",
+    stepKey: "iterate.param_adjust",
     stepOrder: 80,
-    stageLabel: 'Flow 04 - Iterate Generation',
-    displayName: '迭代参数调整',
-    description: '通过 LLM 调整游戏数值和参数',
+    stageLabel: "Flow 04 - Iterate Generation",
+    displayName: "迭代参数调整",
+    description: "通过 LLM 调整游戏数值和参数",
   },
   {
-    id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411010',
-    stepKey: 'iterate.element_change',
+    id: "1e0207d2-a7de-4d49-b4bb-fcdbf0411010",
+    stepKey: "iterate.element_change",
     stepOrder: 90,
-    stageLabel: 'Flow 04 - Iterate Generation',
-    displayName: '迭代元素修改',
-    description: '通过 LLM 修改视觉元素和对象结构',
+    stageLabel: "Flow 04 - Iterate Generation",
+    displayName: "迭代元素修改",
+    description: "通过 LLM 修改视觉元素和对象结构",
   },
   {
-    id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411011',
-    stepKey: 'iterate.mechanic_change',
+    id: "1e0207d2-a7de-4d49-b4bb-fcdbf0411011",
+    stepKey: "iterate.mechanic_change",
     stepOrder: 100,
-    stageLabel: 'Flow 04 - Iterate Generation',
-    displayName: '迭代机制改写',
-    description: '通过 LLM 改写游戏核心机制',
+    stageLabel: "Flow 04 - Iterate Generation",
+    displayName: "迭代机制改写",
+    description: "通过 LLM 改写游戏核心机制",
   },
   {
-    id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411020',
-    stepKey: 'qa_fix.syntax_structural',
+    id: "1e0207d2-a7de-4d49-b4bb-fcdbf0411020",
+    stepKey: "qa_fix.syntax_structural",
     stepOrder: 120,
-    stageLabel: 'Flow 05 - QA Repair Families',
-    displayName: 'QA Fix / Syntax Structural',
-    description: 'Only remaining QA repair path: full-document syntax and structural recovery.',
+    stageLabel: "Flow 05 - QA Repair Families",
+    displayName: "QA Fix / Syntax Structural",
+    description:
+      "Only remaining QA repair path: full-document syntax and structural recovery.",
   },
   {
-    id: '1e0207d2-a7de-4d49-b4bb-fcdbf0411021',
-    stepKey: 'expand_prompt',
+    id: "1e0207d2-a7de-4d49-b4bb-fcdbf0411021",
+    stepKey: "expand_prompt",
     stepOrder: 130,
-    stageLabel: 'Flow 90 - Auxiliary',
-    displayName: 'Prompt 扩写',
-    description: '将用户短描述扩写为详细设计提示词',
+    stageLabel: "Flow 90 - Auxiliary",
+    displayName: "Prompt 扩写",
+    description: "将用户短描述扩写为详细设计提示词",
   },
 ];
 
 const DEFAULT_CLOUD_PROVIDER_ACCOUNT = {
-  id: '9d5307f1-9ee8-4f45-8b18-4e29c0010001',
-  vendor: 'volcengine',
-  accountKey: 'volc-default',
-  displayName: '火山引擎默认账号',
+  id: "9d5307f1-9ee8-4f45-8b18-4e29c0010001",
+  vendor: "volcengine",
+  accountKey: "volc-default",
+  displayName: "火山引擎默认账号",
 };
 
 const DEFAULT_CLOUD_REGION_CATALOG = [
   {
-    id: '9d5307f1-9ee8-4f45-8b18-4e29c0011001',
-    vendor: 'volcengine',
-    regionCode: 'cn-shanghai',
-    regionName: '上海',
-    regionGroup: 'cn_mainland',
+    id: "9d5307f1-9ee8-4f45-8b18-4e29c0011001",
+    vendor: "volcengine",
+    regionCode: "cn-shanghai",
+    regionName: "上海",
+    regionGroup: "cn_mainland",
   },
 ];
 
@@ -596,44 +579,51 @@ const DEFAULT_PROMPT_CATALOG = Array.isArray(promptCatalog)
   : [];
 
 const REMOVED_PROMPT_CONFIG_KEYS = [
-  'prompt.iteration_mobile_layout_guardrails',
-  'prompt.qa_fix',
-  'prompt.qa_fix_fast',
-  'prompt.qa_instruction_input_handlers',
-  'prompt.qa_instruction_visible_feedback',
-  'prompt.qa_instruction_terminal_state',
-  'prompt.qa_instruction_storage',
-  'prompt.qa_instruction_blank_screen',
-  'prompt.qa_instruction_runtime_js_error',
-  'prompt.qa_instruction_mobile_layout',
-  'prompt.qa_instruction_forbidden_api',
-  'prompt.qa_instruction_generic',
-  'bundle.repair.input_contract',
-  'bundle.repair.terminal_state',
-  'bundle.repair.mobile_layout',
-  'bundle.repair.forbidden_api',
-  'bundle.repair.runtime_startup',
-  'bundle.repair.generic',
+  "prompt.slot_extraction_system",
+  "prompt.dialogue_system",
+  "prompt.dialogue_reply_system",
+  "prompt.dialogue_reply_user_template_zh",
+  "prompt.dialogue_reply_user_template_en",
+  "prompt.iteration_mobile_layout_guardrails",
+  "prompt.qa_fix",
+  "prompt.qa_fix_fast",
+  "prompt.qa_instruction_input_handlers",
+  "prompt.qa_instruction_visible_feedback",
+  "prompt.qa_instruction_terminal_state",
+  "prompt.qa_instruction_storage",
+  "prompt.qa_instruction_blank_screen",
+  "prompt.qa_instruction_runtime_js_error",
+  "prompt.qa_instruction_mobile_layout",
+  "prompt.qa_instruction_forbidden_api",
+  "prompt.qa_instruction_generic",
+  "bundle.repair.input_contract",
+  "bundle.repair.terminal_state",
+  "bundle.repair.mobile_layout",
+  "bundle.repair.forbidden_api",
+  "bundle.repair.runtime_startup",
+  "bundle.repair.generic",
 ];
 
 const REMOVED_LLM_STEP_KEYS = [
-  'code_generate.hybrid',
-  'llm_design.enrich',
-  'qa_fix',
-  'qa_fix.input_contract',
-  'qa_fix.score_feedback',
-  'qa_fix.terminal_state',
-  'qa_fix.mobile_layout',
-  'qa_fix.runtime_startup',
-  'qa_fix.forbidden_api',
-  'qa_fix.generic',
-  'qa_fix.syntax_rebuild',
+  "dialogue.slot_extract",
+  "dialogue.reply",
+  "code_generate.hybrid",
+  "llm_design.enrich",
+  "qa_fix",
+  "qa_fix.input_contract",
+  "qa_fix.score_feedback",
+  "qa_fix.terminal_state",
+  "qa_fix.mobile_layout",
+  "qa_fix.runtime_startup",
+  "qa_fix.forbidden_api",
+  "qa_fix.generic",
+  "qa_fix.syntax_rebuild",
 ];
 
 const MANAGED_LLM_ROUTE_ALIASES = [
   {
-    targetStepKey: 'qa_fix.syntax_structural',
-    sourceStepKey: 'code_generate.full',
+    targetStepKey: "qa_fix.syntax_structural",
+    sourceStepKey: "code_generate.full",
     requestTimeoutS: 90,
     connectTimeoutS: 15,
   },
@@ -650,76 +640,93 @@ export class GameSchemaBootstrapService implements OnModuleInit {
   constructor(private readonly prisma: PrismaService) {}
 
   private resolveLegacyExecutionRegion(): string {
-    return 'cn_shanghai';
+    return "cn_shanghai";
   }
 
   private buildDefaultRegionTargets() {
-    const namespace = process.env.VOLCENGINE_REGISTRY_NAMESPACE || 'gamevallies';
+    const namespace =
+      process.env.VOLCENGINE_REGISTRY_NAMESPACE || "gamevallies";
     const legacyExecutionRegion = this.resolveLegacyExecutionRegion();
-    const legacyUrl = (process.env.AI_ENGINE_URL || '').trim();
-    const shanghaiUrl = (process.env.AI_ENGINE_URL_CN_SHANGHAI || '').trim();
+    const legacyUrl = (process.env.AI_ENGINE_URL || "").trim();
+    const shanghaiUrl = (process.env.AI_ENGINE_URL_CN_SHANGHAI || "").trim();
 
     return [
       {
-        id: '9d5307f1-9ee8-4f45-8b18-4e29c0012001',
+        id: "9d5307f1-9ee8-4f45-8b18-4e29c0012001",
         regionCatalogId: DEFAULT_CLOUD_REGION_CATALOG[0].id,
-        vendor: 'volcengine',
-        cloudRegionCode: 'cn-shanghai',
-        executionRegion: 'cn_shanghai',
-        displayName: 'AI Engine 上海主实例',
-        functionName: 'gv-ai-engine-cn',
-        registry: process.env.VOLCENGINE_REGISTRY_CN_SHANGHAI || process.env.VOLCENGINE_REGISTRY || 'gamevallies-repo-cn-shanghai.cr.volces.com',
+        vendor: "volcengine",
+        cloudRegionCode: "cn-shanghai",
+        executionRegion: "cn_shanghai",
+        displayName: "AI Engine 上海主实例",
+        functionName: "gv-ai-engine-cn",
+        registry:
+          process.env.VOLCENGINE_REGISTRY_CN_SHANGHAI ||
+          process.env.VOLCENGINE_REGISTRY ||
+          "gamevallies-repo-cn-shanghai.cr.volces.com",
         registryNamespace: namespace,
-        imageRepository: 'gv-ai-engine-cn',
-        serviceRegionEnv: 'cn_shanghai',
-        aiEngineUrl: shanghaiUrl || (legacyExecutionRegion === 'cn_shanghai' ? legacyUrl : ''),
+        imageRepository: "gv-ai-engine-cn",
+        serviceRegionEnv: "cn_shanghai",
+        aiEngineUrl:
+          shanghaiUrl ||
+          (legacyExecutionRegion === "cn_shanghai" ? legacyUrl : ""),
       },
     ];
   }
 
-  private async normalizeLegacyLlmGatewayData(defaultTargets: ReturnType<GameSchemaBootstrapService['buildDefaultRegionTargets']>) {
-    const shanghaiTarget = defaultTargets.find((target) => target.executionRegion === 'cn_shanghai');
+  private async normalizeLegacyLlmGatewayData(
+    defaultTargets: ReturnType<
+      GameSchemaBootstrapService["buildDefaultRegionTargets"]
+    >,
+  ) {
+    const shanghaiTarget = defaultTargets.find(
+      (target) => target.executionRegion === "cn_shanghai",
+    );
 
     if (shanghaiTarget) {
       await this.prisma.llmGatewayProvider.updateMany({
-        where: { region: 'cn-shanghai' },
+        where: { region: "cn-shanghai" },
         data: {
-          region: 'cn_shanghai',
+          region: "cn_shanghai",
           regionTargetId: shanghaiTarget.id,
-          cloudVendor: 'volcengine',
+          cloudVendor: "volcengine",
           cloudRegionCode: shanghaiTarget.cloudRegionCode,
         },
       });
       await this.prisma.llmGatewayProvider.updateMany({
-        where: { region: 'cn_shanghai', regionTargetId: null },
+        where: { region: "cn_shanghai", regionTargetId: null },
         data: {
           regionTargetId: shanghaiTarget.id,
-          cloudVendor: 'volcengine',
+          cloudVendor: "volcengine",
           cloudRegionCode: shanghaiTarget.cloudRegionCode,
         },
       });
       await this.prisma.llmStepRoute.updateMany({
-        where: { region: 'cn-shanghai' },
-        data: { region: 'cn_shanghai' },
+        where: { region: "cn-shanghai" },
+        data: { region: "cn_shanghai" },
       });
     }
   }
 
-  private pickDefaultProviderForRegion(providers: Array<{
-    id: string;
-    name: string;
-    baseUrl: string;
-    model: string;
-    priority: number;
-    region: string;
-  }>) {
+  private pickDefaultProviderForRegion(
+    providers: Array<{
+      id: string;
+      name: string;
+      baseUrl: string;
+      model: string;
+      priority: number;
+      region: string;
+    }>,
+  ) {
     if (!providers.length) {
       return null;
     }
 
     return (
-      providers.find((provider) => /minimax/i.test(`${provider.name} ${provider.baseUrl} ${provider.model}`))
-      || providers[0]
+      providers.find((provider) =>
+        /minimax/i.test(
+          `${provider.name} ${provider.baseUrl} ${provider.model}`,
+        ),
+      ) || providers[0]
     );
   }
 
@@ -738,7 +745,7 @@ export class GameSchemaBootstrapService implements OnModuleInit {
           priority: true,
           region: true,
         },
-        orderBy: [{ priority: 'asc' }, { updatedAt: 'desc' }],
+        orderBy: [{ priority: "asc" }, { updatedAt: "desc" }],
       }),
       this.prisma.llmStepRoute.findMany({
         select: {
@@ -749,8 +756,10 @@ export class GameSchemaBootstrapService implements OnModuleInit {
     ]);
 
     const defaultProviders = new Map<string, { id: string }>();
-    for (const region of ['cn_shanghai']) {
-      const candidates = providers.filter((provider) => provider.region === region);
+    for (const region of ["cn_shanghai"]) {
+      const candidates = providers.filter(
+        (provider) => provider.region === region,
+      );
       const selected = this.pickDefaultProviderForRegion(candidates);
       if (selected) {
         defaultProviders.set(region, { id: selected.id });
@@ -817,7 +826,9 @@ export class GameSchemaBootstrapService implements OnModuleInit {
     });
 
     for (const binding of MANAGED_LLM_ROUTE_ALIASES) {
-      const sourceRoutes = existingRoutes.filter((route) => route.stepKey === binding.sourceStepKey);
+      const sourceRoutes = existingRoutes.filter(
+        (route) => route.stepKey === binding.sourceStepKey,
+      );
       for (const sourceRoute of sourceRoutes) {
         await this.prisma.llmStepRoute.upsert({
           where: {
@@ -866,15 +877,19 @@ export class GameSchemaBootstrapService implements OnModuleInit {
       }
 
       for (const [tableName, patches] of patchGroups.entries()) {
-        const existingColumns = await this.prisma.$queryRawUnsafe<Array<{ columnName: string }>>(
+        const existingColumns = await this.prisma.$queryRawUnsafe<
+          Array<{ columnName: string }>
+        >(
           `SELECT COLUMN_NAME AS columnName
            FROM INFORMATION_SCHEMA.COLUMNS
            WHERE TABLE_SCHEMA = DATABASE()
              AND TABLE_NAME = '${tableName}'
-             AND COLUMN_NAME IN (${patches.map((patch) => `'${patch.name}'`).join(', ')})`,
+             AND COLUMN_NAME IN (${patches.map((patch) => `'${patch.name}'`).join(", ")})`,
         );
 
-        const existing = new Set(existingColumns.map((column) => column.columnName));
+        const existing = new Set(
+          existingColumns.map((column) => column.columnName),
+        );
         for (const patch of patches) {
           if (!existing.has(patch.name)) {
             await this.prisma.$executeRawUnsafe(patch.sql);
@@ -903,8 +918,9 @@ export class GameSchemaBootstrapService implements OnModuleInit {
         DEFAULT_CLOUD_PROVIDER_ACCOUNT.vendor,
         DEFAULT_CLOUD_PROVIDER_ACCOUNT.accountKey,
         DEFAULT_CLOUD_PROVIDER_ACCOUNT.displayName,
-        process.env.VOLCENGINE_REGISTRY || 'gamevallies-repo-cn-shanghai.cr.volces.com',
-        process.env.VOLCENGINE_REGISTRY_NAMESPACE || 'gamevallies',
+        process.env.VOLCENGINE_REGISTRY ||
+          "gamevallies-repo-cn-shanghai.cr.volces.com",
+        process.env.VOLCENGINE_REGISTRY_NAMESPACE || "gamevallies",
         process.env.VOLCENGINE_VPC_ID || null,
         process.env.VOLCENGINE_SUBNET_ID || null,
         process.env.VOLCENGINE_SECURITY_GROUP_ID || null,
@@ -979,7 +995,7 @@ export class GameSchemaBootstrapService implements OnModuleInit {
           target.imageRepository,
           target.serviceRegionEnv,
           target.aiEngineUrl || null,
-          target.aiEngineUrl ? 'deployed' : 'pending',
+          target.aiEngineUrl ? "deployed" : "pending",
           target.aiEngineUrl ? new Date() : null,
         );
       }
@@ -1005,7 +1021,9 @@ export class GameSchemaBootstrapService implements OnModuleInit {
       }
 
       if (REMOVED_LLM_STEP_KEYS.length) {
-        const stepPlaceholders = REMOVED_LLM_STEP_KEYS.map(() => '?').join(', ');
+        const stepPlaceholders = REMOVED_LLM_STEP_KEYS.map(() => "?").join(
+          ", ",
+        );
         await this.prisma.$executeRawUnsafe(
           `DELETE FROM llm_step_routes
            WHERE step_key IN (${stepPlaceholders})`,
@@ -1031,7 +1049,9 @@ export class GameSchemaBootstrapService implements OnModuleInit {
       }
 
       if (REMOVED_PROMPT_CONFIG_KEYS.length) {
-        const placeholders = REMOVED_PROMPT_CONFIG_KEYS.map(() => '?').join(', ');
+        const placeholders = REMOVED_PROMPT_CONFIG_KEYS.map(() => "?").join(
+          ", ",
+        );
         await this.prisma.$executeRawUnsafe(
           `DELETE FROM system_configs
            WHERE category = 'prompt'
@@ -1086,7 +1106,9 @@ export class GameSchemaBootstrapService implements OnModuleInit {
         );
       }
 
-      for (const [legacyId, canonicalId] of Object.entries(LEGACY_TO_CANONICAL_RUNTIME_PROFILE_IDS)) {
+      for (const [legacyId, canonicalId] of Object.entries(
+        LEGACY_TO_CANONICAL_RUNTIME_PROFILE_IDS,
+      )) {
         if (legacyId === canonicalId) {
           continue;
         }
@@ -1107,7 +1129,7 @@ export class GameSchemaBootstrapService implements OnModuleInit {
       await this.normalizeLegacyLlmGatewayData(defaultTargets);
       await this.backfillDefaultLlmRoutes();
 
-      this.logger.log('Game schema bootstrap finished');
+      this.logger.log("Game schema bootstrap finished");
     } catch (error) {
       this.logger.error(`Game schema bootstrap failed: ${error.message}`);
     }

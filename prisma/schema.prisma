@@ -830,7 +830,7 @@ model AppRelease {
   mimeType       String?              @map("mime_type") @db.VarChar(128)
   storageKey     String?              @map("storage_key") @db.VarChar(512)
   checksumSha256 String?              @map("checksum_sha256") @db.VarChar(64)
-  sourceType     AppReleaseSourceType @default(external_url) @map("source_type")
+  sourceType     AppReleaseSourceType @default(upload) @map("source_type")
   status         AppReleaseStatus     @default(draft)
   isActive       Boolean              @default(false) @map("is_active")
   publishedAt    DateTime?            @map("published_at") @db.DateTime(3)

@@ -10,6 +10,14 @@
         "watchAssets": true
       },
       {
+        "include": "admin/**/*.css",
+        "watchAssets": true
+      },
+      {
+        "include": "admin/**/*.js",
+        "watchAssets": true
+      },
+      {
         "include": "game/**/*.html",
         "watchAssets": true
       }

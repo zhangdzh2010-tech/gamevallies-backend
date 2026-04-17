@@ -211,16 +211,19 @@ Connect to `ws://localhost:3002/ws?token=<jwt_token>`
   }
   ```
 
-  Pipeline stage → percentage mapping:
+  Public generation stage → percentage mapping:
 
   | Stage | % |
   |---|---|
-  | 解析游戏意图 (intent_parsing) | 15 |
-  | 设计游戏参数 (designing) | 30 |
-  | 匹配游戏模板 (template_matching) | 40 |
-  | 生成游戏代码 (code_generating) | 60 |
-  | 质量检测 (qa_checking) | 80 |
-  | 生成完成 (completed) | 100 |
+  | 理解游戏需求 (understanding) | 15 |
+  | 构建游戏设计 (designing) | 35 |
+  | 生成游戏代码 (generating) | 60 |
+  | 质量校验与修复 (validating) | 85 |
+  | 发布生成结果 (finalizing) | 95 |
+
+  Notes:
+  - `stage` 对外统一返回这 5 个 display stage key。
+  - 更细的内部 raw stage 仍保留在 `details.rawStage` 中，仅供排障使用。
 
 - **gen:complete**: Generation completed
   ```json

@@ -11,6 +11,10 @@ import { GameWebSocketGateway } from '../websocket/websocket.gateway';
 import { ok } from '../common/api-response';
 import { GenerationTaskService } from './generation-task.service';
 import { GameService } from './game.service';
+import {
+  buildPublicGenerationStageDetails,
+  resolvePublicGenerationStage,
+} from './generation-stage-contract';
 
 let startupAdminToken: string | null = null;
 
@@ -90,12 +94,18 @@ export class InternalGenerationController {
       details,
     });
 
+    const publicStage = resolvePublicGenerationStage(stage, percentage);
+    const publicDetails = buildPublicGenerationStageDetails(stage, percentage, {
+      ...details,
+      rawMessage: message,
+    });
+
     this.wsGateway.emitGenerationProgress(
       userId,
       gameId,
-      message,
-      percentage,
-      { ...details, stage },
+      publicStage.displayStageLabel,
+      publicStage.displayStagePct,
+      publicDetails,
     );
 
     return ok({ relayed: true });
@@ -198,16 +208,18 @@ export class InternalGenerationController {
     }
 
     const progressPct = task?.progressPct ?? (typeof percentage === 'number' ? percentage : 0);
+    const publicStage = resolvePublicGenerationStage(stage, progressPct);
+    const publicDetails = buildPublicGenerationStageDetails(stage, progressPct, {
+      ...details,
+      stepKey: stepKey || undefined,
+      rawMessage: message,
+    });
     this.wsGateway.emitGenerationProgress(
       userId,
       gameId,
-      message,
-      progressPct,
-      {
-        ...details,
-        stage,
-        stepKey: stepKey || undefined,
-      },
+      publicStage.displayStageLabel,
+      publicStage.displayStagePct,
+      publicDetails,
     );
 
     return ok({ relayed: true });

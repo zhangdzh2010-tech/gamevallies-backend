@@ -275,8 +275,6 @@ STEP_REQUIRED_CAPABILITIES: dict[str, tuple[str, ...]] = {
     "iterate.param_adjust": ("supports_patch_generation",),
     "qa_fix.syntax_structural": ("supports_full_html_rewrite",),
     "intent_parse": ("supports_dialogue",),
-    "dialogue.reply": ("supports_dialogue",),
-    "dialogue.slot_extract": ("supports_dialogue",),
     "iterate.classify": ("supports_dialogue",),
 }
 

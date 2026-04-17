@@ -280,4 +280,31 @@ describe('GenerationTaskService', () => {
       }),
     }));
   });
+
+  it('maps raw task stages into the unified 5-stage public contract', () => {
+    const summary = service.toTaskSummary({
+      id: 'task-display-1',
+      taskType: 'pipeline_run',
+      region: 'cn',
+      status: GenerationTaskStatus.running,
+      timeoutS: 900,
+      wsChannel: 'game:task-display-1',
+      gameId: 'game-display-1',
+      progressStage: 'contract_qa',
+      progressPct: 82,
+      progressMessage: 'running contract QA',
+      createdAt: new Date('2026-04-16T10:00:00.000Z'),
+      updatedAt: new Date('2026-04-16T10:00:10.000Z'),
+      metadata: {},
+    });
+
+    expect(summary).toEqual(expect.objectContaining({
+      displayStageKey: 'validating',
+      displayStageLabel: '质量校验与修复',
+      displayStageIndex: 3,
+      displayStagePct: 85,
+      displayStageTotal: 5,
+      rawStage: 'contract_qa',
+    }));
+  });
 });

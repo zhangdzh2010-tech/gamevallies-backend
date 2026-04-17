@@ -1,624 +1,391 @@
-# 前端动态创作会话适配开发文档
+# 前端 Creation Session 适配开发文档
+
+> 最后更新：2026-04-16
+> 状态：Ready for implementation
+> 适用仓库：`gamevallies-frontend`
+> 文档定位：当前运行中后端契约的前端落地说明
+
+## 1. 文档结论
+
+当前 `creation-session` 已经不是“多轮槽位追问”主流程，而是下面这条三阶段链路：
+
+1. 用户输入一句话或一段描述。
+2. 后端异步扩写成可编辑的游戏生成提示词。
+3. 用户确认或修改提示词后，再启动后台生成。
+
+这意味着前端必须从“回答问题”模式切换为“编辑并确认整段 prompt”模式。
+
+本次改造最重要的三个事实：
+
+1. `POST /creation-sessions` 创建后先返回 `initializing`，前端不能再假设立刻进入可操作态。
+2. `POST /creation-sessions/:id/messages` 现在表示“提交编辑后的完整 prompt 并确认”，不是聊天回复。
+3. `POST /creation-sessions/:id/skip` 现在表示“按当前 expandedPrompt 原样确认”，不是“跳过当前问题”。
+
+如果产品侧要在第二阶段提供“直接生成”按钮，前端当前需要自行串联两步：
+
+1. 未修改 prompt：`skip -> generate`
+2. 已修改 prompt：`messages -> generate`
+
+当前后端没有单独的 `confirm-and-generate` 接口。
+
+## 2. 后端真实契约
+
+以下代码是当前前端适配的 source of truth：
+
+- 控制器入口：[game.controller.ts](../../packages/game-service/src/game/game.controller.ts)
+- 会话主逻辑：[creation-session.service.ts](../../packages/game-service/src/game/creation-session.service.ts)
+- 会话类型定义：[creation-session.types.ts](../../packages/game-service/src/game/types/creation-session.types.ts)
+- DTO 定义：[creation-session.dto.ts](../../packages/game-service/src/game/dto/creation-session.dto.ts)
+- 状态常量：[creation-session.constants.ts](../../packages/game-service/src/game/creation-session.constants.ts)
+- 回归测试：[creation-session.service.spec.ts](../../packages/game-service/test/creation-session.service.spec.ts)
 
-> 版本：v1.0  
-> 日期：2026-03-31  
-> 状态：待开发  
-> 关联文档：
-> - [DYNAMIC_CREATION_DIALOGUE_DESIGN.md](/d:/Project/gamevallies/gamevallies-backend/docs/integration/DYNAMIC_CREATION_DIALOGUE_DESIGN.md)
-> - [DYNAMIC_CREATION_DIALOGUE_EXECUTION_PLAN_2026-03-30.md](/d:/Project/gamevallies/gamevallies-backend/docs/integration/DYNAMIC_CREATION_DIALOGUE_EXECUTION_PLAN_2026-03-30.md)
-> - [DYNAMIC_CREATION_DIALOGUE_RND_SCHEDULE_2026-03-30.md](/d:/Project/gamevallies/gamevallies-backend/docs/integration/DYNAMIC_CREATION_DIALOGUE_RND_SCHEDULE_2026-03-30.md)
+前端不要再以旧文档中的“slot 补齐问答”假设作为实现依据。
 
----
+## 3. 当前会话流程
 
-## 1. 文档目标
+```mermaid
+flowchart TD
+    A["用户输入 prompt"] --> B["POST /creation-sessions"]
+    B --> C["status=initializing"]
+    C --> D["后端调用 /api/v1/ai/expand-prompt"]
+    D --> E["status=collecting<br/>expandedPrompt 已生成"]
+    E --> F["用户编辑或确认 prompt"]
+    F --> G["POST /messages 或 /skip"]
+    G --> H["status=ready"]
+    H --> I["POST /generate"]
+    I --> J["status=generating"]
+    J --> K["后台任务排队成功"]
+    K --> L["status=completed"]
+```
 
-这份文档用于指导 `gamevallies-frontend` 对“动态创作会话”方案做完整适配，目标不是只让创建页可用，而是让前端在以下场景都统一切到后端驱动的创作会话模型：
+对应的后端行为：
 
-- 新建游戏 `create`
-- 复刻后继续创作 `fork`
-- 已有作品优化 `iterate`
-- 创作中断恢复 `resume`
+1. 创建 session 时立即落库为 `initializing`，并异步开始 prompt expansion。
+2. expansion 成功后，session 进入 `collecting`，并返回：
+   - `expandedPrompt`
+   - `currentQuestion`，但其语义只是“请确认或修改提示词”
+   - `readyToGenerate=false`
+3. 用户确认后，session 进入 `ready`。
+4. 只有 `ready` 状态才能调用 `/generate`。
 
-文档重点说明：
+## 4. 前端必须使用的接口
 
-- 当前前端已经适配了什么
-- 还缺哪些关键适配
-- 页面与组件应该如何改
-- 接口契约如何使用
-- 分阶段开发任务和验收标准
+| 接口 | 前端语义 | 必做改动 |
+| --- | --- | --- |
+| `POST /api/v1/games/creation-sessions` | 创建会话 | 接受 `initializing` 返回态 |
+| `GET /api/v1/games/creation-sessions/active` | 恢复活动会话 | 页面进入时优先调用 |
+| `GET /api/v1/games/creation-sessions/:sessionId` | 获取最新 snapshot | 409、刷新、重连恢复时使用 |
+| `GET /api/v1/games/creation-sessions/:sessionId/events` | SSE 实时更新 | `snapshot` 为真相，`delta/done` 只做体验增强 |
+| `POST /api/v1/games/creation-sessions/:sessionId/messages` | 提交编辑后的完整 prompt 并确认 | 语义已变化 |
+| `POST /api/v1/games/creation-sessions/:sessionId/skip` | 直接确认当前 expanded prompt | 语义已变化 |
+| `POST /api/v1/games/creation-sessions/:sessionId/generate` | 启动生成 | 仅 `ready` 可调用 |
+| `POST /api/v1/games/creation-sessions/:sessionId/abandon` | 放弃会话 | 保留 |
 
----
+### 4.1 `POST /creation-sessions`
 
-## 2. 当前状态评估
+请求体仍然使用：
 
-## 2.1 已完成的前端适配
+```json
+{
+  "prompt": "做一个办公室摸鱼躲老板的小游戏",
+  "title": "Slack Hero",
+  "orientation": "portrait",
+  "generationTier": "standard",
+  "entryMode": "create"
+}
+```
 
-当前前端创建页已经接入了创作会话主链，主要落点如下：
+前端需要接受新的初始化行为：
 
-- 创建页：
-  - [index.jsx](/d:/Project/gamevallies/gamevallies-frontend/src/pages/create/index.jsx)
-- 前端服务层：
-  - [game.js](/d:/Project/gamevallies/gamevallies-frontend/src/services/game.js)
+```json
+{
+  "success": true,
+  "data": {
+    "id": "session-123",
+    "status": "initializing",
+    "expandedPrompt": null,
+    "readyToGenerate": false
+  }
+}
+```
 
-目前已经具备的能力：
+### 4.2 `POST /messages`
 
-1. 用户输入首条创意后，前端会调用 `POST /api/v1/games/creation-sessions`
-2. 前端可以显示后端返回的：
-   - `planDraft`
-   - `confidenceSummary`
-   - `questionStrategy`
-   - `currentQuestion`
-3. 前端已经支持：
-   - 回答当前问题
-   - 跳过当前问题
-   - 从会话直接发起生成
-   - 恢复 active session
-4. 创建页已经不再使用原来那套本地硬编码补问逻辑
+请求体中的 `content` 必须是完整的、最终确认的 prompt 文本：
 
-简而言之：
+```json
+{
+  "content": "Game Type: Funny stealth comedy\nCore Mechanic: Tap to swap between working and slacking states...",
+  "revision": 2
+}
+```
 
-- `create` 主入口：已部分接入
-- `fork / iterate`：尚未接入
-- “高质量交互体验”：只做了基础版
+不要再把它当作“回答当前问题”的一句话输入接口。
 
-## 2.2 当前不足
+### 4.3 `POST /skip`
 
-虽然创建页已经可用，但距离文档方案还有明显差距。
+这个接口现在等价于：
 
-主要问题如下：
+1. 接受当前 `expandedPrompt`
+2. 不做编辑
+3. 将 session 直接推进到 `ready`
 
-1. `generationTier` 还没有在创建页给用户可见选择
-2. `fork` 和 `iterate` 仍然走旧链路，没有进入创作会话
-3. 问题呈现仍然是“纯文本问题 + 纯文本回答”，还没有结构化问答 UI
-4. 缺少“方案确认 / 理解纠偏”的显式交互
-5. 创作会话状态异常处理不完整
-6. 还没有形成完整的前端状态机和恢复逻辑
-7. 还没有把创作会话的数据延伸到详情页、作者工作台等后续页面
+前端按钮文案必须同步成“直接使用当前提示词”或“确认当前版本”。
 
----
+### 4.4 `POST /generate`
 
-## 3. 前端适配目标
+调用前置条件：
 
-前端最终要达到的状态是：
+1. `status === "ready"`
+2. 持有最新 `revision`
 
-1. 所有“开始创作”的入口，都先进入创作会话，而不是直接生成
-2. 用户先看到“系统整理出的方案草案”，再选择继续补充或直接生成
-3. 系统每次只追问一个高价值问题
-4. 用户可以：
-   - 回答
-   - 跳过
-   - 纠偏
-   - 直接生成
-5. `fork` 和 `iterate` 进入的是“差异化创作会话”，不是全量重新问一遍
-6. 会话可以恢复、放弃、重新开始
-7. 前端能够清晰区分：
-   - 会话阶段
-   - 生成阶段
-   - 完成阶段
-   - 异常阶段
+如果用户在 `collecting` 阶段点击“直接生成”，前端需要先完成确认动作，再调用 `/generate`。
 
----
+## 5. Snapshot 字段使用原则
 
-## 4. 当前前端与目标方案的差距
+前端状态以 `CreationSessionSnapshot` 为核心。
 
-## 4.1 创建页差距
+### 5.1 必须真正使用的字段
 
-当前创建页在 [index.jsx](/d:/Project/gamevallies/gamevallies-frontend/src/pages/create/index.jsx) 已经具备基本能力，但还缺：
+| 字段 | 用途 |
+| --- | --- |
+| `id` | 会话主键 |
+| `status` | 页面状态机主驱动 |
+| `entryMode` | 区分 `create / fork / iterate` |
+| `initialPrompt` | 首次输入展示或回退 |
+| `expandedPrompt` | 第二阶段编辑器默认值 |
+| `revision` | 并发保护，所有写请求都要带 |
+| `readyToGenerate` | 生成按钮可用性辅助字段 |
+| `conversation` | 会话历史展示 |
+| `metadata.initError` | 初始化失败提示 |
+| `generatedGameId` / `generationTaskId` | 跳转结果页或任务页 |
 
-1. `generationTier` 选择器
-2. “确认方案”按钮和“修改理解”按钮
-3. 更清晰的槽位进度视图
-4. 结构化答案控件
-5. 更完善的会话恢复与过期提示
+### 5.2 可降级处理的兼容字段
 
-## 4.2 复刻页差距
+以下字段目前不再是新流程主驱动，前端可以不重点渲染：
+
+| 字段 | 建议 |
+| --- | --- |
+| `slotState` | 不再驱动主 UI |
+| `missingRequired` | 不再驱动追问流程 |
+| `currentQuestion` | 仅可作为确认提示文案辅助 |
+| `planDraft` | 可暂不展示 |
+| `confidenceSummary` | 可暂不展示 |
+| `questionStrategy` | 可暂不展示 |
+
+## 6. 前端状态机
+
+页面逻辑必须从“问题驱动”改成“状态驱动”。
+
+### 6.1 状态说明
+
+| 状态 | 页面行为 | 用户可操作 |
+| --- | --- | --- |
+| `initializing` | 显示 AI 正在扩写 prompt 的 loading | 不可编辑，不可生成 |
+| `collecting` | 展示 `expandedPrompt` 编辑器 | 可编辑、确认、直接生成、放弃 |
+| `ready` | 展示已确认 prompt | 可生成，也可继续编辑并再次确认 |
+| `generating` | 展示提交中/跳转中状态 | 不可重复提交 |
+| `completed` | 会话已完成职责 | 跳任务页或结果页 |
+| `abandoned` | 会话已失效或失败 | 展示重试 |
+| `failed` | 兼容失败态 | 展示重试 |
+
+### 6.2 页面切换规则
+
+1. `initializing -> collecting`
+   由 SSE `snapshot` 或主动轮询/重查触发。
+2. `collecting -> ready`
+   由 `messages` 或 `skip` 成功后触发。
+3. `ready -> generating`
+   由 `generate` 成功 claim 后触发。
+4. `generating -> completed`
+   由后端任务成功入队后触发。
 
-当前复刻页仍是旧流程：
+## 7. 开发任务拆分
 
-- [fork/index.jsx](/d:/Project/gamevallies/gamevallies-frontend/src/pages/game/fork/index.jsx)
+## 7.1 API / service 层
+
+目标：让前端服务层暴露与后端新语义一致的方法。
 
-当前逻辑是：
+开发项：
 
-1. 用户进入复刻页
-2. 点击复刻
-3. 直接 `forkGame()`
-4. 跳转到 iterate 页面
+1. 保留现有 7 个接口封装，但重写方法注释和调用语义。
+2. `appendCreationSessionMessage(sessionId, content, revision)` 的 `content` 改为“完整 prompt”。
+3. `skipCreationSessionQuestion(sessionId, revision)` 的说明改为“confirm current prompt as-is”。
+4. 新增前端组合 helper：
+   - `confirmEditedPrompt(sessionId, prompt, revision)`
+   - `confirmCurrentPrompt(sessionId, revision)`
+   - `confirmAndGenerate(session, editedPrompt?)`
+5. 所有写请求都必须自动附带 `revision`。
 
-这与新方案不一致。  
-新方案要求：
+建议 helper 逻辑：
 
-1. 先进入一个 `entryMode=fork` 的创作会话
-2. 会话根据源游戏和用户目标生成“差异化问题”
-3. 用户补充“想改哪里”
-4. 再发起生成或 fork 后迭代
+```ts
+async function confirmAndGenerate(session: CreationSessionSnapshot, editedPrompt?: string) {
+  const latest = editedPrompt && editedPrompt.trim() !== (session.expandedPrompt || "").trim()
+    ? await appendCreationSessionMessage(session.id, editedPrompt.trim(), session.revision)
+    : await skipCreationSessionQuestion(session.id, session.revision);
 
-## 4.3 迭代页差距
+  return generateFromCreationSession(latest.id, { revision: latest.revision });
+}
+```
 
-当前迭代页仍是旧流程：
+## 7.2 类型 / store 层
 
-- [iterate/index.jsx](/d:/Project/gamevallies/gamevallies-frontend/src/pages/game/iterate/index.jsx)
+目标：保证前端本地状态与后端 snapshot 一致。
 
-当前逻辑是：
+开发项：
 
-1. 用户输入一段 feedback
-2. 直接调 `/api/v1/games/:id/iterate`
+1. 以后端 `CreationSessionSnapshot` 为基准更新前端类型。
+2. 将 `expandedPrompt` 纳入 store 主状态。
+3. 将 `revision` 纳入 store 主状态，并在每次收到新 snapshot 时覆盖。
+4. 不再使用 `currentQuestion` 作为页面主驱动。
+5. store 中新增派生状态：
+   - `isInitializing`
+   - `isAwaitingPromptConfirmation`
+   - `canGenerate`
+   - `canEditPrompt`
+6. 收到 409 时自动执行：
+   - `GET /creation-sessions/:id`
+   - 用返回 snapshot 覆盖本地状态
+   - 向用户提示“会话已更新，请基于最新版本继续操作”
 
-这与新方案不一致。  
-新方案要求：
-
-1. 先进入 `entryMode=iterate` 的创作会话
-2. 后端分析“本次想改什么”
-3. 只追问最关键的 1 到 2 个问题
-4. 再由会话发起迭代生成
+## 7.3 创建页 UI
 
----
+目标：把页面从“问答对话框”改成“prompt 编辑确认页”。
 
-## 5. 后端接口契约与前端使用方式
+开发项：
 
-## 5.1 已有接口
-
-前端已接入的接口在 [game.js](/d:/Project/gamevallies/gamevallies-frontend/src/services/game.js)：
-
-1. `createCreationSession(prompt, title, options)`
-2. `getActiveCreationSession()`
-3. `getCreationSession(sessionId)`
-4. `appendCreationSessionMessage(sessionId, content, revision)`
-5. `skipCreationSessionQuestion(sessionId, revision)`
-6. `generateFromCreationSession(sessionId, options)`
-7. `abandonCreationSession(sessionId)`
+1. 输入首条想法后，提交创建会话。
+2. `initializing` 阶段展示：
+   - loading 动画
+   - 文案：“正在整理并扩写你的游戏想法”
+3. `collecting` 阶段展示：
+   - `expandedPrompt` 大文本框
+   - “确认提示词”
+   - “直接使用当前提示词”
+   - “直接生成”
+   - “放弃”
+4. `ready` 阶段展示：
+   - 只读或可编辑 prompt
+   - “开始生成”
+   - 可选“返回修改”
+5. `currentQuestion.prompt` 如果存在，只作为页面顶部辅助说明，不要再把它渲染成单独问答输入框。
 
-## 5.2 核心对象
-
-前端需要围绕 `CreationSessionSnapshot` 开发，当前定义在后端：
-
-- [creation-session.types.ts](/d:/Project/gamevallies/gamevallies-backend/packages/game-service/src/game/types/creation-session.types.ts)
-
-关键字段含义如下：
-
-- `status`
-  - `collecting`
-  - `ready`
-  - `generating`
-  - `completed`
-  - `abandoned`
-  - `expired`
-  - `failed`
-- `entryMode`
-  - `create`
-  - `fork`
-  - `iterate`
-- `slotState`
-  - 当前槽位快照
-- `missingRequired`
-  - 当前缺失的关键槽位
-- `currentQuestion`
-  - 当前问题
-- `planDraft`
-  - 用户可见的方案草案
-- `confidenceSummary`
-  - 整体理解置信信息
-- `questionStrategy`
-  - 本轮为什么问这个问题
-- `orientation`
-  - 横竖屏
-- `generationTier`
-  - `safe | standard | showcase`
-
-## 5.3 前端调用原则
-
-前端必须遵循：
-
-1. 不再自行判断“缺什么槽位”
-2. 不再自行拼接 prompt
-3. 只渲染后端返回的：
-   - 当前问题
-   - 方案草案
-   - 置信信息
-   - 会话状态
+建议按钮文案：
 
----
+| 旧文案 | 新文案 |
+| --- | --- |
+| 回答问题 | 确认并保存提示词 |
+| 跳过问题 | 直接使用当前提示词 |
+| 继续追问 | 修改提示词 |
+| 生成 | 开始生成 |
 
-## 6. 前端用户交互逻辑
+## 7.4 Active Session 恢复
 
-## 6.1 create
+目标：页面刷新或中断后能恢复会话。
 
-用户路径：
-
-1. 进入创建页
-2. 输入一句创意
-3. 选择方向：
-   - `portrait`
-   - `landscape`
-4. 选择生成档位：
-   - `safe`
-   - `standard`
-   - `showcase`
-5. 点击“开始创作会话”
-6. 前端请求创建 session
-7. 展示后端返回的：
-   - 方案草案
-   - 当前问题
-   - 追问理由
-   - 已明确/待确认信息
-8. 用户可选：
-   - 提交回答
-   - 跳过此题
-   - 直接生成
-   - 重新开始
-9. 生成后切换到进度态
-10. 完成后切到作品完成态
+开发项：
 
-## 6.2 fork
+1. 创建页初始化时先调用 `GET /creation-sessions/active`。
+2. 如果返回：
+   - `initializing`：继续显示 loading
+   - `collecting`：恢复编辑器
+   - `ready`：恢复待生成页
+3. 如果没有 active session，再展示空白创建页。
 
-目标交互：
+## 7.5 SSE 接入
 
-1. 用户从详情页点击“复刻”
-2. 不直接调用 `forkGame()`
-3. 先创建 `entryMode=fork` 的创作会话
-4. 后端返回：
-   - 基于原作品的方案草案
-   - 本次最值得追问的问题
-5. 用户补充“想改哪里”
-6. 生成完成后得到 fork 后的新游戏
-7. 再进入后续试玩或继续优化
+目标：减少轮询延迟，保证第二阶段自动切换。
 
-## 6.3 iterate
+前端必须监听：
 
-目标交互：
+1. `bootstrap`
+2. `snapshot`
+3. `delta`
+4. `done`
+5. `error`
 
-1. 用户从详情页或作品页点击“继续优化”
-2. 不直接进老式 textarea 提交
-3. 先创建 `entryMode=iterate` 的创作会话
-4. 用户针对本次改动方向补充说明
-5. 系统只追问 1 到 2 题
-6. 再发起会话生成
+使用原则：
 
----
+1. `snapshot` 是唯一真相。
+2. `delta` / `done` 只用于增强体验，比如显示“AI 已整理好一版提示词”。
+3. `error` 需要落到页面错误态。
+4. SSE 中断后，至少执行一次 `GET /creation-sessions/:id` 做状态回补。
 
-## 7. 前端状态机设计
+## 7.6 Fork / Iterate 入口
 
-建议前端统一抽象为如下状态：
+目标：统一走 creation-session，而不是绕开确认阶段直接生成。
 
-1. `idle`
-   - 尚未创建会话
-2. `collecting`
-   - 正在追问
-3. `ready_to_generate`
-   - 信息足够，可以生成
-4. `generating`
-   - 已发起生成任务
-5. `completed`
-   - 生成成功
-6. `failed`
-   - 会话或生成失败
-7. `expired`
-   - 会话已过期
-8. `abandoned`
-   - 会话已放弃
+开发项：
 
-页面不要再用大量局部布尔值隐式拼状态，而建议围绕：
+1. `fork` 入口改为先创建 `entryMode="fork"` 的 creation-session。
+2. `iterate` 入口改为先创建 `entryMode="iterate"` 的 creation-session。
+3. 若有源游戏上下文，传 `sourceGameId`。
+4. 第二阶段仍然复用同一套 prompt 编辑/确认 UI。
 
-- `creationSession?.status`
-- `currentTask?.status`
-- `currentGame?.status`
+如果本次排期有限，建议先完成 `create` 入口，`fork / iterate` 作为下一阶段跟进。
 
-形成显式状态切换。
+## 8. 交互与异常处理要求
 
----
+前端至少覆盖以下异常分支：
 
-## 8. 页面级开发任务
+1. `initializing` 超时或 expansion 失败。
+   - 使用 `metadata.initError`
+   - 提供“重新开始”
+2. revision 冲突。
+   - 自动拉最新 snapshot
+   - 不要直接覆盖用户输入
+3. `generate` 失败回滚到 `ready`。
+   - 展示错误提示
+   - 保留确认后的 prompt
+4. 会话被 `abandoned`。
+   - 提示当前会话已失效
+   - 提供重新创建入口
 
-## 8.1 创建页
+## 9. 验收标准
 
-文件：
+P0 验收必须通过以下场景：
 
-- [index.jsx](/d:/Project/gamevallies/gamevallies-frontend/src/pages/create/index.jsx)
-- [index.scss](/d:/Project/gamevallies/gamevallies-frontend/src/pages/create/index.scss)
+1. 用户输入一句话后，页面进入 `initializing`，2 到 5 秒内自动切到 `collecting`。
+2. `collecting` 阶段可看到 `expandedPrompt`，并能编辑。
+3. 编辑后点击确认，session 进入 `ready`。
+4. 不编辑直接点击“直接生成”，前端能自动完成 `skip -> generate`。
+5. 编辑后点击“直接生成”，前端能自动完成 `messages -> generate`。
+6. 刷新页面后，可通过 `active` 恢复到正确状态。
+7. revision 过期时不会重复提交旧数据，而是刷新最新 snapshot。
+8. expansion 失败时页面能正确展示错误，而不是卡死在 loading。
 
-需要新增或调整：
+## 10. 推荐实施顺序
 
-1. `generationTier` 选择器
-2. 方案草案区增加两个主操作：
-   - `理解正确，继续`
-   - `我想改一下理解`
-3. 显示更完整的槽位状态：
-   - 已明确
-   - 待确认
-   - 已跳过
-4. 问题区域支持多种回答方式
-5. 错误态 UI
-6. 过期/放弃恢复 UI
+建议按下面顺序开发：
 
-## 8.2 复刻页
+1. 更新类型定义与 API 封装。
+2. 完成 create 页面状态机改造。
+3. 接入 active session 恢复。
+4. 接入 SSE snapshot 驱动。
+5. 补 409 / initError / rollback 等异常流程。
+6. 再改造 fork / iterate 入口。
 
-文件：
+## 11. 对应后端测试依据
 
-- [fork/index.jsx](/d:/Project/gamevallies/gamevallies-frontend/src/pages/game/fork/index.jsx)
-- [fork/index.scss](/d:/Project/gamevallies/gamevallies-frontend/src/pages/game/fork/index.scss)
+以下测试已经验证了当前契约，前端开发可据此理解语义：
 
-要改成：
+1. 创建后先 `initializing`，再进入待确认 `collecting`：
+   [creation-session.service.spec.ts](../../packages/game-service/test/creation-session.service.spec.ts)
+2. `messages` 表示确认编辑后的 prompt：
+   [creation-session.service.spec.ts](../../packages/game-service/test/creation-session.service.spec.ts)
+3. `skip` 表示按当前 expanded prompt 确认：
+   [creation-session.service.spec.ts](../../packages/game-service/test/creation-session.service.spec.ts)
 
-1. 进入时创建 `entryMode=fork` 会话
-2. 将 `sourceGameId` 透传给后端
-3. 渲染与创建页相同的会话区域，但文案更聚焦“想改哪里”
-4. 会话完成后调用 `generateFromCreationSession`
-5. 生成成功后进入 fork 后作品
+## 12. 本文档与旧方案的关系
 
-## 8.3 迭代页
+本文档覆盖并替代旧版“多轮槽位追问”前端适配假设。
 
-文件：
+旧假设包括：
 
-- [iterate/index.jsx](/d:/Project/gamevallies/gamevallies-frontend/src/pages/game/iterate/index.jsx)
-- [iterate/index.scss](/d:/Project/gamevallies/gamevallies-frontend/src/pages/game/iterate/index.scss)
+1. 前端围绕 `slotState / missingRequired / currentQuestion` 驱动主流程。
+2. `messages` 表示用户回答当前问题。
+3. `skip` 表示跳过一个槽位问题。
+4. 第二阶段仍然是问答，而不是整段 prompt 编辑确认。
 
-要改成：
-
-1. 进入时创建 `entryMode=iterate` 会话
-2. 将 `sourceGameId=currentGame.id` 透传给后端
-3. 用会话替代旧的“纯 feedback 提交”
-4. 仅保留旧 textarea 作为兜底，不作为主链
-
----
-
-## 9. 组件设计建议
-
-建议新增一个通用创作会话组件层，避免 `create/fork/iterate` 各自复制一套 UI。
-
-推荐拆分：
-
-1. `CreationSessionShell`
-   - 负责页面布局和状态切换
-
-2. `CreationPlanDraftCard`
-   - 展示 `planDraft`
-
-3. `CreationConfidenceCard`
-   - 展示 `confidenceSummary`
-   - 展示 `questionStrategy`
-
-4. `CreationConversationList`
-   - 展示最近对话
-
-5. `CreationQuestionCard`
-   - 展示当前问题
-
-6. `CreationAnswerComposer`
-   - 回答输入
-   - 未来支持结构化选项
-
-7. `CreationSessionActions`
-   - 回答
-   - 跳过
-   - 直接生成
-   - 重新开始
-
-建议位置：
-
-- `src/components/creation/`
-
-这样可让：
-
-- 创建页
-- 复刻页
-- 迭代页
-
-共享大部分 UI 与逻辑。
-
----
-
-## 10. 交互增强建议
-
-## 10.1 generation tier UI
-
-建议文案：
-
-- `安全生成`
-  - 更稳，生成更快，适合快速出稿
-- `标准生成`
-  - 平衡稳定性和丰富度
-- `精品生成`
-  - 更有层次和风格，耗时更长
-
-前端提交字段：
-
-- `generationTier: 'safe' | 'standard' | 'showcase'`
-
-## 10.2 方案草案操作
-
-当前只是展示草案，还不够。
-
-建议增加：
-
-1. `理解正确，继续追问`
-2. `直接开始创作`
-3. `我想调整理解`
-
-“调整理解”的实现第一版可以很简单：
-
-- 聚焦到回答框
-- 用 hint 提示用户直接写“你理解偏了，我想要……”
-
-## 10.3 问题输入方式
-
-当前都是 textarea。
-
-后续建议前端支持如下 answer types：
-
-- `text`
-- `single_select`
-- `multi_select`
-- `chips`
-- `text_with_suggestions`
-
-当前后端尚未把 `answerType/options` 正式暴露出来，但前端组件要为此留出扩展位。
-
----
-
-## 11. 数据与状态持久化建议
-
-前端需要保证以下场景可恢复：
-
-1. 用户离开创建页再回来
-2. H5 刷新后恢复 active session
-3. 会话已进入 `generating`
-4. 任务完成后自动跳转完成态
-
-当前创建页已有初步恢复逻辑，但建议进一步统一成：
-
-- 优先恢复 active creation session
-- 若 session 已在 `generating`，恢复 generation task
-- 若任务已完成，恢复完成态
-
-不要让会话恢复逻辑散落在多个 `useEffect` 中互相打架。
-
----
-
-## 12. 错误处理要求
-
-前端需要专门处理下列错误类型：
-
-1. `revision conflict`
-   - 文案：当前创作已在其他地方更新，请刷新后继续
-
-2. `session expired`
-   - 文案：创作会话已过期，请重新开始
-
-3. `session abandoned`
-   - 文案：当前创作会话已结束，请重新开启
-
-4. `generate failed`
-   - 文案：生成阶段遇到问题，可稍后重试
-
-5. `restore failed`
-   - 文案：恢复创作失败，请手动重新开始
-
-不要全部压成一个“创建游戏阶段遇到问题”。
-
----
-
-## 13. 前端埋点建议
-
-建议至少记录：
-
-1. `creation_session_started`
-2. `creation_plan_draft_shown`
-3. `creation_question_answered`
-4. `creation_question_skipped`
-5. `creation_generate_clicked`
-6. `creation_generate_direct_clicked`
-7. `creation_session_abandoned`
-8. `creation_session_resumed`
-9. `creation_generate_succeeded`
-10. `creation_generate_failed`
-
-额外建议带字段：
-
-- `entryMode`
-- `generationTier`
-- `orientation`
-- `questionCount`
-- `skipCount`
-- `slotFillPct`
-
----
-
-## 14. 测试要求
-
-## 14.1 单元测试
-
-重点覆盖：
-
-1. `normalizeCreationSession`
-2. `planDraft/confidenceSummary/questionStrategy` 映射
-3. `generationTier` 提交
-4. `fork/iterate` 创建会话逻辑
-
-## 14.2 页面流程测试
-
-建议新增或扩展：
-
-- [create.journey.test.jsx](/d:/Project/gamevallies/gamevallies-frontend/src/pages/create/__tests__/create.journey.test.jsx)
-
-补充以下场景：
-
-1. 创建会话成功 -> 看到 plan draft
-2. 回答问题 -> revision 递增
-3. 跳过问题 -> session 更新
-4. 直接生成 -> 调用 generateFromCreationSession
-5. 生成 tier 选择生效
-
-并新增：
-
-- `fork.creation-session.test.jsx`
-- `iterate.creation-session.test.jsx`
-
-## 14.3 真机联调
-
-需要覆盖：
-
-1. H5 创建会话
-2. 微信内创建会话
-3. 生成中断恢复
-4. 作品完成后继续优化
-5. 详情页发起复刻 -> 会话 -> 生成
-
----
-
-## 15. 前端任务拆分
-
-## P0
-
-1. 创建页增加 `generationTier` 选择器
-2. 创建页增加方案确认动作
-3. 复刻页切换到 creation session
-4. 迭代页切换到 creation session
-5. 会话异常态和恢复态补齐
-
-## P1
-
-1. 抽通用 `creation session` 组件层
-2. 增强槽位状态展示
-3. 增加结构化回答扩展位
-4. 完善埋点
-
-## P2
-
-1. 详情页/作者页展示方案草案摘要
-2. 历史会话列表
-3. 会话模板化推荐
-
----
-
-## 16. 验收标准
-
-前端适配完成后，应满足：
-
-1. `create/fork/iterate` 三条入口都能进入创作会话
-2. 用户能看到方案草案，而不是直接进入生成
-3. 用户能回答、跳过、直接生成
-4. `generationTier` 能提交到后端
-5. 会话可恢复
-6. 任务完成后能自然流转到作品完成态
-7. 无需前端自己判断缺失槽位
-
----
-
-## 17. 推荐开发顺序
-
-建议顺序：
-
-1. 创建页补全 `generationTier + 方案确认`
-2. 抽 `creation session` 共用组件
-3. 复刻页接入 session
-4. 迭代页接入 session
-5. 错误态/恢复态完善
-6. 测试补齐
-
-这样可以先保证主链稳定，再逐步扩到 `fork/iterate`。
-
----
-
-## 18. 一句话结论
-
-当前前端并不是没接动态创作会话，而是**只接了创建页的基础版**。  
-下一步前端真正要做的是：把这套会话模型扩展成统一的创作入口层，让 `create / fork / iterate` 都按“方案草案 -> 动态追问 -> 会话生成”的方式工作。
+这些假设已经不再符合当前后端实现。

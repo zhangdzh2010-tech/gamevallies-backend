@@ -1,4 +1,4 @@
-"""Stage 01 + 02: Dialogue engine and single-shot intent parsing."""
+"""Intent parsing and slot-normalization utilities."""
 
 from __future__ import annotations
 
@@ -7,70 +7,32 @@ import hashlib
 import json
 import logging
 import re
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..api.models import (
-    AnalyzeDialogueTurnRequest,
-    AnalyzeDialogueTurnResponse,
-    ChatRequest,
-    ChatResponse,
-    ConversationMessage,
     CoreMechanic,
-    DialogueStreamDeltaPayload,
-    DialogueStreamDonePayload,
-    DialogueStreamFinalPayload,
-    DraftPlanFromInputRequest,
-    DraftPlanFromInputResponse,
-    DialogueQuestion,
-    DialogueSession,
-    DialogueState,
     GameEntity,
     GameRules,
     GameSpec,
-    PlanDraft,
     PlatformConstraints,
-    QuestionStrategy,
-    SpecFromSlotsRequest,
-    SpecFromSlotsResponse,
     SlotState,
     VisualStyle,
 )
 from ..config.settings import settings
 from ..config.timeout_store import get_int as get_timeout_int
 from ..services.llm_client import LLMClient, LLMResponseTruncatedError
-from .prompt_format import safe_format_prompt
 from .prompt_store import require_prompt
 
 logger = logging.getLogger(__name__)
 
-_sessions: Dict[str, DialogueSession] = {}
-
 CURATED_GAME_TYPES = ("casual", "puzzle", "educational", "funny")
 
 
-def _dialogue_slot_request_timeout_s() -> int:
-    return get_timeout_int(
-        "timeout.ai_engine.dialogue.slot_extract_request_s",
-        int(getattr(settings, "DIALOGUE_SLOT_REQUEST_TIMEOUT_S", 4) or 4),
-        min_value=1,
-    )
-
-
-def _dialogue_slot_overall_timeout_s() -> int:
-    request_timeout_s = _dialogue_slot_request_timeout_s()
-    return get_timeout_int(
-        "timeout.ai_engine.dialogue.slot_extract_overall_s",
-        max(request_timeout_s, int(getattr(settings, "DIALOGUE_SLOT_OVERALL_TIMEOUT_S", 5) or 5)),
-        min_value=request_timeout_s,
-    )
-
-
 def _intent_parse_request_timeout_s() -> int:
-    dialogue_slot_request_s = _dialogue_slot_request_timeout_s()
     return get_timeout_int(
         "timeout.ai_engine.intent_parse.request_s",
-        max(dialogue_slot_request_s, int(getattr(settings, "INTENT_PARSE_REQUEST_TIMEOUT_S", 45) or 45)),
-        min_value=dialogue_slot_request_s,
+        int(getattr(settings, "INTENT_PARSE_REQUEST_TIMEOUT_S", 45) or 45),
+        min_value=1,
     )
 
 
@@ -856,7 +818,7 @@ def _parse_labeled_slot_lines(text: str) -> Optional[dict]:
                     continue
             rules = [
                 item.strip(" -")
-                for item in re.split(r"\s*[;,|, /]+\s*", value)
+                for item in re.split(r"\s*(?:[;|,\n]+|[；、])\s*", value)
                 if item.strip(" -")
             ]
             parsed[key] = rules or [value]
@@ -1009,6 +971,18 @@ def _sanitize_reference_game_candidate(candidate: str) -> Optional[str]:
     if any(canonical_key == _canonical_reference_key(name) for name in REFERENCE_GAME_HINTS):
         return normalized
 
+    for name in REFERENCE_GAME_HINTS:
+        if canonical_key.startswith(_canonical_reference_key(name)):
+            suffix = normalized[len(name):].strip()
+            if not suffix:
+                return name
+            if (
+                len(suffix) <= 12
+                and re.fullmatch(r"[\s\u4e00-\u9fffA-Za-z0-9]+", suffix)
+                and re.search(r"(?:小游戏|游戏|玩法|跑酷|消除|闯关|版本|那种|这种|这款|那个)", suffix)
+            ):
+                return name
+
     if re.search(r"[\u4e00-\u9fff]", normalized):
         simplified = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", normalized)
         if not simplified or len(simplified) > 16:
@@ -1052,7 +1026,12 @@ def _extract_reference_game_from_text(text: str) -> Optional[str]:
         if not match:
             continue
         candidate = re.sub(r"^(?:\u50cf|\u7c7b\u4f3c|\u53c2\u8003|like|similar to|inspired by)\s+", "", match.group(1), flags=re.IGNORECASE)
-        candidate = re.sub(r"\s*(?:\u90a3\u79cd|\u8fd9\u79cd|\u8fd9\u6b3e|\u90a3\u4e2a|\u7684\u6e38\u620f)$", "", candidate).strip(" \u300a\u300b\"\u201c\u201d.,;:!?")
+        candidate = re.sub(
+            r"\s*(?:\u90a3\u79cd|\u8fd9\u79cd|\u8fd9\u6b3e|\u90a3\u4e2a)(?:[\u4e00-\u9fffA-Za-z0-9\s]{0,12})?(?:\u5c0f?\u6e38\u620f|\u73a9\u6cd5)?$",
+            "",
+            candidate,
+        ).strip(" \u300a\u300b\"\u201c\u201d.,;:!?")
+        candidate = re.sub(r"\s*\u7684\u6e38\u620f$", "", candidate).strip(" \u300a\u300b\"\u201c\u201d.,;:!?")
         candidate = re.sub(r"\s+(?:style|vibe|feel|prototype)\b.*$", "", candidate, flags=re.IGNORECASE)
         if len(candidate) < 2:
             continue
@@ -1091,181 +1070,6 @@ def _looks_like_understanding_check(text: str) -> bool:
         "familiar with",
     )
     return any(marker in normalized for marker in markers)
-
-
-def _looks_like_dialogue_internal_reply_leak(text: str) -> bool:
-    normalized = _normalize_free_text(text).lower()
-    if len(normalized) < 8:
-        return False
-    markers = (
-        "用户现在要求我",
-        "按照要求",
-        "先理清楚",
-        "先处理清楚",
-        "调整下顺序",
-        "符合要求",
-        "用简体中文回复",
-        "2到4句",
-        "两到四句",
-        "我要这样回复",
-        "我应该这样回答",
-        "让我组织一下",
-        "不对，",
-        "等下，",
-        "safe fallback wording",
-        "follow-up guidance",
-        "readiness guidance",
-        "optional follow-up question",
-        "public brief draft",
-        "reply to the user in",
-        "the user wants me to",
-        "i should respond in",
-        "let me think",
-        "wait,",
-        "actually,",
-    )
-    return any(marker in normalized for marker in markers)
-
-
-def _should_release_dialogue_reply_preview(text: str) -> bool:
-    normalized = _normalize_free_text(text)
-    if not normalized:
-        return False
-    if re.search(r"[。！？.!?]$", normalized):
-        return True
-    return len(normalized) >= 24
-
-
-def _slot_summary_label(slot_key: str, *, zh: bool) -> str:
-    labels = {
-        "game_type": "\u6e38\u620f\u65b9\u5411" if zh else "game direction",
-        "core_mechanic": "\u6838\u5fc3\u73a9\u6cd5" if zh else "core mechanic",
-        "theme": "\u9898\u6750\u60c5\u5883" if zh else "theme",
-        "input_method": "\u64cd\u4f5c\u65b9\u5f0f" if zh else "input method",
-        "win_condition": "\u8fc7\u5173\u76ee\u6807" if zh else "win condition",
-        "difficulty": "\u96be\u5ea6\u8282\u594f" if zh else "difficulty curve",
-    }
-    return labels.get(slot_key, SLOT_LABELS.get(slot_key, slot_key))
-
-
-def _build_contextual_question_prompt(
-    slot_key: str,
-    slots: SlotState,
-    *,
-    zh: bool,
-) -> str:
-    reference_game = _normalize_free_text(str(getattr(slots, "reference_game", "") or ""))
-    core_mechanic = _shorten_text(str(getattr(slots, "core_mechanic", "") or ""), limit=28)
-    theme = _shorten_text(str(getattr(slots, "theme", "") or ""), limit=20)
-    if slot_key == "theme":
-        if reference_game:
-            return (
-                f"\u73a9\u6cd5\u53ef\u4ee5\u53c2\u8003\u300a{reference_game}\u300b\uff0c\u4f46\u9898\u6750\u4f60\u60f3\u6362\u6210\u4ec0\u4e48\u60c5\u5883\u6216\u4e16\u754c\u89c2\uff1f"
-                if zh else
-                f"We can borrow the feel of {reference_game}, but what setting or fantasy should this version use?"
-            )
-        if core_mechanic:
-            return (
-                "\u4f60\u60f3\u628a\u5b83\u653e\u5728\u4ec0\u4e48\u60c5\u5883\u3001\u4e16\u754c\u89c2\u6216\u9898\u6750\u91cc\uff1f"
-                if zh else
-                "What setting, world, or theme should this version use?"
-            )
-    if slot_key == "win_condition":
-        if reference_game:
-            return (
-                f"\u5982\u679c\u53c2\u8003\u300a{reference_game}\u300b\uff0c\u4f60\u66f4\u60f3\u8fd9\u7248\u505a\u6210\u201c\u6e05\u7a7a\u578b\u201d\u3001\u201c\u8fbe\u6210\u76ee\u6807\u578b\u201d\uff0c\u8fd8\u662f\u201c\u6491\u8fc7\u4e00\u8f6e\u201d\u7684\u8fc7\u5173\u65b9\u5f0f\uff1f"
-                if zh else
-                f"If this nods to {reference_game}, should a round be about clearing everything, hitting a target, or surviving the whole run?"
-            )
-        if core_mechanic:
-            return (
-                "\u8fd9\u4e00\u5c40\u91cc\uff0c\u73a9\u5bb6\u8fbe\u6210\u4ec0\u4e48\u6761\u4ef6\u624d\u7b97\u8fc7\u5173\uff1f"
-                if zh else
-                "What exactly should count as clearing a round?"
-            )
-    if slot_key == "core_mechanic":
-        if reference_game:
-            return (
-                f"\u5982\u679c\u53c2\u8003\u300a{reference_game}\u300b\uff0c\u4f60\u6700\u60f3\u4fdd\u7559\u7684\u662f\u201c\u64cd\u4f5c\u624b\u611f\u201d\u3001\u201c\u5361\u5173\u538b\u529b\u201d\uff0c\u8fd8\u662f\u201c\u4e00\u5c40\u4e00\u5c40\u7684\u8282\u594f\u53cd\u9988\u201d\uff1f"
-                if zh else
-                f"If this takes inspiration from {reference_game}, what do you most want to preserve: the input feel, the pressure curve, or the round-to-round payoff?"
-            )
-        if theme:
-            return (
-                f"\u5728\u201c{theme}\u201d\u8fd9\u4e2a\u60c5\u5883\u91cc\uff0c\u73a9\u5bb6\u6700\u5e38\u505a\u7684\u4e00\u4e2a\u52a8\u4f5c\u662f\u4ec0\u4e48\uff1f"
-                if zh else
-                f"In the {theme} setup, what does the player do over and over?"
-            )
-    if slot_key == "input_method":
-        if reference_game:
-            return (
-                f"\u8fd9\u7248\u8fd8\u662f\u60f3\u4fdd\u6301\u300a{reference_game}\u300b\u90a3\u79cd\u70b9\u6309\u8282\u594f\uff0c\u8fd8\u662f\u6539\u6210\u6ed1\u52a8/\u62d6\u62fd\u66f4\u5408\u9002\uff1f"
-                if zh else
-                f"Should this stay close to {reference_game}'s main control feel, or would swipe/drag fit this version better?"
-            )
-        if core_mechanic:
-            return (
-                "\u73a9\u5bb6\u4e3b\u8981\u901a\u8fc7\u70b9\u51fb\u3001\u6ed1\u52a8\u8fd8\u662f\u62d6\u62fd\u6765\u64cd\u4f5c\uff1f"
-                if zh else
-                "Should the player mainly tap, swipe, or drag?"
-            )
-    if slot_key == "difficulty":
-        if reference_game:
-            return (
-                f"\u4f60\u5e0c\u671b\u8fd9\u7248\u50cf\u300a{reference_game}\u300b\u90a3\u6837\u540e\u52b2\u8d8a\u6765\u8d8a\u5f3a\uff0c\u8fd8\u662f\u6574\u4f53\u66f4\u8f7b\u677e\u4e00\u70b9\uff1f"
-                if zh else
-                f"Do you want this to spike like {reference_game}, or stay more relaxed throughout?"
-            )
-        if theme:
-            return (
-                f"\u201c{theme}\u201d\u8fd9\u7248\u4f53\u9a8c\uff0c\u4f60\u66f4\u60f3\u505a\u6210\u8f7b\u677e\u3001\u6807\u51c6\uff0c\u8fd8\u662f\u9010\u6b65\u53d8\u96be\uff1f"
-                if zh else
-                f"For this {theme} version, should the difficulty feel easy, standard, or progressively tougher?"
-            )
-    if slot_key == "game_type":
-        if reference_game:
-            return (
-                f"\u53c2\u8003\u300a{reference_game}\u300b\u7684\u524d\u63d0\u4e0b\uff0c\u4f60\u66f4\u60f3\u8981\u76ca\u667a\u3001\u4f11\u95f2\uff0c\u8fd8\u662f\u66f4\u6076\u641e\u7684\u7248\u672c\uff1f"
-                if zh else
-                f"With {reference_game} as a touchstone, should this lean more puzzle, casual, or more overtly comedic?"
-            )
-
-    default_prompts = {
-        "game_type": (
-            "\u8fd9\u4e2a\u6e38\u620f\u66f4\u504f\u76ca\u667a\u3001\u4f11\u95f2\u3001\u6559\u80b2\uff0c\u8fd8\u662f\u641e\u7b11\u65b9\u5411\uff1f"
-            if zh else
-            "Should this feel more puzzle, casual, educational, or funny?"
-        ),
-        "core_mechanic": (
-            "\u73a9\u5bb6\u5728\u8fd9\u4e2a\u6e38\u620f\u91cc\u6700\u5e38\u505a\u7684\u4e00\u4e2a\u52a8\u4f5c\u662f\u4ec0\u4e48\uff1f"
-            if zh else
-            "What is the main thing the player does most of the time?"
-        ),
-        "theme": (
-            "\u4f60\u5e0c\u671b\u6e38\u620f\u5448\u73b0\u4ec0\u4e48\u4e3b\u9898\u3001\u4e16\u754c\u89c2\u6216\u60c5\u5883\uff1f"
-            if zh else
-            "What theme, world, or situation should the game use?"
-        ),
-        "input_method": (
-            "\u73a9\u5bb6\u4e3b\u8981\u901a\u8fc7\u70b9\u51fb\u3001\u6ed1\u52a8\u8fd8\u662f\u62d6\u62fd\u6765\u64cd\u4f5c\uff1f"
-            if zh else
-            "Should the player mainly tap, swipe, or drag?"
-        ),
-        "win_condition": (
-            "\u8fd9\u4e00\u5c40\u91cc\u73a9\u5bb6\u600e\u6837\u7b97\u8d62\uff0c\u6216\u8005\u8fbe\u6210\u4ec0\u4e48\u76ee\u6807\uff1f"
-            if zh else
-            "What counts as winning or clearing the round?"
-        ),
-        "difficulty": (
-            "\u6574\u4f53\u96be\u5ea6\u4f60\u66f4\u60f3\u8981\u8f7b\u677e\u3001\u6807\u51c6\uff0c\u8fd8\u662f\u9010\u6b65\u53d8\u96be\uff1f"
-            if zh else
-            "Should the difficulty feel easy, standard, or progressively harder?"
-        ),
-    }
-    return default_prompts.get(
-        slot_key,
-        "\u8bf7\u518d\u8865\u5145\u4e00\u4e2a\u5173\u952e\u8bbe\u5b9a\u3002" if zh else "Please add one more key design detail.",
-    )
 
 
 def _contains_marker(text: str, marker: str) -> bool:
@@ -1636,59 +1440,6 @@ def _build_sparse_slot_fallback(
     return _normalize_slot_payload(merged)
 
 
-def _resolve_spec_request_slots(
-    *,
-    slots: SlotState,
-    source_text: str,
-    title: Optional[str],
-    preferred_game_type: Optional[str],
-    variation_seed: Optional[str] = None,
-) -> SlotState:
-    normalized_source = _normalize_free_text(source_text)
-    normalized_title = _normalize_free_text(title or "")
-    existing_payload = _normalize_slot_payload(
-        slots.model_dump(mode="python", exclude_none=True)
-    )
-    existing_required_count = sum(
-        1
-        for key in SlotState.model_fields["REQUIRED_SLOTS"].default
-        if str(existing_payload.get(key) or "").strip()
-    )
-    concise_source = bool(normalized_source and len(normalized_source) <= 64)
-    sparse_request = (
-        _looks_like_sparse_request(normalized_source)
-        or (concise_source and existing_required_count <= 1)
-        if normalized_source
-        else bool(normalized_title and _looks_like_sparse_request(normalized_title))
-    )
-    fallback_payload = _build_sparse_slot_fallback(
-        source_text=normalized_source,
-        title=normalized_title or None,
-        raw_text=" ".join(item for item in [normalized_title, normalized_source] if item),
-        repaired_text="",
-        preferred_game_type=preferred_game_type,
-        variation_seed=variation_seed,
-    ) if sparse_request else {}
-    merged_payload = _merge_slot_payloads(fallback_payload, existing_payload)
-    if not str(merged_payload.get("game_type") or "").strip():
-        preferred = _normalize_game_type_label(
-            preferred_game_type or "",
-            normalized_title,
-            normalized_source,
-        ) if preferred_game_type else ""
-        if preferred:
-            merged_payload["game_type"] = preferred
-        elif sparse_request:
-            merged_payload["game_type"] = _infer_game_type_from_sparse_context(
-                normalized_title,
-                normalized_source,
-                variation_seed=variation_seed,
-            ) or "casual"
-        else:
-            merged_payload["game_type"] = "casual"
-    return SlotState(**_normalize_slot_payload(merged_payload))
-
-
 def _has_minimum_viable_slot_payload(slot_data: Dict[str, Any]) -> bool:
     return bool(str(slot_data.get("game_type") or "").strip())
 
@@ -1841,39 +1592,6 @@ def _infer_slots_from_text(text: str) -> Dict[str, Any]:
     return inferred
 
 
-def _source_description_from_history(history: List[ConversationMessage]) -> str:
-    user_messages = [
-        re.sub(r"\s+", " ", item.content.strip())
-        for item in history
-        if item.role == "user" and item.content and item.content.strip()
-    ]
-    return "\n".join(user_messages[-3:])
-
-
-def _latest_user_answer_from_history(history: List[ConversationMessage]) -> str:
-    for item in reversed(history):
-        if item.role != "user":
-            continue
-        content = _normalize_free_text(item.content)
-        if content:
-            return content
-    return ""
-
-
-def _build_dialogue_source_text(initial_prompt: Optional[str], history: List[ConversationMessage]) -> str:
-    combined: List[str] = []
-    for part in [initial_prompt or "", *(item.content for item in history if item.role == "user")]:
-        normalized = _normalize_free_text(part)
-        if normalized and normalized not in combined:
-            combined.append(normalized)
-    return "\n".join(combined[-4:])
-
-
-def _normalize_slot_key(slot_key: Optional[str]) -> str:
-    normalized = str(slot_key or "").strip()
-    return normalized if normalized in SlotState.model_fields else ""
-
-
 def _build_heuristic_slot_payload(
     *,
     raw_text: str,
@@ -1994,72 +1712,10 @@ def _coerce_authoritative_slot_value(
 
 
 class DialogueEngine:
-    """Dialogue engine for slot-filling and single-shot parsing."""
+    """Intent parser with slot repair and GameSpec synthesis."""
 
     def __init__(self) -> None:
         self._client = LLMClient()
-
-    @staticmethod
-    def _should_use_first_turn_fast_path(history: List[ConversationMessage]) -> bool:
-        user_count = 0
-        assistant_count = 0
-        latest_user_message = ""
-        for message in history:
-            normalized = _normalize_free_text(message.content)
-            if not normalized:
-                continue
-            if message.role == "user":
-                user_count += 1
-                latest_user_message = normalized
-            elif message.role == "assistant":
-                assistant_count += 1
-        if user_count != 1 or assistant_count != 0:
-            return False
-        if _extract_reference_game_from_text(latest_user_message):
-            return False
-        if not _looks_like_sparse_request(latest_user_message):
-            return False
-        inferred = _infer_slots_from_text(latest_user_message)
-        if any(
-            inferred.get(key)
-            for key in (
-                "game_type",
-                "core_mechanic",
-                "theme",
-                "input_method",
-                "win_condition",
-                "difficulty",
-                "reference_game",
-            )
-        ):
-            return False
-        return True
-
-    def _apply_heuristic_turn_slot_update(
-        self,
-        *,
-        session: DialogueSession,
-        source_text: str,
-        title: Optional[str] = None,
-        allow_sparse_fallback: bool = True,
-    ) -> List[str]:
-        old_slots = session.slots.model_copy()
-        heuristic_slot_data = _build_heuristic_slot_payload(
-            raw_text="",
-            source_text=source_text,
-            title=title,
-            preferred_game_type=str(session.slots.game_type or "") or None,
-            variation_seed=session.session_id,
-            allow_sparse_fallback=allow_sparse_fallback,
-        )
-        for key, value in heuristic_slot_data.items():
-            if value is not None and hasattr(session.slots, key):
-                setattr(session.slots, key, value)
-
-        return [
-            key for key in SlotState.model_fields
-            if getattr(session.slots, key) != getattr(old_slots, key)
-        ]
 
     async def _complete_slot_request(
         self,
@@ -2075,26 +1731,16 @@ class DialogueEngine:
         timeout_retry_increment_s: int = 30,
         timeout_retry_max_s: Optional[int] = None,
     ) -> str:
-        is_fast_dialogue_slot_extract = step_key == "dialogue.slot_extract"
-        prefer_fast_route = False
-        effective_request_timeout_s = request_timeout_s
-        effective_overall_timeout_s = overall_timeout_s
-        if is_fast_dialogue_slot_extract:
-            slot_request_timeout_s = _dialogue_slot_request_timeout_s()
-            slot_overall_timeout_s = _dialogue_slot_overall_timeout_s()
-            effective_request_timeout_s = (
-                slot_request_timeout_s
-                if effective_request_timeout_s is None
-                else max(1, int(effective_request_timeout_s))
-            )
-            effective_overall_timeout_s = (
-                slot_overall_timeout_s
-                if effective_overall_timeout_s is None
-                else max(
-                    max(1, int(effective_request_timeout_s)),
-                    int(effective_overall_timeout_s),
-                )
-            )
+        effective_request_timeout_s = (
+            max(1, int(request_timeout_s))
+            if request_timeout_s is not None
+            else None
+        )
+        effective_overall_timeout_s = (
+            max(effective_request_timeout_s or 1, int(overall_timeout_s))
+            if overall_timeout_s is not None
+            else None
+        )
         try:
             return await self._client.complete(
                 max_tokens=max_tokens,
@@ -2102,11 +1748,11 @@ class DialogueEngine:
                 messages=messages,
                 step_key=step_key,
                 stage=stage,
-                prefer_fast=prefer_fast_route,
+                prefer_fast=False,
                 allow_provider_fallback=True,
                 response_size_hint="small",
                 context_scope="task",
-                compression_policy="intent_parse" if step_key == "intent_parse" else "dialogue",
+                compression_policy="intent_parse",
                 request_timeout_s=effective_request_timeout_s,
                 overall_timeout_s=effective_overall_timeout_s,
             )
@@ -2120,34 +1766,30 @@ class DialogueEngine:
                     exc.output_tokens,
                 )
                 return excerpt
-            if is_fast_dialogue_slot_extract:
-                raise
             return await self._client.complete_with_truncation_retry(
                 max_tokens=max_tokens,
                 system=system,
                 messages=messages,
                 step_key=step_key,
                 stage=stage,
-                prefer_fast=prefer_fast_route,
+                prefer_fast=False,
                 allow_provider_fallback=True,
                 response_size_hint="small",
                 context_scope="task",
-                compression_policy="intent_parse" if step_key == "intent_parse" else "dialogue",
+                compression_policy="intent_parse",
                 request_timeout_s=effective_request_timeout_s,
                 overall_timeout_s=effective_overall_timeout_s,
                 truncation_retry_attempts=1,
                 truncation_retry_increment=512,
                 truncation_retry_max_tokens=max(max_tokens, 2048),
-                timeout_retry_attempts=(
-                    0 if is_fast_dialogue_slot_extract else max(1, int(timeout_retry_attempts or 0))
-                ),
+                timeout_retry_attempts=max(1, int(timeout_retry_attempts or 0)),
                 timeout_retry_increment_s=max(1, int(timeout_retry_increment_s)),
                 timeout_retry_max_s=timeout_retry_max_s or 120,
             )
         except Exception as exc:
             normalized_message = str(exc or "").lower()
             is_timeout_like = "timed out" in normalized_message or "timeout" in normalized_message
-            if is_fast_dialogue_slot_extract or not is_timeout_like or int(timeout_retry_attempts or 0) <= 0:
+            if not is_timeout_like or int(timeout_retry_attempts or 0) <= 0:
                 raise
             logger.warning(
                 "LLM %s request timed out; retrying with extended timeout budget (request=%ss overall=%ss)",
@@ -2161,11 +1803,11 @@ class DialogueEngine:
                 messages=messages,
                 step_key=step_key,
                 stage=stage,
-                prefer_fast=prefer_fast_route,
+                prefer_fast=False,
                 allow_provider_fallback=True,
                 response_size_hint="small",
                 context_scope="task",
-                compression_policy="intent_parse" if step_key == "intent_parse" else "dialogue",
+                compression_policy="intent_parse",
                 request_timeout_s=effective_request_timeout_s,
                 overall_timeout_s=effective_overall_timeout_s,
                 truncation_retry_attempts=1,
@@ -2175,422 +1817,6 @@ class DialogueEngine:
                 timeout_retry_increment_s=max(1, int(timeout_retry_increment_s)),
                 timeout_retry_max_s=timeout_retry_max_s or 120,
             )
-
-    def get_or_create_session(self, session_id: str, user_id: str) -> DialogueSession:
-        if session_id not in _sessions:
-            _sessions[session_id] = DialogueSession(
-                session_id=session_id,
-                user_id=user_id,
-                state=DialogueState.greeting,
-            )
-        return _sessions[session_id]
-
-    async def process_message(self, req: ChatRequest) -> ChatResponse:
-        session = self.get_or_create_session(req.session_id, req.user_id)
-        session.history.append(ConversationMessage(role="user", content=req.content))
-
-        if not self._client.is_enabled():
-            raise RuntimeError("Real LLM mode is required for dialogue sessions")
-
-        reply, updated_slots = await self._llm_process(session)
-        session.history.append(ConversationMessage(role="assistant", content=reply))
-        session.state = self._next_state(session.state, session.slots.fill_pct())
-
-        return ChatResponse(
-            session_id=req.session_id,
-            reply=reply,
-            state=session.state,
-            slots_updated=updated_slots,
-            slot_fill_pct=session.slots.fill_pct(),
-            ready_to_generate=session.state == DialogueState.confirmed,
-        )
-
-    async def analyze_turn(self, req: AnalyzeDialogueTurnRequest) -> AnalyzeDialogueTurnResponse:
-        if not self._client.is_enabled():
-            raise RuntimeError("Real LLM mode is required for dialogue analysis")
-
-        history = [
-            ConversationMessage(
-                role=item.role,
-                content=item.content,
-                kind=getattr(item, "kind", None),
-            )
-            for item in (req.conversation or [])
-        ]
-        session = DialogueSession(
-            session_id=req.session_id or "stateless",
-            user_id=req.user_id or "system",
-            state=DialogueState.clarifying,
-            slots=req.current_slots.model_copy(deep=True),
-            history=history,
-        )
-        source_text = _build_dialogue_source_text(req.initial_prompt, history)
-        answered_slot_key = _normalize_slot_key(req.answered_slot_key)
-        latest_user_answer = _normalize_free_text(
-            req.latest_user_answer or _latest_user_answer_from_history(history)
-        )
-
-        skipped_slots = {
-            str(slot).strip()
-            for slot in (req.skipped_slots or [])
-            if str(slot).strip()
-        }
-        authoritative_slots: set[str] = set()
-        blocked_slots: set[str] = set()
-
-        if req.advance_only:
-            updated_slots: list[str] = []
-        elif answered_slot_key and latest_user_answer:
-            updated_slots = self._apply_answer_turn_slot_update(
-                session=session,
-                answered_slot_key=answered_slot_key,
-                latest_user_answer=latest_user_answer,
-                source_text=source_text,
-                title=req.title,
-            )
-            if (
-                answered_slot_key in updated_slots
-                and str(getattr(session.slots, answered_slot_key, "") or "").strip()
-            ):
-                authoritative_slots.add(answered_slot_key)
-                blocked_slots.add(answered_slot_key)
-        elif self._should_use_first_turn_fast_path(history):
-            updated_slots = self._apply_heuristic_turn_slot_update(
-                session=session,
-                source_text=source_text,
-                title=req.title,
-                allow_sparse_fallback=True,
-            )
-        else:
-            updated_slots = await self._extract_slots_from_conversation(
-                session,
-                source_text=source_text,
-                title=req.title,
-            )
-
-        confidence_by_slot, evidence_by_slot, ambiguity_flags = _build_slot_confidence_report(
-            session.slots,
-            source_text=source_text,
-            title=req.title,
-            history=history,
-            updated_slots=updated_slots,
-            authoritative_slots=sorted(authoritative_slots),
-        )
-        current_question, question_strategy = _build_dialogue_question(
-            session.slots,
-            skipped_slots=sorted(skipped_slots),
-            blocked_slots=sorted(blocked_slots),
-            source_text=source_text,
-            entry_mode=req.entry_mode,
-            confidence_by_slot=confidence_by_slot,
-            ambiguity_flags=ambiguity_flags,
-        )
-        question_zh = _detect_ui_language(" ".join(part for part in [req.title or "", source_text] if part)).startswith("zh")
-        if current_question:
-            current_question.prompt = _build_contextual_question_prompt(
-                current_question.slot_key,
-                session.slots,
-                zh=question_zh,
-            )
-            current_question.label = _slot_summary_label(
-                current_question.slot_key,
-                zh=question_zh,
-            )
-        fill_pct = session.slots.fill_pct()
-        missing_required = session.slots.missing_required()
-        has_interactive_context = bool(
-            req.advance_only
-            or answered_slot_key
-            or sum(
-                1 for message in history
-                if message.role == "assistant" and _normalize_free_text(message.content)
-            ) > 0
-            or sum(
-                1 for message in history
-                if message.role == "user" and _normalize_free_text(message.content)
-            ) > 1
-        )
-        ready_to_generate = bool(
-            not missing_required
-            or (
-                fill_pct >= 0.67
-                and (current_question is None or has_interactive_context)
-            )
-        )
-        plan_draft = _build_plan_draft(
-            session.slots,
-            source_text=source_text,
-            title=req.title,
-            generation_tier=req.generation_tier,
-            entry_mode=req.entry_mode,
-        )
-        question_reason = (
-            question_strategy.reason
-            if question_strategy and question_strategy.reason
-            else None
-        )
-        reply = _compose_creation_session_reply_v2(
-            slots=session.slots,
-            current_question=current_question,
-            ready_to_generate=ready_to_generate,
-            source_text=source_text,
-            title=req.title,
-            latest_user_answer=latest_user_answer,
-            question_strategy=question_strategy,
-            plan_draft=plan_draft,
-        )
-
-        return AnalyzeDialogueTurnResponse(
-            reply=reply,
-            slots=session.slots,
-            slots_updated=updated_slots,
-            missing_required=missing_required,
-            slot_fill_pct=fill_pct,
-            ready_to_generate=ready_to_generate,
-            current_question=current_question,
-            confidence_by_slot=confidence_by_slot,
-            evidence_by_slot=evidence_by_slot,
-            ambiguity_flags=ambiguity_flags,
-            next_best_question_reason=question_reason,
-            question_strategy=question_strategy,
-            plan_draft=plan_draft,
-        )
-
-    async def analyze_turn_stream(
-        self,
-        req: AnalyzeDialogueTurnRequest,
-    ) -> AsyncIterator[Dict[str, Any]]:
-        analysis = await self.analyze_turn(req)
-        reply_kind = "question" if analysis.current_question else "summary"
-        fallback_reply = _normalize_free_text(analysis.reply)
-        analysis.reply = fallback_reply
-        yield {
-            "event": "final",
-            "data": DialogueStreamFinalPayload(
-                **analysis.model_dump(mode="json", exclude_none=True),
-            ).model_dump(mode="json", exclude_none=True),
-        }
-        accumulated = ""
-        preview_buffer = ""
-        emitted_delta = False
-        stream_failed = False
-
-        try:
-            async for delta in self._stream_analyze_turn_reply(req=req, analysis=analysis):
-                cleaned = str(delta or "")
-                if not cleaned:
-                    continue
-                if not emitted_delta:
-                    preview_buffer += cleaned
-                    if _looks_like_dialogue_internal_reply_leak(preview_buffer):
-                        stream_failed = True
-                        logger.warning(
-                            "Dialogue reply leak guard triggered before first delta for session=%s",
-                            req.session_id or "stateless",
-                        )
-                        break
-                    if not _should_release_dialogue_reply_preview(preview_buffer):
-                        continue
-                    accumulated = preview_buffer
-                    emitted_delta = True
-                    preview_buffer = ""
-                    yield {
-                        "event": "delta",
-                        "data": DialogueStreamDeltaPayload(
-                            delta=accumulated,
-                            accumulated=accumulated,
-                            kind=reply_kind,
-                        ).model_dump(mode="json"),
-                    }
-                    continue
-
-                candidate_accumulated = f"{accumulated}{cleaned}"
-                if _looks_like_dialogue_internal_reply_leak(candidate_accumulated):
-                    stream_failed = True
-                    logger.warning(
-                        "Dialogue reply leak guard triggered mid-stream for session=%s",
-                        req.session_id or "stateless",
-                    )
-                    break
-                accumulated = candidate_accumulated
-                yield {
-                    "event": "delta",
-                    "data": DialogueStreamDeltaPayload(
-                        delta=cleaned,
-                        accumulated=accumulated,
-                        kind=reply_kind,
-                    ).model_dump(mode="json"),
-                }
-        except Exception as exc:
-            stream_failed = True
-            logger.warning(
-                "Dialogue reply stream failed for session=%s, using fallback reply: %s",
-                req.session_id or "stateless",
-                exc,
-            )
-
-        if preview_buffer and not emitted_delta and not stream_failed:
-            if _looks_like_dialogue_internal_reply_leak(preview_buffer):
-                stream_failed = True
-                logger.warning(
-                    "Dialogue reply leak guard triggered on buffered preview for session=%s",
-                    req.session_id or "stateless",
-                )
-            else:
-                accumulated = preview_buffer
-                emitted_delta = True
-                preview_buffer = ""
-                yield {
-                    "event": "delta",
-                    "data": DialogueStreamDeltaPayload(
-                        delta=accumulated,
-                        accumulated=accumulated,
-                        kind=reply_kind,
-                    ).model_dump(mode="json"),
-                }
-
-        final_reply = fallback_reply if stream_failed else (_normalize_free_text(accumulated) or fallback_reply)
-        if _looks_like_dialogue_internal_reply_leak(final_reply):
-            stream_failed = True
-            final_reply = fallback_reply
-        if not emitted_delta and final_reply:
-            for chunk in _chunk_reply_for_streaming(final_reply):
-                accumulated += chunk if accumulated else chunk
-                yield {
-                    "event": "delta",
-                    "data": DialogueStreamDeltaPayload(
-                        delta=chunk,
-                        accumulated=accumulated,
-                        kind=reply_kind,
-                    ).model_dump(mode="json"),
-                }
-
-        analysis.reply = final_reply
-        yield {
-            "event": "done",
-            "data": DialogueStreamDonePayload(
-                message=final_reply,
-                kind=reply_kind,
-            ).model_dump(mode="json"),
-        }
-
-    async def _stream_analyze_turn_reply(
-        self,
-        *,
-        req: AnalyzeDialogueTurnRequest,
-        analysis: AnalyzeDialogueTurnResponse,
-    ) -> AsyncIterator[str]:
-        source_text = _build_dialogue_source_text(
-            req.initial_prompt,
-            [
-                ConversationMessage(
-                    role=item.role,
-                    content=item.content,
-                    kind=getattr(item, "kind", None),
-                )
-                for item in (req.conversation or [])
-            ],
-        )
-        system_prompt = _build_dialogue_reply_system_prompt_from_catalog(analysis)
-        user_prompt = _build_dialogue_reply_user_prompt_from_catalog(
-            request=req,
-            analysis=analysis,
-            source_text=source_text,
-        )
-        async for delta in self._client.stream_complete(
-            max_tokens=640,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-            step_key="dialogue.reply",
-            stage="dialogue",
-            prefer_fast=True,
-            response_size_hint="medium",
-            context_scope="task",
-            compression_policy="dialogue",
-        ):
-            yield delta
-
-    async def draft_plan_from_input(self, req: DraftPlanFromInputRequest) -> DraftPlanFromInputResponse:
-        slots = req.current_slots.model_copy(deep=True)
-        source_text = (req.source_description or "").strip()
-        title = (req.title or "").strip()
-        if source_text or title:
-            inferred = _normalize_slot_payload(
-                _infer_slots_from_text(" ".join(part for part in [title, source_text] if part))
-            )
-            explicit_theme = _infer_theme_from_context(title, source_text)
-            if not explicit_theme:
-                inferred.pop("theme", None)
-            for key, value in inferred.items():
-                if not getattr(slots, key, None) and value is not None:
-                    setattr(slots, key, value)
-
-        confidence_by_slot, evidence_by_slot, ambiguity_flags = _build_slot_confidence_report(
-            slots,
-            source_text=source_text,
-            title=title,
-            history=[],
-            updated_slots=[],
-        )
-        return DraftPlanFromInputResponse(
-            plan_draft=_build_plan_draft(
-                slots,
-                source_text=source_text,
-                title=title,
-                generation_tier=req.generation_tier,
-                entry_mode=req.entry_mode,
-            ),
-            confidence_by_slot=confidence_by_slot,
-            evidence_by_slot=evidence_by_slot,
-            ambiguity_flags=ambiguity_flags,
-        )
-
-    async def spec_from_slots(self, req: SpecFromSlotsRequest) -> SpecFromSlotsResponse:
-        slots = req.slots.model_copy(deep=True)
-        source_text = (req.source_description or "").strip()
-        title = (req.title or "").strip()
-        if source_text or title:
-            inferred = _infer_slots_from_text(" ".join(part for part in [title, source_text] if part))
-            normalized = _normalize_slot_payload(inferred)
-            for key, value in normalized.items():
-                if not getattr(slots, key, None) and value is not None:
-                    setattr(slots, key, value)
-
-        effective_slots = _resolve_spec_request_slots(
-            slots=slots,
-            source_text=source_text,
-            title=title or None,
-            preferred_game_type=req.preferred_game_type,
-            variation_seed=req.variation_seed or req.session_id,
-        )
-
-        spec = _build_game_spec(
-            effective_slots,
-            source_description=source_text,
-            variation_seed=req.variation_seed or req.session_id,
-        )
-        spec.generation_tier = req.generation_tier
-        spec.complexity_budget = str(getattr(req.generation_tier, "value", req.generation_tier) or "standard")
-        if title:
-            if spec.intent_summary:
-                spec.intent_summary = f"{title}: {spec.intent_summary}"
-            if not spec.source_description:
-                spec.source_description = source_text
-        return SpecFromSlotsResponse(
-            spec=spec,
-            missing_required=effective_slots.missing_required(),
-            slot_fill_pct=effective_slots.fill_pct(),
-        )
-
-    async def slots_to_game_spec(self, session_id: str) -> GameSpec:
-        session = _sessions.get(session_id)
-        if not session:
-            raise ValueError(f"Session {session_id} not found")
-        return _build_game_spec(
-            session.slots,
-            source_description=_source_description_from_history(session.history),
-            variation_seed=session_id,
-        )
 
     async def parse_description_to_spec(
         self,
@@ -2637,220 +1863,6 @@ class DialogueEngine:
             source_description=description,
             variation_seed=variation_seed,
         )
-
-    async def _llm_process(self, session: DialogueSession) -> Tuple[str, List[str]]:
-        if self._should_use_first_turn_fast_path(session.history):
-            source_text = _source_description_from_history(session.history)
-            updated = self._apply_heuristic_turn_slot_update(
-                session=session,
-                source_text=source_text,
-                title=None,
-                allow_sparse_fallback=True,
-            )
-            current_question, _ = _build_dialogue_question(
-                session.slots,
-                skipped_slots=[],
-                blocked_slots=[],
-                source_text=source_text,
-                entry_mode="create",
-                confidence_by_slot={},
-                ambiguity_flags=[],
-            )
-            question_zh = _detect_ui_language(source_text).startswith("zh")
-            if current_question:
-                current_question.prompt = _build_contextual_question_prompt(
-                    current_question.slot_key,
-                    session.slots,
-                    zh=question_zh,
-                )
-                current_question.label = _slot_summary_label(
-                    current_question.slot_key,
-                    zh=question_zh,
-                )
-            missing_required = session.slots.missing_required()
-            ready_to_generate = bool(
-                not missing_required
-                or (
-                    session.slots.fill_pct() >= 0.67
-                    and current_question is None
-                )
-            )
-            reply = _compose_creation_session_reply_v2(
-                slots=session.slots,
-                current_question=current_question,
-                ready_to_generate=ready_to_generate,
-                source_text=source_text,
-                title=None,
-                latest_user_answer=_latest_user_answer_from_history(session.history),
-                question_strategy=None,
-                plan_draft=_build_plan_draft(
-                    session.slots,
-                    source_text=source_text,
-                    title=None,
-                    generation_tier="standard",
-                    entry_mode="create",
-                ),
-            )
-            return reply, updated
-
-        old_slots = session.slots.model_copy()
-
-        slot_text = await self._complete_slot_request(
-            max_tokens=640,
-            system=_with_slot_json_contract(
-                require_prompt("prompt.slot_extraction_system")
-            ),
-            messages=_history_to_messages(session.history),
-            step_key="dialogue.slot_extract",
-            stage="dialogue",
-        )
-        slot_data = await self._extract_slot_payload_with_repair(
-            raw_text=slot_text,
-            source_text=_source_description_from_history(session.history),
-            step_key="dialogue.slot_extract",
-            stage="dialogue",
-        )
-
-        for key, value in slot_data.items():
-            if value is not None and hasattr(session.slots, key):
-                setattr(session.slots, key, value)
-
-        updated = [
-            key for key in SlotState.model_fields
-            if getattr(session.slots, key) != getattr(old_slots, key)
-        ]
-
-        missing = session.slots.missing_required()
-        slot_summary = _format_slot_summary(session.slots)
-        system = require_prompt("prompt.dialogue_system").format(
-            slot_summary=slot_summary,
-            missing_slots=", ".join(SLOT_LABELS.get(item, item) for item in missing) or "None",
-        )
-
-        try:
-            reply = await self._client.complete_with_truncation_retry(
-                max_tokens=2048,
-                system=system,
-                messages=_history_to_messages(session.history),
-                step_key="dialogue.reply",
-                stage="dialogue",
-                prefer_fast=True,
-                response_size_hint="medium",
-                context_scope="task",
-                compression_policy="dialogue",
-                truncation_retry_attempts=1,
-                truncation_retry_increment=512,
-                truncation_retry_max_tokens=3072,
-                timeout_retry_attempts=1,
-                timeout_retry_increment_s=30,
-                timeout_retry_max_s=120,
-            )
-            reply = reply.strip()
-        except Exception as exc:
-            logger.warning("Reply generation error: %s", exc)
-            reply = _fallback_reply(session.state, session.slots)
-
-        return reply, updated
-
-    async def _extract_slots_from_conversation(
-        self,
-        session: DialogueSession,
-        *,
-        source_text: str,
-        title: Optional[str] = None,
-    ) -> List[str]:
-        old_slots = session.slots.model_copy()
-        messages = _history_to_messages(session.history)
-        if not messages and source_text.strip():
-            messages = [{"role": "user", "content": source_text.strip()}]
-
-        slot_text = ""
-        try:
-            slot_text = await self._complete_slot_request(
-                max_tokens=640,
-                system=_with_slot_json_contract(
-                    require_prompt("prompt.slot_extraction_system")
-                ),
-                messages=messages,
-                step_key="dialogue.slot_extract",
-                stage="dialogue",
-            )
-        except Exception as exc:
-            logger.warning(
-                "Dialogue slot extraction request failed; using heuristic fallback for session=%s: %s",
-                session.session_id,
-                exc,
-            )
-        heuristic_slot_data = _build_heuristic_slot_payload(
-            raw_text=slot_text,
-            source_text=source_text,
-            title=title,
-            variation_seed=session.session_id,
-            allow_sparse_fallback=True,
-        )
-        slot_data = _merge_structured_slot_payload(
-            heuristic_slot_data=heuristic_slot_data,
-            raw_slot_data=_normalize_slot_payload(_safe_parse_json(slot_text) or {}),
-            source_text=source_text,
-            title=title,
-            raw_text=slot_text,
-        )
-
-        for key, value in slot_data.items():
-            if value is not None and hasattr(session.slots, key):
-                setattr(session.slots, key, value)
-
-        return [
-            key for key in SlotState.model_fields
-            if getattr(session.slots, key) != getattr(old_slots, key)
-        ]
-
-    def _apply_answer_turn_slot_update(
-        self,
-        *,
-        session: DialogueSession,
-        answered_slot_key: str,
-        latest_user_answer: str,
-        source_text: str,
-        title: Optional[str] = None,
-    ) -> List[str]:
-        normalized_slot_key = _normalize_slot_key(answered_slot_key)
-        normalized_answer = _normalize_free_text(latest_user_answer)
-        if (
-            not normalized_slot_key
-            or normalized_slot_key not in SlotState.model_fields
-            or not normalized_answer
-        ):
-            return []
-
-        old_slots = session.slots.model_copy()
-        heuristic_slot_data = _build_heuristic_slot_payload(
-            raw_text="",
-            source_text=normalized_answer,
-            title=title,
-            preferred_game_type=str(session.slots.game_type or "") or None,
-            variation_seed=session.session_id,
-            allow_sparse_fallback=False,
-        )
-        slot_data = dict(heuristic_slot_data)
-        authoritative_value = _coerce_authoritative_slot_value(
-            normalized_slot_key,
-            answer_text=normalized_answer,
-            inferred_slot_data=heuristic_slot_data,
-            source_text=source_text,
-            title=title,
-        )
-        if authoritative_value is not None:
-            slot_data[normalized_slot_key] = authoritative_value
-
-        for key, value in slot_data.items():
-            if value is not None and hasattr(session.slots, key):
-                setattr(session.slots, key, value)
-
-        return [
-            key for key in SlotState.model_fields
-            if getattr(session.slots, key) != getattr(old_slots, key)
-        ]
 
     async def _extract_slot_payload_with_repair(
         self,
@@ -2978,17 +1990,6 @@ class DialogueEngine:
                 "repairedSlotData": repaired_slot_data,
             },
         )
-
-    @staticmethod
-    def _next_state(current: DialogueState, fill_pct: float) -> DialogueState:
-        if current == DialogueState.greeting:
-            return DialogueState.describing
-        if current == DialogueState.describing and fill_pct >= 0.6:
-            return DialogueState.clarifying
-        if current == DialogueState.clarifying and fill_pct >= 1.0:
-            return DialogueState.confirmed
-        return current
-
 
 def _build_game_spec(
     slots: SlotState,
@@ -3217,203 +2218,6 @@ def _derive_quality_spec_fields(
     }
 
 
-def _history_to_messages(history: List[ConversationMessage]) -> List[Dict[str, str]]:
-    return [{"role": item.role, "content": item.content} for item in history]
-
-
-def _format_slot_summary(slots: SlotState) -> str:
-    lines = []
-    for field in ["game_type", "core_mechanic", "theme", "input_method", "win_condition", "difficulty"]:
-        value = getattr(slots, field)
-        label = SLOT_LABELS.get(field, field)
-        lines.append(f"  {label}: {value or '(unknown)'}")
-    return "\n".join(lines)
-
-
-def _build_slot_confidence_report(
-    slots: SlotState,
-    *,
-    source_text: str = "",
-    title: Optional[str] = None,
-    history: Optional[List[ConversationMessage]] = None,
-    updated_slots: Optional[List[str]] = None,
-    authoritative_slots: Optional[List[str]] = None,
-) -> Tuple[Dict[str, float], Dict[str, str], List[str]]:
-    history = history or []
-    updated_slots = updated_slots or []
-    authoritative_slots = authoritative_slots or []
-    authoritative = {slot for slot in authoritative_slots if slot}
-    combined_text = " ".join(
-        part
-        for part in [title or "", source_text, *(item.content for item in history[-6:])]
-        if str(part or "").strip()
-    )
-    language = _detect_ui_language(combined_text)
-    zh = language.startswith("zh")
-    confidence: Dict[str, float] = {}
-    evidence: Dict[str, str] = {}
-    ambiguity_flags: List[str] = []
-
-    for field in ["game_type", "core_mechanic", "theme", "input_method", "win_condition", "difficulty"]:
-        value = getattr(slots, field, None)
-        score, evidence_text, ambiguous = _score_slot_confidence(
-            field,
-            value,
-            combined_text,
-            updated=field in updated_slots,
-            authoritative=field in authoritative,
-            zh=zh,
-        )
-        confidence[field] = score
-        if evidence_text:
-            evidence[field] = evidence_text
-        if value is None or str(value).strip() == "":
-            ambiguity_flags.append(f"{field}:missing")
-        elif ambiguous:
-            ambiguity_flags.append(f"{field}:ambiguous")
-        elif score < 0.72:
-            ambiguity_flags.append(f"{field}:low_confidence")
-
-    return confidence, evidence, ambiguity_flags
-
-
-
-
-def _score_slot_confidence(
-    field: str,
-    value: Any,
-    text: str,
-    *,
-    updated: bool,
-    authoritative: bool,
-    zh: bool,
-) -> Tuple[float, str, bool]:
-    if isinstance(value, list):
-        value_text = " ".join(str(item).strip() for item in value if str(item).strip())
-    else:
-        value_text = str(value or "").strip()
-
-    missing_evidence = (
-        "当前描述里还没有提供这个信息。"
-        if zh
-        else "Missing from the current brief."
-    )
-    if not value_text:
-        return 0.0, missing_evidence, False
-
-    explicit_evidence = (
-        "这个信息是用户在最新一轮里直接确认的。"
-        if zh
-        else "Explicitly confirmed in the latest user message."
-    )
-    if authoritative:
-        return (0.99 if updated else 0.97), explicit_evidence, False
-
-    lowered = (text or "").lower()
-    value_lower = value_text.lower()
-    evidence_terms = _slot_evidence_terms(field, value_text)
-    matched_term = next((term for term in evidence_terms if term and term.lower() in lowered), None)
-    ambiguous = False
-    base = 0.68 if updated else 0.6
-
-    if matched_term:
-        base = 0.86 if updated else 0.8
-
-    if field == "game_type":
-        explicit_type = _infer_explicit_game_type(text)
-        if explicit_type == value_lower:
-            base = max(base, 0.91 if updated else 0.86)
-        elif explicit_type:
-            ambiguous = True
-            base = min(base, 0.58)
-    elif field == "input_method":
-        input_hint = _infer_input_method_from_text(text)
-        if input_hint == value_lower:
-            base = max(base, 0.9 if updated else 0.84)
-        elif input_hint:
-            ambiguous = True
-            base = min(base, 0.56)
-    elif field == "difficulty":
-        difficulty_hint = _infer_difficulty_from_text(text)
-        if difficulty_hint == value_lower:
-            base = max(base, 0.88 if updated else 0.83)
-        elif difficulty_hint:
-            ambiguous = True
-            base = min(base, 0.56)
-    elif field == "theme":
-        theme_hint = _infer_theme_from_context(text)
-        if theme_hint:
-            hint_lower = theme_hint.lower()
-            if hint_lower in value_lower or value_lower in hint_lower:
-                base = max(base, 0.9 if updated else 0.84)
-            elif matched_term is None:
-                ambiguous = True
-                base = min(base, 0.6)
-        elif matched_term:
-            base = max(base, 0.84 if updated else 0.76)
-    elif field == "core_mechanic":
-        if matched_term:
-            base = max(base, 0.88 if updated else 0.82)
-        elif len(value_text) >= 8:
-            base = max(base, 0.74 if updated else 0.68)
-    elif field == "win_condition":
-        outcome_markers = ("win", "goal", "clear", "complete", "survive", "过关", "获胜", "目标", "完成")
-        if matched_term or any(marker in lowered for marker in outcome_markers):
-            base = max(base, 0.86 if updated else 0.8)
-
-    if updated and not matched_term and not ambiguous:
-        base = min(0.98, base + 0.04)
-
-    if ambiguous:
-        evidence = (
-            "当前值主要是根据上下文推断的，但最新回复里出现了另一种信号。"
-            if zh
-            else "Inferred from context, but the latest message also suggests a different answer."
-        )
-    elif matched_term:
-        evidence = (
-            f"在最新上下文里命中了标记 `{matched_term}`。"
-            if zh
-            else f"Matched marker `{matched_term}` in the latest context."
-        )
-    else:
-        evidence = (
-            "这个值主要是根据整体想法和上下文推断出来的。"
-            if zh
-            else "Mainly inferred from the current idea and surrounding context."
-        )
-    return round(max(0.0, min(base, 0.99)), 3), evidence, ambiguous
-
-
-def _slot_evidence_terms(field: str, value_text: str) -> List[str]:
-    normalized = value_text.lower()
-    if field == "game_type":
-        marker_map = {
-            "casual": CASUAL_REQUEST_MARKERS,
-            "puzzle": PUZZLE_REQUEST_MARKERS,
-            "educational": EDUCATIONAL_REQUEST_MARKERS,
-            "funny": FUNNY_REQUEST_MARKERS,
-        }
-        return list(marker_map.get(normalized, (value_text,)))
-    if field == "input_method":
-        marker_map = {
-            "tap": ("tap", "click", "touch", "点击", "点按", "轻触"),
-            "touch": ("touch", "tap", "press", "触摸", "轻触"),
-            "swipe": ("swipe", "slide", "sliding", "滑动", "滑屏", "划动"),
-            "drag": ("drag", "move", "拖拽", "拖动"),
-        }
-        return list(marker_map.get(normalized, (value_text,)))
-    if field == "difficulty":
-        marker_map = {
-            "easy": ("easy", "simple", "relaxed", "casual", "简单", "轻松", "休闲"),
-            "medium": ("medium", "balanced", "normal", "moderate", "中等", "适中", "普通"),
-            "hard": ("hard", "challenging", "difficult", "brutal", "困难", "硬核", "挑战"),
-            "progressive": ("progressive", "ramping", "escalating", "ramp", "递进", "逐步升级", "越来越难"),
-        }
-        return list(marker_map.get(normalized, (value_text,)))
-    return [value_text]
-
-
 def _infer_explicit_game_type(text: str) -> Optional[str]:
     normalized = _normalize_free_text(text)
     if not normalized:
@@ -3512,128 +2316,6 @@ def _infer_difficulty_from_text(text: str) -> Optional[str]:
     return _pick_unique_top_signal(signal_scores)
 
 
-def _build_plan_draft(
-    slots: SlotState,
-    *,
-    source_text: str = "",
-    title: Optional[str] = None,
-    generation_tier: str = "standard",
-    entry_mode: str = "create",
-) -> PlanDraft:
-    language = _detect_ui_language(" ".join(part for part in [title or "", source_text] if part))
-    zh = language.startswith("zh")
-
-    game_type = str(slots.game_type or "casual").strip() or "casual"
-    game_type_label = _localized_game_type_name(game_type, zh)
-    theme = str(
-        slots.theme
-        or _infer_theme_from_context(title or "", source_text)
-        or (title or "").strip()
-        or ("清晰世界观" if zh else "a clear world")
-    ).strip()
-    mechanic = str(slots.core_mechanic or ("一个好懂又有后劲的核心交互" if zh else "a readable core interaction")).strip()
-    input_method = str(slots.input_method or ("touch" if not zh else "点按"))
-    objective = str(slots.win_condition or ("完成当前回合目标" if zh else "complete the current round goal")).strip()
-    difficulty = str(slots.difficulty or "medium").strip() or "medium"
-    visual_style = str(slots.visual_style or ("鲜明易识别的手机游戏风格" if zh else "a bold, readable mobile look")).strip()
-
-    title_value = str(title or "").strip() or _plan_title_fallback(game_type, theme, zh)
-    summary = (
-        f"这是一款{game_type_label}，核心围绕“{mechanic}”，放在“{theme}”这个情境中展开。"
-        if zh else
-        f"This is a {game_type_label} built around '{mechanic}' in a {theme} setting."
-    )
-    concept_anchor = str(title or "").strip() or theme
-    concept = (
-        f"?????{concept_anchor}????????????????????????"
-        if zh else
-        f"The concept is to turn {concept_anchor} into a mobile loop that is easy to read and satisfying within one round."
-    )
-    interaction = (
-        f"玩家主要通过{input_method}去{mechanic}，并快速收到结果反馈。"
-        if zh else
-        f"The main interaction is to {mechanic} through {input_method} input with quick feedback."
-    )
-    objective_text = (
-        f"每一局的目标是：{objective}。"
-        if zh else
-        f"The round goal is: {objective}."
-    )
-    pacing = _plan_pacing_text(difficulty, generation_tier, entry_mode, zh)
-    visual_direction = (
-        f"视觉上优先追求{visual_style}，保证小屏上也能一眼看懂状态和目标。"
-        if zh else
-        f"Visually, aim for {visual_style} with strong readability on small screens."
-    )
-    signature_moment = _plan_signature_moment(game_type, theme, mechanic, zh)
-
-    return PlanDraft(
-        title=title_value,
-        summary=summary,
-        concept=concept,
-        interaction=interaction,
-        objective=objective_text,
-        pacing=pacing,
-        visual_direction=visual_direction,
-        signature_moment=signature_moment,
-    )
-
-
-def _localized_game_type_name(game_type: str, zh: bool) -> str:
-    mapping = {
-        "casual": ("休闲手机游戏", "casual mobile game"),
-        "puzzle": ("益智手机游戏", "puzzle mobile game"),
-        "educational": ("教育向手机游戏", "educational mobile game"),
-        "funny": ("恶搞轻游戏", "comedic mobile game"),
-    }
-    pair = mapping.get((game_type or "").strip().lower(), ("手机游戏", "mobile game"))
-    return pair[0] if zh else pair[1]
-
-
-def _plan_title_fallback(game_type: str, theme: str, zh: bool) -> str:
-    theme_text = _shorten_text(theme, limit=18) or ("新主题" if zh else "New Theme")
-    if zh:
-        return f"{theme_text}{_localized_game_type_name(game_type, True)}"
-    return f"{theme_text.title()} {game_type.title()}"
-
-
-def _plan_pacing_text(
-    difficulty: str,
-    generation_tier: str,
-    entry_mode: str,
-    zh: bool,
-) -> str:
-    difficulty = (difficulty or "medium").strip().lower()
-    if zh:
-        if difficulty == "easy":
-            base = "节奏偏轻松，前几秒就要给到成功反馈。"
-        elif difficulty == "hard":
-            base = "节奏更紧，尽快建立压力但仍要说清楚规则。"
-        elif difficulty == "progressive":
-            base = "前面先让玩家进入状态，后面逐步加压形成起伏。"
-        else:
-            base = "节奏保持清晰稳定，每次操作都能看到明确回报。"
-        if generation_tier == "showcase":
-            base += " 可以多给一个高光节奏或系统升级点。"
-        if entry_mode == "iterate":
-            base += " 这次偏向在现有方向上做精修。"
-        return base
-
-    if difficulty == "easy":
-        base = "Keep the pacing gentle and reward the player within the opening seconds."
-    elif difficulty == "hard":
-        base = "Build pressure quickly, but keep the rules readable and fair."
-    elif difficulty == "progressive":
-        base = "Start readable, then steadily ramp the pressure across the round."
-    else:
-        base = "Keep the pacing clear and even, with obvious feedback on each action."
-    if generation_tier == "showcase":
-        base += " Add one stronger escalation or highlight beat."
-    if entry_mode == "iterate":
-        base += " Treat this pass as a focused refinement of the current direction."
-    return base
-
-
 def _plan_signature_moment(game_type: str, theme: str, mechanic: str, zh: bool) -> str:
     theme_text = _shorten_text(theme, limit=16) or ("当前主题" if zh else "the theme")
     mechanic_text = _shorten_text(mechanic, limit=24) or ("核心交互" if zh else "the core interaction")
@@ -3650,455 +2332,3 @@ def _plan_signature_moment(game_type: str, theme: str, mechanic: str, zh: bool) 
     return f"Create one standout beat in {theme_text} where {mechanic_text} feels instantly replayable."
 
 
-def _build_dialogue_question(
-    slots: SlotState,
-    *,
-    skipped_slots: List[str],
-    blocked_slots: List[str],
-    source_text: str,
-    entry_mode: str,
-    confidence_by_slot: Optional[Dict[str, float]] = None,
-    ambiguity_flags: Optional[List[str]] = None,
-) -> Tuple[Optional[DialogueQuestion], Optional[QuestionStrategy]]:
-    confidence_by_slot = confidence_by_slot or {}
-    ambiguity_flags = ambiguity_flags or []
-    skipped = set(skipped_slots or [])
-    blocked = set(blocked_slots or [])
-    zh = _detect_ui_language(source_text).startswith("zh")
-    reference_game = _normalize_free_text(str(getattr(slots, "reference_game", "") or ""))
-    required_slots = ["game_type", "core_mechanic", "theme", "input_method", "win_condition", "difficulty"]
-    all_required_present = all(
-        str(getattr(slots, slot_key, "") or "").strip()
-        for slot_key in required_slots
-        if slot_key not in skipped and slot_key not in blocked
-    )
-    has_missing_required = not all_required_present
-    low_confidence_thresholds = {
-        "core_mechanic": 0.72,
-        "win_condition": 0.72,
-        "input_method": 0.72,
-        "difficulty": 0.64,
-    }
-    templates = {
-        "game_type": (
-            "这个游戏更偏益智、休闲、教育，还是恶搞方向？"
-            if zh else
-            "Should this feel more puzzle, casual, educational, or funny?"
-        ),
-        "core_mechanic": (
-            "玩家在这个游戏里最常做的一个动作是什么？"
-            if zh else
-            "What is the main action the player repeats?"
-        ),
-        "theme": (
-            "你想把它放在什么世界观或情境里？"
-            if zh else
-            "What world, theme, or situation should this use?"
-        ),
-        "input_method": (
-            "玩家主要通过点击、滑动还是拖拽来操作？"
-            if zh else
-            "Should the main control be tap, swipe, or drag?"
-        ),
-        "win_condition": (
-            "这一局里，玩家怎样才算真正过关？"
-            if zh else
-            "What exactly counts as clearing a round?"
-        ),
-        "difficulty": (
-            "难度你更想要轻松、标准，还是逐步变难？"
-            if zh else
-            "Should the difficulty feel easy, standard, or progressively harder?"
-        ),
-    }
-
-    candidates: List[Tuple[float, str, str, float, float, str]] = []
-    for slot_key in required_slots:
-        if slot_key in skipped or slot_key in blocked:
-            continue
-        value = str(getattr(slots, slot_key, "") or "").strip()
-        impact = SLOT_IMPACT_WEIGHTS.get(slot_key, 0.4) + ENTRY_MODE_SLOT_BIAS.get(entry_mode, {}).get(slot_key, 0.0)
-        if reference_game:
-            if slot_key == "core_mechanic":
-                impact += 0.18
-            elif slot_key == "theme":
-                impact += 0.1
-            elif slot_key in {"win_condition", "difficulty"}:
-                impact -= 0.08
-        confidence = float(confidence_by_slot.get(slot_key, 0.0) or 0.0)
-        ambiguity_weight = 1.0 if f"{slot_key}:ambiguous" in ambiguity_flags else 0.0
-        if not value:
-            score = impact + 0.5
-            reason = (
-                f"「{_slot_summary_label(slot_key, zh=zh)}」还没有被确定，会直接影响生成结果。"
-                if zh else
-                f'The {SLOT_LABELS.get(slot_key, slot_key)} is still missing and will directly shape the result.'
-            )
-            candidates.append((score, slot_key, "missing_required", impact, confidence, reason))
-            continue
-        if ambiguity_weight > 0 and not has_missing_required:
-            score = impact + 0.35 + ambiguity_weight
-            reason = (
-                f"「{_slot_summary_label(slot_key, zh=zh)}」目前存在歧义，需要先消歧。"
-                if zh else
-                f'The {SLOT_LABELS.get(slot_key, slot_key)} still looks ambiguous and should be clarified.'
-            )
-            candidates.append((score, slot_key, "ambiguity_resolution", impact, confidence, reason))
-            continue
-        threshold = low_confidence_thresholds.get(slot_key)
-        if threshold is not None and confidence < threshold:
-            if all_required_present and slot_key not in {"input_method", "win_condition"}:
-                continue
-            mode = "ambiguity_resolution" if all_required_present else "low_confidence"
-            score = impact + (threshold - confidence)
-            reason = (
-                f"「{_slot_summary_label(slot_key, zh=zh)}」已经有方向了，但还差最后一次确认才能更稳。"
-                if zh else
-                (
-                    f'The {SLOT_LABELS.get(slot_key, slot_key)} exists, but it still needs one more confirmation pass.'
-                    if all_required_present else
-                    f'The {SLOT_LABELS.get(slot_key, slot_key)} exists, but confidence is still shaky.'
-                )
-            )
-            candidates.append((score, slot_key, mode, impact, confidence, reason))
-
-    if not candidates:
-        return None, None
-
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    _, slot_key, mode, impact, confidence, reason = candidates[0]
-    question = DialogueQuestion(
-        slot_key=slot_key,
-        label=SLOT_LABELS.get(slot_key, slot_key),
-        prompt=templates.get(slot_key, templates["core_mechanic"]),
-        skippable=True,
-    )
-    strategy = QuestionStrategy(
-        mode=mode,
-        slot_key=slot_key,
-        reason=reason,
-        impact=round(max(0.0, min(impact, 1.5)), 3),
-        confidence=round(max(0.0, min(confidence, 1.0)), 3),
-        ambiguity_weight=1.0 if mode == "ambiguity_resolution" else 0.0,
-    )
-    return question, strategy
-
-
-def _compose_creation_session_reply_v2(
-    *,
-    slots: SlotState,
-    current_question: Optional[DialogueQuestion],
-    ready_to_generate: bool,
-    source_text: str = "",
-    title: Optional[str] = None,
-    latest_user_answer: Optional[str] = None,
-    question_strategy: Optional[QuestionStrategy] = None,
-    plan_draft: Optional[PlanDraft] = None,
-) -> str:
-    language = _detect_ui_language(" ".join(part for part in [title or "", source_text] if part))
-    zh = language.startswith("zh")
-    reference_game = _normalize_free_text(str(getattr(slots, "reference_game", "") or ""))
-    understanding_check = _looks_like_understanding_check(latest_user_answer or "")
-
-    def _join_reply_parts(*parts: str) -> str:
-        return " ".join(part.strip() for part in parts if part and part.strip()).strip()
-
-    if reference_game:
-        opener = (
-            f"可以，我知道《{reference_game}》那种感觉。"
-            if zh and understanding_check else
-            f"可以，我们先沿着《{reference_game}》那种感觉走。"
-            if zh else
-            f"Yes, I know the feel of {reference_game}."
-            if understanding_check else
-            f"Okay, let's build around the feel of {reference_game}."
-        )
-    elif understanding_check:
-        opener = (
-            "可以，我知道你说的是哪种感觉。"
-            if zh else
-            "Okay, I get the feel you're pointing to."
-        )
-    else:
-        opener = ""
-
-    if ready_to_generate and current_question:
-        if zh:
-            return _join_reply_parts(
-                opener,
-                f"最后再确认一个关键点：{current_question.prompt}",
-            )
-        return _join_reply_parts(
-            opener,
-            f"One last key detail to confirm: {current_question.prompt}",
-        )
-
-    if ready_to_generate:
-        if zh:
-            return _join_reply_parts(
-                opener,
-                "方向已经差不多定了，想直接生成就可以；如果还想微调，再补一句你最在意的体验。",
-            )
-        return _join_reply_parts(
-            opener,
-            "The direction is basically there. You can generate now, or add one more detail about the experience you care about most.",
-        )
-
-    if current_question:
-        if zh:
-            return _join_reply_parts(
-                opener,
-                f"我先确认一个关键点：{current_question.prompt}",
-            )
-        return _join_reply_parts(
-            opener,
-            f"Let me confirm one key detail first: {current_question.prompt}",
-        )
-
-    if zh:
-        return _join_reply_parts(
-            opener,
-            "你可以再补一句你最在意的玩法或气质，我继续帮你把它具体化。",
-        )
-    return _join_reply_parts(
-        opener,
-        "Add one more sentence about the mechanic or feeling you care about most, and I'll help turn it into something concrete.",
-    )
-
-
-def _build_dialogue_public_direction_summary(
-    analysis: AnalyzeDialogueTurnResponse,
-    *,
-    zh: bool,
-) -> str:
-    slots = analysis.slots
-    reference_game = _normalize_free_text(str(getattr(slots, "reference_game", "") or ""))
-    theme = _normalize_free_text(str(getattr(slots, "theme", "") or ""))
-    core_mechanic = _normalize_free_text(str(getattr(slots, "core_mechanic", "") or ""))
-    objective = _normalize_free_text(str(getattr(slots, "win_condition", "") or ""))
-    plan_summary = _normalize_free_text(str(getattr(analysis.plan_draft, "summary", "") or ""))
-
-    fragments: List[str] = []
-    if reference_game:
-        fragments.append(
-            f"参考《{reference_game}》的直觉反馈"
-            if zh else
-            f"capture some of the immediate feel of {reference_game}"
-        )
-    if theme:
-        fragments.append(
-            f"放在{theme}这个主题里"
-            if zh else
-            f"set it inside a {theme} theme"
-        )
-    if core_mechanic:
-        fragments.append(
-            f"核心交互围绕“{_shorten_text(core_mechanic, limit=34)}”展开"
-            if zh else
-            f"center it on {_shorten_text(core_mechanic, limit=40)}"
-        )
-    if objective:
-        fragments.append(
-            f"玩家目标是“{_shorten_text(objective, limit=28)}”"
-            if zh else
-            f"and give the player a clear goal: {_shorten_text(objective, limit=36)}"
-        )
-
-    if fragments:
-        return (
-            "已知方向：" + "，".join(fragments) + "。"
-            if zh else
-            "Current working direction: " + ", ".join(fragments) + "."
-        )
-    if plan_summary:
-        return plan_summary
-    return (
-        "请顺着用户最新的想法，把回复组织成一个自然、可落地的移动小游戏方向。"
-        if zh else
-        "Keep the reply grounded in the user's latest idea and tighten it into a buildable mobile game."
-    )
-
-
-def _build_dialogue_public_follow_up_guidance(
-    analysis: AnalyzeDialogueTurnResponse,
-    *,
-    zh: bool,
-) -> str:
-    question_text = _normalize_free_text(
-        str(getattr(analysis.current_question, "prompt", "") or "")
-    )
-    if analysis.ready_to_generate and question_text:
-        return (
-            f"如果还要追问，只能把“{question_text}”当成可选微调。"
-            if zh else
-            f"The brief is already strong enough to build; if you ask anything else, treat '{question_text}' as an optional polish question."
-        )
-    if analysis.ready_to_generate:
-        return (
-            "方向已经够清楚了，不要把回复写成还在索取必填信息。"
-            if zh else
-            "The brief is ready to build, so do not frame the reply like required information is still missing."
-        )
-    if question_text:
-        return (
-            f"如果要追问，就只问这一句用户能直接回答的话：{question_text}"
-            if zh else
-            f"If you ask a follow-up, make it exactly one user-facing question: {question_text}"
-        )
-    return (
-        "只有在确实能明显帮助收口时才追问，而且一次只问一个问题。"
-        if zh else
-        "Only ask a follow-up if it clearly sharpens the brief, and never ask more than one question."
-    )
-
-
-def _build_dialogue_reply_system_prompt_from_catalog(
-    analysis: AnalyzeDialogueTurnResponse,
-) -> str:
-    language = _detect_ui_language(
-        " ".join(
-            part for part in [
-                str(getattr(analysis.slots, "reference_game", "") or ""),
-                str(getattr(analysis.slots, "theme", "") or ""),
-                str(getattr(analysis.slots, "core_mechanic", "") or ""),
-            ] if part
-        )
-    )
-    zh = language.startswith("zh")
-    base_prompt = require_prompt("prompt.dialogue_system").format(
-        slot_summary=_build_dialogue_public_direction_summary(analysis, zh=zh),
-        missing_slots=_build_dialogue_public_follow_up_guidance(analysis, zh=zh),
-    )
-    prompt = safe_format_prompt(
-        require_prompt("prompt.dialogue_reply_system"),
-        base_prompt=base_prompt,
-    ).strip()
-    guardrail = (
-        "Critical guardrail:\n"
-        "- Never repeat the same idea twice with both a recap and a second paraphrase.\n"
-        "- If you ask a follow-up, make it a decision that materially changes the mechanic, control, theme, or round goal.\n"
-        "- Do not ask optional polish questions once the brief is already buildable.\n"
-        "- Never narrate your own reasoning, drafting steps, or compliance checks.\n"
-        "- Never say things like '用户现在要求我', '先理清楚', '调整下顺序', '2到4句', 'I should respond', or 'let me think'.\n"
-        "- Say only the final user-facing reply."
-    )
-    return f"{prompt}\n\n{guardrail}".strip()
-
-
-def _build_dialogue_reply_context_payload(
-    *,
-    request: AnalyzeDialogueTurnRequest,
-    analysis: AnalyzeDialogueTurnResponse,
-    source_text: str,
-    zh: bool,
-) -> Dict[str, Any]:
-    history = [
-        {
-            "role": item.role,
-            "content": _normalize_free_text(item.content),
-        }
-        for item in (request.conversation or [])[-4:]
-        if _normalize_free_text(item.content)
-    ]
-    follow_up_question = _normalize_free_text(
-        analysis.current_question.prompt if analysis.current_question else ""
-    )
-    latest_user_message = _normalize_free_text(
-        request.latest_user_answer or _latest_user_answer_from_history(request.conversation or [])
-    )
-    next_action = (
-        {
-            "type": "optional_refinement",
-            "question": follow_up_question,
-        }
-        if analysis.ready_to_generate and follow_up_question else
-        {
-            "type": "ready_to_create",
-            "question": None,
-        }
-        if analysis.ready_to_generate else
-        {
-            "type": "ask_follow_up",
-            "question": follow_up_question or None,
-        }
-    )
-    return {
-        "language": "zh-CN" if zh else "en-US",
-        "latest_user_message": latest_user_message or ("暂无" if zh else "none yet"),
-        "recent_user_points": [
-            item["content"]
-            for item in history
-            if item["role"] == "user" and item["content"] != latest_user_message
-        ][-2:],
-        "next_action": next_action,
-    }
-
-
-def _build_dialogue_reply_user_prompt_from_catalog(
-    *,
-    request: AnalyzeDialogueTurnRequest,
-    analysis: AnalyzeDialogueTurnResponse,
-    source_text: str,
-) -> str:
-    language = _detect_ui_language(" ".join(part for part in [request.title or "", source_text] if part))
-    zh = language.startswith("zh")
-    context_payload = _build_dialogue_reply_context_payload(
-        request=request,
-        analysis=analysis,
-        source_text=source_text,
-        zh=zh,
-    )
-    template = require_prompt(
-        "prompt.dialogue_reply_user_template_zh"
-        if zh else
-        "prompt.dialogue_reply_user_template_en"
-    )
-    reply_context = json.dumps(context_payload, ensure_ascii=False, indent=2)
-    if "{reply_context}" in template:
-        return safe_format_prompt(
-            template,
-            reply_context=reply_context,
-        ).strip()
-    prefix = (
-        "Reply context for the final user-facing answer:\n"
-        if not zh else
-        "用于生成最终用户回复的上下文：\n"
-    )
-    return f"{prefix}{reply_context}".strip()
-
-
-def _chunk_reply_for_streaming(message: str) -> List[str]:
-    normalized = _normalize_free_text(message)
-    if not normalized:
-        return []
-    chunks = [item.strip() for item in re.split(r"(?<=[。！？.!?])\s*", normalized) if item.strip()]
-    if not chunks:
-        chunks = [normalized]
-    flattened: List[str] = []
-    for chunk in chunks:
-        if len(chunk) <= 48:
-            flattened.append(chunk)
-            continue
-        for index in range(0, len(chunk), 24):
-            flattened.append(chunk[index:index + 24])
-    return [item for item in flattened if item]
-def _fallback_reply(state: DialogueState, slots: SlotState) -> str:
-    missing = slots.missing_required()
-    if state == DialogueState.greeting:
-        return "Tell me the kind of game you want to build."
-    if not missing:
-        game_type = slots.game_type or "game"
-        return (
-            f"I understand the direction: a {game_type} game themed around "
-            f"{slots.theme or 'your idea'}. I can generate it once you confirm."
-        )
-    next_field = missing[0]
-    prompts = {
-        "game_type": "What kind of game is it: casual, puzzle, educational, funny, or another light mobile-friendly direction?",
-        "core_mechanic": "What does the player do most of the time?",
-        "theme": "What theme or world should the game use?",
-        "input_method": "How should the player control it on mobile?",
-        "win_condition": "What counts as winning or clearing the game?",
-        "difficulty": "Should the difficulty be easy, medium, hard, or progressive?",
-    }
-    return prompts.get(next_field, "Tell me a bit more about the game you want.")

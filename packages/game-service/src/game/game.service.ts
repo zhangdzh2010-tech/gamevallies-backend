@@ -53,18 +53,10 @@ import {
   buildIntentBuildSnapshot,
   normalizeIntentBuildSnapshot,
 } from './intent-build.util';
-
-// Pipeline stage labels for WebSocket progress events
-const STAGE_LABELS: Record<string, string> = {
-  intent_parsing: '解析游戏意图',
-  designing: '设计游戏参数',
-  template_matching: '确认生成路径',
-  code_generating: '生成游戏代码',
-  qa_checking: '质量检测',
-  publishing: '发布生成结果',
-  completed: '生成完成',
-  failed: '生成失败',
-};
+import {
+  buildPublicGenerationStageDetails,
+  resolvePublicGenerationStage,
+} from './generation-stage-contract';
 
 const STAGE_PCT: Record<string, number> = {
   intent_parsing: 15,
@@ -4395,11 +4387,19 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         });
       }
 
-    this.wsGateway.emitGenerationError(userId, gameId, errorMessage, {
-      stage: failure.failedStage || 'pipeline_run',
-      retryCount: failure.retryCount,
-      fallback: failure.fallback,
-    });
+    this.wsGateway.emitGenerationError(
+      userId,
+      gameId,
+      errorMessage,
+      buildPublicGenerationStageDetails(
+        failure.failedStage || 'pipeline_run',
+        undefined,
+        {
+          retryCount: failure.retryCount,
+          fallback: failure.fallback,
+        },
+      ),
+    );
     this.wsGateway.emitNotification(userId, {
       type: 'error',
       message: `Game generation failed: ${errorMessage}`,
@@ -4772,7 +4772,15 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       });
     }
 
-    this.wsGateway.emitGenerationProgress(userId, gameId, '杩唬瀹屾垚', 100);
+    this.wsGateway.emitGenerationProgress(
+      userId,
+      gameId,
+      '发布生成结果',
+      100,
+      buildPublicGenerationStageDetails('completed', 100, {
+        rawMessage: '迭代完成',
+      }),
+    );
   }
 
   private async failIterationTask(params: {
@@ -4847,11 +4855,19 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         this.logger.warn(`Failed to update iteration task ${taskId}: ${taskError.message}`);
       });
     }
-    this.wsGateway.emitGenerationError(userId, gameId, failure.message, {
-      stage: failure.failedStage || 'iteration',
-      retryCount: failure.retryCount,
-      fallback: failure.fallback,
-    });
+    this.wsGateway.emitGenerationError(
+      userId,
+      gameId,
+      failure.message,
+      buildPublicGenerationStageDetails(
+        failure.failedStage || 'iteration',
+        undefined,
+        {
+          retryCount: failure.retryCount,
+          fallback: failure.fallback,
+        },
+      ),
+    );
     this.wsGateway.emitNotification(userId, {
       type: 'error',
       message: `Game iteration failed: ${failure.message}`,
@@ -5317,9 +5333,19 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     stage: string,
     details?: Record<string, unknown>,
   ): void {
-    const pct = STAGE_PCT[stage] ?? 50;
-    const label = STAGE_LABELS[stage] ?? stage;
-    this.emitProgress(userId, gameId, label, pct, details);
+    const publicStage = resolvePublicGenerationStage(stage, STAGE_PCT[stage] ?? 0);
+    const publicDetails = buildPublicGenerationStageDetails(
+      stage,
+      STAGE_PCT[stage] ?? 0,
+      details,
+    );
+    this.emitProgress(
+      userId,
+      gameId,
+      publicStage.displayStageLabel,
+      publicStage.displayStagePct,
+      publicDetails,
+    );
   }
 
   private extractErrorMessage(error: any): string {
@@ -6323,9 +6349,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           requireSubscription: true,
         },
       }) || game;
+      const taskSummary = this.generationTaskService.toTaskSummary(resolvedTask || latestTask);
       return this.withAuthorPreviewUrls({
-        ...this.generationTaskService.toTaskSummary(resolvedTask || latestTask),
-        stage: (resolvedTask || latestTask).progressStage || (resolvedTask || latestTask).failedStage || 'queued',
+        ...taskSummary,
+        stage: taskSummary.displayStageKey,
+        rawStage: taskSummary.rawStage,
         gameId: id,
         version: (resolvedTask || latestTask).version ?? (effectiveGame.version || 1),
         previewUrl: (resolvedTask || latestTask).previewUrl || this.buildPreviewUrl(id),
@@ -6353,12 +6381,22 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         : game.status === 'banned'
           ? 'canceled'
         : 'completed';
+    const publicStage = resolvePublicGenerationStage(
+      stage,
+      stage === 'completed' ? 100 : undefined,
+    );
 
     return this.withAuthorPreviewUrls({
       taskId: `${id}:pipeline`,
       taskType: 'pipeline_run',
       status: taskStatus,
-      stage,
+      stage: publicStage.displayStageKey,
+      rawStage: publicStage.rawStage,
+      displayStageKey: publicStage.displayStageKey,
+      displayStageLabel: publicStage.displayStageLabel,
+      displayStageIndex: publicStage.displayStageIndex,
+      displayStagePct: publicStage.displayStagePct,
+      displayStageTotal: publicStage.displayStageTotal,
       gameId: id,
       version: game.version || 1,
       wsChannel: `game:${id}`,

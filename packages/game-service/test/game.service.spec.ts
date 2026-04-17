@@ -332,7 +332,9 @@ describe('GameService', () => {
       'game-504',
       'Generated code failed QA',
       expect.objectContaining({
-        stage: 'qa_checking',
+        stage: 'validating',
+        rawStage: 'qa_checking',
+        displayStageKey: 'validating',
         retryCount: 3,
       }),
     );
@@ -2858,7 +2860,11 @@ describe('GameService', () => {
       taskId: 'game-status:pipeline',
       taskType: 'pipeline_run',
       status: 'failed',
-      stage: 'qa_checking',
+      stage: 'validating',
+      rawStage: 'qa_checking',
+      displayStageKey: 'validating',
+      displayStageLabel: '质量校验与修复',
+      displayStageTotal: 5,
       gameId: 'game-status',
       version: 2,
       wsChannel: 'game:game-status',

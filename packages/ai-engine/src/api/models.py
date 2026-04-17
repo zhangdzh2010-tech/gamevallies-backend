@@ -3,18 +3,7 @@
 from __future__ import annotations
 from enum import Enum
 from pydantic import BaseModel, Field, field_validator
-from typing import List, Dict, Optional, Any, Literal
-
-
-# ---------------------------------------------------------------------------
-# Stage 01 – Dialogue Engine models
-# ---------------------------------------------------------------------------
-
-class DialogueState(str, Enum):
-    greeting = "greeting"
-    describing = "describing"
-    clarifying = "clarifying"
-    confirmed = "confirmed"
+from typing import List, Dict, Optional, Any
 
 
 class GenerationTier(str, Enum):
@@ -128,141 +117,8 @@ class ConversationMessage(BaseModel):
     kind: Optional[str] = None
 
 
-class ChatRequest(BaseModel):
-    session_id: str = Field(..., description="Dialogue session ID")
-    content: str = Field(..., description="User message")
-    user_id: str = Field(..., description="User ID")
-
-
-class ChatResponse(BaseModel):
-    session_id: str
-    reply: str
-    state: DialogueState
-    slots_updated: List[str] = Field(default_factory=list)
-    slot_fill_pct: float = Field(0.0, ge=0.0, le=1.0)
-    ready_to_generate: bool = False
-
-
-class DialogueQuestion(BaseModel):
-    slot_key: str
-    label: str
-    prompt: str
-    skippable: bool = True
-
-
-class PlanDraft(BaseModel):
-    title: str = ""
-    summary: str = ""
-    concept: str = ""
-    interaction: str = ""
-    objective: str = ""
-    pacing: str = ""
-    visual_direction: str = ""
-    signature_moment: str = ""
-
-
-class QuestionStrategy(BaseModel):
-    mode: str = "missing_required"
-    slot_key: Optional[str] = None
-    reason: str = ""
-    impact: float = Field(0.0, ge=0.0, le=1.5)
-    confidence: float = Field(0.0, ge=0.0, le=1.0)
-    ambiguity_weight: float = Field(0.0, ge=0.0, le=1.0)
-
-
-class AnalyzeDialogueTurnRequest(BaseModel):
-    session_id: Optional[str] = None
-    user_id: Optional[str] = None
-    conversation: List[ConversationMessage] = Field(default_factory=list)
-    current_slots: SlotState = Field(default_factory=SlotState)
-    skipped_slots: List[str] = Field(default_factory=list)
-    entry_mode: str = "create"
-    generation_tier: GenerationTier = GenerationTier.standard
-    title: Optional[str] = None
-    initial_prompt: Optional[str] = None
-    answered_slot_key: Optional[str] = None
-    answered_slot_prompt: Optional[str] = None
-    latest_user_answer: Optional[str] = None
-    advance_only: bool = False
-
-
-class AnalyzeDialogueTurnResponse(BaseModel):
-    reply: str
-    slots: SlotState = Field(default_factory=SlotState)
-    slots_updated: List[str] = Field(default_factory=list)
-    missing_required: List[str] = Field(default_factory=list)
-    slot_fill_pct: float = Field(0.0, ge=0.0, le=1.0)
-    ready_to_generate: bool = False
-    current_question: Optional[DialogueQuestion] = None
-    confidence_by_slot: Dict[str, float] = Field(default_factory=dict)
-    evidence_by_slot: Dict[str, str] = Field(default_factory=dict)
-    ambiguity_flags: List[str] = Field(default_factory=list)
-    next_best_question_reason: Optional[str] = None
-    question_strategy: Optional[QuestionStrategy] = None
-    plan_draft: Optional[PlanDraft] = None
-
-
-class DialogueStreamDeltaPayload(BaseModel):
-    delta: str = ""
-    accumulated: str = ""
-    kind: Literal["question", "summary"] = "question"
-
-
-class DialogueStreamDonePayload(BaseModel):
-    message: str = ""
-    kind: Literal["question", "summary"] = "question"
-
-
-class DialogueStreamFinalPayload(BaseModel):
-    reply: str
-    slots: SlotState = Field(default_factory=SlotState)
-    slots_updated: List[str] = Field(default_factory=list)
-    missing_required: List[str] = Field(default_factory=list)
-    slot_fill_pct: float = Field(0.0, ge=0.0, le=1.0)
-    ready_to_generate: bool = False
-    current_question: Optional[DialogueQuestion] = None
-    confidence_by_slot: Dict[str, float] = Field(default_factory=dict)
-    evidence_by_slot: Dict[str, str] = Field(default_factory=dict)
-    ambiguity_flags: List[str] = Field(default_factory=list)
-    next_best_question_reason: Optional[str] = None
-    question_strategy: Optional[QuestionStrategy] = None
-    plan_draft: Optional[PlanDraft] = None
-
-
-class DraftPlanFromInputRequest(BaseModel):
-    source_description: str = ""
-    title: Optional[str] = None
-    current_slots: SlotState = Field(default_factory=SlotState)
-    generation_tier: GenerationTier = GenerationTier.standard
-    entry_mode: str = "create"
-
-
-class DraftPlanFromInputResponse(BaseModel):
-    plan_draft: PlanDraft
-    confidence_by_slot: Dict[str, float] = Field(default_factory=dict)
-    evidence_by_slot: Dict[str, str] = Field(default_factory=dict)
-    ambiguity_flags: List[str] = Field(default_factory=list)
-
-
-class SpecFromSlotsRequest(BaseModel):
-    session_id: Optional[str] = None
-    slots: SlotState = Field(default_factory=SlotState)
-    source_description: str = ""
-    title: Optional[str] = None
-    generation_tier: GenerationTier = GenerationTier.standard
-    preferred_game_type: Optional[str] = None
-    skipped_slots: List[str] = Field(default_factory=list)
-    variation_seed: Optional[str] = None
-
-
-class SpecFromSlotsResponse(BaseModel):
-    spec: "GameSpec"
-    missing_required: List[str] = Field(default_factory=list)
-    slot_fill_pct: float = Field(0.0, ge=0.0, le=1.0)
-
-
 # ---------------------------------------------------------------------------
-# Stage 02 – Intent Parser / GameSpec
+# Intent Parser / GameSpec
 # ---------------------------------------------------------------------------
 
 class CoreMechanic(BaseModel):
@@ -752,18 +608,6 @@ class IterateV2Request(BaseModel):
     runtime_contract: GameRuntimeContract = Field(default_factory=GameRuntimeContract)
     normalized_request: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
-
-
-# ---------------------------------------------------------------------------
-# Dialogue session (in-memory state)
-# ---------------------------------------------------------------------------
-
-class DialogueSession(BaseModel):
-    session_id: str
-    user_id: str
-    state: DialogueState = DialogueState.greeting
-    slots: SlotState = Field(default_factory=SlotState)
-    history: List[ConversationMessage] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

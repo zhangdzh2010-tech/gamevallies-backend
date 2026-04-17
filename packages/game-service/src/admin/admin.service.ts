@@ -1,6 +1,11 @@
-import { Injectable, NotFoundException, BadRequestException, BadGatewayException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { PrismaService } from '../prisma/prisma.service';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  BadGatewayException,
+} from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import { PrismaService } from "../prisma/prisma.service";
 import {
   GameStatus,
   GenerationTaskStatus,
@@ -11,24 +16,27 @@ import {
   SubscriptionPeriod,
   UserRole,
   UserSubscriptionStatus,
-} from '@prisma/client';
-import { randomUUID } from 'crypto';
-import * as bcrypt from 'bcryptjs';
-import axios from 'axios';
-import { GameService } from '../game/game.service';
-import promptCatalog from '../game/catalogs/prompt-catalog.json';
-import promptBundleCatalog from '../game/catalogs/prompt-bundle-catalog.json';
-import runtimeProfileCatalog from '../game/catalogs/runtime-profile-catalog.json';
-import promptPipelineCatalog from '../game/catalogs/prompt-pipeline-catalog.json';
-import { TIMEOUT_CONFIG_CATALOG, TIMEOUT_CONFIG_CATALOG_BY_KEY } from '../game/catalogs/timeout-catalog';
-import { normalizeGameType } from '../game/game-type-catalog';
-import { normalizeIntentBuildSnapshot } from '../game/intent-build.util';
+} from "@prisma/client";
+import { randomUUID } from "crypto";
+import * as bcrypt from "bcryptjs";
+import axios from "axios";
+import { GameService } from "../game/game.service";
+import promptCatalog from "../game/catalogs/prompt-catalog.json";
+import promptBundleCatalog from "../game/catalogs/prompt-bundle-catalog.json";
+import runtimeProfileCatalog from "../game/catalogs/runtime-profile-catalog.json";
+import promptPipelineCatalog from "../game/catalogs/prompt-pipeline-catalog.json";
+import {
+  TIMEOUT_CONFIG_CATALOG,
+  TIMEOUT_CONFIG_CATALOG_BY_KEY,
+} from "../game/catalogs/timeout-catalog";
+import { normalizeGameType } from "../game/game-type-catalog";
+import { normalizeIntentBuildSnapshot } from "../game/intent-build.util";
 import {
   expandBusinessTimeoutConfigUpdates,
   getBusinessTimeoutConfig,
   isBusinessTimeoutConfigKey,
   listBusinessTimeoutConfigs,
-} from './timeout-admin-catalog';
+} from "./timeout-admin-catalog";
 
 interface LegacyPreviewBackfillOptions {
   limit?: number;
@@ -50,9 +58,9 @@ interface AdminGameCoverUpdateInput {
 }
 
 interface LlmProviderCatalogConfig {
-  mode: 'auto' | 'custom';
+  mode: "auto" | "custom";
   apiUrl: string;
-  authMode: 'inherit_provider' | 'bearer_token';
+  authMode: "inherit_provider" | "bearer_token";
   apiKey: string;
 }
 
@@ -118,7 +126,10 @@ interface PromptPipelineSectionCatalog {
 interface PromptPipelineCatalog {
   steps: PromptPipelineSectionCatalog[];
   extras?: PromptPipelineSectionCatalog[];
-  itemMeta?: Record<string, { displayName?: string; variables?: string[]; note?: string }>;
+  itemMeta?: Record<
+    string,
+    { displayName?: string; variables?: string[]; note?: string }
+  >;
 }
 
 interface LlmStepFlowMeta {
@@ -131,113 +142,105 @@ interface LlmStepFlowMeta {
   optional?: boolean;
 }
 
-const DEFAULT_PROMPT_CATALOG: PromptCatalogEntry[] = Array.isArray(promptCatalog)
+const DEFAULT_PROMPT_CATALOG: PromptCatalogEntry[] = Array.isArray(
+  promptCatalog,
+)
   ? (promptCatalog as PromptCatalogEntry[])
   : [];
-const DEFAULT_PROMPT_BUNDLE_CATALOG: PromptBundleCatalogEntry[] = Array.isArray(promptBundleCatalog)
+const DEFAULT_PROMPT_BUNDLE_CATALOG: PromptBundleCatalogEntry[] = Array.isArray(
+  promptBundleCatalog,
+)
   ? (promptBundleCatalog as PromptBundleCatalogEntry[])
   : [];
-const DEFAULT_RUNTIME_PROFILE_CATALOG: RuntimeProfileCatalogEntry[] = Array.isArray(runtimeProfileCatalog)
-  ? (runtimeProfileCatalog as RuntimeProfileCatalogEntry[])
-  : [];
-const PROMPT_PIPELINE_CATALOG: PromptPipelineCatalog = (
-  promptPipelineCatalog
-  && typeof promptPipelineCatalog === 'object'
-  && !Array.isArray(promptPipelineCatalog)
-)
-  ? (promptPipelineCatalog as PromptPipelineCatalog)
-  : { steps: [], extras: [], itemMeta: {} };
+const DEFAULT_RUNTIME_PROFILE_CATALOG: RuntimeProfileCatalogEntry[] =
+  Array.isArray(runtimeProfileCatalog)
+    ? (runtimeProfileCatalog as RuntimeProfileCatalogEntry[])
+    : [];
+const PROMPT_PIPELINE_CATALOG: PromptPipelineCatalog =
+  promptPipelineCatalog &&
+  typeof promptPipelineCatalog === "object" &&
+  !Array.isArray(promptPipelineCatalog)
+    ? (promptPipelineCatalog as PromptPipelineCatalog)
+    : { steps: [], extras: [], itemMeta: {} };
 const PROMPT_PIPELINE_ITEM_META = PROMPT_PIPELINE_CATALOG.itemMeta || {};
-const PROMPT_CATALOG_BY_KEY = new Map(DEFAULT_PROMPT_CATALOG.map((entry) => [entry.key, entry]));
+const PROMPT_CATALOG_BY_KEY = new Map(
+  DEFAULT_PROMPT_CATALOG.map((entry) => [entry.key, entry]),
+);
 const LLM_STEP_FLOW_META: Record<string, LlmStepFlowMeta> = {
-  'dialogue.slot_extract': {
-    flowGroup: 'Flow 01 - Creation Session',
-    flowOrder: 10,
-    flowSummary: 'Creation-session interview',
-    triggerSummary: 'Runs in multi-turn session mode before create',
-    journeys: ['creation_session'],
-    journeySummary: 'Creation session only',
-  },
-  'dialogue.reply': {
-    flowGroup: 'Flow 01 - Creation Session',
-    flowOrder: 20,
-    flowSummary: 'Creation-session interview',
-    triggerSummary: 'Runs in multi-turn session mode before create',
-    journeys: ['creation_session'],
-    journeySummary: 'Creation session only',
-  },
   intent_parse: {
-    flowGroup: 'Flow 02 - Structured Intent',
+    flowGroup: "Flow 02 - Structured Intent",
     flowOrder: 30,
-    flowSummary: 'Create + iterate spec compilation',
-    triggerSummary: 'Used by direct create, iterate, and sourceSpec backfill',
-    journeys: ['direct_create', 'session_generate', 'iterate'],
-    journeySummary: 'Direct create + session generate + iterate',
+    flowSummary: "Create + iterate spec compilation",
+    triggerSummary: "Used by direct create, iterate, and sourceSpec backfill",
+    journeys: ["direct_create", "session_generate", "iterate"],
+    journeySummary: "Direct create + session generate + iterate",
   },
-  'code_generate.full': {
-    flowGroup: 'Flow 03 - Create Generation',
+  "code_generate.full": {
+    flowGroup: "Flow 03 - Create Generation",
     flowOrder: 40,
-    flowSummary: 'Create primary generation',
-    triggerSummary: 'Main create path full HTML generation',
-    journeys: ['direct_create', 'session_generate'],
-    journeySummary: 'Create only',
+    flowSummary: "Create primary generation",
+    triggerSummary: "Main create path full HTML generation",
+    journeys: ["direct_create", "session_generate"],
+    journeySummary: "Create only",
   },
   code_review: {
-    flowGroup: 'Flow 03 - Create Generation',
+    flowGroup: "Flow 03 - Create Generation",
     flowOrder: 50,
-    flowSummary: 'Create review pass',
-    triggerSummary: 'Runs after successful create candidates',
-    journeys: ['direct_create', 'session_generate'],
-    journeySummary: 'Create only',
+    flowSummary: "Create review pass",
+    triggerSummary: "Runs after successful create candidates",
+    journeys: ["direct_create", "session_generate"],
+    journeySummary: "Create only",
     optional: true,
   },
-  'iterate.classify': {
-    flowGroup: 'Flow 04 - Iterate Generation',
+  "iterate.classify": {
+    flowGroup: "Flow 04 - Iterate Generation",
     flowOrder: 70,
-    flowSummary: 'Iterate entry classification',
-    triggerSummary: 'Chooses param / element / mechanic path',
-    journeys: ['iterate'],
-    journeySummary: 'Iterate only',
+    flowSummary: "Iterate entry classification",
+    triggerSummary: "Chooses param / element / mechanic path",
+    journeys: ["iterate"],
+    journeySummary: "Iterate only",
   },
-  'iterate.param_adjust': {
-    flowGroup: 'Flow 04 - Iterate Generation',
+  "iterate.param_adjust": {
+    flowGroup: "Flow 04 - Iterate Generation",
     flowOrder: 80,
-    flowSummary: 'Iterate parameter patch',
-    triggerSummary: 'Used for numeric and tuning changes',
-    journeys: ['iterate'],
-    journeySummary: 'Iterate only',
+    flowSummary: "Iterate parameter patch",
+    triggerSummary: "Used for numeric and tuning changes",
+    journeys: ["iterate"],
+    journeySummary: "Iterate only",
   },
-  'iterate.element_change': {
-    flowGroup: 'Flow 04 - Iterate Generation',
+  "iterate.element_change": {
+    flowGroup: "Flow 04 - Iterate Generation",
     flowOrder: 90,
-    flowSummary: 'Iterate element patch',
-    triggerSummary: 'Used for entity / UI / visual structure changes',
-    journeys: ['iterate'],
-    journeySummary: 'Iterate only',
+    flowSummary: "Iterate element patch",
+    triggerSummary: "Used for entity / UI / visual structure changes",
+    journeys: ["iterate"],
+    journeySummary: "Iterate only",
   },
-  'iterate.mechanic_change': {
-    flowGroup: 'Flow 04 - Iterate Generation',
+  "iterate.mechanic_change": {
+    flowGroup: "Flow 04 - Iterate Generation",
     flowOrder: 100,
-    flowSummary: 'Iterate mechanic rewrite',
-    triggerSummary: 'Used for larger gameplay logic changes',
-    journeys: ['iterate'],
-    journeySummary: 'Iterate only',
+    flowSummary: "Iterate mechanic rewrite",
+    triggerSummary: "Used for larger gameplay logic changes",
+    journeys: ["iterate"],
+    journeySummary: "Iterate only",
   },
-  'qa_fix.syntax_structural': {
-    flowGroup: 'Flow 05 - QA Repair Families',
+  "qa_fix.syntax_structural": {
+    flowGroup: "Flow 05 - QA Repair Families",
     flowOrder: 110,
-    flowSummary: 'Syntax-only QA repair',
-    triggerSummary: 'Full-document syntax and structural repair for invalid HTML / JS output',
-    journeys: ['direct_create', 'session_generate', 'iterate'],
-    journeySummary: 'Create + iterate',
+    flowSummary: "Syntax-only QA repair",
+    triggerSummary:
+      "Full-document syntax and structural repair for invalid HTML / JS output",
+    journeys: ["direct_create", "session_generate", "iterate"],
+    journeySummary: "Create + iterate",
   },
   expand_prompt: {
-    flowGroup: 'Flow 90 - Auxiliary',
+    flowGroup: "Flow 90 - Auxiliary",
     flowOrder: 120,
-    flowSummary: 'Auxiliary utility',
-    triggerSummary: 'Separate prompt-expansion tool, not create / iterate / fork mainline',
-    journeys: ['auxiliary'],
-    journeySummary: 'Auxiliary only',
+    flowSummary: "Auxiliary utility",
+    triggerSummary:
+      "Separate prompt-expansion tool, not create / iterate / fork mainline",
+    journeys: ["auxiliary"],
+    journeySummary: "Auxiliary only",
     optional: true,
   },
 };
@@ -251,13 +254,20 @@ export class AdminService {
   ) {}
 
   private getFallbackAiEngineAdminBaseUrl(): string {
-    return this.configService.get<string>('AI_ENGINE_URL', 'http://localhost:8000').replace(/\/$/, '');
+    return this.configService
+      .get<string>("AI_ENGINE_URL", "http://localhost:8000")
+      .replace(/\/$/, "");
   }
 
   private getPublicBaseUrl(): string {
-    const publicApiBaseUrl = this.configService.get<string>('PUBLIC_API_BASE_URL');
-    const appUrl = this.configService.get<string>('APP_URL', 'http://localhost:3002');
-    return (publicApiBaseUrl || appUrl).replace(/\/$/, '');
+    const publicApiBaseUrl = this.configService.get<string>(
+      "PUBLIC_API_BASE_URL",
+    );
+    const appUrl = this.configService.get<string>(
+      "APP_URL",
+      "http://localhost:3002",
+    );
+    return (publicApiBaseUrl || appUrl).replace(/\/$/, "");
   }
 
   private getPublicApiBaseUrl(): string {
@@ -265,48 +275,64 @@ export class AdminService {
 
     try {
       const parsed = new URL(baseUrl);
-      const normalizedPath = (parsed.pathname || '').replace(/\/$/, '');
-      parsed.pathname = normalizedPath.endsWith('/api/v1')
+      const normalizedPath = (parsed.pathname || "").replace(/\/$/, "");
+      parsed.pathname = normalizedPath.endsWith("/api/v1")
         ? normalizedPath
-        : `${normalizedPath}/api/v1`.replace(/\/{2,}/g, '/');
-      return parsed.toString().replace(/\/$/, '');
+        : `${normalizedPath}/api/v1`.replace(/\/{2,}/g, "/");
+      return parsed.toString().replace(/\/$/, "");
     } catch {
-      return baseUrl.endsWith('/api/v1') ? baseUrl : `${baseUrl}/api/v1`;
+      return baseUrl.endsWith("/api/v1") ? baseUrl : `${baseUrl}/api/v1`;
     }
   }
 
   private buildPublicCoverUrl(gameId: string, version?: number | null): string {
-    const coverUrl = new URL(`${this.getPublicApiBaseUrl()}/games/${gameId}/cover`);
-    if (typeof version === 'number' && Number.isFinite(version) && version > 0) {
-      coverUrl.searchParams.set('v', String(version));
+    const coverUrl = new URL(
+      `${this.getPublicApiBaseUrl()}/games/${gameId}/cover`,
+    );
+    if (
+      typeof version === "number" &&
+      Number.isFinite(version) &&
+      version > 0
+    ) {
+      coverUrl.searchParams.set("v", String(version));
     }
     return coverUrl.toString();
   }
 
   private resolveAdminGameCoverUrl(game: any): string | null {
-    if (typeof game?.thumbnailUrl === 'string' && game.thumbnailUrl.trim()) {
+    if (typeof game?.thumbnailUrl === "string" && game.thumbnailUrl.trim()) {
       return game.thumbnailUrl.trim();
     }
 
     const latestBundle = Array.isArray(game?.bundles) ? game.bundles[0] : null;
     const metadata = latestBundle?.metadata;
-    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
       return null;
     }
 
-    const rawCoverUrl = (metadata as Record<string, unknown>).coverUrl
-      ?? (metadata as Record<string, unknown>).cover_url;
-    if (typeof rawCoverUrl === 'string' && rawCoverUrl.trim()) {
+    const rawCoverUrl =
+      (metadata as Record<string, unknown>).coverUrl ??
+      (metadata as Record<string, unknown>).cover_url;
+    if (typeof rawCoverUrl === "string" && rawCoverUrl.trim()) {
       return rawCoverUrl.trim();
     }
 
-    const hasCoverArtifact = typeof ((metadata as Record<string, unknown>).coverArtifactId
-      ?? (metadata as Record<string, unknown>).cover_artifact_id) === 'string';
-    const hasCoverTask = typeof ((metadata as Record<string, unknown>).coverTaskId
-      ?? (metadata as Record<string, unknown>).cover_task_id) === 'string';
+    const hasCoverArtifact =
+      typeof (
+        (metadata as Record<string, unknown>).coverArtifactId ??
+        (metadata as Record<string, unknown>).cover_artifact_id
+      ) === "string";
+    const hasCoverTask =
+      typeof (
+        (metadata as Record<string, unknown>).coverTaskId ??
+        (metadata as Record<string, unknown>).cover_task_id
+      ) === "string";
 
     if (hasCoverArtifact || hasCoverTask) {
-      return this.buildPublicCoverUrl(game.id, latestBundle?.version ?? game.version ?? null);
+      return this.buildPublicCoverUrl(
+        game.id,
+        latestBundle?.version ?? game.version ?? null,
+      );
     }
 
     return null;
@@ -329,12 +355,12 @@ export class AdminService {
       }
 
       const parsedPreviewUrl = new URL(previewUrl, this.getPublicBaseUrl());
-      const previewToken = parsedPreviewUrl.searchParams.get('previewToken');
-      if (!previewToken || parsedCoverUrl.searchParams.has('previewToken')) {
+      const previewToken = parsedPreviewUrl.searchParams.get("previewToken");
+      if (!previewToken || parsedCoverUrl.searchParams.has("previewToken")) {
         return parsedCoverUrl.toString();
       }
 
-      parsedCoverUrl.searchParams.set('previewToken', previewToken);
+      parsedCoverUrl.searchParams.set("previewToken", previewToken);
       return parsedCoverUrl.toString();
     } catch {
       return coverUrl;
@@ -345,7 +371,12 @@ export class AdminService {
     const adminPreviewUrls = this.gameService.buildAdminPreviewUrls(game.id);
     return {
       ...game,
-      gameType: normalizeGameType(game.gameType, game.title, game.description, game.tags),
+      gameType: normalizeGameType(
+        game.gameType,
+        game.title,
+        game.description,
+        game.tags,
+      ),
       coverUrl: this.attachAdminPreviewTokenToCoverUrl(
         game.id,
         game.status,
@@ -359,11 +390,13 @@ export class AdminService {
   private normalizeGameIds(ids: unknown): string[] {
     const rawItems = Array.isArray(ids)
       ? ids
-      : typeof ids === 'string'
-        ? ids.split(',')
+      : typeof ids === "string"
+        ? ids.split(",")
         : [];
     const normalized = rawItems
-      .map((item) => (typeof item === 'string' ? item.trim() : String(item || '').trim()))
+      .map((item) =>
+        typeof item === "string" ? item.trim() : String(item || "").trim(),
+      )
       .filter(Boolean);
     return Array.from(new Set(normalized));
   }
@@ -371,11 +404,13 @@ export class AdminService {
   private normalizeUserIds(ids: unknown): string[] {
     const rawItems = Array.isArray(ids)
       ? ids
-      : typeof ids === 'string'
-        ? ids.split(',')
+      : typeof ids === "string"
+        ? ids.split(",")
         : [];
     const normalized = rawItems
-      .map((item) => (typeof item === 'string' ? item.trim() : String(item || '').trim()))
+      .map((item) =>
+        typeof item === "string" ? item.trim() : String(item || "").trim(),
+      )
       .filter(Boolean);
     return Array.from(new Set(normalized));
   }
@@ -383,29 +418,31 @@ export class AdminService {
   private normalizeLlmFallbackProviderIds(ids: unknown): string[] {
     const rawItems = Array.isArray(ids)
       ? ids
-      : typeof ids === 'string'
-        ? ids.split(',')
+      : typeof ids === "string"
+        ? ids.split(",")
         : [];
     const normalized = rawItems
-      .map((item) => (typeof item === 'string' ? item.trim() : String(item || '').trim()))
+      .map((item) =>
+        typeof item === "string" ? item.trim() : String(item || "").trim(),
+      )
       .filter(Boolean);
     return Array.from(new Set(normalized));
   }
 
   private normalizeManualCoverUrl(rawValue: unknown): string | null {
-    if (typeof rawValue !== 'string' || !rawValue.trim()) {
+    if (typeof rawValue !== "string" || !rawValue.trim()) {
       return null;
     }
 
     const normalized = rawValue.trim();
     try {
       const parsed = new URL(normalized);
-      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-        throw new Error('unsupported protocol');
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error("unsupported protocol");
       }
       return parsed.toString();
     } catch {
-      throw new BadRequestException('imageUrl must be a valid http(s) URL');
+      throw new BadRequestException("imageUrl must be a valid http(s) URL");
     }
   }
 
@@ -414,46 +451,52 @@ export class AdminService {
     contentType: string;
     sizeBytes: number;
   } | null {
-    if (typeof rawValue !== 'string' || !rawValue.trim()) {
+    if (typeof rawValue !== "string" || !rawValue.trim()) {
       return null;
     }
 
     const trimmed = rawValue.trim();
-    const matched = trimmed.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([a-zA-Z0-9+/=]+)$/);
+    const matched = trimmed.match(
+      /^data:(image\/[a-zA-Z0-9.+-]+);base64,([a-zA-Z0-9+/=]+)$/,
+    );
     if (!matched) {
-      throw new BadRequestException('imageDataUrl must be a base64 data URL');
+      throw new BadRequestException("imageDataUrl must be a base64 data URL");
     }
 
     const [, contentType, base64Payload] = matched;
     const allowedContentTypes = new Set([
-      'image/jpeg',
-      'image/png',
-      'image/webp',
-      'image/avif',
-      'image/gif',
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+      "image/avif",
+      "image/gif",
     ]);
     if (!allowedContentTypes.has(contentType)) {
-      throw new BadRequestException(`Unsupported cover content type: ${contentType}`);
+      throw new BadRequestException(
+        `Unsupported cover content type: ${contentType}`,
+      );
     }
 
     let buffer: Buffer;
     try {
-      buffer = Buffer.from(base64Payload, 'base64');
+      buffer = Buffer.from(base64Payload, "base64");
     } catch {
-      throw new BadRequestException('imageDataUrl contains invalid base64 payload');
+      throw new BadRequestException(
+        "imageDataUrl contains invalid base64 payload",
+      );
     }
 
     if (!buffer.length) {
-      throw new BadRequestException('imageDataUrl payload is empty');
+      throw new BadRequestException("imageDataUrl payload is empty");
     }
 
     const maxBytes = 5 * 1024 * 1024;
     if (buffer.length > maxBytes) {
-      throw new BadRequestException('Cover image must be 5 MB or smaller');
+      throw new BadRequestException("Cover image must be 5 MB or smaller");
     }
 
     return {
-      payload: buffer.toString('base64'),
+      payload: buffer.toString("base64"),
       contentType,
       sizeBytes: buffer.length,
     };
@@ -463,11 +506,19 @@ export class AdminService {
     id: string;
     status: GameStatus;
     version: number;
-    bundles?: Array<{ id: string; version: number; metadata: Prisma.JsonValue }>;
+    bundles?: Array<{
+      id: string;
+      version: number;
+      metadata: Prisma.JsonValue;
+    }>;
   }) {
     let bundle = game.bundles?.[0] || null;
 
-    if (game.status === GameStatus.published && Number.isFinite(game.version) && Number(game.version) > 0) {
+    if (
+      game.status === GameStatus.published &&
+      Number.isFinite(game.version) &&
+      Number(game.version) > 0
+    ) {
       const liveVersion = Number(game.version);
       if (!bundle || bundle.version !== liveVersion) {
         bundle = await this.prisma.gameBundle.findFirst({
@@ -485,35 +536,52 @@ export class AdminService {
     }
 
     if (!bundle) {
-      throw new NotFoundException('Game bundle not found');
+      throw new NotFoundException("Game bundle not found");
     }
 
     return bundle;
   }
 
-  private validateBatchStatus(status: string): 'published' | 'draft' {
-    if (status === 'published' || status === 'draft') {
+  private validateBatchStatus(status: string): "published" | "draft" {
+    if (status === "published" || status === "draft") {
       return status;
     }
-    throw new BadRequestException('status must be published or draft');
+    throw new BadRequestException("status must be published or draft");
   }
 
   private validateUserRole(role: string): UserRole {
-    if (role === 'user' || role === 'creator' || role === 'moderator' || role === 'admin') {
+    if (
+      role === "user" ||
+      role === "creator" ||
+      role === "moderator" ||
+      role === "admin"
+    ) {
       return role;
     }
-    throw new BadRequestException('role must be one of user, creator, moderator, admin');
+    throw new BadRequestException(
+      "role must be one of user, creator, moderator, admin",
+    );
   }
 
-  private normalizeUserAuthProvider(value?: string | null): 'all' | 'email' | 'phone' | 'wechat' {
-    const normalized = String(value || '').trim().toLowerCase();
-    if (!normalized || normalized === 'all') {
-      return 'all';
+  private normalizeUserAuthProvider(
+    value?: string | null,
+  ): "all" | "email" | "phone" | "wechat" {
+    const normalized = String(value || "")
+      .trim()
+      .toLowerCase();
+    if (!normalized || normalized === "all") {
+      return "all";
     }
-    if (normalized === 'email' || normalized === 'phone' || normalized === 'wechat') {
+    if (
+      normalized === "email" ||
+      normalized === "phone" ||
+      normalized === "wechat"
+    ) {
       return normalized;
     }
-    throw new BadRequestException('authProvider must be one of all, email, phone, wechat');
+    throw new BadRequestException(
+      "authProvider must be one of all, email, phone, wechat",
+    );
   }
 
   private async recalculateForkDepths(
@@ -546,7 +614,7 @@ export class AdminService {
   private async deleteUsersByIds(userIds: string[]) {
     const normalizedIds = this.normalizeUserIds(userIds);
     if (!normalizedIds.length) {
-      throw new BadRequestException('ids must be a non-empty array');
+      throw new BadRequestException("ids must be a non-empty array");
     }
 
     return this.prisma.$transaction(async (tx) => {
@@ -557,7 +625,7 @@ export class AdminService {
       if (existingUsers.length !== normalizedIds.length) {
         const existingSet = new Set(existingUsers.map((item) => item.id));
         const missingIds = normalizedIds.filter((id) => !existingSet.has(id));
-        throw new NotFoundException(`User not found: ${missingIds.join(', ')}`);
+        throw new NotFoundException(`User not found: ${missingIds.join(", ")}`);
       }
 
       const authoredGames = await tx.game.findMany({
@@ -565,11 +633,16 @@ export class AdminService {
         select: { id: true, forkedFrom: true },
       });
       const authoredGameIds = authoredGames.map((item) => item.id);
-      const forkParentIds = Array.from(new Set(
-        authoredGames
-          .map((item) => item.forkedFrom)
-          .filter((value): value is string => Boolean(value) && !authoredGameIds.includes(value as string)),
-      ));
+      const forkParentIds = Array.from(
+        new Set(
+          authoredGames
+            .map((item) => item.forkedFrom)
+            .filter(
+              (value): value is string =>
+                Boolean(value) && !authoredGameIds.includes(value as string),
+            ),
+        ),
+      );
 
       const affectedFollowRelations = await tx.userFollow.findMany({
         where: {
@@ -583,9 +656,14 @@ export class AdminService {
           followingId: true,
         },
       });
-      const affectedUserIdsToRecount = Array.from(new Set(
-        affectedFollowRelations.flatMap((relation) => [relation.followerId, relation.followingId]),
-      )).filter((id) => !normalizedIds.includes(id));
+      const affectedUserIdsToRecount = Array.from(
+        new Set(
+          affectedFollowRelations.flatMap((relation) => [
+            relation.followerId,
+            relation.followingId,
+          ]),
+        ),
+      ).filter((id) => !normalizedIds.includes(id));
 
       const likedGameInteractions = await tx.socialInteraction.findMany({
         where: {
@@ -595,27 +673,33 @@ export class AdminService {
         },
         select: { targetId: true },
       });
-      const likedGameIdsToRecount = Array.from(new Set(
-        likedGameInteractions
-          .map((item) => item.targetId)
-          .filter((id) => !authoredGameIds.includes(id)),
-      ));
+      const likedGameIdsToRecount = Array.from(
+        new Set(
+          likedGameInteractions
+            .map((item) => item.targetId)
+            .filter((id) => !authoredGameIds.includes(id)),
+        ),
+      );
 
       const commentsToDelete = await tx.comment.findMany({
         where: {
           OR: [
             { userId: { in: normalizedIds } },
-            ...(authoredGameIds.length ? [{ gameId: { in: authoredGameIds } }] : []),
+            ...(authoredGameIds.length
+              ? [{ gameId: { in: authoredGameIds } }]
+              : []),
           ],
         },
         select: { id: true, gameId: true },
       });
       const commentIds = commentsToDelete.map((item) => item.id);
-      const commentGameIdsToRecount = Array.from(new Set(
-        commentsToDelete
-          .map((item) => item.gameId)
-          .filter((id) => !authoredGameIds.includes(id)),
-      ));
+      const commentGameIdsToRecount = Array.from(
+        new Set(
+          commentsToDelete
+            .map((item) => item.gameId)
+            .filter((id) => !authoredGameIds.includes(id)),
+        ),
+      );
 
       if (commentIds.length) {
         await tx.comment.updateMany({
@@ -626,13 +710,22 @@ export class AdminService {
 
       const interactionTargets: Prisma.SocialInteractionWhereInput[] = [
         { userId: { in: normalizedIds } },
-        { targetType: InteractionTargetType.user, targetId: { in: normalizedIds } },
+        {
+          targetType: InteractionTargetType.user,
+          targetId: { in: normalizedIds },
+        },
       ];
       if (authoredGameIds.length) {
-        interactionTargets.push({ targetType: InteractionTargetType.game, targetId: { in: authoredGameIds } });
+        interactionTargets.push({
+          targetType: InteractionTargetType.game,
+          targetId: { in: authoredGameIds },
+        });
       }
       if (commentIds.length) {
-        interactionTargets.push({ targetType: InteractionTargetType.comment, targetId: { in: commentIds } });
+        interactionTargets.push({
+          targetType: InteractionTargetType.comment,
+          targetId: { in: commentIds },
+        });
       }
 
       await tx.socialInteraction.deleteMany({
@@ -645,7 +738,9 @@ export class AdminService {
             { userId: { in: normalizedIds } },
             { actorId: { in: normalizedIds } },
             { targetId: { in: normalizedIds } },
-            ...(authoredGameIds.length ? [{ targetId: { in: authoredGameIds } }] : []),
+            ...(authoredGameIds.length
+              ? [{ targetId: { in: authoredGameIds } }]
+              : []),
             ...(commentIds.length ? [{ targetId: { in: commentIds } }] : []),
           ],
         },
@@ -655,7 +750,9 @@ export class AdminService {
         where: {
           OR: [
             { creatorId: { in: normalizedIds } },
-            ...(authoredGameIds.length ? [{ gameId: { in: authoredGameIds } }] : []),
+            ...(authoredGameIds.length
+              ? [{ gameId: { in: authoredGameIds } }]
+              : []),
           ],
         },
       });
@@ -697,49 +794,59 @@ export class AdminService {
         where: { id: { in: normalizedIds } },
       });
 
-      await Promise.all(affectedUserIdsToRecount.map(async (userId) => {
-        const [followerCount, followingCount] = await Promise.all([
-          tx.userFollow.count({ where: { followingId: userId } }),
-          tx.userFollow.count({ where: { followerId: userId } }),
-        ]);
-        await tx.user.update({
-          where: { id: userId },
-          data: {
-            followerCount,
-            followingCount,
-          },
-        });
-      }));
+      await Promise.all(
+        affectedUserIdsToRecount.map(async (userId) => {
+          const [followerCount, followingCount] = await Promise.all([
+            tx.userFollow.count({ where: { followingId: userId } }),
+            tx.userFollow.count({ where: { followerId: userId } }),
+          ]);
+          await tx.user.update({
+            where: { id: userId },
+            data: {
+              followerCount,
+              followingCount,
+            },
+          });
+        }),
+      );
 
-      await Promise.all(commentGameIdsToRecount.map(async (gameId) => {
-        const commentCount = await tx.comment.count({ where: { gameId } });
-        await tx.game.update({
-          where: { id: gameId },
-          data: { commentCount },
-        });
-      }));
+      await Promise.all(
+        commentGameIdsToRecount.map(async (gameId) => {
+          const commentCount = await tx.comment.count({ where: { gameId } });
+          await tx.game.update({
+            where: { id: gameId },
+            data: { commentCount },
+          });
+        }),
+      );
 
-      await Promise.all(forkParentIds.map(async (gameId) => {
-        const forkCount = await tx.game.count({ where: { forkedFrom: gameId } });
-        await tx.game.update({
-          where: { id: gameId },
-          data: { forkCount },
-        });
-      }));
+      await Promise.all(
+        forkParentIds.map(async (gameId) => {
+          const forkCount = await tx.game.count({
+            where: { forkedFrom: gameId },
+          });
+          await tx.game.update({
+            where: { id: gameId },
+            data: { forkCount },
+          });
+        }),
+      );
 
-      await Promise.all(likedGameIdsToRecount.map(async (gameId) => {
-        const likeCount = await tx.socialInteraction.count({
-          where: {
-            targetType: InteractionTargetType.game,
-            targetId: gameId,
-            action: InteractionAction.like,
-          },
-        });
-        await tx.game.update({
-          where: { id: gameId },
-          data: { likeCount },
-        });
-      }));
+      await Promise.all(
+        likedGameIdsToRecount.map(async (gameId) => {
+          const likeCount = await tx.socialInteraction.count({
+            where: {
+              targetType: InteractionTargetType.game,
+              targetId: gameId,
+              action: InteractionAction.like,
+            },
+          });
+          await tx.game.update({
+            where: { id: gameId },
+            data: { likeCount },
+          });
+        }),
+      );
 
       return {
         deleted: existingUsers.length,
@@ -749,19 +856,26 @@ export class AdminService {
   }
 
   private normalizeExecutionRegion(rawValue?: string | null): string {
-    return 'cn_shanghai';
+    return "cn_shanghai";
   }
 
-  private getConfiguredAiEngineAdminBaseUrlForRegion(executionRegion?: string | null): string {
+  private getConfiguredAiEngineAdminBaseUrlForRegion(
+    executionRegion?: string | null,
+  ): string {
     const normalizedRegion = this.normalizeExecutionRegion(executionRegion);
     const defaultRegion = this.normalizeExecutionRegion(
-      this.configService.get<string>('AI_ENGINE_DEFAULT_REGION')
-      || this.configService.get<string>('SERVICE_REGION')
-      || 'cn_shanghai',
+      this.configService.get<string>("AI_ENGINE_DEFAULT_REGION") ||
+        this.configService.get<string>("SERVICE_REGION") ||
+        "cn_shanghai",
     );
 
-    const regionSpecificUrl = this.configService.get<string>('AI_ENGINE_URL_CN_SHANGHAI', '');
-    const normalizedSpecificUrl = (regionSpecificUrl || '').trim().replace(/\/$/, '');
+    const regionSpecificUrl = this.configService.get<string>(
+      "AI_ENGINE_URL_CN_SHANGHAI",
+      "",
+    );
+    const normalizedSpecificUrl = (regionSpecificUrl || "")
+      .trim()
+      .replace(/\/$/, "");
     if (normalizedSpecificUrl) {
       return normalizedSpecificUrl;
     }
@@ -770,51 +884,61 @@ export class AdminService {
       return this.getFallbackAiEngineAdminBaseUrl();
     }
 
-    return '';
+    return "";
   }
 
   private getDefaultExecutionRegion(): string {
-    return 'cn_shanghai';
+    return "cn_shanghai";
   }
 
-  private async getAiEngineAdminBaseUrls(regionTargetId?: string): Promise<string[]> {
+  private async getAiEngineAdminBaseUrls(
+    regionTargetId?: string,
+  ): Promise<string[]> {
     const urls: string[] = [];
     const appendUrl = (value?: string | null) => {
-      const normalized = (value || '').trim().replace(/\/$/, '');
+      const normalized = (value || "").trim().replace(/\/$/, "");
       if (normalized && !urls.includes(normalized)) {
         urls.push(normalized);
       }
     };
 
     if (regionTargetId) {
-      const target = await this.prisma.aiEngineRegionTarget.findUnique({
-        where: { id: regionTargetId },
-        select: {
-          executionRegion: true,
-          aiEngineUrl: true,
-          deployEnabled: true,
-          deployStatus: true,
-        },
-      }).catch(() => null);
+      const target = await this.prisma.aiEngineRegionTarget
+        .findUnique({
+          where: { id: regionTargetId },
+          select: {
+            executionRegion: true,
+            aiEngineUrl: true,
+            deployEnabled: true,
+            deployStatus: true,
+          },
+        })
+        .catch(() => null);
 
-      appendUrl(this.getConfiguredAiEngineAdminBaseUrlForRegion(target?.executionRegion));
-      if (target?.deployEnabled && target?.deployStatus === 'deployed') {
+      appendUrl(
+        this.getConfiguredAiEngineAdminBaseUrlForRegion(
+          target?.executionRegion,
+        ),
+      );
+      if (target?.deployEnabled && target?.deployStatus === "deployed") {
         appendUrl(target.aiEngineUrl);
       }
     } else {
-      appendUrl(this.getConfiguredAiEngineAdminBaseUrlForRegion('cn_shanghai'));
+      appendUrl(this.getConfiguredAiEngineAdminBaseUrlForRegion("cn_shanghai"));
 
-      const targets = await this.prisma.aiEngineRegionTarget.findMany({
-        where: {
-          executionRegion: 'cn_shanghai',
-          deployEnabled: true,
-          deployStatus: 'deployed',
-          aiEngineUrl: { not: null },
-        },
-        select: {
-          aiEngineUrl: true,
-        },
-      }).catch(() => []);
+      const targets = await this.prisma.aiEngineRegionTarget
+        .findMany({
+          where: {
+            executionRegion: "cn_shanghai",
+            deployEnabled: true,
+            deployStatus: "deployed",
+            aiEngineUrl: { not: null },
+          },
+          select: {
+            aiEngineUrl: true,
+          },
+        })
+        .catch(() => []);
 
       for (const target of targets) {
         appendUrl(target.aiEngineUrl);
@@ -830,34 +954,37 @@ export class AdminService {
   }
 
   private getAdminToken(): string {
-    const token = (process.env.ADMIN_TOKEN || '').trim();
+    const token = (process.env.ADMIN_TOKEN || "").trim();
     if (!token) {
-      throw new BadRequestException('ADMIN_TOKEN is not configured');
+      throw new BadRequestException("ADMIN_TOKEN is not configured");
     }
     return token;
   }
 
   private getOptionalAdminToken(): string | null {
-    const token = (process.env.ADMIN_TOKEN || '').trim();
+    const token = (process.env.ADMIN_TOKEN || "").trim();
     return token || null;
   }
 
-  private parseDashboardDateRange(from?: string, to?: string): DashboardDateRange {
+  private parseDashboardDateRange(
+    from?: string,
+    to?: string,
+  ): DashboardDateRange {
     const parseValue = (value?: string, label?: string) => {
       if (!value || !value.trim()) {
         return null;
       }
       const parsed = new Date(value);
       if (Number.isNaN(parsed.getTime())) {
-        throw new BadRequestException(`${label || 'date'} is invalid`);
+        throw new BadRequestException(`${label || "date"} is invalid`);
       }
       return parsed;
     };
 
-    const resolvedFrom = parseValue(from, 'from');
-    const resolvedTo = parseValue(to, 'to');
+    const resolvedFrom = parseValue(from, "from");
+    const resolvedTo = parseValue(to, "to");
     if (resolvedFrom && resolvedTo && resolvedFrom > resolvedTo) {
-      throw new BadRequestException('from must be earlier than to');
+      throw new BadRequestException("from must be earlier than to");
     }
     return {
       from: resolvedFrom,
@@ -865,7 +992,9 @@ export class AdminService {
     };
   }
 
-  private buildPaidSubscriptionOrderWhere(range: DashboardDateRange): Prisma.SubscriptionOrderWhereInput {
+  private buildPaidSubscriptionOrderWhere(
+    range: DashboardDateRange,
+  ): Prisma.SubscriptionOrderWhereInput {
     return {
       status: SubscriptionOrderStatus.paid,
       ...(range.from || range.to
@@ -882,10 +1011,10 @@ export class AdminService {
   private normalizeSubscriptionFeatures(input: unknown): string[] {
     if (Array.isArray(input)) {
       return input
-        .map((item) => (typeof item === 'string' ? item.trim() : ''))
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
         .filter(Boolean);
     }
-    if (typeof input === 'string') {
+    if (typeof input === "string") {
       return input
         .split(/\r?\n|,/)
         .map((item) => item.trim())
@@ -900,27 +1029,36 @@ export class AdminService {
   }
 
   private parseSubscriptionPlanPrice(body: any): number {
-    if (body?.priceYuan !== undefined && body?.priceYuan !== null && String(body.priceYuan).trim() !== '') {
+    if (
+      body?.priceYuan !== undefined &&
+      body?.priceYuan !== null &&
+      String(body.priceYuan).trim() !== ""
+    ) {
       const yuan = Number.parseFloat(String(body.priceYuan));
       if (!Number.isFinite(yuan) || yuan < 0) {
-        throw new BadRequestException('priceYuan must be a non-negative number');
+        throw new BadRequestException(
+          "priceYuan must be a non-negative number",
+        );
       }
       return Math.round(yuan * 100);
     }
-    const cents = Number.parseInt(String(body?.price ?? ''), 10);
+    const cents = Number.parseInt(String(body?.price ?? ""), 10);
     if (!Number.isFinite(cents) || cents < 0) {
-      throw new BadRequestException('price must be a non-negative integer');
+      throw new BadRequestException("price must be a non-negative integer");
     }
     return cents;
   }
 
-  private presentSubscriptionPlan(plan: any, usage?: {
-    orderCount?: number;
-    revenueCents?: number;
-    activeSubscribers?: number;
-  }) {
+  private presentSubscriptionPlan(
+    plan: any,
+    usage?: {
+      orderCount?: number;
+      revenueCents?: number;
+      activeSubscribers?: number;
+    },
+  ) {
     const features = Array.isArray(plan.features) ? plan.features : [];
-    const periodLabel = plan.period === SubscriptionPeriod.yearly ? '年' : '月';
+    const periodLabel = plan.period === SubscriptionPeriod.yearly ? "年" : "月";
     const priceYuan = Number(plan.price || 0) / 100;
     return {
       id: plan.id,
@@ -950,26 +1088,27 @@ export class AdminService {
 
   private stringifyAiEngineErrorDetail(detail: any): string {
     if (detail == null) {
-      return '';
+      return "";
     }
-    if (typeof detail === 'string') {
+    if (typeof detail === "string") {
       return detail.trim();
     }
     if (Array.isArray(detail)) {
       return detail
         .map((item) => this.stringifyAiEngineErrorDetail(item))
         .filter(Boolean)
-        .join('; ');
+        .join("; ");
     }
-    if (typeof detail === 'object') {
-      const loc = Array.isArray(detail.loc) ? detail.loc.join('.') : '';
-      const message = typeof detail.msg === 'string'
-        ? detail.msg
-        : typeof detail.message === 'string'
-          ? detail.message
-          : typeof detail.error === 'string'
-            ? detail.error
-            : '';
+    if (typeof detail === "object") {
+      const loc = Array.isArray(detail.loc) ? detail.loc.join(".") : "";
+      const message =
+        typeof detail.msg === "string"
+          ? detail.msg
+          : typeof detail.message === "string"
+            ? detail.message
+            : typeof detail.error === "string"
+              ? detail.error
+              : "";
       if (loc && message) {
         return `${loc}: ${message}`;
       }
@@ -979,7 +1118,7 @@ export class AdminService {
       try {
         return JSON.stringify(detail);
       } catch {
-        return '';
+        return "";
       }
     }
     return String(detail);
@@ -988,12 +1127,9 @@ export class AdminService {
   private extractAiEngineAdminErrorMessage(error: any): string {
     if (axios.isAxiosError(error)) {
       const data = error.response?.data;
-      const statusText = error.response?.statusText || '';
+      const statusText = error.response?.statusText || "";
       const detail = this.stringifyAiEngineErrorDetail(
-        data?.message
-        ?? data?.detail
-        ?? data?.error
-        ?? data,
+        data?.message ?? data?.detail ?? data?.error ?? data,
       );
       if (detail) {
         return detail;
@@ -1001,17 +1137,17 @@ export class AdminService {
       if (statusText) {
         return statusText;
       }
-      if (error.code === 'ECONNABORTED') {
-        return 'request timed out';
+      if (error.code === "ECONNABORTED") {
+        return "request timed out";
       }
-      if (typeof error.message === 'string' && error.message.trim()) {
+      if (typeof error.message === "string" && error.message.trim()) {
         return error.message.trim();
       }
     }
     if (error instanceof Error && error.message.trim()) {
       return error.message.trim();
     }
-    return String(error || 'unknown error');
+    return String(error || "unknown error");
   }
 
   private async postAiEngineAdminWithFailover<T>(
@@ -1029,16 +1165,12 @@ export class AdminService {
     const failures: Array<{ baseUrl: string; message: string }> = [];
     for (const baseUrl of urls) {
       try {
-        const response = await axios.post<T>(
-          `${baseUrl}${path}`,
-          body,
-          {
-            headers: {
-              'x-admin-token': this.getAdminToken(),
-            },
-            timeout,
+        const response = await axios.post<T>(`${baseUrl}${path}`, body, {
+          headers: {
+            "x-admin-token": this.getAdminToken(),
           },
-        );
+          timeout,
+        });
         return {
           baseUrl,
           data: response.data,
@@ -1053,29 +1185,46 @@ export class AdminService {
 
     const summary = failures
       .map((entry) => `${entry.baseUrl}: ${entry.message}`)
-      .join(' | ');
+      .join(" | ");
     throw new BadGatewayException(
-      `All ai-engine admin endpoints failed. ${summary || 'No upstream error details available.'}`,
+      `All ai-engine admin endpoints failed. ${summary || "No upstream error details available."}`,
     );
   }
 
-  private normalizeLlmProviderExtraConfig(extraConfig: any): NormalizedLlmProviderExtraConfig {
-    const normalized = extraConfig && typeof extraConfig === 'object' && !Array.isArray(extraConfig)
-      ? { ...extraConfig }
-      : {};
-    const rawCatalog = normalized.modelCatalog && typeof normalized.modelCatalog === 'object' && !Array.isArray(normalized.modelCatalog)
-      ? normalized.modelCatalog
-      : {};
-    const vendorPreset = typeof normalized.vendorPreset === 'string' && normalized.vendorPreset.trim()
-      ? normalized.vendorPreset.trim()
-      : 'generic';
+  private normalizeLlmProviderExtraConfig(
+    extraConfig: any,
+  ): NormalizedLlmProviderExtraConfig {
+    const normalized =
+      extraConfig &&
+      typeof extraConfig === "object" &&
+      !Array.isArray(extraConfig)
+        ? { ...extraConfig }
+        : {};
+    const rawCatalog =
+      normalized.modelCatalog &&
+      typeof normalized.modelCatalog === "object" &&
+      !Array.isArray(normalized.modelCatalog)
+        ? normalized.modelCatalog
+        : {};
+    const vendorPreset =
+      typeof normalized.vendorPreset === "string" &&
+      normalized.vendorPreset.trim()
+        ? normalized.vendorPreset.trim()
+        : "generic";
     const modelCatalog: LlmProviderCatalogConfig = {
-      mode: rawCatalog.mode === 'custom' ? 'custom' : 'auto',
-      apiUrl: typeof rawCatalog.apiUrl === 'string' ? rawCatalog.apiUrl.trim() : '',
-      authMode: rawCatalog.authMode === 'bearer_token' ? 'bearer_token' : 'inherit_provider',
-      apiKey: typeof rawCatalog.apiKey === 'string' ? rawCatalog.apiKey.trim() : '',
+      mode: rawCatalog.mode === "custom" ? "custom" : "auto",
+      apiUrl:
+        typeof rawCatalog.apiUrl === "string" ? rawCatalog.apiUrl.trim() : "",
+      authMode:
+        rawCatalog.authMode === "bearer_token"
+          ? "bearer_token"
+          : "inherit_provider",
+      apiKey:
+        typeof rawCatalog.apiKey === "string" ? rawCatalog.apiKey.trim() : "",
     };
-    const contextWindow = this.coerceOptionalPositiveInteger(normalized.contextWindow);
+    const contextWindow = this.coerceOptionalPositiveInteger(
+      normalized.contextWindow,
+    );
     const maxTokens = this.coerceOptionalPositiveInteger(normalized.maxTokens);
     return {
       ...normalized,
@@ -1094,7 +1243,7 @@ export class AdminService {
     if (value === undefined) {
       return fallback;
     }
-    if (value === null || value === '') {
+    if (value === null || value === "") {
       return null;
     }
     const normalized = this.coerceOptionalPositiveInteger(value);
@@ -1105,7 +1254,7 @@ export class AdminService {
   }
 
   private coerceOptionalPositiveInteger(value: unknown): number | null {
-    if (value === null || value === undefined || value === '') {
+    if (value === null || value === undefined || value === "") {
       return null;
     }
     const parsed = Number(value);
@@ -1116,30 +1265,37 @@ export class AdminService {
     return rounded > 0 ? rounded : null;
   }
 
-  private buildLlmProviderExtraConfig(body: any, existing?: any): NormalizedLlmProviderExtraConfig {
+  private buildLlmProviderExtraConfig(
+    body: any,
+    existing?: any,
+  ): NormalizedLlmProviderExtraConfig {
     const current = this.normalizeLlmProviderExtraConfig(existing?.extraConfig);
-    const vendorPreset = typeof body?.vendorPreset === 'string' && body.vendorPreset.trim()
-      ? body.vendorPreset.trim()
-      : current.vendorPreset || 'generic';
-    const catalogMode = body?.catalogMode === 'custom' ? 'custom' : 'auto';
-    const nextCatalogApiKey = typeof body?.catalogApiKey === 'string' && body.catalogApiKey.trim()
-      ? body.catalogApiKey.trim()
-      : current.modelCatalog.apiKey || '';
-    const nextCatalogApiUrl = typeof body?.catalogApiUrl === 'string'
-      ? body.catalogApiUrl.trim()
-      : current.modelCatalog.apiUrl || '';
-    const nextCatalogAuthMode = body?.catalogAuthMode === 'bearer_token'
-      ? 'bearer_token'
-      : 'inherit_provider';
+    const vendorPreset =
+      typeof body?.vendorPreset === "string" && body.vendorPreset.trim()
+        ? body.vendorPreset.trim()
+        : current.vendorPreset || "generic";
+    const catalogMode = body?.catalogMode === "custom" ? "custom" : "auto";
+    const nextCatalogApiKey =
+      typeof body?.catalogApiKey === "string" && body.catalogApiKey.trim()
+        ? body.catalogApiKey.trim()
+        : current.modelCatalog.apiKey || "";
+    const nextCatalogApiUrl =
+      typeof body?.catalogApiUrl === "string"
+        ? body.catalogApiUrl.trim()
+        : current.modelCatalog.apiUrl || "";
+    const nextCatalogAuthMode =
+      body?.catalogAuthMode === "bearer_token"
+        ? "bearer_token"
+        : "inherit_provider";
     const contextWindow = this.resolveOptionalPositiveInteger(
       body?.contextWindow,
       current.contextWindow,
-      'contextWindow',
+      "contextWindow",
     );
     const maxTokens = this.resolveOptionalPositiveInteger(
       body?.maxTokens,
       current.maxTokens,
-      'maxTokens',
+      "maxTokens",
     );
     return {
       ...current,
@@ -1156,7 +1312,7 @@ export class AdminService {
   }
 
   private maskSecret(secret?: string | null): string | null {
-    const value = (secret || '').trim();
+    const value = (secret || "").trim();
     if (!value) {
       return null;
     }
@@ -1167,19 +1323,25 @@ export class AdminService {
   }
 
   private presentLlmProvider(provider: any) {
-    const extraConfig = this.normalizeLlmProviderExtraConfig(provider?.extraConfig);
-    const latestTest = Array.isArray(provider?.testRecords) && provider.testRecords.length
-      ? provider.testRecords[0]
-      : null;
+    const extraConfig = this.normalizeLlmProviderExtraConfig(
+      provider?.extraConfig,
+    );
+    const latestTest =
+      Array.isArray(provider?.testRecords) && provider.testRecords.length
+        ? provider.testRecords[0]
+        : null;
     const apiKeyMasked = this.maskSecret(provider?.apiKey);
-    const catalogApiKeyMasked = this.maskSecret(extraConfig.modelCatalog.apiKey);
+    const catalogApiKeyMasked = this.maskSecret(
+      extraConfig.modelCatalog.apiKey,
+    );
     return {
       ...provider,
       extraConfig: undefined,
       apiKey: undefined,
-      apiKeySet: Boolean((provider?.apiKey || '').trim()),
+      apiKeySet: Boolean((provider?.apiKey || "").trim()),
       apiKeyMasked,
-      regionDisplayName: provider?.regionTarget?.displayName || provider?.region,
+      regionDisplayName:
+        provider?.regionTarget?.displayName || provider?.region,
       vendorPreset: extraConfig.vendorPreset,
       catalogMode: extraConfig.modelCatalog.mode,
       catalogApiUrl: extraConfig.modelCatalog.apiUrl,
@@ -1202,18 +1364,63 @@ export class AdminService {
     };
   }
 
+  async getLlmProviderSecret(id: string, kind: string) {
+    const normalizedKind = String(kind || "")
+      .trim()
+      .toLowerCase();
+    if (normalizedKind !== "api-key" && normalizedKind !== "catalog-api-key") {
+      throw new BadRequestException("Unsupported provider secret kind");
+    }
+
+    const provider = await this.prisma.llmGatewayProvider.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        apiKey: true,
+        extraConfig: true,
+      },
+    });
+
+    if (!provider) {
+      throw new NotFoundException("Provider not found");
+    }
+
+    const extraConfig = this.normalizeLlmProviderExtraConfig(
+      provider.extraConfig,
+    );
+    const value =
+      normalizedKind === "api-key"
+        ? String(provider.apiKey || "").trim()
+        : String(extraConfig.modelCatalog.apiKey || "").trim();
+
+    if (!value) {
+      throw new NotFoundException("Requested secret is not configured");
+    }
+
+    return {
+      providerId: provider.id,
+      kind: normalizedKind,
+      value,
+    };
+  }
+
   private async invalidateFeedCache(): Promise<void> {
     const adminToken = this.getOptionalAdminToken();
     if (!adminToken) {
-      console.warn('[ADMIN] Skipping feed cache invalidation because ADMIN_TOKEN is not configured');
+      console.warn(
+        "[ADMIN] Skipping feed cache invalidation because ADMIN_TOKEN is not configured",
+      );
       return;
     }
 
     const baseUrl = (
-      this.configService.get<string>('FEED_SERVICE_UPSTREAM_URL')
-      || this.configService.get<string>('FEED_SERVICE_URL')
-      || this.configService.get<string>('PUBLIC_API_BASE_URL', 'http://localhost:3002')
-    ).replace(/\/$/, '');
+      this.configService.get<string>("FEED_SERVICE_UPSTREAM_URL") ||
+      this.configService.get<string>("FEED_SERVICE_URL") ||
+      this.configService.get<string>(
+        "PUBLIC_API_BASE_URL",
+        "http://localhost:3002",
+      )
+    ).replace(/\/$/, "");
 
     try {
       await axios.post(
@@ -1222,43 +1429,60 @@ export class AdminService {
         {
           timeout: 5000,
           headers: {
-            'x-admin-token': adminToken,
+            "x-admin-token": adminToken,
           },
         },
       );
     } catch (error: any) {
       // Mutations should not fail just because cache eviction missed.
-      console.warn('[ADMIN] Failed to invalidate feed cache:', error?.message || error);
+      console.warn(
+        "[ADMIN] Failed to invalidate feed cache:",
+        error?.message || error,
+      );
     }
   }
 
   private normalizeLegacyPreviewBackfillLimit(rawValue?: unknown): number {
-    const parsed = Number.parseInt(String(rawValue ?? '200'), 10);
+    const parsed = Number.parseInt(String(rawValue ?? "200"), 10);
     if (!Number.isFinite(parsed)) {
       return 200;
     }
     return Math.min(Math.max(parsed, 1), 2000);
   }
 
-  private parseLegacyPreviewBackfillDryRun(rawValue?: boolean | string): boolean {
-    return String(rawValue ?? 'false').trim().toLowerCase() === 'true';
+  private parseLegacyPreviewBackfillDryRun(
+    rawValue?: boolean | string,
+  ): boolean {
+    return (
+      String(rawValue ?? "false")
+        .trim()
+        .toLowerCase() === "true"
+    );
   }
 
-  private parseLegacyPreviewBackfillGameIds(rawValue?: string[] | string): string[] {
+  private parseLegacyPreviewBackfillGameIds(
+    rawValue?: string[] | string,
+  ): string[] {
     if (Array.isArray(rawValue)) {
       return rawValue
-        .map((value) => String(value || '').trim())
+        .map((value) => String(value || "").trim())
         .filter(Boolean);
     }
 
-    return String(rawValue || '')
-      .split(',')
-        .map((value) => value.trim())
-        .filter(Boolean);
+    return String(rawValue || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
   }
 
-  private parseGameCoverBackfillOverwriteExisting(rawValue?: boolean | string): boolean {
-    return String(rawValue ?? 'false').trim().toLowerCase() === 'true';
+  private parseGameCoverBackfillOverwriteExisting(
+    rawValue?: boolean | string,
+  ): boolean {
+    return (
+      String(rawValue ?? "false")
+        .trim()
+        .toLowerCase() === "true"
+    );
   }
 
   async listGames(
@@ -1273,7 +1497,7 @@ export class AdminService {
       where.title = { contains: search };
     }
 
-    if (status && status !== 'all') {
+    if (status && status !== "all") {
       where.status = status as any;
     }
 
@@ -1296,11 +1520,11 @@ export class AdminService {
               metadata: true,
               createdAt: true,
             },
-            orderBy: { version: 'desc' },
+            orderBy: { version: "desc" },
             take: 1,
           },
         },
-        orderBy: { createdAt: 'desc' },
+        orderBy: { createdAt: "desc" },
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -1328,13 +1552,13 @@ export class AdminService {
           },
         },
         bundles: {
-          orderBy: { version: 'desc' },
+          orderBy: { version: "desc" },
         },
       },
     });
 
     if (!game) {
-      throw new NotFoundException('Game not found');
+      throw new NotFoundException("Game not found");
     }
 
     return this.presentAdminGame(game);
@@ -1359,22 +1583,22 @@ export class AdminService {
       data.slug ||
       data.title
         .toLowerCase()
-        .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '-')
-        .replace(/^-|-$/g, '') +
-        '-' +
+        .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "-")
+        .replace(/^-|-$/g, "") +
+        "-" +
         Date.now().toString(36);
 
-    const htmlCode = data.htmlCode || '';
+    const htmlCode = data.htmlCode || "";
     const codeSizeBytes =
-      Buffer.byteLength(htmlCode, 'utf8') +
-      Buffer.byteLength(data.cssCode || '', 'utf8') +
-      Buffer.byteLength(data.jsCode || '', 'utf8');
+      Buffer.byteLength(htmlCode, "utf8") +
+      Buffer.byteLength(data.cssCode || "", "utf8") +
+      Buffer.byteLength(data.jsCode || "", "utf8");
 
     // If no authorId provided, try to find or create a system admin user
     let authorId = data.authorId;
     if (!authorId) {
       const adminUser = await this.prisma.user.findFirst({
-        where: { role: 'admin' },
+        where: { role: "admin" },
       });
       if (adminUser) {
         authorId = adminUser.id;
@@ -1384,17 +1608,22 @@ export class AdminService {
         await this.prisma.user.create({
           data: {
             id: adminId,
-            username: 'system_admin',
-            displayName: 'System Admin',
-            role: 'admin',
-            authProvider: 'email',
+            username: "system_admin",
+            displayName: "System Admin",
+            role: "admin",
+            authProvider: "email",
           },
         });
         authorId = adminId;
       }
     }
 
-    const normalizedGameType = normalizeGameType(data.gameType, data.title, data.description, data.tags);
+    const normalizedGameType = normalizeGameType(
+      data.gameType,
+      data.title,
+      data.description,
+      data.tags,
+    );
 
     const game = await this.prisma.game.create({
       data: {
@@ -1405,7 +1634,7 @@ export class AdminService {
         gameType: normalizedGameType,
         tags: data.tags || [],
         author: { connect: { id: authorId! } },
-        status: 'draft',
+        status: "draft",
         codeBundleId: bundleId,
         version: 1,
       },
@@ -1444,24 +1673,25 @@ export class AdminService {
     const existing = await this.prisma.game.findUnique({
       where: { id },
       include: {
-        bundles: { orderBy: { version: 'desc' }, take: 1 },
+        bundles: { orderBy: { version: "desc" }, take: 1 },
       },
     });
 
     if (!existing) {
-      throw new NotFoundException('Game not found');
+      throw new NotFoundException("Game not found");
     }
 
-    if (data.status === 'banned') {
+    if (data.status === "banned") {
       await this.gameService.terminateActiveTasksForGame(id, {
-        reason: 'Task canceled because the game was banned by admin',
+        reason: "Task canceled because the game was banned by admin",
       });
     }
 
     // Update game metadata
     const gameUpdate: any = {};
     if (data.title !== undefined) gameUpdate.title = data.title;
-    if (data.description !== undefined) gameUpdate.description = data.description;
+    if (data.description !== undefined)
+      gameUpdate.description = data.description;
     if (data.slug !== undefined) gameUpdate.slug = data.slug;
     if (data.gameType !== undefined) {
       gameUpdate.gameType = normalizeGameType(
@@ -1484,11 +1714,11 @@ export class AdminService {
     // Update or create bundle if code provided
     if (data.htmlCode !== undefined) {
       const newVersion = (existing.bundles[0]?.version || 0) + 1;
-      const htmlCode = data.htmlCode || '';
+      const htmlCode = data.htmlCode || "";
       const codeSizeBytes =
-        Buffer.byteLength(htmlCode, 'utf8') +
-        Buffer.byteLength(data.cssCode || '', 'utf8') +
-        Buffer.byteLength(data.jsCode || '', 'utf8');
+        Buffer.byteLength(htmlCode, "utf8") +
+        Buffer.byteLength(data.cssCode || "", "utf8") +
+        Buffer.byteLength(data.jsCode || "", "utf8");
 
       const bundleId = randomUUID();
       await this.prisma.gameBundle.create({
@@ -1530,32 +1760,41 @@ export class AdminService {
             version: true,
             metadata: true,
           },
-          orderBy: { version: 'desc' },
+          orderBy: { version: "desc" },
           take: 1,
         },
       },
     });
 
     if (!game) {
-      throw new NotFoundException('Game not found');
+      throw new NotFoundException("Game not found");
     }
 
-    if (typeof game.authorId !== 'string' || !game.authorId.trim()) {
-      throw new BadRequestException('Game author is missing');
+    if (typeof game.authorId !== "string" || !game.authorId.trim()) {
+      throw new BadRequestException("Game author is missing");
     }
 
-    const uploadedImage = this.decodeManualCoverImageDataUrl(data?.imageDataUrl);
-    const externalImageUrl = uploadedImage ? null : this.normalizeManualCoverUrl(data?.imageUrl);
+    const uploadedImage = this.decodeManualCoverImageDataUrl(
+      data?.imageDataUrl,
+    );
+    const externalImageUrl = uploadedImage
+      ? null
+      : this.normalizeManualCoverUrl(data?.imageUrl);
     if (!uploadedImage && !externalImageUrl) {
-      throw new BadRequestException('Either imageDataUrl or imageUrl is required');
+      throw new BadRequestException(
+        "Either imageDataUrl or imageUrl is required",
+      );
     }
 
     const bundle = await this.resolveGameCoverTargetBundle(game);
-    const metadata = bundle.metadata && typeof bundle.metadata === 'object' && !Array.isArray(bundle.metadata)
-      ? { ...(bundle.metadata as Record<string, any>) }
-      : {};
+    const metadata =
+      bundle.metadata &&
+      typeof bundle.metadata === "object" &&
+      !Array.isArray(bundle.metadata)
+        ? { ...(bundle.metadata as Record<string, any>) }
+        : {};
     const manualUpdatedAt = new Date().toISOString();
-    let targetCoverUrl = externalImageUrl || '';
+    let targetCoverUrl = externalImageUrl || "";
     let coverArtifactId: string | null = null;
 
     if (uploadedImage) {
@@ -1565,20 +1804,21 @@ export class AdminService {
           taskId: undefined,
           gameId: game.id,
           userId: game.authorId,
-          artifactType: 'cover_image',
+          artifactType: "cover_image",
           contentType: uploadedImage.contentType,
-          storageType: 'inline_text',
+          storageType: "inline_text",
           payloadText: uploadedImage.payload,
           payloadJson: undefined,
           payloadUrl: undefined,
           sizeBytes: uploadedImage.sizeBytes,
           metadata: {
-            encoding: 'base64',
+            encoding: "base64",
             manualCover: true,
-            manualCoverSource: 'admin_upload',
-            manualCoverFileName: typeof data?.fileName === 'string' && data.fileName.trim()
-              ? data.fileName.trim().slice(0, 255)
-              : undefined,
+            manualCoverSource: "admin_upload",
+            manualCoverFileName:
+              typeof data?.fileName === "string" && data.fileName.trim()
+                ? data.fileName.trim().slice(0, 255)
+                : undefined,
             manualCoverUpdatedAt: manualUpdatedAt,
           } as Prisma.InputJsonValue,
         },
@@ -1591,7 +1831,7 @@ export class AdminService {
       ...metadata,
       coverUrl: targetCoverUrl,
       manualCover: true,
-      manualCoverSource: uploadedImage ? 'admin_upload' : 'admin_url',
+      manualCoverSource: uploadedImage ? "admin_upload" : "admin_url",
       manualCoverUpdatedAt: manualUpdatedAt,
       ...(coverArtifactId ? { coverArtifactId } : {}),
     };
@@ -1623,11 +1863,11 @@ export class AdminService {
   async deleteGame(id: string) {
     const game = await this.prisma.game.findUnique({ where: { id } });
     if (!game) {
-      throw new NotFoundException('Game not found');
+      throw new NotFoundException("Game not found");
     }
 
     await this.gameService.terminateActiveTasksForGame(id, {
-      reason: 'Task canceled because the game was deleted by admin',
+      reason: "Task canceled because the game was deleted by admin",
     });
 
     // Delete bundles first (cascade should handle this, but be explicit)
@@ -1641,7 +1881,7 @@ export class AdminService {
   async batchUpdateGameStatus(ids: unknown, status: string) {
     const normalizedIds = this.normalizeGameIds(ids);
     if (!normalizedIds.length) {
-      throw new BadRequestException('ids must contain at least one game id');
+      throw new BadRequestException("ids must contain at least one game id");
     }
 
     const nextStatus = this.validateBatchStatus(status);
@@ -1659,8 +1899,10 @@ export class AdminService {
 
     await this.prisma.$transaction(async (tx) => {
       for (const game of games) {
-        const updateData: Prisma.GameUpdateInput = { status: nextStatus as any };
-        if (nextStatus === 'published' && !game.publishedAt) {
+        const updateData: Prisma.GameUpdateInput = {
+          status: nextStatus as any,
+        };
+        if (nextStatus === "published" && !game.publishedAt) {
           updateData.publishedAt = updatedAt;
         }
         await tx.game.update({
@@ -1686,7 +1928,7 @@ export class AdminService {
   async batchDeleteGames(ids: unknown) {
     const normalizedIds = this.normalizeGameIds(ids);
     if (!normalizedIds.length) {
-      throw new BadRequestException('ids must contain at least one game id');
+      throw new BadRequestException("ids must contain at least one game id");
     }
 
     const games = await this.prisma.game.findMany({
@@ -1699,9 +1941,11 @@ export class AdminService {
     const missingIds = normalizedIds.filter((id) => !foundIdSet.has(id));
 
     await Promise.all(
-      foundIds.map((gameId) => this.gameService.terminateActiveTasksForGame(gameId, {
-        reason: 'Task canceled because the game was batch-deleted by admin',
-      })),
+      foundIds.map((gameId) =>
+        this.gameService.terminateActiveTasksForGame(gameId, {
+          reason: "Task canceled because the game was batch-deleted by admin",
+        }),
+      ),
     );
 
     if (foundIds.length > 0) {
@@ -1723,17 +1967,17 @@ export class AdminService {
   async toggleStatus(id: string, status: string) {
     const game = await this.prisma.game.findUnique({ where: { id } });
     if (!game) {
-      throw new NotFoundException('Game not found');
+      throw new NotFoundException("Game not found");
     }
 
-    if (status === 'banned') {
+    if (status === "banned") {
       await this.gameService.terminateActiveTasksForGame(id, {
-        reason: 'Task canceled because the game was banned by admin',
+        reason: "Task canceled because the game was banned by admin",
       });
     }
 
     const updateData: any = { status };
-    if (status === 'published' && !game.publishedAt) {
+    if (status === "published" && !game.publishedAt) {
       updateData.publishedAt = new Date();
     }
 
@@ -1748,7 +1992,10 @@ export class AdminService {
   }
 
   async refreshGameTypes(options: { dryRun?: boolean | string } = {}) {
-    const dryRun = String(options?.dryRun ?? 'false').trim().toLowerCase() === 'true';
+    const dryRun =
+      String(options?.dryRun ?? "false")
+        .trim()
+        .toLowerCase() === "true";
     const batchSize = 200;
     const summary = {
       dryRun,
@@ -1765,7 +2012,7 @@ export class AdminService {
       const games = await this.prisma.game.findMany({
         ...(gameCursor ? { cursor: { id: gameCursor }, skip: 1 } : {}),
         take: batchSize,
-        orderBy: { id: 'asc' },
+        orderBy: { id: "asc" },
         select: {
           id: true,
           title: true,
@@ -1805,7 +2052,7 @@ export class AdminService {
       const bundles = await this.prisma.gameBundle.findMany({
         ...(bundleCursor ? { cursor: { id: bundleCursor }, skip: 1 } : {}),
         take: batchSize,
-        orderBy: { id: 'asc' },
+        orderBy: { id: "asc" },
         select: {
           id: true,
           metadata: true,
@@ -1859,7 +2106,7 @@ export class AdminService {
       const tasks = await this.prisma.generationTask.findMany({
         ...(taskCursor ? { cursor: { id: taskCursor }, skip: 1 } : {}),
         take: batchSize,
-        orderBy: { id: 'asc' },
+        orderBy: { id: "asc" },
         select: {
           id: true,
           resultSummary: true,
@@ -1904,7 +2151,10 @@ export class AdminService {
           changed = true;
         }
 
-        if (Object.prototype.hasOwnProperty.call(metadata, 'selectedGameType') && metadata.selectedGameType !== normalizedGameType) {
+        if (
+          Object.prototype.hasOwnProperty.call(metadata, "selectedGameType") &&
+          metadata.selectedGameType !== normalizedGameType
+        ) {
           nextMetadata = {
             ...nextMetadata,
             selectedGameType: normalizedGameType,
@@ -1912,7 +2162,10 @@ export class AdminService {
           changed = true;
         }
 
-        if (Object.prototype.hasOwnProperty.call(metadata, 'gameType') && metadata.gameType !== normalizedGameType) {
+        if (
+          Object.prototype.hasOwnProperty.call(metadata, "gameType") &&
+          metadata.gameType !== normalizedGameType
+        ) {
           nextMetadata = {
             ...nextMetadata,
             gameType: normalizedGameType,
@@ -1937,7 +2190,12 @@ export class AdminService {
       taskCursor = tasks[tasks.length - 1]?.id;
     }
 
-    if (!dryRun && (summary.gamesUpdated > 0 || summary.bundlesUpdated > 0 || summary.tasksUpdated > 0)) {
+    if (
+      !dryRun &&
+      (summary.gamesUpdated > 0 ||
+        summary.bundlesUpdated > 0 ||
+        summary.tasksUpdated > 0)
+    ) {
       await this.invalidateFeedCache();
     }
 
@@ -1953,11 +2211,11 @@ export class AdminService {
         in: [GameStatus.draft, GameStatus.review, GameStatus.published],
       },
       visibility: {
-        notIn: ['public', 'unlisted'],
+        notIn: ["public", "unlisted"],
       },
       generationTasks: {
         some: {
-          status: 'succeeded',
+          status: "succeeded",
         },
       },
       bundles: {
@@ -1990,13 +2248,13 @@ export class AdminService {
             htmlCode: true,
           },
           orderBy: {
-            version: 'desc',
+            version: "desc",
           },
           take: 1,
         },
         generationTasks: {
           where: {
-            status: 'succeeded',
+            status: "succeeded",
           },
           select: {
             id: true,
@@ -2004,57 +2262,66 @@ export class AdminService {
             createdAt: true,
           },
           orderBy: {
-            createdAt: 'desc',
+            createdAt: "desc",
           },
           take: 1,
         },
       },
       orderBy: {
-        createdAt: 'asc',
+        createdAt: "asc",
       },
       take: limit,
     });
 
-    const eligibleGames = candidates.reduce<Array<{
-      id: string;
-      title: string;
-      previousStatus: GameStatus;
-      previousVisibility: string;
-      previousVersion: number;
-      previousCodeBundleId: string | null;
-      createdAt: Date;
-      publishedAt: Date | null;
-      latestBundleId: string;
-      latestBundleVersion: number;
-      sourceTaskId: string;
-      sourcePreviewUrl: string | null;
-    }>>((items, game) => {
-        const latestBundle = game.bundles[0];
-        const latestSucceededTask = game.generationTasks[0];
-        const previewUrl = latestSucceededTask?.previewUrl || '';
-        const isLegacyTask = !previewUrl || !previewUrl.includes('previewToken=');
-        const hasPlayableBundle = typeof latestBundle?.htmlCode === 'string' && latestBundle.htmlCode.trim().length > 0;
+    const eligibleGames = candidates.reduce<
+      Array<{
+        id: string;
+        title: string;
+        previousStatus: GameStatus;
+        previousVisibility: string;
+        previousVersion: number;
+        previousCodeBundleId: string | null;
+        createdAt: Date;
+        publishedAt: Date | null;
+        latestBundleId: string;
+        latestBundleVersion: number;
+        sourceTaskId: string;
+        sourcePreviewUrl: string | null;
+      }>
+    >((items, game) => {
+      const latestBundle = game.bundles[0];
+      const latestSucceededTask = game.generationTasks[0];
+      const previewUrl = latestSucceededTask?.previewUrl || "";
+      const isLegacyTask = !previewUrl || !previewUrl.includes("previewToken=");
+      const hasPlayableBundle =
+        typeof latestBundle?.htmlCode === "string" &&
+        latestBundle.htmlCode.trim().length > 0;
 
-        if (!latestBundle || !latestSucceededTask || !isLegacyTask || !hasPlayableBundle) {
-          return items;
-        }
-
-        items.push({
-          id: game.id,
-          title: game.title,
-          previousStatus: game.status,
-          previousVisibility: game.visibility || 'private',
-          previousVersion: game.version,
-          previousCodeBundleId: game.codeBundleId,
-          createdAt: game.createdAt,
-          publishedAt: game.publishedAt,
-          latestBundleId: latestBundle.id,
-          latestBundleVersion: latestBundle.version,
-          sourceTaskId: latestSucceededTask.id,
-          sourcePreviewUrl: latestSucceededTask.previewUrl,
-        });
+      if (
+        !latestBundle ||
+        !latestSucceededTask ||
+        !isLegacyTask ||
+        !hasPlayableBundle
+      ) {
         return items;
-      }, []);
+      }
+
+      items.push({
+        id: game.id,
+        title: game.title,
+        previousStatus: game.status,
+        previousVisibility: game.visibility || "private",
+        previousVersion: game.version,
+        previousCodeBundleId: game.codeBundleId,
+        createdAt: game.createdAt,
+        publishedAt: game.publishedAt,
+        latestBundleId: latestBundle.id,
+        latestBundleVersion: latestBundle.version,
+        sourceTaskId: latestSucceededTask.id,
+        sourcePreviewUrl: latestSucceededTask.previewUrl,
+      });
+      return items;
+    }, []);
 
     if (!dryRun) {
       for (const game of eligibleGames) {
@@ -2064,9 +2331,12 @@ export class AdminService {
           },
           data: {
             status: GameStatus.published,
-            visibility: 'unlisted',
+            visibility: "unlisted",
             publishedAt: game.publishedAt || game.createdAt,
-            version: Math.max(game.previousVersion || 0, game.latestBundleVersion || 1),
+            version: Math.max(
+              game.previousVersion || 0,
+              game.latestBundleVersion || 1,
+            ),
             codeBundleId: game.latestBundleId,
           },
         });
@@ -2095,7 +2365,7 @@ export class AdminService {
         previousVisibility: game.previousVisibility,
         latestBundleVersion: game.latestBundleVersion,
         targetStatus: GameStatus.published,
-        targetVisibility: 'unlisted',
+        targetVisibility: "unlisted",
       })),
     };
   }
@@ -2104,7 +2374,9 @@ export class AdminService {
     const limit = this.normalizeLegacyPreviewBackfillLimit(options.limit);
     const dryRun = this.parseLegacyPreviewBackfillDryRun(options.dryRun);
     const gameIds = this.parseLegacyPreviewBackfillGameIds(options.gameIds);
-    const overwriteExisting = this.parseGameCoverBackfillOverwriteExisting(options.overwriteExisting);
+    const overwriteExisting = this.parseGameCoverBackfillOverwriteExisting(
+      options.overwriteExisting,
+    );
     const summary = {
       dryRun,
       overwriteExisting,
@@ -2126,10 +2398,7 @@ export class AdminService {
         },
         ...(!overwriteExisting
           ? {
-              OR: [
-                { thumbnailUrl: null },
-                { thumbnailUrl: '' },
-              ],
+              OR: [{ thumbnailUrl: null }, { thumbnailUrl: "" }],
             }
           : {}),
         ...(gameIds.length > 0
@@ -2158,13 +2427,13 @@ export class AdminService {
             metadata: true,
           },
           orderBy: {
-            version: 'desc',
+            version: "desc",
           },
           take: 1,
         },
       },
       orderBy: {
-        createdAt: 'asc',
+        createdAt: "asc",
       },
       take: limit,
     });
@@ -2172,13 +2441,13 @@ export class AdminService {
     summary.scanned = candidates.length;
 
     for (const game of candidates) {
-      if (typeof game.authorId !== 'string' || !game.authorId.trim()) {
+      if (typeof game.authorId !== "string" || !game.authorId.trim()) {
         summary.skipped += 1;
         summary.items.push({
           id: game.id,
           title: game.title,
-          status: 'skipped',
-          reason: 'missing_author',
+          status: "skipped",
+          reason: "missing_author",
         });
         continue;
       }
@@ -2189,7 +2458,11 @@ export class AdminService {
         htmlCode: string;
         metadata: Prisma.JsonValue;
       } | null = game.bundles[0] || null;
-      if (game.status === GameStatus.published && Number.isFinite(game.version) && Number(game.version) > 0) {
+      if (
+        game.status === GameStatus.published &&
+        Number.isFinite(game.version) &&
+        Number(game.version) > 0
+      ) {
         const liveVersion = Number(game.version);
         if (!bundle || bundle.version !== liveVersion) {
           bundle = await this.prisma.gameBundle.findFirst({
@@ -2207,17 +2480,22 @@ export class AdminService {
         }
       }
 
-      const metadata = bundle?.metadata && typeof bundle.metadata === 'object' && !Array.isArray(bundle.metadata)
-        ? { ...(bundle.metadata as Record<string, any>) }
-        : {};
-      const hasPlayableBundle = typeof bundle?.htmlCode === 'string' && bundle.htmlCode.trim().length > 0;
+      const metadata =
+        bundle?.metadata &&
+        typeof bundle.metadata === "object" &&
+        !Array.isArray(bundle.metadata)
+          ? { ...(bundle.metadata as Record<string, any>) }
+          : {};
+      const hasPlayableBundle =
+        typeof bundle?.htmlCode === "string" &&
+        bundle.htmlCode.trim().length > 0;
       const hasExistingCover = Boolean(
-        game.thumbnailUrl
-        || metadata.coverUrl
-        || metadata.coverTaskId
-        || metadata.coverArtifactId
-        || metadata.cover_task_id
-        || metadata.cover_artifact_id
+        game.thumbnailUrl ||
+        metadata.coverUrl ||
+        metadata.coverTaskId ||
+        metadata.coverArtifactId ||
+        metadata.cover_task_id ||
+        metadata.cover_artifact_id,
       );
 
       if (!bundle || !hasPlayableBundle) {
@@ -2225,8 +2503,8 @@ export class AdminService {
         summary.items.push({
           id: game.id,
           title: game.title,
-          status: 'skipped',
-          reason: 'no_playable_bundle',
+          status: "skipped",
+          reason: "no_playable_bundle",
         });
         continue;
       }
@@ -2236,30 +2514,39 @@ export class AdminService {
         summary.items.push({
           id: game.id,
           title: game.title,
-          status: 'skipped',
-          reason: 'existing_cover',
+          status: "skipped",
+          reason: "existing_cover",
           bundleVersion: bundle.version,
         });
         continue;
       }
 
       summary.eligible += 1;
-      const gameSpec = metadata.gameSpec && typeof metadata.gameSpec === 'object' && !Array.isArray(metadata.gameSpec)
-        ? metadata.gameSpec as Record<string, any>
-        : {};
-      const visualStyle = gameSpec.visual_style && typeof gameSpec.visual_style === 'object' && !Array.isArray(gameSpec.visual_style)
-        ? gameSpec.visual_style as Record<string, any>
-        : {};
-      const runtimeOrientation = typeof metadata.runtimeOrientation === 'string'
-        ? metadata.runtimeOrientation
-        : typeof metadata.requestedOrientation === 'string'
-          ? (metadata.requestedOrientation === 'landscape' ? 'landscape_first' : 'portrait_first')
-          : undefined;
+      const gameSpec =
+        metadata.gameSpec &&
+        typeof metadata.gameSpec === "object" &&
+        !Array.isArray(metadata.gameSpec)
+          ? (metadata.gameSpec as Record<string, any>)
+          : {};
+      const visualStyle =
+        gameSpec.visual_style &&
+        typeof gameSpec.visual_style === "object" &&
+        !Array.isArray(gameSpec.visual_style)
+          ? (gameSpec.visual_style as Record<string, any>)
+          : {};
+      const runtimeOrientation =
+        typeof metadata.runtimeOrientation === "string"
+          ? metadata.runtimeOrientation
+          : typeof metadata.requestedOrientation === "string"
+            ? metadata.requestedOrientation === "landscape"
+              ? "landscape_first"
+              : "portrait_first"
+            : undefined;
 
       try {
         const captureResponse = await this.postAiEngineAdminWithFailover<any>(
           undefined,
-          '/api/v1/ai/covers/capture',
+          "/api/v1/ai/covers/capture",
           {
             game_id: game.id,
             user_id: game.authorId,
@@ -2272,39 +2559,60 @@ export class AdminService {
               game.description,
               Array.isArray(gameSpec.tags) ? gameSpec.tags : [],
             ),
-            theme: typeof visualStyle.theme === 'string' ? visualStyle.theme : null,
-            runtime_profile: typeof metadata.runtimeProfile === 'string' ? metadata.runtimeProfile : null,
-            visual_pack: typeof visualStyle.visual_pack === 'string' ? visualStyle.visual_pack : null,
-            render_style_intensity: typeof visualStyle.render_style_intensity === 'string'
-              ? visualStyle.render_style_intensity
-              : null,
-            updated: game.status === GameStatus.published && bundle.version < Number(game.version || bundle.version),
+            theme:
+              typeof visualStyle.theme === "string" ? visualStyle.theme : null,
+            runtime_profile:
+              typeof metadata.runtimeProfile === "string"
+                ? metadata.runtimeProfile
+                : null,
+            visual_pack:
+              typeof visualStyle.visual_pack === "string"
+                ? visualStyle.visual_pack
+                : null,
+            render_style_intensity:
+              typeof visualStyle.render_style_intensity === "string"
+                ? visualStyle.render_style_intensity
+                : null,
+            updated:
+              game.status === GameStatus.published &&
+              bundle.version < Number(game.version || bundle.version),
           },
           60000,
-          'No reachable ai-engine endpoint found for cover backfill',
+          "No reachable ai-engine endpoint found for cover backfill",
         );
         const captured = captureResponse.data?.captured !== false;
-        const payload = typeof captureResponse.data?.payload === 'string' ? captureResponse.data.payload : '';
-        const contentType = typeof captureResponse.data?.content_type === 'string'
-          ? captureResponse.data.content_type
-          : (typeof captureResponse.data?.contentType === 'string' ? captureResponse.data.contentType : 'image/jpeg');
-        const coverMetadata = captureResponse.data?.metadata && typeof captureResponse.data.metadata === 'object'
-          ? captureResponse.data.metadata
-          : {};
+        const payload =
+          typeof captureResponse.data?.payload === "string"
+            ? captureResponse.data.payload
+            : "";
+        const contentType =
+          typeof captureResponse.data?.content_type === "string"
+            ? captureResponse.data.content_type
+            : typeof captureResponse.data?.contentType === "string"
+              ? captureResponse.data.contentType
+              : "image/jpeg";
+        const coverMetadata =
+          captureResponse.data?.metadata &&
+          typeof captureResponse.data.metadata === "object"
+            ? captureResponse.data.metadata
+            : {};
 
         if (!captured || !payload) {
           summary.failed += 1;
           summary.items.push({
             id: game.id,
             title: game.title,
-            status: 'failed',
-            reason: 'cover_capture_empty',
+            status: "failed",
+            reason: "cover_capture_empty",
             bundleVersion: bundle.version,
           });
           continue;
         }
 
-        const targetCoverUrl = this.buildPublicCoverUrl(game.id, bundle.version);
+        const targetCoverUrl = this.buildPublicCoverUrl(
+          game.id,
+          bundle.version,
+        );
         if (!dryRun) {
           const artifact = await this.prisma.generationArtifact.create({
             data: {
@@ -2312,15 +2620,15 @@ export class AdminService {
               taskId: undefined,
               gameId: game.id,
               userId: game.authorId,
-              artifactType: 'cover_image',
+              artifactType: "cover_image",
               contentType,
-              storageType: 'inline_text',
+              storageType: "inline_text",
               payloadText: payload,
               payloadJson: undefined,
               payloadUrl: undefined,
               metadata: {
-                encoding: 'base64',
-                backfillSource: 'admin_cover_backfill',
+                encoding: "base64",
+                backfillSource: "admin_cover_backfill",
                 backfilledAt: new Date().toISOString(),
                 ...(coverMetadata as Record<string, unknown>),
               } as Prisma.InputJsonValue,
@@ -2354,7 +2662,7 @@ export class AdminService {
         summary.items.push({
           id: game.id,
           title: game.title,
-          status: dryRun ? 'planned' : 'regenerated',
+          status: dryRun ? "planned" : "regenerated",
           bundleVersion: bundle.version,
           coverUrl: targetCoverUrl,
           overlayStyle: coverMetadata.coverStyle || null,
@@ -2364,7 +2672,7 @@ export class AdminService {
         summary.items.push({
           id: game.id,
           title: game.title,
-          status: 'failed',
+          status: "failed",
           reason: this.extractAiEngineAdminErrorMessage(error),
           bundleVersion: bundle.version,
         });
@@ -2380,7 +2688,13 @@ export class AdminService {
 
   // ===================== User Management =====================
 
-  async listUsers(page: number, limit: number, search?: string, role?: string, authProvider?: string) {
+  async listUsers(
+    page: number,
+    limit: number,
+    search?: string,
+    role?: string,
+    authProvider?: string,
+  ) {
     const where: Prisma.UserWhereInput = {};
     if (search) {
       where.OR = [
@@ -2390,11 +2704,11 @@ export class AdminService {
         { phone: { contains: search } },
       ];
     }
-    if (role && role !== 'all') {
+    if (role && role !== "all") {
       where.role = role as any;
     }
     const providerFilter = this.normalizeUserAuthProvider(authProvider);
-    if (providerFilter !== 'all') {
+    if (providerFilter !== "all") {
       where.authProvider = providerFilter;
     }
 
@@ -2402,38 +2716,68 @@ export class AdminService {
       this.prisma.user.findMany({
         where,
         select: {
-          id: true, username: true, displayName: true, email: true, phone: true,
-          role: true, isPro: true, bio: true, avatarUrl: true, authProvider: true,
-          followerCount: true, followingCount: true, gameCount: true, totalPlays: true,
-          createdAt: true, updatedAt: true,
+          id: true,
+          username: true,
+          displayName: true,
+          email: true,
+          phone: true,
+          role: true,
+          isPro: true,
+          bio: true,
+          avatarUrl: true,
+          authProvider: true,
+          followerCount: true,
+          followingCount: true,
+          gameCount: true,
+          totalPlays: true,
+          createdAt: true,
+          updatedAt: true,
         },
-        orderBy: { createdAt: 'desc' },
+        orderBy: { createdAt: "desc" },
         skip: (page - 1) * limit,
         take: limit,
       }),
       this.prisma.user.count({ where }),
     ]);
 
-    return { items: users, total, page, limit, totalPages: Math.ceil(total / limit) };
+    return {
+      items: users,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
   }
 
   async getUser(id: string) {
     const user = await this.prisma.user.findUnique({
       where: { id },
       select: {
-        id: true, username: true, displayName: true, email: true, phone: true,
-        role: true, isPro: true, bio: true, avatarUrl: true, authProvider: true,
-        followerCount: true, followingCount: true, gameCount: true, totalPlays: true,
-        createdAt: true, updatedAt: true,
+        id: true,
+        username: true,
+        displayName: true,
+        email: true,
+        phone: true,
+        role: true,
+        isPro: true,
+        bio: true,
+        avatarUrl: true,
+        authProvider: true,
+        followerCount: true,
+        followingCount: true,
+        gameCount: true,
+        totalPlays: true,
+        createdAt: true,
+        updatedAt: true,
       },
     });
-    if (!user) throw new NotFoundException('User not found');
+    if (!user) throw new NotFoundException("User not found");
     return user;
   }
 
   async updateUser(id: string, data: any) {
     const user = await this.prisma.user.findUnique({ where: { id } });
-    if (!user) throw new NotFoundException('User not found');
+    if (!user) throw new NotFoundException("User not found");
 
     const update: any = {};
     if (data.username !== undefined) update.username = data.username;
@@ -2453,7 +2797,7 @@ export class AdminService {
   async batchUpdateUsers(ids: unknown, data: any) {
     const normalizedIds = this.normalizeUserIds(ids);
     if (!normalizedIds.length) {
-      throw new BadRequestException('ids must be a non-empty array');
+      throw new BadRequestException("ids must be a non-empty array");
     }
 
     const update: Prisma.UserUpdateManyMutationInput = {};
@@ -2461,19 +2805,19 @@ export class AdminService {
       update.role = this.validateUserRole(String(data.role));
     }
     if (data?.isPro !== undefined) {
-      if (typeof data.isPro === 'boolean') {
+      if (typeof data.isPro === "boolean") {
         update.isPro = data.isPro;
-      } else if (String(data.isPro).toLowerCase() === 'true') {
+      } else if (String(data.isPro).toLowerCase() === "true") {
         update.isPro = true;
-      } else if (String(data.isPro).toLowerCase() === 'false') {
+      } else if (String(data.isPro).toLowerCase() === "false") {
         update.isPro = false;
       } else {
-        throw new BadRequestException('isPro must be a boolean');
+        throw new BadRequestException("isPro must be a boolean");
       }
     }
 
     if (!Object.keys(update).length) {
-      throw new BadRequestException('At least one updatable field is required');
+      throw new BadRequestException("At least one updatable field is required");
     }
 
     await this.prisma.user.updateMany({
@@ -2484,10 +2828,22 @@ export class AdminService {
     const items = await this.prisma.user.findMany({
       where: { id: { in: normalizedIds } },
       select: {
-        id: true, username: true, displayName: true, email: true, phone: true,
-        role: true, isPro: true, bio: true, avatarUrl: true, authProvider: true,
-        followerCount: true, followingCount: true, gameCount: true, totalPlays: true,
-        createdAt: true, updatedAt: true,
+        id: true,
+        username: true,
+        displayName: true,
+        email: true,
+        phone: true,
+        role: true,
+        isPro: true,
+        bio: true,
+        avatarUrl: true,
+        authProvider: true,
+        followerCount: true,
+        followingCount: true,
+        gameCount: true,
+        totalPlays: true,
+        createdAt: true,
+        updatedAt: true,
       },
     });
 
@@ -2514,22 +2870,27 @@ export class AdminService {
 
   async resetUserPassword(id: string, newPassword: string) {
     const user = await this.prisma.user.findUnique({ where: { id } });
-    if (!user) throw new NotFoundException('User not found');
+    if (!user) throw new NotFoundException("User not found");
     if (!newPassword || newPassword.length < 6) {
-      throw new BadRequestException('Password must be at least 6 characters');
+      throw new BadRequestException("Password must be at least 6 characters");
     }
     const hash = await bcrypt.hash(newPassword, 10);
-    await this.prisma.user.update({ where: { id }, data: { passwordHash: hash } });
+    await this.prisma.user.update({
+      where: { id },
+      data: { passwordHash: hash },
+    });
     return { success: true };
   }
 
   async createUser(data: any) {
-    if (!data.username) throw new BadRequestException('Username is required');
+    if (!data.username) throw new BadRequestException("Username is required");
     if (String(data.username).length > 32) {
-      throw new BadRequestException('Username must be 32 characters or fewer');
+      throw new BadRequestException("Username must be 32 characters or fewer");
     }
-    const existing = await this.prisma.user.findUnique({ where: { username: data.username } });
-    if (existing) throw new BadRequestException('Username already exists');
+    const existing = await this.prisma.user.findUnique({
+      where: { username: data.username },
+    });
+    if (existing) throw new BadRequestException("Username already exists");
 
     const passwordHash = data.password
       ? await bcrypt.hash(data.password, 10)
@@ -2544,18 +2905,18 @@ export class AdminService {
           displayName: data.displayName || data.username,
           email: data.email || null,
           phone: data.phone || null,
-          role: data.role || 'user',
+          role: data.role || "user",
           bio: data.bio || null,
           passwordHash,
-          authProvider: 'email',
+          authProvider: "email",
         },
       });
     } catch (error) {
       if (
-        error instanceof Prisma.PrismaClientKnownRequestError
-        && error.code === 'P2002'
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002"
       ) {
-        throw new BadRequestException('Username already exists');
+        throw new BadRequestException("Username already exists");
       }
       throw error;
     }
@@ -2567,18 +2928,24 @@ export class AdminService {
     const paidOrderWhere = this.buildPaidSubscriptionOrderWhere(range);
     const now = new Date();
 
-    const [plans, orderGroups, activeSubscriberGroups, activeSubscriberCount, paidOrderAggregate] = await Promise.all([
+    const [
+      plans,
+      orderGroups,
+      activeSubscriberGroups,
+      activeSubscriberCount,
+      paidOrderAggregate,
+    ] = await Promise.all([
       this.prisma.subscriptionPlan.findMany({
-        orderBy: [{ sortOrder: 'asc' }, { price: 'asc' }, { createdAt: 'asc' }],
+        orderBy: [{ sortOrder: "asc" }, { price: "asc" }, { createdAt: "asc" }],
       }),
       this.prisma.subscriptionOrder.groupBy({
-        by: ['planId'],
+        by: ["planId"],
         where: paidOrderWhere,
         _count: { _all: true },
         _sum: { amount: true },
       }),
       this.prisma.userSubscription.groupBy({
-        by: ['planId'],
+        by: ["planId"],
         where: {
           status: UserSubscriptionStatus.active,
           expiresAt: { gt: now },
@@ -2608,13 +2975,18 @@ export class AdminService {
       ]),
     );
     const activeMap = new Map(
-      activeSubscriberGroups.map((group) => [group.planId, group._count?._all || 0]),
+      activeSubscriberGroups.map((group) => [
+        group.planId,
+        group._count?._all || 0,
+      ]),
     );
 
-    const items = plans.map((plan) => this.presentSubscriptionPlan(plan, {
-      ...orderMap.get(plan.id),
-      activeSubscribers: activeMap.get(plan.id) || 0,
-    }));
+    const items = plans.map((plan) =>
+      this.presentSubscriptionPlan(plan, {
+        ...orderMap.get(plan.id),
+        activeSubscribers: activeMap.get(plan.id) || 0,
+      }),
+    );
 
     return {
       items,
@@ -2624,7 +2996,9 @@ export class AdminService {
         activeSubscribers: activeSubscriberCount,
         paidOrderCount: paidOrderAggregate._count.id || 0,
         totalRevenueCents: Number(paidOrderAggregate._sum.amount || 0),
-        totalRevenueYuan: Number((Number(paidOrderAggregate._sum.amount || 0) / 100).toFixed(2)),
+        totalRevenueYuan: Number(
+          (Number(paidOrderAggregate._sum.amount || 0) / 100).toFixed(2),
+        ),
         range: {
           from: range.from,
           to: range.to,
@@ -2635,25 +3009,29 @@ export class AdminService {
 
   async upsertSubscriptionPlan(id: string | undefined, body: any) {
     if (!body?.name || !String(body.name).trim()) {
-      throw new BadRequestException('name is required');
+      throw new BadRequestException("name is required");
     }
 
     const planId = id || this.buildSubscriptionPlanId(String(body.name).trim());
     const price = this.parseSubscriptionPlanPrice(body);
-    const quota = Number.parseInt(String(body?.quota ?? ''), 10);
-    const sortOrder = Number.parseInt(String(body?.sortOrder ?? '0'), 10);
-    const period = body?.period === SubscriptionPeriod.yearly ? SubscriptionPeriod.yearly : SubscriptionPeriod.monthly;
-    const currency = (body?.currency || 'CNY').toString().trim().toUpperCase() || 'CNY';
+    const quota = Number.parseInt(String(body?.quota ?? ""), 10);
+    const sortOrder = Number.parseInt(String(body?.sortOrder ?? "0"), 10);
+    const period =
+      body?.period === SubscriptionPeriod.yearly
+        ? SubscriptionPeriod.yearly
+        : SubscriptionPeriod.monthly;
+    const currency =
+      (body?.currency || "CNY").toString().trim().toUpperCase() || "CNY";
     const features = this.normalizeSubscriptionFeatures(body?.features);
     const recommended = body?.recommended === true;
     const active = body?.active !== false;
-    const badge = body?.badge === '' ? null : (body?.badge || null);
+    const badge = body?.badge === "" ? null : body?.badge || null;
 
     if (!Number.isFinite(quota) || quota < 0) {
-      throw new BadRequestException('quota must be a non-negative integer');
+      throw new BadRequestException("quota must be a non-negative integer");
     }
     if (!Number.isFinite(sortOrder)) {
-      throw new BadRequestException('sortOrder must be an integer');
+      throw new BadRequestException("sortOrder must be an integer");
     }
 
     const plan = await this.prisma.$transaction(async (tx) => {
@@ -2669,7 +3047,9 @@ export class AdminService {
         create: {
           id: planId,
           name: String(body.name).trim(),
-          description: body?.description ? String(body.description).trim() : null,
+          description: body?.description
+            ? String(body.description).trim()
+            : null,
           price,
           currency,
           period,
@@ -2682,7 +3062,9 @@ export class AdminService {
         },
         update: {
           name: String(body.name).trim(),
-          description: body?.description ? String(body.description).trim() : null,
+          description: body?.description
+            ? String(body.description).trim()
+            : null,
           price,
           currency,
           period,
@@ -2707,7 +3089,7 @@ export class AdminService {
     ]);
 
     if (!plan) {
-      throw new NotFoundException('Subscription plan not found');
+      throw new NotFoundException("Subscription plan not found");
     }
 
     if (orderCount > 0 || subscriptionCount > 0) {
@@ -2721,7 +3103,8 @@ export class AdminService {
       return {
         deleted: false,
         deactivated: true,
-        reason: 'Plan has historical orders or subscriptions and was archived instead of deleted',
+        reason:
+          "Plan has historical orders or subscriptions and was archived instead of deleted",
       };
     }
 
@@ -2737,21 +3120,25 @@ export class AdminService {
   async changeAdminToken(currentToken: string, newToken: string) {
     const envToken = this.getAdminToken();
     if (currentToken !== envToken) {
-      throw new BadRequestException('Current token is incorrect');
+      throw new BadRequestException("Current token is incorrect");
     }
     if (!newToken || newToken.length < 6) {
-      throw new BadRequestException('New token must be at least 6 characters');
+      throw new BadRequestException("New token must be at least 6 characters");
     }
     // Update the runtime env var (persists until restart)
     process.env.ADMIN_TOKEN = newToken;
-    return { success: true, message: 'Admin token updated (runtime only, update .env.deploy for persistence)' };
+    return {
+      success: true,
+      message:
+        "Admin token updated (runtime only, update .env.deploy for persistence)",
+    };
   }
 
   // ===================== Generation Logs =====================
 
   private asPlainObject(value: unknown): Record<string, unknown> {
-    return value && typeof value === 'object' && !Array.isArray(value)
-      ? value as Record<string, unknown>
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
       : {};
   }
 
@@ -2761,7 +3148,7 @@ export class AdminService {
 
   private pickFirstString(...values: unknown[]): string | null {
     for (const value of values) {
-      if (typeof value === 'string' && value.trim()) {
+      if (typeof value === "string" && value.trim()) {
         return value.trim();
       }
     }
@@ -2770,7 +3157,7 @@ export class AdminService {
 
   private pickFirstNumber(...values: unknown[]): number | null {
     for (const value of values) {
-      if (typeof value === 'number' && Number.isFinite(value)) {
+      if (typeof value === "number" && Number.isFinite(value)) {
         return value;
       }
     }
@@ -2779,14 +3166,16 @@ export class AdminService {
 
   private pickFirstBoolean(...values: unknown[]): boolean | null {
     for (const value of values) {
-      if (typeof value === 'boolean') {
+      if (typeof value === "boolean") {
         return value;
       }
     }
     return null;
   }
 
-  private pickFirstObject(...values: unknown[]): Record<string, unknown> | null {
+  private pickFirstObject(
+    ...values: unknown[]
+  ): Record<string, unknown> | null {
     for (const value of values) {
       const record = this.asPlainObject(value);
       if (Object.keys(record).length > 0) {
@@ -2798,29 +3187,36 @@ export class AdminService {
 
   private normalizeIssueItem(
     value: unknown,
-    fallbackSeverity: 'error' | 'warning',
+    fallbackSeverity: "error" | "warning",
   ): Record<string, unknown> | null {
-    if (typeof value === 'string' && value.trim()) {
+    if (typeof value === "string" && value.trim()) {
       return {
         message: value.trim(),
         severity: fallbackSeverity,
-        family: 'generic',
-        blocking: fallbackSeverity !== 'warning',
+        family: "generic",
+        blocking: fallbackSeverity !== "warning",
       };
     }
 
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
       return null;
     }
 
     const record = value as Record<string, unknown>;
-    const message = this.pickFirstString(record.message, record.reason, record.title);
+    const message = this.pickFirstString(
+      record.message,
+      record.reason,
+      record.title,
+    );
     if (!message) {
       return null;
     }
 
-    const severity = this.pickFirstString(record.severity, fallbackSeverity) || fallbackSeverity;
-    const family = this.pickFirstString(record.family, record.type) || 'generic';
+    const severity =
+      this.pickFirstString(record.severity, fallbackSeverity) ||
+      fallbackSeverity;
+    const family =
+      this.pickFirstString(record.family, record.type) || "generic";
     const repairHint = this.pickFirstString(
       record.repairHint,
       record.repair_hint,
@@ -2832,20 +3228,29 @@ export class AdminService {
       message,
       severity,
       family,
-      blocking: typeof record.blocking === 'boolean' ? record.blocking : severity !== 'warning',
+      blocking:
+        typeof record.blocking === "boolean"
+          ? record.blocking
+          : severity !== "warning",
       ...(repairHint ? { repairHint } : {}),
       ...(Object.keys(location).length > 0 ? { location } : {}),
     };
   }
 
-  private summarizeIssueItems(items: Record<string, unknown>[]): Record<string, unknown> | null {
+  private summarizeIssueItems(
+    items: Record<string, unknown>[],
+  ): Record<string, unknown> | null {
     if (!items.length) {
       return null;
     }
 
-    const warningCount = items.filter((item) => String(item.severity || '').toLowerCase() === 'warning').length;
+    const warningCount = items.filter(
+      (item) => String(item.severity || "").toLowerCase() === "warning",
+    ).length;
     const errorCount = items.length - warningCount;
-    const blockingCount = items.filter((item) => item.blocking !== false).length;
+    const blockingCount = items.filter(
+      (item) => item.blocking !== false,
+    ).length;
 
     return {
       items,
@@ -2855,13 +3260,16 @@ export class AdminService {
     };
   }
 
-  private buildIssueListFromArrays(errorsValue: unknown, warningsValue: unknown): Record<string, unknown> | null {
+  private buildIssueListFromArrays(
+    errorsValue: unknown,
+    warningsValue: unknown,
+  ): Record<string, unknown> | null {
     const items = [
       ...this.asPlainArray(errorsValue)
-        .map((item) => this.normalizeIssueItem(item, 'error'))
+        .map((item) => this.normalizeIssueItem(item, "error"))
         .filter((item): item is Record<string, unknown> => Boolean(item)),
       ...this.asPlainArray(warningsValue)
-        .map((item) => this.normalizeIssueItem(item, 'warning'))
+        .map((item) => this.normalizeIssueItem(item, "warning"))
         .filter((item): item is Record<string, unknown> => Boolean(item)),
     ];
 
@@ -2875,7 +3283,7 @@ export class AdminService {
     }
 
     const normalizedItems = this.asPlainArray(record.items)
-      .map((item) => this.normalizeIssueItem(item, 'error'))
+      .map((item) => this.normalizeIssueItem(item, "error"))
       .filter((item): item is Record<string, unknown> => Boolean(item));
 
     if (normalizedItems.length > 0) {
@@ -2887,9 +3295,15 @@ export class AdminService {
       };
       return {
         items: normalizedItems,
-        errorCount: this.pickFirstNumber(record.errorCount, record.error_count) ?? fallbackSummary.errorCount,
-        warningCount: this.pickFirstNumber(record.warningCount, record.warning_count) ?? fallbackSummary.warningCount,
-        blockingCount: this.pickFirstNumber(record.blockingCount, record.blocking_count) ?? fallbackSummary.blockingCount,
+        errorCount:
+          this.pickFirstNumber(record.errorCount, record.error_count) ??
+          fallbackSummary.errorCount,
+        warningCount:
+          this.pickFirstNumber(record.warningCount, record.warning_count) ??
+          fallbackSummary.warningCount,
+        blockingCount:
+          this.pickFirstNumber(record.blockingCount, record.blocking_count) ??
+          fallbackSummary.blockingCount,
       };
     }
 
@@ -2908,16 +3322,16 @@ export class AdminService {
         continue;
       }
       for (const item of this.asPlainArray(normalizedIssueList.items)) {
-        const normalizedItem = this.normalizeIssueItem(item, 'error');
+        const normalizedItem = this.normalizeIssueItem(item, "error");
         if (!normalizedItem) {
           continue;
         }
         const key = JSON.stringify({
-          message: normalizedItem.message ?? '',
-          severity: normalizedItem.severity ?? '',
-          family: normalizedItem.family ?? '',
+          message: normalizedItem.message ?? "",
+          severity: normalizedItem.severity ?? "",
+          family: normalizedItem.family ?? "",
           blocking: normalizedItem.blocking !== false,
-          repairHint: normalizedItem.repairHint ?? '',
+          repairHint: normalizedItem.repairHint ?? "",
           location: this.asPlainObject(normalizedItem.location),
         });
         if (seen.has(key)) {
@@ -2931,14 +3345,18 @@ export class AdminService {
     return this.summarizeIssueItems(mergedItems);
   }
 
-  private extractIssueListFromReport(reportValue: unknown): Record<string, unknown> | null {
+  private extractIssueListFromReport(
+    reportValue: unknown,
+  ): Record<string, unknown> | null {
     const report = this.asPlainObject(reportValue);
     if (!Object.keys(report).length) {
       return null;
     }
 
-    return this.normalizeIssueList(report.issueList ?? report.issue_list)
-      || this.buildIssueListFromArrays(report.errors, report.warnings);
+    return (
+      this.normalizeIssueList(report.issueList ?? report.issue_list) ||
+      this.buildIssueListFromArrays(report.errors, report.warnings)
+    );
   }
 
   private buildQaArtifactSummary(artifact: any) {
@@ -2952,14 +3370,23 @@ export class AdminService {
     };
   }
 
-  private buildTaskDiagnostics(task: any, sourceBundle?: any, qaArtifacts: any[] = []) {
+  private buildTaskDiagnostics(
+    task: any,
+    sourceBundle?: any,
+    qaArtifacts: any[] = [],
+  ) {
     const summary = this.asPlainObject(task?.resultSummary);
     const metadata = this.asPlainObject(task?.metadata);
     const bundleMeta = this.asPlainObject(sourceBundle?.metadata);
     const intentBuild = normalizeIntentBuildSnapshot(metadata.intentBuild);
-    const runtimeQaReport = this.pickFirstObject(summary.runtimeQaReport, bundleMeta.runtimeQaReport);
+    const runtimeQaReport = this.pickFirstObject(
+      summary.runtimeQaReport,
+      bundleMeta.runtimeQaReport,
+    );
     const qaWarnings = this.asPlainArray(summary.qaWarnings);
-    const qaArtifactSummaries = qaArtifacts.map((artifact) => this.buildQaArtifactSummary(artifact));
+    const qaArtifactSummaries = qaArtifacts.map((artifact) =>
+      this.buildQaArtifactSummary(artifact),
+    );
     const issueList = this.mergeIssueLists([
       this.extractIssueListFromReport(summary),
       ...qaArtifactSummaries.map((artifact) => artifact.issueList),
@@ -3010,20 +3437,26 @@ export class AdminService {
       return GameStatus.banned;
     }
 
-    if (taskStatus === GenerationTaskStatus.queued || taskStatus === GenerationTaskStatus.running) {
+    if (
+      taskStatus === GenerationTaskStatus.queued ||
+      taskStatus === GenerationTaskStatus.running
+    ) {
       return GameStatus.generating;
     }
 
     if (
-      taskStatus === GenerationTaskStatus.failed
-      || taskStatus === GenerationTaskStatus.timed_out
-      || taskStatus === GenerationTaskStatus.canceled
+      taskStatus === GenerationTaskStatus.failed ||
+      taskStatus === GenerationTaskStatus.timed_out ||
+      taskStatus === GenerationTaskStatus.canceled
     ) {
       return GameStatus.failed;
     }
 
     if (taskStatus === GenerationTaskStatus.succeeded) {
-      if (gameStatus === GameStatus.published || gameStatus === GameStatus.review) {
+      if (
+        gameStatus === GameStatus.published ||
+        gameStatus === GameStatus.review
+      ) {
         return gameStatus;
       }
       return GameStatus.draft;
@@ -3040,12 +3473,11 @@ export class AdminService {
     const bundleMeta = this.asPlainObject(bundle?.metadata);
     const diagnostics = this.buildTaskDiagnostics(task, bundle);
     const previewUrls = this.gameService.buildAdminPreviewUrls(game.id);
-    const taskHasError = task
-      && (
-        task.status === GenerationTaskStatus.failed
-        || task.status === GenerationTaskStatus.timed_out
-        || task.status === GenerationTaskStatus.canceled
-      );
+    const taskHasError =
+      task &&
+      (task.status === GenerationTaskStatus.failed ||
+        task.status === GenerationTaskStatus.timed_out ||
+        task.status === GenerationTaskStatus.canceled);
 
     return {
       gameId: game.id,
@@ -3054,12 +3486,22 @@ export class AdminService {
       title: game.title,
       description: game.description,
       status: this.deriveGenerationLogStatus(game.status, task?.status),
-      failedStage: task ? (task.failedStage || null) : (game.failedStage || null),
-      failedReason: task ? (task.errorMessage || null) : (game.failedReason || null),
+      failedStage: task ? task.failedStage || null : game.failedStage || null,
+      failedReason: task
+        ? task.errorMessage || null
+        : game.failedReason || null,
       retryCount: task ? (task.retryCount ?? 0) : game.retryCount,
-      lastErrorAt: task ? (taskHasError ? (task.completedAt || null) : null) : (game.lastErrorAt || null),
+      lastErrorAt: task
+        ? taskHasError
+          ? task.completedAt || null
+          : null
+        : game.lastErrorAt || null,
       gameType: normalizeGameType(
-        this.pickFirstString(summary.gameType, bundleMeta.gameType, game.gameType),
+        this.pickFirstString(
+          summary.gameType,
+          bundleMeta.gameType,
+          game.gameType,
+        ),
         game.title,
         game.description,
         game.tags,
@@ -3071,7 +3513,10 @@ export class AdminService {
       generationTier: diagnostics.generationTier,
       qaPassed: this.pickFirstBoolean(summary.qaPassed, bundleMeta.qaPassed),
       qaRetries: this.pickFirstNumber(summary.qaRetries, bundleMeta.qaRetries),
-      iterationRetries: this.pickFirstNumber(summary.iterationRetries, bundleMeta.iterationRetries),
+      iterationRetries: this.pickFirstNumber(
+        summary.iterationRetries,
+        bundleMeta.iterationRetries,
+      ),
       qaWarningCount: diagnostics.qaWarnings.length,
       runtimeQaUnavailable: diagnostics.runtimeQaUnavailable,
       runtimeQaUnavailableKind: diagnostics.runtimeQaUnavailableKind,
@@ -3085,22 +3530,35 @@ export class AdminService {
         bundleMeta.generationTimeMs,
         bundleMeta.genTimeMs,
       ),
-      codeSizeBytes: this.pickFirstNumber(summary.codeSizeBytes, bundle?.codeSizeBytes),
-      qualityScore: this.pickFirstNumber(summary.qualityScore, bundleMeta.qualityScore),
-      version: this.pickFirstNumber(summary.version, bundle?.version, game.version) || 0,
+      codeSizeBytes: this.pickFirstNumber(
+        summary.codeSizeBytes,
+        bundle?.codeSizeBytes,
+      ),
+      qualityScore: this.pickFirstNumber(
+        summary.qualityScore,
+        bundleMeta.qualityScore,
+      ),
+      version:
+        this.pickFirstNumber(summary.version, bundle?.version, game.version) ||
+        0,
       previewUrl: previewUrls.previewUrl,
       gameUrl: previewUrls.gameUrl,
     };
   }
 
-  async listGenerationLogs(page: number, limit: number, status?: string, search?: string) {
+  async listGenerationLogs(
+    page: number,
+    limit: number,
+    status?: string,
+    search?: string,
+  ) {
     const filters: Prisma.GameWhereInput[] = [];
 
-    if (status && status !== 'all') {
-      if (status === 'failed') {
+    if (status && status !== "all") {
+      if (status === "failed") {
         filters.push({
           OR: [
-            { status: 'failed' as any },
+            { status: "failed" as any },
             { failedStage: { not: null } },
             { failedReason: { not: null } },
             {
@@ -3118,7 +3576,7 @@ export class AdminService {
             },
           ],
         });
-      } else if (status === 'generating') {
+      } else if (status === "generating") {
         filters.push({
           OR: [
             { status: status as any },
@@ -3126,7 +3584,10 @@ export class AdminService {
               generationTasks: {
                 some: {
                   status: {
-                    in: [GenerationTaskStatus.queued, GenerationTaskStatus.running],
+                    in: [
+                      GenerationTaskStatus.queued,
+                      GenerationTaskStatus.running,
+                    ],
                   },
                 },
               },
@@ -3175,7 +3636,7 @@ export class AdminService {
               codeSizeBytes: true,
               createdAt: true,
             },
-            orderBy: { version: 'desc' },
+            orderBy: { version: "desc" },
             take: 1,
           },
           generationTasks: {
@@ -3192,11 +3653,11 @@ export class AdminService {
               updatedAt: true,
               completedAt: true,
             },
-            orderBy: { createdAt: 'desc' },
+            orderBy: { createdAt: "desc" },
             take: 1,
           },
         },
-        orderBy: { createdAt: 'desc' },
+        orderBy: { createdAt: "desc" },
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -3208,10 +3669,15 @@ export class AdminService {
     return { items, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
-  async listGenerationTasks(page: number, limit: number, status?: string, search?: string) {
+  async listGenerationTasks(
+    page: number,
+    limit: number,
+    status?: string,
+    search?: string,
+  ) {
     const where: Prisma.GenerationTaskWhereInput = {};
 
-    if (status && status !== 'all') {
+    if (status && status !== "all") {
       where.status = status as any;
     }
     if (search) {
@@ -3231,26 +3697,34 @@ export class AdminService {
           game: { select: { id: true, title: true, status: true } },
           user: { select: { id: true, username: true, displayName: true } },
         },
-        orderBy: { createdAt: 'desc' },
+        orderBy: { createdAt: "desc" },
         skip: (page - 1) * limit,
         take: limit,
       }),
       this.prisma.generationTask.count({ where }),
     ]);
 
-    const resolvedTasks = await Promise.all(tasks.map(async (task: any) => {
-      const reconciled = await this.gameService.reconcileGenerationTask(task);
-      const gameId = String(reconciled?.gameId || task.gameId || '').trim();
-      return {
-        ...task,
-        ...(reconciled || {}),
-        game: reconciled?.game || task.game,
-        user: task.user,
-        ...(gameId ? this.gameService.buildAdminPreviewUrls(gameId) : {}),
-      };
-    }));
+    const resolvedTasks = await Promise.all(
+      tasks.map(async (task: any) => {
+        const reconciled = await this.gameService.reconcileGenerationTask(task);
+        const gameId = String(reconciled?.gameId || task.gameId || "").trim();
+        return {
+          ...task,
+          ...(reconciled || {}),
+          game: reconciled?.game || task.game,
+          user: task.user,
+          ...(gameId ? this.gameService.buildAdminPreviewUrls(gameId) : {}),
+        };
+      }),
+    );
 
-    return { items: resolvedTasks, total, page, limit, totalPages: Math.ceil(total / limit) };
+    return {
+      items: resolvedTasks,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
   }
 
   async getGenerationTask(taskId: string) {
@@ -3280,51 +3754,54 @@ export class AdminService {
                 codeSizeBytes: true,
                 createdAt: true,
               },
-              orderBy: { version: 'desc' },
+              orderBy: { version: "desc" },
               take: 1,
             },
           },
         },
         user: { select: { id: true, username: true, displayName: true } },
         events: {
-          orderBy: { createdAt: 'asc' },
+          orderBy: { createdAt: "asc" },
           take: 300,
         },
         llmCallLogs: {
-          orderBy: { createdAt: 'asc' },
+          orderBy: { createdAt: "asc" },
           take: 300,
         },
       },
     });
 
     if (!task) {
-      throw new NotFoundException('Generation task not found');
+      throw new NotFoundException("Generation task not found");
     }
 
     const [reconciled, qaArtifacts] = await Promise.all([
       this.gameService.reconcileGenerationTask(task),
-      this.prisma.generationArtifact.findMany({
-        where: {
-          taskId,
-          artifactType: {
-            in: ['contract_qa_report', 'runtime_qa_report'],
+      this.prisma.generationArtifact
+        .findMany({
+          where: {
+            taskId,
+            artifactType: {
+              in: ["contract_qa_report", "runtime_qa_report"],
+            },
           },
-        },
-        select: {
-          id: true,
-          artifactType: true,
-          payloadJson: true,
-          createdAt: true,
-        },
-        orderBy: [{ createdAt: 'desc' }],
-        take: 8,
-      }).catch(() => []),
+          select: {
+            id: true,
+            artifactType: true,
+            payloadJson: true,
+            createdAt: true,
+          },
+          orderBy: [{ createdAt: "desc" }],
+          take: 8,
+        })
+        .catch(() => []),
     ]);
-    if (reconciled && (
-      reconciled.status !== task.status
-      || reconciled.progressStage !== task.progressStage
-      || reconciled.failedStage !== task.failedStage
-    )) {
+    if (
+      reconciled &&
+      (reconciled.status !== task.status ||
+        reconciled.progressStage !== task.progressStage ||
+        reconciled.failedStage !== task.failedStage)
+    ) {
       const refreshed = await this.prisma.generationTask.findUnique({
         where: { id: taskId },
         include: {
@@ -3351,25 +3828,29 @@ export class AdminService {
                   codeSizeBytes: true,
                   createdAt: true,
                 },
-                orderBy: { version: 'desc' },
+                orderBy: { version: "desc" },
                 take: 1,
               },
             },
           },
           user: { select: { id: true, username: true, displayName: true } },
           events: {
-            orderBy: { createdAt: 'asc' },
+            orderBy: { createdAt: "asc" },
             take: 300,
           },
           llmCallLogs: {
-            orderBy: { createdAt: 'asc' },
+            orderBy: { createdAt: "asc" },
             take: 300,
           },
         },
       });
       if (refreshed) {
         const mergedGame = refreshed.game;
-        const diagnostics = this.buildTaskDiagnostics(refreshed, mergedGame?.bundles?.[0] || null, qaArtifacts);
+        const diagnostics = this.buildTaskDiagnostics(
+          refreshed,
+          mergedGame?.bundles?.[0] || null,
+          qaArtifacts,
+        );
         return {
           ...refreshed,
           inputPrompt: mergedGame?.description || null,
@@ -3380,7 +3861,7 @@ export class AdminService {
       }
     }
 
-    const gameId = String((reconciled || task).gameId || '').trim();
+    const gameId = String((reconciled || task).gameId || "").trim();
     const mergedGame = {
       ...(task.game || {}),
       ...(reconciled?.game || {}),
@@ -3408,7 +3889,7 @@ export class AdminService {
   async terminateGenerationTask(taskId: string, reason?: string) {
     return this.gameService.terminateTask(taskId, {
       admin: true,
-      reason: reason || 'Task terminated by admin',
+      reason: reason || "Task terminated by admin",
     });
   }
 
@@ -3419,13 +3900,13 @@ export class AdminService {
     });
 
     if (!task) {
-      throw new NotFoundException('Generation task not found');
+      throw new NotFoundException("Generation task not found");
     }
 
     return {
       items: await this.prisma.generationTaskEvent.findMany({
         where: { taskId },
-        orderBy: { createdAt: 'asc' },
+        orderBy: { createdAt: "asc" },
         take: Math.max(1, Math.min(limit, 500)),
       }),
     };
@@ -3438,13 +3919,13 @@ export class AdminService {
     });
 
     if (!task) {
-      throw new NotFoundException('Generation task not found');
+      throw new NotFoundException("Generation task not found");
     }
 
     return {
       items: await this.prisma.generationArtifact.findMany({
         where: { taskId },
-        orderBy: { createdAt: 'desc' },
+        orderBy: { createdAt: "desc" },
         take: Math.max(1, Math.min(limit, 500)),
       }),
     };
@@ -3452,14 +3933,14 @@ export class AdminService {
 
   async listCloudAccounts() {
     return this.prisma.cloudProviderAccount.findMany({
-      orderBy: [{ enabled: 'desc' }, { createdAt: 'asc' }],
+      orderBy: [{ enabled: "desc" }, { createdAt: "asc" }],
     });
   }
 
   async listCloudRegions() {
     return this.prisma.cloudRegionCatalog.findMany({
       where: {
-        regionCode: 'cn-shanghai',
+        regionCode: "cn-shanghai",
       },
       include: {
         account: {
@@ -3472,17 +3953,19 @@ export class AdminService {
           },
         },
       },
-      orderBy: [{ vendor: 'asc' }, { regionCode: 'asc' }],
+      orderBy: [{ vendor: "asc" }, { regionCode: "asc" }],
     });
   }
 
-  async listAiEngineRegionTargets(params?: { providerSelectableOnly?: boolean }) {
+  async listAiEngineRegionTargets(params?: {
+    providerSelectableOnly?: boolean;
+  }) {
     const where: Prisma.AiEngineRegionTargetWhereInput = {
-      executionRegion: 'cn_shanghai',
+      executionRegion: "cn_shanghai",
     };
     if (params?.providerSelectableOnly) {
       where.deployEnabled = true;
-      where.deployStatus = 'deployed';
+      where.deployStatus = "deployed";
     }
 
     const targets = await this.prisma.aiEngineRegionTarget.findMany({
@@ -3507,20 +3990,26 @@ export class AdminService {
           },
         },
       },
-      orderBy: [{ executionRegion: 'asc' }, { createdAt: 'asc' }],
+      orderBy: [{ executionRegion: "asc" }, { createdAt: "asc" }],
     });
 
     const enrichedTargets = targets.map((target) => ({
       ...target,
-      resolvedAiEngineUrl: target.aiEngineUrl || this.getConfiguredAiEngineAdminBaseUrlForRegion(target.executionRegion) || null,
+      resolvedAiEngineUrl:
+        target.aiEngineUrl ||
+        this.getConfiguredAiEngineAdminBaseUrlForRegion(
+          target.executionRegion,
+        ) ||
+        null,
     }));
 
     if (params?.providerSelectableOnly) {
-      return enrichedTargets.filter((target) => (
-        target.deployEnabled !== false
-        && target.deployStatus === 'deployed'
-        && Boolean(target.resolvedAiEngineUrl)
-      ));
+      return enrichedTargets.filter(
+        (target) =>
+          target.deployEnabled !== false &&
+          target.deployStatus === "deployed" &&
+          Boolean(target.resolvedAiEngineUrl),
+      );
     }
 
     return enrichedTargets;
@@ -3528,53 +4017,67 @@ export class AdminService {
 
   async upsertAiEngineRegionTarget(id: string | undefined, body: any) {
     if (!body?.accountId) {
-      throw new BadRequestException('accountId is required');
+      throw new BadRequestException("accountId is required");
     }
     if (!body?.regionCatalogId) {
-      throw new BadRequestException('regionCatalogId is required');
+      throw new BadRequestException("regionCatalogId is required");
     }
     if (!body?.executionRegion) {
-      throw new BadRequestException('executionRegion is required');
+      throw new BadRequestException("executionRegion is required");
     }
     if (!body?.displayName) {
-      throw new BadRequestException('displayName is required');
+      throw new BadRequestException("displayName is required");
     }
     if (!body?.functionName) {
-      throw new BadRequestException('functionName is required');
+      throw new BadRequestException("functionName is required");
     }
 
     const [account, regionCatalog, existing] = await Promise.all([
-      this.prisma.cloudProviderAccount.findUnique({ where: { id: body.accountId } }),
-      this.prisma.cloudRegionCatalog.findUnique({ where: { id: body.regionCatalogId } }),
-      id ? this.prisma.aiEngineRegionTarget.findUnique({ where: { id } }) : Promise.resolve(null),
+      this.prisma.cloudProviderAccount.findUnique({
+        where: { id: body.accountId },
+      }),
+      this.prisma.cloudRegionCatalog.findUnique({
+        where: { id: body.regionCatalogId },
+      }),
+      id
+        ? this.prisma.aiEngineRegionTarget.findUnique({ where: { id } })
+        : Promise.resolve(null),
     ]);
 
     if (!account || !account.enabled) {
-      throw new BadRequestException('Cloud account not found or disabled');
+      throw new BadRequestException("Cloud account not found or disabled");
     }
     if (!regionCatalog || !regionCatalog.enabled) {
-      throw new BadRequestException('Cloud region not found or disabled');
+      throw new BadRequestException("Cloud region not found or disabled");
     }
     if (regionCatalog.accountId !== account.id) {
-      throw new BadRequestException('regionCatalogId does not belong to the selected account');
+      throw new BadRequestException(
+        "regionCatalogId does not belong to the selected account",
+      );
     }
-    if (body.executionRegion !== 'cn_shanghai') {
-      throw new BadRequestException('executionRegion must be cn_shanghai');
+    if (body.executionRegion !== "cn_shanghai") {
+      throw new BadRequestException("executionRegion must be cn_shanghai");
     }
-    const expectedCloudRegionCode = 'cn-shanghai';
+    const expectedCloudRegionCode = "cn-shanghai";
     if (regionCatalog.regionCode !== expectedCloudRegionCode) {
-      throw new BadRequestException(`regionCatalogId does not match executionRegion=${body.executionRegion}`);
+      throw new BadRequestException(
+        `regionCatalogId does not match executionRegion=${body.executionRegion}`,
+      );
     }
     if (existing && existing.executionRegion !== body.executionRegion) {
-      throw new BadRequestException('executionRegion cannot be changed after creation');
+      throw new BadRequestException(
+        "executionRegion cannot be changed after creation",
+      );
     }
 
-    const explicitAiEngineUrl = body?.aiEngineUrl === undefined
-      ? undefined
-      : ((body.aiEngineUrl || '').trim() || null);
-    const explicitDeployStatus = body?.deployStatus === undefined
-      ? undefined
-      : String(body.deployStatus || '').trim() || null;
+    const explicitAiEngineUrl =
+      body?.aiEngineUrl === undefined
+        ? undefined
+        : (body.aiEngineUrl || "").trim() || null;
+    const explicitDeployStatus =
+      body?.deployStatus === undefined
+        ? undefined
+        : String(body.deployStatus || "").trim() || null;
     const explicitLastDeployedAt = body?.lastDeployedAt
       ? new Date(body.lastDeployedAt)
       : undefined;
@@ -3591,18 +4094,27 @@ export class AdminService {
         executionRegion: body.executionRegion,
         displayName: body.displayName,
         functionName: body.functionName,
-        registry: body.registry || account.defaultRegistry || '',
-        registryNamespace: body.registryNamespace || account.defaultRegistryNamespace || '',
+        registry: body.registry || account.defaultRegistry || "",
+        registryNamespace:
+          body.registryNamespace || account.defaultRegistryNamespace || "",
         imageRepository: body.imageRepository || body.functionName,
         serviceRegionEnv: body.serviceRegionEnv || body.executionRegion,
         aiEngineUrl: explicitAiEngineUrl ?? null,
         deployEnabled: body.deployEnabled !== false,
-        deployStatus: explicitDeployStatus || existing?.deployStatus || (explicitAiEngineUrl ? 'deployed' : 'pending'),
+        deployStatus:
+          explicitDeployStatus ||
+          existing?.deployStatus ||
+          (explicitAiEngineUrl ? "deployed" : "pending"),
         lastRevision: body?.lastRevision ?? existing?.lastRevision ?? null,
         lastImageTag: body?.lastImageTag ?? existing?.lastImageTag ?? null,
-        lastReleaseStatus: body?.lastReleaseStatus ?? existing?.lastReleaseStatus ?? null,
-        lastDeployError: body?.lastDeployError ?? existing?.lastDeployError ?? null,
-        lastDeployedAt: explicitLastDeployedAt ?? existing?.lastDeployedAt ?? (explicitAiEngineUrl ? new Date() : null),
+        lastReleaseStatus:
+          body?.lastReleaseStatus ?? existing?.lastReleaseStatus ?? null,
+        lastDeployError:
+          body?.lastDeployError ?? existing?.lastDeployError ?? null,
+        lastDeployedAt:
+          explicitLastDeployedAt ??
+          existing?.lastDeployedAt ??
+          (explicitAiEngineUrl ? new Date() : null),
       },
       update: {
         accountId: account.id,
@@ -3611,18 +4123,33 @@ export class AdminService {
         cloudRegionCode: regionCatalog.regionCode,
         displayName: body.displayName,
         functionName: body.functionName,
-        registry: body.registry || account.defaultRegistry || '',
-        registryNamespace: body.registryNamespace || account.defaultRegistryNamespace || '',
+        registry: body.registry || account.defaultRegistry || "",
+        registryNamespace:
+          body.registryNamespace || account.defaultRegistryNamespace || "",
         imageRepository: body.imageRepository || body.functionName,
-        serviceRegionEnv: body.serviceRegionEnv || existing?.serviceRegionEnv || body.executionRegion,
-        aiEngineUrl: explicitAiEngineUrl !== undefined ? explicitAiEngineUrl : existing?.aiEngineUrl ?? null,
+        serviceRegionEnv:
+          body.serviceRegionEnv ||
+          existing?.serviceRegionEnv ||
+          body.executionRegion,
+        aiEngineUrl:
+          explicitAiEngineUrl !== undefined
+            ? explicitAiEngineUrl
+            : (existing?.aiEngineUrl ?? null),
         deployEnabled: body.deployEnabled !== false,
-        deployStatus: explicitDeployStatus || existing?.deployStatus || (explicitAiEngineUrl ? 'deployed' : 'pending'),
+        deployStatus:
+          explicitDeployStatus ||
+          existing?.deployStatus ||
+          (explicitAiEngineUrl ? "deployed" : "pending"),
         lastRevision: body?.lastRevision ?? existing?.lastRevision ?? null,
         lastImageTag: body?.lastImageTag ?? existing?.lastImageTag ?? null,
-        lastReleaseStatus: body?.lastReleaseStatus ?? existing?.lastReleaseStatus ?? null,
-        lastDeployError: body?.lastDeployError ?? existing?.lastDeployError ?? null,
-        lastDeployedAt: explicitLastDeployedAt ?? existing?.lastDeployedAt ?? (explicitAiEngineUrl ? new Date() : null),
+        lastReleaseStatus:
+          body?.lastReleaseStatus ?? existing?.lastReleaseStatus ?? null,
+        lastDeployError:
+          body?.lastDeployError ?? existing?.lastDeployError ?? null,
+        lastDeployedAt:
+          explicitLastDeployedAt ??
+          existing?.lastDeployedAt ??
+          (explicitAiEngineUrl ? new Date() : null),
       },
       include: {
         account: {
@@ -3647,27 +4174,38 @@ export class AdminService {
 
   async syncAiEngineRegionTargetDeployState(body: any) {
     if (!body?.executionRegion) {
-      throw new BadRequestException('executionRegion is required');
+      throw new BadRequestException("executionRegion is required");
     }
-    const executionRegion = this.normalizeExecutionRegion(body?.executionRegion);
+    const executionRegion = this.normalizeExecutionRegion(
+      body?.executionRegion,
+    );
     const existing = await this.prisma.aiEngineRegionTarget.findFirst({
       where: { executionRegion },
     });
 
     if (!existing) {
-      throw new NotFoundException(`Region target not found for executionRegion=${executionRegion}`);
+      throw new NotFoundException(
+        `Region target not found for executionRegion=${executionRegion}`,
+      );
     }
 
-    const nextAiEngineUrl = body?.aiEngineUrl === undefined
-      ? existing.aiEngineUrl
-      : (body.aiEngineUrl || '').trim() || null;
-    const nextDeployStatus = body?.deployStatus
-      || (body?.lastDeployError ? 'failed' : nextAiEngineUrl ? 'deployed' : existing.deployStatus || 'pending');
-    const nextLastDeployedAt = nextDeployStatus === 'deployed'
-      ? new Date(body?.lastDeployedAt || new Date())
-      : body?.lastDeployedAt
-        ? new Date(body.lastDeployedAt)
-        : existing.lastDeployedAt;
+    const nextAiEngineUrl =
+      body?.aiEngineUrl === undefined
+        ? existing.aiEngineUrl
+        : (body.aiEngineUrl || "").trim() || null;
+    const nextDeployStatus =
+      body?.deployStatus ||
+      (body?.lastDeployError
+        ? "failed"
+        : nextAiEngineUrl
+          ? "deployed"
+          : existing.deployStatus || "pending");
+    const nextLastDeployedAt =
+      nextDeployStatus === "deployed"
+        ? new Date(body?.lastDeployedAt || new Date())
+        : body?.lastDeployedAt
+          ? new Date(body.lastDeployedAt)
+          : existing.lastDeployedAt;
 
     return this.prisma.aiEngineRegionTarget.update({
       where: { id: existing.id },
@@ -3676,7 +4214,8 @@ export class AdminService {
         deployStatus: nextDeployStatus,
         lastRevision: body?.lastRevision ?? existing.lastRevision,
         lastImageTag: body?.lastImageTag ?? existing.lastImageTag,
-        lastReleaseStatus: body?.lastReleaseStatus ?? existing.lastReleaseStatus,
+        lastReleaseStatus:
+          body?.lastReleaseStatus ?? existing.lastReleaseStatus,
         lastDeployError: body?.lastDeployError ?? null,
         lastDeployedAt: nextLastDeployedAt,
       },
@@ -3716,7 +4255,7 @@ export class AdminService {
         },
         testRecords: {
           orderBy: {
-            testedAt: 'desc',
+            testedAt: "desc",
           },
           take: 1,
           select: {
@@ -3729,28 +4268,37 @@ export class AdminService {
           },
         },
       },
-      orderBy: [{ priority: 'asc' }, { updatedAt: 'desc' }],
+      orderBy: [{ priority: "asc" }, { updatedAt: "desc" }],
     });
 
     return providers.map((provider) => this.presentLlmProvider(provider));
   }
 
   private getLlmStepFlowMeta(stepKey: string): LlmStepFlowMeta {
-    return LLM_STEP_FLOW_META[stepKey] || {
-      flowGroup: 'Flow 99 - Unclassified',
-      flowOrder: 999,
-      flowSummary: 'Unclassified step',
-      triggerSummary: 'Present in the gateway catalog but not mapped to the current game generation flow.',
-      journeys: ['unclassified'],
-      journeySummary: 'Unclassified',
-      optional: true,
-    };
+    return (
+      LLM_STEP_FLOW_META[stepKey] || {
+        flowGroup: "Flow 99 - Unclassified",
+        flowOrder: 999,
+        flowSummary: "Unclassified step",
+        triggerSummary:
+          "Present in the gateway catalog but not mapped to the current game generation flow.",
+        journeys: ["unclassified"],
+        journeySummary: "Unclassified",
+        optional: true,
+      }
+    );
   }
 
-  private sortLlmFlowRows<T extends { flowOrder?: number | null; stepKey: string }>(rows: T[]): T[] {
+  private sortLlmFlowRows<
+    T extends { flowOrder?: number | null; stepKey: string },
+  >(rows: T[]): T[] {
     return [...rows].sort((left, right) => {
-      const leftOrder = Number.isFinite(Number(left.flowOrder)) ? Number(left.flowOrder) : 999;
-      const rightOrder = Number.isFinite(Number(right.flowOrder)) ? Number(right.flowOrder) : 999;
+      const leftOrder = Number.isFinite(Number(left.flowOrder))
+        ? Number(left.flowOrder)
+        : 999;
+      const rightOrder = Number.isFinite(Number(right.flowOrder))
+        ? Number(right.flowOrder)
+        : 999;
       if (leftOrder !== rightOrder) {
         return leftOrder - rightOrder;
       }
@@ -3760,37 +4308,53 @@ export class AdminService {
 
   private isVisibleGameGenerationLlmStep(stepKey: string): boolean {
     const meta = this.getLlmStepFlowMeta(stepKey);
-    return !meta.journeys.includes('auxiliary') && !meta.journeys.includes('unclassified');
+    return (
+      !meta.journeys.includes("auxiliary") &&
+      !meta.journeys.includes("unclassified")
+    );
   }
 
-  private getLlmRouteLookupCandidates(stepKey: string): Array<{ stepKey: string; routeMatchStrategy: string }> {
+  private getLlmRouteLookupCandidates(
+    stepKey: string,
+  ): Array<{ stepKey: string; routeMatchStrategy: string }> {
     const candidates: Array<{ stepKey: string; routeMatchStrategy: string }> = [
-      { stepKey, routeMatchStrategy: 'exact' },
+      { stepKey, routeMatchStrategy: "exact" },
     ];
     let parentStepKey = stepKey;
-    while (parentStepKey.includes('.')) {
-      parentStepKey = parentStepKey.slice(0, parentStepKey.lastIndexOf('.'));
+    while (parentStepKey.includes(".")) {
+      parentStepKey = parentStepKey.slice(0, parentStepKey.lastIndexOf("."));
       candidates.push({
         stepKey: parentStepKey,
-        routeMatchStrategy: 'parent_step',
+        routeMatchStrategy: "parent_step",
       });
     }
     return candidates;
   }
 
-  private sortLlmProvidersForRuntime(providers: any[], executionRegion: string): any[] {
+  private sortLlmProvidersForRuntime(
+    providers: any[],
+    executionRegion: string,
+  ): any[] {
     const sorted = [...providers].sort((left, right) => {
-      const leftPriority = Number.isFinite(Number(left?.priority)) ? Number(left.priority) : 100;
-      const rightPriority = Number.isFinite(Number(right?.priority)) ? Number(right.priority) : 100;
+      const leftPriority = Number.isFinite(Number(left?.priority))
+        ? Number(left.priority)
+        : 100;
+      const rightPriority = Number.isFinite(Number(right?.priority))
+        ? Number(right.priority)
+        : 100;
       if (leftPriority !== rightPriority) {
         return leftPriority - rightPriority;
       }
-      const leftUpdatedAt = left?.updatedAt ? new Date(left.updatedAt).getTime() : 0;
-      const rightUpdatedAt = right?.updatedAt ? new Date(right.updatedAt).getTime() : 0;
+      const leftUpdatedAt = left?.updatedAt
+        ? new Date(left.updatedAt).getTime()
+        : 0;
+      const rightUpdatedAt = right?.updatedAt
+        ? new Date(right.updatedAt).getTime()
+        : 0;
       if (leftUpdatedAt !== rightUpdatedAt) {
         return rightUpdatedAt - leftUpdatedAt;
       }
-      return String(left?.id || '').localeCompare(String(right?.id || ''));
+      return String(left?.id || "").localeCompare(String(right?.id || ""));
     });
     return [
       ...sorted.filter((provider) => provider?.region === executionRegion),
@@ -3805,16 +4369,24 @@ export class AdminService {
     runtimeProviders: any[],
   ) {
     const exactRoute = routeMap.get(stepKey) || null;
-    const runtimeProviderMap = new Map(runtimeProviders.map((provider) => [provider.id, provider]));
+    const runtimeProviderMap = new Map(
+      runtimeProviders.map((provider) => [provider.id, provider]),
+    );
     for (const candidate of this.getLlmRouteLookupCandidates(stepKey)) {
       const candidateRoute = routeMap.get(candidate.stepKey);
       if (!candidateRoute || candidateRoute.enabled === false) {
         continue;
       }
-      const configuredProviderIds = Array.from(new Set([
-        candidateRoute.providerId,
-        ...this.normalizeLlmFallbackProviderIds(candidateRoute.fallbackProviderIds),
-      ].filter(Boolean)));
+      const configuredProviderIds = Array.from(
+        new Set(
+          [
+            candidateRoute.providerId,
+            ...this.normalizeLlmFallbackProviderIds(
+              candidateRoute.fallbackProviderIds,
+            ),
+          ].filter(Boolean),
+        ),
+      );
       const configuredProviders = configuredProviderIds
         .map((providerId) => runtimeProviderMap.get(providerId))
         .filter((provider): provider is any => Boolean(provider));
@@ -3826,22 +4398,26 @@ export class AdminService {
           effectiveProvider: null,
           matchedStepKey: candidate.stepKey,
           routeMatchStrategy: candidate.routeMatchStrategy,
-          routeBindingState: 'invalid_provider',
-          bindingNote: candidate.routeMatchStrategy === 'exact'
-            ? '启用路由绑定到了已禁用或不存在的 Provider，运行时会直接失败。'
-            : `父级步骤 ${candidate.stepKey} 的启用路由绑定到了已禁用或不存在的 Provider，运行时会直接失败。`,
+          routeBindingState: "invalid_provider",
+          bindingNote:
+            candidate.routeMatchStrategy === "exact"
+              ? "启用路由绑定到了已禁用或不存在的 Provider，运行时会直接失败。"
+              : `父级步骤 ${candidate.stepKey} 的启用路由绑定到了已禁用或不存在的 Provider，运行时会直接失败。`,
         };
       }
-      const usingExplicitFallback = effectiveProvider.id !== candidateRoute.providerId;
+      const usingExplicitFallback =
+        effectiveProvider.id !== candidateRoute.providerId;
 
-      if (candidate.routeMatchStrategy === 'exact') {
+      if (candidate.routeMatchStrategy === "exact") {
         return {
           exactRoute,
           effectiveRoute: candidateRoute,
           effectiveProvider,
           matchedStepKey: candidate.stepKey,
           routeMatchStrategy: candidate.routeMatchStrategy,
-          routeBindingState: usingExplicitFallback ? 'fallback_active' : 'configured',
+          routeBindingState: usingExplicitFallback
+            ? "fallback_active"
+            : "configured",
           bindingNote: usingExplicitFallback
             ? `主 Provider 当前不可用，运行时会回退到显式 fallback ${effectiveProvider.name}。`
             : null,
@@ -3854,7 +4430,9 @@ export class AdminService {
         effectiveProvider,
         matchedStepKey: candidate.stepKey,
         routeMatchStrategy: candidate.routeMatchStrategy,
-        routeBindingState: usingExplicitFallback ? 'fallback_active' : 'inherited',
+        routeBindingState: usingExplicitFallback
+          ? "fallback_active"
+          : "inherited",
         bindingNote: usingExplicitFallback
           ? `当前步骤会继承父级步骤 ${candidate.stepKey}，并在主 Provider 不可用时回退到显式 fallback ${effectiveProvider.name}。`
           : exactRoute && exactRoute.enabled === false
@@ -3863,18 +4441,21 @@ export class AdminService {
       };
     }
 
-    const providerPoolFallback = this.sortLlmProvidersForRuntime(runtimeProviders, executionRegion)[0] || null;
+    const providerPoolFallback =
+      this.sortLlmProvidersForRuntime(runtimeProviders, executionRegion)[0] ||
+      null;
     if (providerPoolFallback) {
       return {
         exactRoute,
         effectiveRoute: null,
         effectiveProvider: providerPoolFallback,
         matchedStepKey: null,
-        routeMatchStrategy: 'provider_pool',
-        routeBindingState: 'provider_pool_fallback',
-        bindingNote: exactRoute && exactRoute.enabled === false
-          ? '当前步骤路由已禁用，且没有可继承的父级路由；运行时会退回到启用中的 Provider 池。'
-          : '当前步骤没有精确或父级路由；运行时会退回到启用中的 Provider 池。',
+        routeMatchStrategy: "provider_pool",
+        routeBindingState: "provider_pool_fallback",
+        bindingNote:
+          exactRoute && exactRoute.enabled === false
+            ? "当前步骤路由已禁用，且没有可继承的父级路由；运行时会退回到启用中的 Provider 池。"
+            : "当前步骤没有精确或父级路由；运行时会退回到启用中的 Provider 池。",
       };
     }
 
@@ -3883,23 +4464,39 @@ export class AdminService {
       effectiveRoute: null,
       effectiveProvider: null,
       matchedStepKey: null,
-      routeMatchStrategy: 'none',
-      routeBindingState: 'missing',
-      bindingNote: exactRoute && exactRoute.enabled === false
-        ? '当前步骤路由已禁用，且当前区域没有可用的继承路由或 Provider 池。'
-        : '当前步骤没有可用的精确路由、父级路由或 Provider 池。',
+      routeMatchStrategy: "none",
+      routeBindingState: "missing",
+      bindingNote:
+        exactRoute && exactRoute.enabled === false
+          ? "当前步骤路由已禁用，且当前区域没有可用的继承路由或 Provider 池。"
+          : "当前步骤没有可用的精确路由、父级路由或 Provider 池。",
     };
   }
 
-  private presentLlmRouteRow(step: any, executionRegion: string, routeMap: Map<string, any>, runtimeProviders: any[]) {
+  private presentLlmRouteRow(
+    step: any,
+    executionRegion: string,
+    routeMap: Map<string, any>,
+    runtimeProviders: any[],
+  ) {
     const meta = this.getLlmStepFlowMeta(step.stepKey);
-    const bindingRequired = !meta.optional && meta.flowGroup !== 'Flow 90 - Auxiliary';
-    const binding = this.resolveLlmRouteBinding(step.stepKey, executionRegion, routeMap, runtimeProviders);
+    const bindingRequired =
+      !meta.optional && meta.flowGroup !== "Flow 90 - Auxiliary";
+    const binding = this.resolveLlmRouteBinding(
+      step.stepKey,
+      executionRegion,
+      routeMap,
+      runtimeProviders,
+    );
     const exactRoute = binding.exactRoute;
     const exactProvider = exactRoute?.provider || null;
     const effectiveProvider = binding.effectiveProvider || null;
-    const runtimeProviderMap = new Map(runtimeProviders.map((provider) => [provider.id, provider]));
-    const fallbackProviderIds = this.normalizeLlmFallbackProviderIds(exactRoute?.fallbackProviderIds);
+    const runtimeProviderMap = new Map(
+      runtimeProviders.map((provider) => [provider.id, provider]),
+    );
+    const fallbackProviderIds = this.normalizeLlmFallbackProviderIds(
+      exactRoute?.fallbackProviderIds,
+    );
     const fallbackProviders = fallbackProviderIds.map((providerId) => {
       const provider = runtimeProviderMap.get(providerId);
       return {
@@ -3925,7 +4522,8 @@ export class AdminService {
       optional: Boolean(meta.optional),
       bindingRequired,
       displayName: step.displayName || step.stepKey,
-      description: step.description || `${meta.flowSummary}. ${meta.triggerSummary}`,
+      description:
+        step.description || `${meta.flowSummary}. ${meta.triggerSummary}`,
       executionRegion,
       enabled: exactRoute?.enabled ?? false,
       providerId: exactRoute?.providerId ?? null,
@@ -3935,13 +4533,18 @@ export class AdminService {
       providerRegionDisplayName: exactProvider?.region ?? null,
       providerEnabled: exactProvider?.enabled ?? null,
       modelDefault: effectiveProvider?.model ?? exactProvider?.model ?? null,
-      modelFast: effectiveProvider?.fastModel ?? exactProvider?.fastModel ?? null,
+      modelFast:
+        effectiveProvider?.fastModel ?? exactProvider?.fastModel ?? null,
       fallbackProviderIds,
       fallbackProviders,
       fallbackProviderSummary: fallbackProviders.length
-        ? fallbackProviders.map((provider) => (
-          provider.enabled === false ? `${provider.name}（不可用）` : provider.name
-        )).join(' / ')
+        ? fallbackProviders
+            .map((provider) =>
+              provider.enabled === false
+                ? `${provider.name}（不可用）`
+                : provider.name,
+            )
+            .join(" / ")
         : null,
       updatedAt: exactRoute?.updatedAt ?? null,
       routeBindingState: binding.routeBindingState,
@@ -3960,38 +4563,50 @@ export class AdminService {
 
   async upsertLlmProvider(id: string | undefined, body: any) {
     if (!body?.name) {
-      throw new BadRequestException('Provider name is required');
+      throw new BadRequestException("Provider name is required");
     }
     if (!body?.providerType) {
-      throw new BadRequestException('providerType is required');
+      throw new BadRequestException("providerType is required");
     }
-    if (!body?.baseUrl && body.providerType !== 'anthropic') {
-      throw new BadRequestException('baseUrl is required');
+    if (!body?.baseUrl && body.providerType !== "anthropic") {
+      throw new BadRequestException("baseUrl is required");
     }
     if (!body?.model) {
-      throw new BadRequestException('model is required');
+      throw new BadRequestException("model is required");
     }
     if (!body?.regionTargetId) {
-      throw new BadRequestException('regionTargetId is required');
+      throw new BadRequestException("regionTargetId is required");
     }
 
     const providerId = id || randomUUID();
     const [existing, regionTarget] = await Promise.all([
-      id ? this.prisma.llmGatewayProvider.findUnique({ where: { id } }) : Promise.resolve(null),
-      this.prisma.aiEngineRegionTarget.findUnique({ where: { id: body.regionTargetId } }),
+      id
+        ? this.prisma.llmGatewayProvider.findUnique({ where: { id } })
+        : Promise.resolve(null),
+      this.prisma.aiEngineRegionTarget.findUnique({
+        where: { id: body.regionTargetId },
+      }),
     ]);
     if (!regionTarget) {
-      throw new BadRequestException('regionTargetId is invalid');
+      throw new BadRequestException("regionTargetId is invalid");
     }
     const resolvedAiEngineUrl =
-      (regionTarget.aiEngineUrl || '').trim()
-      || this.getConfiguredAiEngineAdminBaseUrlForRegion(regionTarget.executionRegion);
-    if (!regionTarget.deployEnabled || regionTarget.deployStatus !== 'deployed' || !resolvedAiEngineUrl) {
-      throw new BadRequestException('Selected region target is not deployed and provider-selectable');
+      (regionTarget.aiEngineUrl || "").trim() ||
+      this.getConfiguredAiEngineAdminBaseUrlForRegion(
+        regionTarget.executionRegion,
+      );
+    if (
+      !regionTarget.deployEnabled ||
+      regionTarget.deployStatus !== "deployed" ||
+      !resolvedAiEngineUrl
+    ) {
+      throw new BadRequestException(
+        "Selected region target is not deployed and provider-selectable",
+      );
     }
     const apiKey = body.apiKey || existing?.apiKey;
     if (!apiKey) {
-      throw new BadRequestException('apiKey is required');
+      throw new BadRequestException("apiKey is required");
     }
     const extraConfig = this.buildLlmProviderExtraConfig(body, existing);
 
@@ -4005,7 +4620,7 @@ export class AdminService {
         cloudVendor: regionTarget.vendor,
         cloudRegionCode: regionTarget.cloudRegionCode,
         region: regionTarget.executionRegion,
-        baseUrl: body.baseUrl || '',
+        baseUrl: body.baseUrl || "",
         apiKey,
         model: body.model,
         fastModel: body.fastModel || null,
@@ -4023,7 +4638,7 @@ export class AdminService {
         cloudVendor: regionTarget.vendor,
         cloudRegionCode: regionTarget.cloudRegionCode,
         region: regionTarget.executionRegion,
-        baseUrl: body.baseUrl || '',
+        baseUrl: body.baseUrl || "",
         apiKey,
         model: body.model,
         fastModel: body.fastModel || null,
@@ -4062,7 +4677,7 @@ export class AdminService {
     const [steps, routes, runtimeProviders] = await Promise.all([
       this.prisma.llmStepCatalog.findMany({
         where: { enabled: true },
-        orderBy: [{ stepOrder: 'asc' }, { stepKey: 'asc' }],
+        orderBy: [{ stepOrder: "asc" }, { stepKey: "asc" }],
       }),
       this.prisma.llmStepRoute.findMany({
         where: {
@@ -4099,7 +4714,7 @@ export class AdminService {
           priority: true,
           updatedAt: true,
         },
-        orderBy: [{ priority: 'asc' }, { updatedAt: 'desc' }],
+        orderBy: [{ priority: "asc" }, { updatedAt: "desc" }],
       }),
     ]);
 
@@ -4107,7 +4722,14 @@ export class AdminService {
     return this.sortLlmFlowRows(
       steps
         .filter((step) => this.isVisibleGameGenerationLlmStep(step.stepKey))
-        .map((step) => this.presentLlmRouteRow(step, resolvedRegion, routeMap, runtimeProviders)),
+        .map((step) =>
+          this.presentLlmRouteRow(
+            step,
+            resolvedRegion,
+            routeMap,
+            runtimeProviders,
+          ),
+        ),
     );
   }
 
@@ -4133,7 +4755,7 @@ export class AdminService {
     });
 
     if (!route) {
-      throw new NotFoundException('Route not found');
+      throw new NotFoundException("Route not found");
     }
 
     const [step, routes, runtimeProviders] = await Promise.all([
@@ -4173,7 +4795,7 @@ export class AdminService {
           priority: true,
           updatedAt: true,
         },
-        orderBy: [{ priority: 'asc' }, { updatedAt: 'desc' }],
+        orderBy: [{ priority: "asc" }, { updatedAt: "desc" }],
       }),
     ]);
 
@@ -4193,10 +4815,10 @@ export class AdminService {
 
   async upsertLlmRoute(id: string | undefined, body: any) {
     if (!body?.stepKey) {
-      throw new BadRequestException('stepKey is required');
+      throw new BadRequestException("stepKey is required");
     }
     if (!body?.providerId) {
-      throw new BadRequestException('providerId is required');
+      throw new BadRequestException("providerId is required");
     }
 
     const [step, provider] = await Promise.all([
@@ -4219,50 +4841,75 @@ export class AdminService {
     ]);
 
     if (!step || step.enabled === false) {
-      throw new BadRequestException('Unknown or disabled stepKey');
+      throw new BadRequestException("Unknown or disabled stepKey");
     }
     if (!provider) {
-      throw new BadRequestException('Provider not found');
+      throw new BadRequestException("Provider not found");
     }
     if (provider.enabled === false) {
-      throw new BadRequestException('Selected provider is disabled and cannot be bound to a live generation step');
+      throw new BadRequestException(
+        "Selected provider is disabled and cannot be bound to a live generation step",
+      );
     }
-    const requestedRegion = body.executionRegion || body.region || provider.region;
+    const requestedRegion =
+      body.executionRegion || body.region || provider.region;
     const routeRegion = provider.region || this.getDefaultExecutionRegion();
     if (requestedRegion && requestedRegion !== routeRegion) {
-      throw new BadRequestException('executionRegion must match the selected provider region');
+      throw new BadRequestException(
+        "executionRegion must match the selected provider region",
+      );
     }
-    const fallbackProviderIds = this.normalizeLlmFallbackProviderIds(body?.fallbackProviderIds)
-      .filter((providerId) => providerId !== body.providerId);
+    const fallbackProviderIds = this.normalizeLlmFallbackProviderIds(
+      body?.fallbackProviderIds,
+    ).filter((providerId) => providerId !== body.providerId);
     const fallbackProviders = fallbackProviderIds.length
       ? await this.prisma.llmGatewayProvider.findMany({
-        where: { id: { in: fallbackProviderIds } },
-        select: {
-          id: true,
-          name: true,
-          region: true,
-          regionTargetId: true,
-          enabled: true,
-        },
-      })
+          where: { id: { in: fallbackProviderIds } },
+          select: {
+            id: true,
+            name: true,
+            region: true,
+            regionTargetId: true,
+            enabled: true,
+          },
+        })
       : [];
     if (fallbackProviders.length !== fallbackProviderIds.length) {
       const existingIds = new Set(fallbackProviders.map((item) => item.id));
-      const missingIds = fallbackProviderIds.filter((providerId) => !existingIds.has(providerId));
-      throw new BadRequestException(`Fallback provider not found: ${missingIds.join(', ')}`);
+      const missingIds = fallbackProviderIds.filter(
+        (providerId) => !existingIds.has(providerId),
+      );
+      throw new BadRequestException(
+        `Fallback provider not found: ${missingIds.join(", ")}`,
+      );
     }
-    const disabledFallback = fallbackProviders.find((item) => item.enabled === false);
+    const disabledFallback = fallbackProviders.find(
+      (item) => item.enabled === false,
+    );
     if (disabledFallback) {
-      throw new BadRequestException(`Fallback provider is disabled: ${disabledFallback.name}`);
+      throw new BadRequestException(
+        `Fallback provider is disabled: ${disabledFallback.name}`,
+      );
     }
-    const crossRegionFallback = fallbackProviders.find((item) => item.region !== routeRegion);
+    const crossRegionFallback = fallbackProviders.find(
+      (item) => item.region !== routeRegion,
+    );
     if (crossRegionFallback) {
-      throw new BadRequestException('Fallback providers must match the selected provider region');
+      throw new BadRequestException(
+        "Fallback providers must match the selected provider region",
+      );
     }
     const routeId = id || randomUUID();
 
     const route = await this.prisma.llmStepRoute.upsert({
-      where: id ? { id } : { llm_step_routes_step_key_region_key: { stepKey: body.stepKey, region: routeRegion } },
+      where: id
+        ? { id }
+        : {
+            llm_step_routes_step_key_region_key: {
+              stepKey: body.stepKey,
+              region: routeRegion,
+            },
+          },
       create: {
         id: routeId,
         stepKey: body.stepKey,
@@ -4320,7 +4967,9 @@ export class AdminService {
       },
     });
     await this.prisma.llmStepRoute.delete({ where: { id } });
-    await this.refreshLlmGateway(existing?.provider?.regionTargetId || undefined);
+    await this.refreshLlmGateway(
+      existing?.provider?.regionTargetId || undefined,
+    );
     return { deleted: true };
   }
 
@@ -4336,7 +4985,7 @@ export class AdminService {
           {},
           {
             headers: {
-              'x-admin-token': this.getAdminToken(),
+              "x-admin-token": this.getAdminToken(),
             },
             timeout: 10000,
           },
@@ -4356,9 +5005,9 @@ export class AdminService {
     if (!responses.length) {
       const summary = failures
         .map((entry) => `${entry.baseUrl}: ${entry.message}`)
-        .join(' | ');
+        .join(" | ");
       throw new BadGatewayException(
-        `All ai-engine admin endpoints failed during llm gateway refresh. ${summary || 'No upstream error details available.'}`,
+        `All ai-engine admin endpoints failed during llm gateway refresh. ${summary || "No upstream error details available."}`,
       );
     }
 
@@ -4379,14 +5028,14 @@ export class AdminService {
       },
     });
     if (!provider) {
-      throw new NotFoundException('Provider not found');
+      throw new NotFoundException("Provider not found");
     }
     const response = await this.postAiEngineAdminWithFailover<any>(
       provider.regionTargetId || undefined,
       `/api/v1/ai/llm-gateway/providers/${providerId}/test`,
       {},
       30000,
-      'No reachable ai-engine endpoint found for the selected provider',
+      "No reachable ai-engine endpoint found for the selected provider",
     );
     return response.data;
   }
@@ -4405,9 +5054,11 @@ export class AdminService {
         },
       });
       if (!existing) {
-        throw new NotFoundException('Provider not found');
+        throw new NotFoundException("Provider not found");
       }
-      const normalizedExtra = this.normalizeLlmProviderExtraConfig(existing.extraConfig);
+      const normalizedExtra = this.normalizeLlmProviderExtraConfig(
+        existing.extraConfig,
+      );
       payload = {
         ...payload,
         providerType: payload.providerType || existing.providerType,
@@ -4415,32 +5066,42 @@ export class AdminService {
         baseUrl: payload.baseUrl || existing.baseUrl,
         apiKey: payload.apiKey || existing.apiKey,
         vendorPreset: payload.vendorPreset || normalizedExtra.vendorPreset,
-        catalogApiUrl: payload.catalogApiUrl || normalizedExtra.modelCatalog.apiUrl,
-        catalogAuthMode: payload.catalogAuthMode || normalizedExtra.modelCatalog.authMode,
-        catalogApiKey: payload.catalogApiKey || normalizedExtra.modelCatalog.apiKey,
+        catalogApiUrl:
+          payload.catalogApiUrl || normalizedExtra.modelCatalog.apiUrl,
+        catalogAuthMode:
+          payload.catalogAuthMode || normalizedExtra.modelCatalog.authMode,
+        catalogApiKey:
+          payload.catalogApiKey || normalizedExtra.modelCatalog.apiKey,
       };
     }
     const requestBody = {
-      provider_type: payload.providerType || 'openai_compatible',
-      vendor_preset: payload.vendorPreset || 'generic',
-      base_url: payload.baseUrl || '',
-      api_key: payload.apiKey || '',
-      catalog_api_url: payload.catalogApiUrl || '',
-      catalog_auth_mode: payload.catalogAuthMode || 'inherit_provider',
-      catalog_api_key: payload.catalogApiKey || '',
+      provider_type: payload.providerType || "openai_compatible",
+      vendor_preset: payload.vendorPreset || "generic",
+      base_url: payload.baseUrl || "",
+      api_key: payload.apiKey || "",
+      catalog_api_url: payload.catalogApiUrl || "",
+      catalog_auth_mode: payload.catalogAuthMode || "inherit_provider",
+      catalog_api_key: payload.catalogApiKey || "",
     };
     const response = await this.postAiEngineAdminWithFailover<any>(
       payload?.regionTargetId || undefined,
-      '/api/v1/ai/llm-gateway/providers/catalog/preview',
+      "/api/v1/ai/llm-gateway/providers/catalog/preview",
       requestBody,
       30000,
-      'No reachable ai-engine endpoint found for the selected region target',
+      "No reachable ai-engine endpoint found for the selected region target",
     );
     return {
       models: response.data?.models || [],
       fetchedAt: response.data?.fetchedAt || response.data?.fetched_at || null,
-      resolvedCatalogApiUrl: response.data?.resolvedCatalogApiUrl || response.data?.resolved_catalog_api_url || '',
-      vendorPreset: response.data?.vendorPreset || response.data?.vendor_preset || requestBody.vendor_preset || 'generic',
+      resolvedCatalogApiUrl:
+        response.data?.resolvedCatalogApiUrl ||
+        response.data?.resolved_catalog_api_url ||
+        "",
+      vendorPreset:
+        response.data?.vendorPreset ||
+        response.data?.vendor_preset ||
+        requestBody.vendor_preset ||
+        "generic",
     };
   }
 
@@ -4452,27 +5113,35 @@ export class AdminService {
       },
     });
     if (!provider) {
-      throw new NotFoundException('Provider not found');
+      throw new NotFoundException("Provider not found");
     }
     const response = await this.postAiEngineAdminWithFailover<any>(
       provider.regionTargetId || undefined,
       `/api/v1/ai/llm-gateway/providers/${providerId}/test-chat`,
       body || {},
       60000,
-      'No reachable ai-engine endpoint found for the selected provider',
+      "No reachable ai-engine endpoint found for the selected provider",
     );
     return {
-      providerId: response.data?.providerId || response.data?.provider_id || providerId,
-      providerName: response.data?.providerName || response.data?.provider_name || null,
-      providerType: response.data?.providerType || response.data?.provider_type || null,
+      providerId:
+        response.data?.providerId || response.data?.provider_id || providerId,
+      providerName:
+        response.data?.providerName || response.data?.provider_name || null,
+      providerType:
+        response.data?.providerType || response.data?.provider_type || null,
       region: response.data?.region || null,
-      resolvedEndpoint: response.data?.resolvedEndpoint || response.data?.resolved_endpoint || null,
+      resolvedEndpoint:
+        response.data?.resolvedEndpoint ||
+        response.data?.resolved_endpoint ||
+        null,
       model: response.data?.model || null,
       latencyMs: response.data?.latencyMs ?? response.data?.latency_ms ?? null,
-      httpStatus: response.data?.httpStatus ?? response.data?.http_status ?? null,
+      httpStatus:
+        response.data?.httpStatus ?? response.data?.http_status ?? null,
       success: response.data?.success !== false,
-      errorMessage: response.data?.errorMessage || response.data?.error_message || null,
-      reply: response.data?.reply || '',
+      errorMessage:
+        response.data?.errorMessage || response.data?.error_message || null,
+      reply: response.data?.reply || "",
       testedAt: response.data?.testedAt || response.data?.tested_at || null,
     };
   }
@@ -4485,12 +5154,12 @@ export class AdminService {
       },
     });
     if (!provider) {
-      throw new NotFoundException('Provider not found');
+      throw new NotFoundException("Provider not found");
     }
     const take = Math.min(Math.max(Number(limit) || 20, 1), 50);
     return this.prisma.llmGatewayTestRecord.findMany({
       where: { providerId },
-      orderBy: { testedAt: 'desc' },
+      orderBy: { testedAt: "desc" },
       take,
       select: {
         id: true,
@@ -4513,7 +5182,17 @@ export class AdminService {
     const paidOrderWhere = this.buildPaidSubscriptionOrderWhere(range);
     const now = new Date();
 
-    const [totalGames, totalUsers, gamesAgg, averages, gameMetrics, planCount, activePlanCount, activeSubscriberCount, paidOrderAggregate] = await Promise.all([
+    const [
+      totalGames,
+      totalUsers,
+      gamesAgg,
+      averages,
+      gameMetrics,
+      planCount,
+      activePlanCount,
+      activeSubscriberCount,
+      paidOrderAggregate,
+    ] = await Promise.all([
       this.prisma.game.count(),
       this.prisma.user.count(),
       this.prisma.game.aggregate({
@@ -4554,7 +5233,7 @@ export class AdminService {
     ]);
 
     const statusCounts = await this.prisma.game.groupBy({
-      by: ['status'],
+      by: ["status"],
       _count: { id: true },
     });
 
@@ -4565,43 +5244,46 @@ export class AdminService {
 
     const failedStageMap: Record<string, number> = {};
     const retryBuckets: Record<string, number> = {
-      '0 retries': 0,
-      '1 retry': 0,
-      '2 retries': 0,
-      '3+ retries': 0,
+      "0 retries": 0,
+      "1 retry": 0,
+      "2 retries": 0,
+      "3+ retries": 0,
     };
     const qualityBuckets: Record<string, number> = {
-      '90+': 0,
-      '80-89': 0,
-      '70-79': 0,
-      '<70': 0,
+      "90+": 0,
+      "80-89": 0,
+      "70-79": 0,
+      "<70": 0,
     };
-    const failureReasonMap = new Map<string, { stage: string; reason: string; count: number }>();
+    const failureReasonMap = new Map<
+      string,
+      { stage: string; reason: string; count: number }
+    >();
 
     for (const game of gameMetrics) {
       const retries = Number(game.retryCount || 0);
-      if (retries <= 0) retryBuckets['0 retries'] += 1;
-      else if (retries === 1) retryBuckets['1 retry'] += 1;
-      else if (retries === 2) retryBuckets['2 retries'] += 1;
-      else retryBuckets['3+ retries'] += 1;
+      if (retries <= 0) retryBuckets["0 retries"] += 1;
+      else if (retries === 1) retryBuckets["1 retry"] += 1;
+      else if (retries === 2) retryBuckets["2 retries"] += 1;
+      else retryBuckets["3+ retries"] += 1;
 
       if (game.qualityScore !== null && game.qualityScore !== undefined) {
         const score = Number(game.qualityScore);
-        if (score >= 90) qualityBuckets['90+'] += 1;
-        else if (score >= 80) qualityBuckets['80-89'] += 1;
-        else if (score >= 70) qualityBuckets['70-79'] += 1;
-        else qualityBuckets['<70'] += 1;
+        if (score >= 90) qualityBuckets["90+"] += 1;
+        else if (score >= 80) qualityBuckets["80-89"] += 1;
+        else if (score >= 70) qualityBuckets["70-79"] += 1;
+        else qualityBuckets["<70"] += 1;
       }
 
       if (!game.failedStage && !game.failedReason) {
         continue;
       }
 
-      const stage = game.failedStage || 'unknown';
+      const stage = game.failedStage || "unknown";
       failedStageMap[stage] = (failedStageMap[stage] || 0) + 1;
 
-      const normalizedReason = (game.failedReason || 'unknown error')
-        .replace(/\s+/g, ' ')
+      const normalizedReason = (game.failedReason || "unknown error")
+        .replace(/\s+/g, " ")
         .trim()
         .slice(0, 80);
       const key = `${stage}::${normalizedReason}`;
@@ -4639,7 +5321,9 @@ export class AdminService {
         activeSubscribers: activeSubscriberCount,
         paidOrderCount: paidOrderAggregate._count.id || 0,
         totalRevenueCents: Number(paidOrderAggregate._sum.amount || 0),
-        totalRevenueYuan: Number((Number(paidOrderAggregate._sum.amount || 0) / 100).toFixed(2)),
+        totalRevenueYuan: Number(
+          (Number(paidOrderAggregate._sum.amount || 0) / 100).toFixed(2),
+        ),
         range: {
           from: range.from,
           to: range.to,
@@ -4656,30 +5340,34 @@ export class AdminService {
 
   private promptDisplayName(key: string) {
     const meta = this.promptItemMeta(key);
-    if (typeof meta.displayName === 'string' && meta.displayName.trim()) {
+    if (typeof meta.displayName === "string" && meta.displayName.trim()) {
       return meta.displayName.trim();
     }
-    return key.replace(/^(prompt|bundle)\./, '');
+    return key.replace(/^(prompt|bundle)\./, "");
   }
 
   private mergePromptConfigs(configs: any[]) {
-    const existingMap = new Map(configs.map((config) => [config.configKey, config]));
+    const existingMap = new Map(
+      configs.map((config) => [config.configKey, config]),
+    );
     const merged = DEFAULT_PROMPT_CATALOG.map((entry) => {
       const existing = existingMap.get(entry.key);
       const meta = this.promptItemMeta(entry.key);
       const variables = Array.isArray(meta.variables)
-        ? meta.variables.filter((value) => typeof value === 'string' && value.trim())
+        ? meta.variables.filter(
+            (value) => typeof value === "string" && value.trim(),
+          )
         : [];
       return {
         id: existing?.id || `catalog:${entry.key}`,
         configKey: entry.key,
-        configValue: existing?.configValue ?? entry.value ?? '',
+        configValue: existing?.configValue ?? entry.value ?? "",
         description: existing?.description ?? entry.description ?? null,
-        category: 'prompt',
+        category: "prompt",
         createdAt: existing?.createdAt ?? null,
         updatedAt: existing?.updatedAt ?? null,
-        defaultValue: entry.value ?? '',
-        source: existing ? 'db' : 'catalog',
+        defaultValue: entry.value ?? "",
+        source: existing ? "db" : "catalog",
         isDefault: !existing,
         displayName: this.promptDisplayName(entry.key),
         variables,
@@ -4691,7 +5379,7 @@ export class AdminService {
       .map((config) => ({
         ...config,
         defaultValue: null,
-        source: 'db',
+        source: "db",
         isDefault: false,
         displayName: this.promptDisplayName(config.configKey),
         variables: [],
@@ -4701,10 +5389,10 @@ export class AdminService {
   }
 
   private mergeCatalogConfigs(category: string | undefined, configs: any[]) {
-    if (category === 'prompt') {
+    if (category === "prompt") {
       return this.mergePromptConfigs(configs);
     }
-    if (category !== 'timeout') {
+    if (category !== "timeout") {
       return configs;
     }
     return listBusinessTimeoutConfigs(configs);
@@ -4727,12 +5415,14 @@ export class AdminService {
       select: { configValue: true },
     });
     const rawValue = row?.configValue ?? catalogEntry.defaultValue;
-    const parsed = catalogEntry.valueType === 'float'
-      ? Number.parseFloat(String(rawValue))
-      : Number.parseInt(String(rawValue), 10);
-    const fallback = catalogEntry.valueType === 'float'
-      ? Number.parseFloat(catalogEntry.defaultValue)
-      : Number.parseInt(catalogEntry.defaultValue, 10);
+    const parsed =
+      catalogEntry.valueType === "float"
+        ? Number.parseFloat(String(rawValue))
+        : Number.parseInt(String(rawValue), 10);
+    const fallback =
+      catalogEntry.valueType === "float"
+        ? Number.parseFloat(catalogEntry.defaultValue)
+        : Number.parseInt(catalogEntry.defaultValue, 10);
     const value = Number.isFinite(parsed) ? parsed : fallback;
     const min = options?.min ?? Number.NEGATIVE_INFINITY;
     const max = options?.max ?? Number.POSITIVE_INFINITY;
@@ -4744,7 +5434,7 @@ export class AdminService {
     if (category) where.category = category;
     const configs = await this.prisma.systemConfig.findMany({
       where,
-      orderBy: [{ category: 'asc' }, { configKey: 'asc' }],
+      orderBy: [{ category: "asc" }, { configKey: "asc" }],
     });
     return this.mergeCatalogConfigs(category, configs);
   }
@@ -4752,8 +5442,8 @@ export class AdminService {
   async getConfig(key: string) {
     if (isBusinessTimeoutConfigKey(key)) {
       const configs = await this.prisma.systemConfig.findMany({
-        where: { category: 'timeout' },
-        orderBy: [{ category: 'asc' }, { configKey: 'asc' }],
+        where: { category: "timeout" },
+        orderBy: [{ category: "asc" }, { configKey: "asc" }],
       });
       const businessConfig = getBusinessTimeoutConfig(key, configs);
       if (businessConfig) {
@@ -4771,13 +5461,13 @@ export class AdminService {
         return {
           id: `catalog:${key}`,
           configKey: key,
-          configValue: promptEntry.value ?? '',
+          configValue: promptEntry.value ?? "",
           description: promptEntry.description ?? null,
-          category: 'prompt',
+          category: "prompt",
           createdAt: null,
           updatedAt: null,
-          defaultValue: promptEntry.value ?? '',
-          source: 'catalog',
+          defaultValue: promptEntry.value ?? "",
+          source: "catalog",
           isDefault: true,
           displayName: this.promptDisplayName(key),
           variables: Array.isArray(meta.variables) ? meta.variables : [],
@@ -4790,7 +5480,7 @@ export class AdminService {
           configKey: timeoutCatalog.key,
           configValue: timeoutCatalog.defaultValue,
           description: timeoutCatalog.description,
-          category: 'timeout',
+          category: "timeout",
           createdAt: null,
           updatedAt: null,
           defaultValue: timeoutCatalog.defaultValue,
@@ -4805,7 +5495,7 @@ export class AdminService {
           sectionTitle: timeoutCatalog.sectionTitle,
           sectionDescription: timeoutCatalog.sectionDescription,
           itemOrder: timeoutCatalog.itemOrder,
-          source: 'catalog',
+          source: "catalog",
           isDefault: true,
         };
       }
@@ -4814,13 +5504,18 @@ export class AdminService {
     return config;
   }
 
-  async upsertConfig(key: string, data: { value: string; description?: string; category?: string }) {
+  async upsertConfig(
+    key: string,
+    data: { value: string; description?: string; category?: string },
+  ) {
     if (isBusinessTimeoutConfigKey(key)) {
       let updates;
       try {
         updates = expandBusinessTimeoutConfigUpdates(key, data.value);
       } catch (error: any) {
-        throw new BadRequestException(error?.message || 'Invalid timeout value');
+        throw new BadRequestException(
+          error?.message || "Invalid timeout value",
+        );
       }
 
       for (const update of updates) {
@@ -4830,32 +5525,47 @@ export class AdminService {
           update: {
             configValue: update.value,
             description: timeoutCatalog?.description ?? null,
-            category: 'timeout',
+            category: "timeout",
           },
           create: {
             id: randomUUID(),
             configKey: update.key,
             configValue: update.value,
             description: timeoutCatalog?.description ?? null,
-            category: 'timeout',
+            category: "timeout",
           },
         });
       }
 
       const refreshResult = await this.refreshTimeoutConfigs();
+      const configs = await this.prisma.systemConfig.findMany({
+        where: { category: "timeout" },
+        orderBy: [{ category: "asc" }, { configKey: "asc" }],
+      });
+      const businessConfig = getBusinessTimeoutConfig(key, configs);
+      if (!businessConfig) {
+        return {
+          id: `business:${key}`,
+          configKey: key,
+          configValue: String(data.value),
+          category: "timeout",
+          refreshResult,
+        };
+      }
       return {
-        id: `business:${key}`,
-        configKey: key,
-        configValue: String(data.value),
-        category: 'timeout',
+        ...businessConfig,
         refreshResult,
       };
     }
 
     const timeoutCatalog = TIMEOUT_CONFIG_CATALOG_BY_KEY.get(key);
     const promptCatalogEntry = PROMPT_CATALOG_BY_KEY.get(key);
-    const category = data.category || (timeoutCatalog ? 'timeout' : 'prompt');
-    const description = data.description ?? timeoutCatalog?.description ?? promptCatalogEntry?.description ?? null;
+    const category = data.category || (timeoutCatalog ? "timeout" : "prompt");
+    const description =
+      data.description ??
+      timeoutCatalog?.description ??
+      promptCatalogEntry?.description ??
+      null;
     const config = await this.prisma.systemConfig.upsert({
       where: { configKey: key },
       update: {
@@ -4871,7 +5581,7 @@ export class AdminService {
         category,
       },
     });
-    if (category === 'timeout') {
+    if (category === "timeout") {
       const refreshResult = await this.refreshTimeoutConfigs();
       return {
         ...config,
@@ -4889,35 +5599,66 @@ export class AdminService {
     const defaults = Array.isArray(promptCatalog) ? promptCatalog : [];
 
     let created = 0;
+    let updated = 0;
     let skipped = 0;
     for (const d of defaults) {
+      const nextValue = typeof d.value === "string" ? d.value : "";
+      const nextDescription = d.description ?? null;
       const existing = await this.prisma.systemConfig.findUnique({
         where: { configKey: d.key },
       });
-      if (existing) {
+      if (!existing) {
+        await this.prisma.systemConfig.create({
+          data: {
+            id: randomUUID(),
+            configKey: d.key,
+            configValue: nextValue,
+            description: nextDescription,
+            category: "prompt",
+          },
+        });
+        created++;
+        continue;
+      }
+
+      const existingDescription = existing.description ?? null;
+      const existingCategory =
+        typeof existing.category === "string" ? existing.category : "prompt";
+      const needsUpdate =
+        existing.configValue !== nextValue ||
+        existingDescription !== nextDescription ||
+        existingCategory !== "prompt";
+
+      if (!needsUpdate) {
         skipped++;
         continue;
       }
-      await this.prisma.systemConfig.create({
+
+      await this.prisma.systemConfig.update({
+        where: { configKey: d.key },
         data: {
-          id: randomUUID(),
-          configKey: d.key,
-          configValue: d.value,
-          description: d.description,
-          category: 'prompt',
+          configValue: nextValue,
+          description: nextDescription,
+          category: "prompt",
         },
       });
-      created++;
+      updated++;
     }
     const refreshResult = await this.refreshPromptConfigs();
-    return { created, skipped, total: defaults.length, refreshResult };
+    return {
+      created,
+      updated,
+      skipped,
+      total: defaults.length,
+      refreshResult,
+    };
   }
 
   async refreshPromptConfigs() {
     const urls = await this.getAiEngineAdminBaseUrls();
     const adminToken = this.getAdminToken();
     const requestTimeoutMs = await this.resolveTimeoutConfigValue(
-      'timeout.game_service.admin_refresh_timeout_ms',
+      "timeout.game_service.admin_refresh_timeout_ms",
       { min: 1000 },
     );
     const settledResults = await Promise.allSettled(
@@ -4927,7 +5668,7 @@ export class AdminService {
           {},
           {
             headers: {
-              'x-admin-token': adminToken,
+              "x-admin-token": adminToken,
             },
             timeout: requestTimeoutMs,
           },
@@ -4940,20 +5681,21 @@ export class AdminService {
     );
     const aiEngine = settledResults.map((result, index) => {
       const baseUrl = urls[index];
-      if (result.status === 'fulfilled') {
+      if (result.status === "fulfilled") {
         return {
           baseUrl,
-          status: 'ok',
+          status: "ok",
           data: result.value.data,
         };
       }
       return {
         baseUrl,
-        status: 'error',
-        errorMessage: result.reason?.message || String(result.reason || 'unknown error'),
+        status: "error",
+        errorMessage:
+          result.reason?.message || String(result.reason || "unknown error"),
       };
     });
-    const successCount = aiEngine.filter((item) => item.status === 'ok').length;
+    const successCount = aiEngine.filter((item) => item.status === "ok").length;
     const failureCount = aiEngine.length - successCount;
     return {
       refreshed: successCount,
@@ -4980,7 +5722,7 @@ export class AdminService {
           configKey: entry.key,
           configValue: entry.defaultValue,
           description: entry.description,
-          category: 'timeout',
+          category: "timeout",
         },
       });
       created++;
@@ -4994,7 +5736,7 @@ export class AdminService {
     const urls = await this.getAiEngineAdminBaseUrls();
     const adminToken = this.getAdminToken();
     const requestTimeoutMs = await this.resolveTimeoutConfigValue(
-      'timeout.game_service.admin_refresh_timeout_ms',
+      "timeout.game_service.admin_refresh_timeout_ms",
       { min: 1000 },
     );
     const settledResults = await Promise.allSettled(
@@ -5004,7 +5746,7 @@ export class AdminService {
           {},
           {
             headers: {
-              'x-admin-token': adminToken,
+              "x-admin-token": adminToken,
             },
             timeout: requestTimeoutMs,
           },
@@ -5017,27 +5759,28 @@ export class AdminService {
     );
     const aiEngine = settledResults.map((result, index) => {
       const baseUrl = urls[index];
-      if (result.status === 'fulfilled') {
+      if (result.status === "fulfilled") {
         return {
           baseUrl,
-          status: 'ok',
+          status: "ok",
           data: result.value.data,
         };
       }
       return {
         baseUrl,
-        status: 'error',
-        errorMessage: result.reason?.message || String(result.reason || 'unknown error'),
+        status: "error",
+        errorMessage:
+          result.reason?.message || String(result.reason || "unknown error"),
       };
     });
-    const successCount = aiEngine.filter((item) => item.status === 'ok').length;
+    const successCount = aiEngine.filter((item) => item.status === "ok").length;
     const failureCount = aiEngine.length - successCount;
 
     return {
       refreshed: successCount + 1,
       failed: failureCount,
       partialFailure: failureCount > 0,
-      gameService: { status: 'ok' },
+      gameService: { status: "ok" },
       aiEngine,
     };
   }
@@ -5049,7 +5792,7 @@ export class AdminService {
     }
     const bundles = await this.prisma.promptBundle.findMany({
       where,
-      orderBy: [{ id: 'asc' }, { version: 'desc' }],
+      orderBy: [{ id: "asc" }, { version: "desc" }],
     });
     const existingMap = new Map(
       bundles.map((bundle) => [`${bundle.id}::${bundle.version}`, bundle]),
@@ -5059,25 +5802,39 @@ export class AdminService {
       return {
         id: entry.id,
         version: entry.version,
-        status: existing?.status ?? entry.status ?? 'draft',
-        productPolicy: existing?.productPolicy ?? entry.productPolicy ?? '',
-        lockedContractOverride: existing?.lockedContractOverride ?? entry.lockedContractOverride ?? null,
-        repairPlaybook: existing?.repairPlaybook ?? entry.repairPlaybook ?? '',
-        profileOverrides: existing?.profileOverrides ?? entry.profileOverrides ?? null,
+        status: existing?.status ?? entry.status ?? "draft",
+        productPolicy: existing?.productPolicy ?? entry.productPolicy ?? "",
+        lockedContractOverride:
+          existing?.lockedContractOverride ??
+          entry.lockedContractOverride ??
+          null,
+        repairPlaybook: existing?.repairPlaybook ?? entry.repairPlaybook ?? "",
+        profileOverrides:
+          existing?.profileOverrides ?? entry.profileOverrides ?? null,
         metadata: existing?.metadata ?? entry.metadata ?? null,
         createdAt: existing?.createdAt ?? null,
         updatedAt: existing?.updatedAt ?? null,
-        source: existing ? 'db' : 'catalog',
+        source: existing ? "db" : "catalog",
       };
     });
     const extras = bundles
-      .filter((bundle) => !DEFAULT_PROMPT_BUNDLE_CATALOG.some((entry) => entry.id === bundle.id && entry.version === bundle.version))
+      .filter(
+        (bundle) =>
+          !DEFAULT_PROMPT_BUNDLE_CATALOG.some(
+            (entry) =>
+              entry.id === bundle.id && entry.version === bundle.version,
+          ),
+      )
       .map((bundle) => ({
         ...bundle,
-        source: 'db',
+        source: "db",
       }));
     const result = [...merged, ...extras]
-      .filter((bundle) => !status || String(bundle.status || '').toLowerCase() === status.toLowerCase())
+      .filter(
+        (bundle) =>
+          !status ||
+          String(bundle.status || "").toLowerCase() === status.toLowerCase(),
+      )
       .sort((a, b) => {
         if (a.id === b.id) {
           return Number(b.version || 0) - Number(a.version || 0);
@@ -5094,29 +5851,37 @@ export class AdminService {
     }
     const profiles = await this.prisma.runtimeProfileCatalog.findMany({
       where,
-      orderBy: [{ enabled: 'desc' }, { id: 'asc' }],
+      orderBy: [{ enabled: "desc" }, { id: "asc" }],
     });
-    const existingMap = new Map(profiles.map((profile) => [profile.id, profile]));
+    const existingMap = new Map(
+      profiles.map((profile) => [profile.id, profile]),
+    );
     const merged = DEFAULT_RUNTIME_PROFILE_CATALOG.map((entry) => {
       const existing = existingMap.get(entry.id);
       return {
         id: entry.id,
         displayName: existing?.displayName ?? entry.displayName ?? entry.id,
         enabled: existing?.enabled ?? entry.enabled ?? true,
-        skeletonVersion: existing?.skeletonVersion ?? entry.skeletonVersion ?? 'v1',
+        skeletonVersion:
+          existing?.skeletonVersion ?? entry.skeletonVersion ?? "v1",
         contractSchema: existing?.contractSchema ?? entry.contractSchema ?? {},
-        fewShotPrompt: existing?.fewShotPrompt ?? entry.fewShotPrompt ?? '',
+        fewShotPrompt: existing?.fewShotPrompt ?? entry.fewShotPrompt ?? "",
         metadata: existing?.metadata ?? entry.metadata ?? null,
         createdAt: existing?.createdAt ?? null,
         updatedAt: existing?.updatedAt ?? null,
-        source: existing ? 'db' : 'catalog',
+        source: existing ? "db" : "catalog",
       };
     });
     const extras = profiles
-      .filter((profile) => !DEFAULT_RUNTIME_PROFILE_CATALOG.some((entry) => entry.id === profile.id))
+      .filter(
+        (profile) =>
+          !DEFAULT_RUNTIME_PROFILE_CATALOG.some(
+            (entry) => entry.id === profile.id,
+          ),
+      )
       .map((profile) => ({
         ...profile,
-        source: 'db',
+        source: "db",
       }));
     return [...merged, ...extras]
       .filter((profile) => !enabledOnly || Boolean(profile.enabled))
@@ -5133,118 +5898,150 @@ export class AdminService {
     const inputContract = this.asPlainObject(contract.inputContract);
     const stateContract = this.asPlainObject(contract.stateContract);
     const safetyContract = this.asPlainObject(contract.safetyContract);
-    const mobileLayoutContract = this.asPlainObject(contract.mobileLayoutContract);
+    const mobileLayoutContract = this.asPlainObject(
+      contract.mobileLayoutContract,
+    );
     return {
-      runtimeProfile: typeof contract.runtimeProfile === 'string' ? contract.runtimeProfile : null,
-      requiredStates: Array.isArray(stateContract.requiredStates) ? stateContract.requiredStates : [],
-      inputModes: Array.isArray(inputContract.requiredModes) ? inputContract.requiredModes : [],
-      gestures: Array.isArray(inputContract.gestures) ? inputContract.gestures : [],
-      forbiddenApis: Array.isArray(safetyContract.forbiddenApis) ? safetyContract.forbiddenApis : [],
-      orientation: typeof mobileLayoutContract.orientation === 'string' ? mobileLayoutContract.orientation : null,
-      uiScaleMode: typeof mobileLayoutContract.uiScaleMode === 'string' ? mobileLayoutContract.uiScaleMode : null,
+      runtimeProfile:
+        typeof contract.runtimeProfile === "string"
+          ? contract.runtimeProfile
+          : null,
+      requiredStates: Array.isArray(stateContract.requiredStates)
+        ? stateContract.requiredStates
+        : [],
+      inputModes: Array.isArray(inputContract.requiredModes)
+        ? inputContract.requiredModes
+        : [],
+      gestures: Array.isArray(inputContract.gestures)
+        ? inputContract.gestures
+        : [],
+      forbiddenApis: Array.isArray(safetyContract.forbiddenApis)
+        ? safetyContract.forbiddenApis
+        : [],
+      orientation:
+        typeof mobileLayoutContract.orientation === "string"
+          ? mobileLayoutContract.orientation
+          : null,
+      uiScaleMode:
+        typeof mobileLayoutContract.uiScaleMode === "string"
+          ? mobileLayoutContract.uiScaleMode
+          : null,
     };
   }
 
   async getPromptPipeline() {
     const [promptConfigs, promptBundles, runtimeProfiles] = await Promise.all([
-      this.listConfigs('prompt'),
+      this.listConfigs("prompt"),
       this.listPromptBundles(),
       this.listRuntimeProfiles(false),
     ]);
 
-    const promptMap = new Map(promptConfigs.map((item: any) => [item.configKey, item]));
+    const promptMap = new Map(
+      promptConfigs.map((item: any) => [item.configKey, item]),
+    );
     const assignedKeys = new Set<string>();
 
-    const buildPromptItems = (keys: string[]) => keys
-      .map((key) => {
-        assignedKeys.add(key);
-        const config = promptMap.get(key);
-        if (!config) {
-          return null;
-        }
-        const meta = this.promptItemMeta(key);
-        return {
-          kind: 'prompt',
-          configKey: config.configKey,
-          shortKey: String(config.configKey || '').replace(/^(prompt|bundle)\./, ''),
-          displayName: this.promptDisplayName(key),
-          description: config.description || null,
-          configValue: config.configValue ?? '',
-          defaultValue: config.defaultValue ?? '',
-          source: config.source || 'db',
-          isDefault: Boolean(config.isDefault),
-          updatedAt: config.updatedAt ?? null,
-          variables: Array.isArray(config.variables) ? config.variables : (Array.isArray(meta.variables) ? meta.variables : []),
-          note: typeof meta.note === 'string' ? meta.note : null,
-        };
-      })
-      .filter(Boolean);
+    const buildPromptItems = (keys: string[]) =>
+      keys
+        .map((key) => {
+          assignedKeys.add(key);
+          const config = promptMap.get(key);
+          if (!config) {
+            return null;
+          }
+          const meta = this.promptItemMeta(key);
+          return {
+            kind: "prompt",
+            configKey: config.configKey,
+            shortKey: String(config.configKey || "").replace(
+              /^(prompt|bundle)\./,
+              "",
+            ),
+            displayName: this.promptDisplayName(key),
+            description: config.description || null,
+            configValue: config.configValue ?? "",
+            defaultValue: config.defaultValue ?? "",
+            source: config.source || "db",
+            isDefault: Boolean(config.isDefault),
+            updatedAt: config.updatedAt ?? null,
+            variables: Array.isArray(config.variables)
+              ? config.variables
+              : Array.isArray(meta.variables)
+                ? meta.variables
+                : [],
+            note: typeof meta.note === "string" ? meta.note : null,
+          };
+        })
+        .filter(Boolean);
 
-    const buildSupportItems = (step: PromptPipelineSectionCatalog) => (step.support || []).map((support) => {
-      if (support.kind === 'runtime_profiles') {
+    const buildSupportItems = (step: PromptPipelineSectionCatalog) =>
+      (step.support || []).map((support) => {
+        if (support.kind === "runtime_profiles") {
+          return {
+            kind: "runtime_profiles",
+            title: support.title,
+            description: support.description || "",
+            items: runtimeProfiles.map((profile: any) => ({
+              kind: "runtime_profile",
+              id: profile.id,
+              displayName: profile.displayName,
+              enabled: Boolean(profile.enabled),
+              skeletonVersion: profile.skeletonVersion || "v1",
+              fewShotPrompt: profile.fewShotPrompt || "",
+              source: profile.source || "db",
+              isDefault: Boolean(this.asPlainObject(profile.metadata).default),
+              metadata: profile.metadata ?? null,
+              contractSchema: profile.contractSchema ?? {},
+              contractSummary: this.summarizeRuntimeProfileContract(
+                profile.contractSchema,
+              ),
+              updatedAt: profile.updatedAt ?? null,
+            })),
+          };
+        }
+        if (support.kind === "prompt_bundle_policy") {
+          return {
+            kind: "prompt_bundle_policy",
+            title: support.title,
+            description: support.description || "",
+            items: promptBundles.map((bundle: any) => ({
+              kind: "prompt_bundle_policy_item",
+              id: bundle.id,
+              version: bundle.version,
+              status: bundle.status || "draft",
+              source: bundle.source || "db",
+              productPolicy: bundle.productPolicy || "",
+              lockedContractOverride: bundle.lockedContractOverride || "",
+              profileOverrides: bundle.profileOverrides ?? null,
+              metadata: bundle.metadata ?? null,
+              updatedAt: bundle.updatedAt ?? null,
+            })),
+          };
+        }
+        if (support.kind === "prompt_bundle_repair") {
+          return {
+            kind: "prompt_bundle_repair",
+            title: support.title,
+            description: support.description || "",
+            items: promptBundles.map((bundle: any) => ({
+              kind: "prompt_bundle_repair_item",
+              id: bundle.id,
+              version: bundle.version,
+              status: bundle.status || "draft",
+              source: bundle.source || "db",
+              repairPlaybook: bundle.repairPlaybook || "",
+              metadata: bundle.metadata ?? null,
+              updatedAt: bundle.updatedAt ?? null,
+            })),
+          };
+        }
         return {
-          kind: 'runtime_profiles',
+          kind: "note",
           title: support.title,
-          description: support.description || '',
-          items: runtimeProfiles.map((profile: any) => ({
-            kind: 'runtime_profile',
-            id: profile.id,
-            displayName: profile.displayName,
-            enabled: Boolean(profile.enabled),
-            skeletonVersion: profile.skeletonVersion || 'v1',
-            fewShotPrompt: profile.fewShotPrompt || '',
-            source: profile.source || 'db',
-            isDefault: Boolean(this.asPlainObject(profile.metadata).default),
-            metadata: profile.metadata ?? null,
-            contractSchema: profile.contractSchema ?? {},
-            contractSummary: this.summarizeRuntimeProfileContract(profile.contractSchema),
-            updatedAt: profile.updatedAt ?? null,
-          })),
+          description: support.description || "",
+          items: [],
         };
-      }
-      if (support.kind === 'prompt_bundle_policy') {
-        return {
-          kind: 'prompt_bundle_policy',
-          title: support.title,
-          description: support.description || '',
-          items: promptBundles.map((bundle: any) => ({
-            kind: 'prompt_bundle_policy_item',
-            id: bundle.id,
-            version: bundle.version,
-            status: bundle.status || 'draft',
-            source: bundle.source || 'db',
-            productPolicy: bundle.productPolicy || '',
-            lockedContractOverride: bundle.lockedContractOverride || '',
-            profileOverrides: bundle.profileOverrides ?? null,
-            metadata: bundle.metadata ?? null,
-            updatedAt: bundle.updatedAt ?? null,
-          })),
-        };
-      }
-      if (support.kind === 'prompt_bundle_repair') {
-        return {
-          kind: 'prompt_bundle_repair',
-          title: support.title,
-          description: support.description || '',
-          items: promptBundles.map((bundle: any) => ({
-            kind: 'prompt_bundle_repair_item',
-            id: bundle.id,
-            version: bundle.version,
-            status: bundle.status || 'draft',
-            source: bundle.source || 'db',
-            repairPlaybook: bundle.repairPlaybook || '',
-            metadata: bundle.metadata ?? null,
-            updatedAt: bundle.updatedAt ?? null,
-          })),
-        };
-      }
-      return {
-        kind: 'note',
-        title: support.title,
-        description: support.description || '',
-        items: [],
-      };
-    });
+      });
 
     const steps = (PROMPT_PIPELINE_CATALOG.steps || []).map((step) => {
       const promptItems = buildPromptItems(step.promptKeys || []);
@@ -5253,10 +6050,10 @@ export class AdminService {
         stepNumber: step.stepNumber || null,
         tag: step.tag || null,
         title: step.title,
-        description: step.description || '',
-        color: step.color || '#2563eb',
-        bg: step.bg || '#eff6ff',
-        border: step.border || '#bfdbfe',
+        description: step.description || "",
+        color: step.color || "#2563eb",
+        bg: step.bg || "#eff6ff",
+        border: step.border || "#bfdbfe",
         prompts: promptItems,
         support: buildSupportItems(step),
         itemCount: promptItems.length + (step.support || []).length,
@@ -5265,26 +6062,29 @@ export class AdminService {
 
     const extras = (PROMPT_PIPELINE_CATALOG.extras || []).map((section) => ({
       id: section.id,
-      tag: section.tag || '附加',
+      tag: section.tag || "附加",
       title: section.title,
-      description: section.description || '',
-      color: section.color || '#475569',
-      bg: section.bg || '#f8fafc',
-      border: section.border || '#cbd5e1',
+      description: section.description || "",
+      color: section.color || "#475569",
+      bg: section.bg || "#f8fafc",
+      border: section.border || "#cbd5e1",
       prompts: buildPromptItems(section.promptKeys || []),
     }));
 
     const unassignedPrompts = promptConfigs
       .filter((item: any) => !assignedKeys.has(item.configKey))
       .map((item: any) => ({
-        kind: 'prompt',
+        kind: "prompt",
         configKey: item.configKey,
-        shortKey: String(item.configKey || '').replace(/^(prompt|bundle)\./, ''),
+        shortKey: String(item.configKey || "").replace(
+          /^(prompt|bundle)\./,
+          "",
+        ),
         displayName: item.displayName || this.promptDisplayName(item.configKey),
         description: item.description || null,
-        configValue: item.configValue ?? '',
-        defaultValue: item.defaultValue ?? '',
-        source: item.source || 'db',
+        configValue: item.configValue ?? "",
+        defaultValue: item.defaultValue ?? "",
+        source: item.source || "db",
         isDefault: Boolean(item.isDefault),
         updatedAt: item.updatedAt ?? null,
         variables: Array.isArray(item.variables) ? item.variables : [],
@@ -5293,13 +6093,13 @@ export class AdminService {
 
     if (unassignedPrompts.length) {
       extras.push({
-        id: 'extra_unassigned',
-        tag: '附加',
-        title: '未归档 Prompt',
-        description: 'catalog 之外或尚未归入五步流程的 prompt 项。',
-        color: '#475569',
-        bg: '#f8fafc',
-        border: '#cbd5e1',
+        id: "extra_unassigned",
+        tag: "附加",
+        title: "未归档 Prompt",
+        description: "catalog 之外或尚未归入五步流程的 prompt 项。",
+        color: "#475569",
+        bg: "#f8fafc",
+        border: "#cbd5e1",
         prompts: unassignedPrompts,
       });
     }
@@ -5308,9 +6108,14 @@ export class AdminService {
       summary: {
         promptConfigCount: promptConfigs.length,
         promptBundleCount: promptBundles.length,
-        activePromptBundleCount: promptBundles.filter((bundle: any) => String(bundle.status || '').toLowerCase() === 'active').length,
+        activePromptBundleCount: promptBundles.filter(
+          (bundle: any) =>
+            String(bundle.status || "").toLowerCase() === "active",
+        ).length,
         runtimeProfileCount: runtimeProfiles.length,
-        enabledRuntimeProfileCount: runtimeProfiles.filter((profile: any) => Boolean(profile.enabled)).length,
+        enabledRuntimeProfileCount: runtimeProfiles.filter((profile: any) =>
+          Boolean(profile.enabled),
+        ).length,
       },
       steps,
       extras,
@@ -5322,31 +6127,52 @@ export class AdminService {
       where: { id, version },
     });
     if (!existing) {
-      throw new NotFoundException('Prompt bundle not found');
+      throw new NotFoundException("Prompt bundle not found");
     }
 
-    const section = body?.section === 'repair' ? 'repair' : 'policy';
-    const payload = body?.payload && typeof body.payload === 'object' && !Array.isArray(body.payload)
-      ? body.payload
-      : {};
-    const nextMetadata = payload.metadata !== undefined ? payload.metadata : existing.metadata;
-    const data = section === 'repair'
-      ? {
-        status: typeof payload.status === 'string' && payload.status.trim() ? payload.status.trim() : existing.status,
-        repairPlaybook: typeof payload.repairPlaybook === 'string' ? payload.repairPlaybook : existing.repairPlaybook,
-        metadata: nextMetadata,
-      }
-      : {
-        status: typeof payload.status === 'string' && payload.status.trim() ? payload.status.trim() : existing.status,
-        productPolicy: typeof payload.productPolicy === 'string' ? payload.productPolicy : existing.productPolicy,
-        lockedContractOverride: payload.lockedContractOverride === null
-          ? null
-          : typeof payload.lockedContractOverride === 'string'
-            ? payload.lockedContractOverride
-            : existing.lockedContractOverride,
-        profileOverrides: payload.profileOverrides !== undefined ? payload.profileOverrides : existing.profileOverrides,
-        metadata: nextMetadata,
-      };
+    const section = body?.section === "repair" ? "repair" : "policy";
+    const payload =
+      body?.payload &&
+      typeof body.payload === "object" &&
+      !Array.isArray(body.payload)
+        ? body.payload
+        : {};
+    const nextMetadata =
+      payload.metadata !== undefined ? payload.metadata : existing.metadata;
+    const data =
+      section === "repair"
+        ? {
+            status:
+              typeof payload.status === "string" && payload.status.trim()
+                ? payload.status.trim()
+                : existing.status,
+            repairPlaybook:
+              typeof payload.repairPlaybook === "string"
+                ? payload.repairPlaybook
+                : existing.repairPlaybook,
+            metadata: nextMetadata,
+          }
+        : {
+            status:
+              typeof payload.status === "string" && payload.status.trim()
+                ? payload.status.trim()
+                : existing.status,
+            productPolicy:
+              typeof payload.productPolicy === "string"
+                ? payload.productPolicy
+                : existing.productPolicy,
+            lockedContractOverride:
+              payload.lockedContractOverride === null
+                ? null
+                : typeof payload.lockedContractOverride === "string"
+                  ? payload.lockedContractOverride
+                  : existing.lockedContractOverride,
+            profileOverrides:
+              payload.profileOverrides !== undefined
+                ? payload.profileOverrides
+                : existing.profileOverrides,
+            metadata: nextMetadata,
+          };
 
     await this.prisma.promptBundle.updateMany({
       where: { id, version },
@@ -5367,28 +6193,39 @@ export class AdminService {
       where: { id },
     });
     if (!existing) {
-      throw new NotFoundException('Runtime profile not found');
+      throw new NotFoundException("Runtime profile not found");
     }
 
-    const payload = body?.payload && typeof body.payload === 'object' && !Array.isArray(body.payload)
-      ? body.payload
-      : {};
+    const payload =
+      body?.payload &&
+      typeof body.payload === "object" &&
+      !Array.isArray(body.payload)
+        ? body.payload
+        : {};
     const updated = await this.prisma.runtimeProfileCatalog.update({
       where: { id },
       data: {
-        displayName: typeof payload.displayName === 'string' && payload.displayName.trim()
-          ? payload.displayName.trim()
-          : existing.displayName,
-        enabled: payload.enabled !== undefined ? Boolean(payload.enabled) : existing.enabled,
-        skeletonVersion: typeof payload.skeletonVersion === 'string' && payload.skeletonVersion.trim()
-          ? payload.skeletonVersion.trim()
-          : existing.skeletonVersion,
-        fewShotPrompt: payload.fewShotPrompt === null
-          ? null
-          : typeof payload.fewShotPrompt === 'string'
-            ? payload.fewShotPrompt
-            : existing.fewShotPrompt,
-        metadata: payload.metadata !== undefined ? payload.metadata : existing.metadata,
+        displayName:
+          typeof payload.displayName === "string" && payload.displayName.trim()
+            ? payload.displayName.trim()
+            : existing.displayName,
+        enabled:
+          payload.enabled !== undefined
+            ? Boolean(payload.enabled)
+            : existing.enabled,
+        skeletonVersion:
+          typeof payload.skeletonVersion === "string" &&
+          payload.skeletonVersion.trim()
+            ? payload.skeletonVersion.trim()
+            : existing.skeletonVersion,
+        fewShotPrompt:
+          payload.fewShotPrompt === null
+            ? null
+            : typeof payload.fewShotPrompt === "string"
+              ? payload.fewShotPrompt
+              : existing.fewShotPrompt,
+        metadata:
+          payload.metadata !== undefined ? payload.metadata : existing.metadata,
       },
     });
     const refreshResult = await this.refreshPromptConfigs();
@@ -5416,6 +6253,6 @@ export class AdminService {
       ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
     `;
     await this.prisma.$executeRawUnsafe(sql);
-    return { success: true, message: 'system_configs table created' };
+    return { success: true, message: "system_configs table created" };
   }
 }

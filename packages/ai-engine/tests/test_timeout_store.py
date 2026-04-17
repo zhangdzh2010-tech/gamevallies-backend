@@ -35,7 +35,7 @@ def test_timeout_store_exposes_step_level_generation_defaults():
         {},
         clear=True,
     ):
-        assert timeout_store.get_raw("timeout.ai_engine.dialogue.slot_extract_request_s", 999) == "4"
         assert timeout_store.get_raw("timeout.ai_engine.intent_parse.request_s", 999) == "45"
+        assert timeout_store.get_raw("timeout.ai_engine.intent_parse.overall_s", 999) == "90"
         assert timeout_store.get_raw("timeout.ai_engine.iterate.element_change_request_s", 999) == "120"
         assert timeout_store.get_raw("timeout.ai_engine.iterate.element_change_overall_s", 999) == "240"

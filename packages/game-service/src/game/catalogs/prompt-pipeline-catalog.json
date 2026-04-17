@@ -4,21 +4,17 @@
       "id": "step1_intent_freeze",
       "stepNumber": 1,
       "tag": "Step 1",
-      "title": "专家访谈与意图冻结",
-      "description": "多轮对话、slot 提取、brief / frozen spec 的统一入口。",
+      "title": "Prompt Expansion & Intent Freeze",
+      "description": "Expand the user brief into a confirmable prompt, then lock the confirmed brief into the intent JSON contract.",
       "color": "#7c3aed",
       "bg": "#f5f3ff",
       "border": "#ddd6fe",
       "promptKeys": [
-        "prompt.dialogue_system",
-        "prompt.dialogue_reply_system",
-        "prompt.dialogue_reply_user_template_zh",
-        "prompt.dialogue_reply_user_template_en",
-        "prompt.slot_extraction_system",
+        "prompt.expand_prompt_system",
+        "prompt.intent_parse_system",
         "prompt.slot_output_contract",
         "prompt.slot_json_repair_system",
-        "prompt.slot_json_repair_user_template",
-        "prompt.intent_parse_system"
+        "prompt.slot_json_repair_user_template"
       ],
       "support": []
     },
@@ -136,18 +132,6 @@
       ]
     },
     {
-      "id": "extra_tools",
-      "tag": "附加",
-      "title": "辅助工具",
-      "description": "不直接属于主链的 utility prompt。",
-      "color": "#475569",
-      "bg": "#f8fafc",
-      "border": "#cbd5e1",
-      "promptKeys": [
-        "prompt.expand_prompt_system"
-      ]
-    },
-    {
       "id": "extra_legacy_fallbacks",
       "tag": "Legacy",
       "title": "Legacy fallback prompts",
@@ -155,55 +139,20 @@
       "color": "#6b7280",
       "bg": "#f9fafb",
       "border": "#d1d5db",
-      "promptKeys": [
-        "prompt.platform_standard"
-      ]
+      "promptKeys": ["prompt.platform_standard"]
     }
   ],
   "itemMeta": {
-    "prompt.dialogue_system": {
-      "displayName": "对话骨架",
-      "variables": [
-        "{slot_summary}",
-        "{missing_slots}"
-      ]
-    },
-    "prompt.dialogue_reply_system": {
-      "displayName": "专家回复系统层",
-      "variables": [
-        "{base_prompt}"
-      ]
-    },
-    "prompt.dialogue_reply_user_template_zh": {
-      "displayName": "中文专家回复模板",
-      "variables": [
-        "{reply_context}"
-      ]
-    },
-    "prompt.dialogue_reply_user_template_en": {
-      "displayName": "英文专家回复模板",
-      "variables": [
-        "{reply_context}"
-      ]
-    },
-    "prompt.slot_extraction_system": {
-      "displayName": "多轮 slot 抽取"
-    },
     "prompt.slot_output_contract": {
       "displayName": "slot 输出契约",
-      "variables": [
-        "{slot_json_schema}"
-      ]
+      "variables": ["{slot_json_schema}"]
     },
     "prompt.slot_json_repair_system": {
       "displayName": "slot JSON 修复系统层"
     },
     "prompt.slot_json_repair_user_template": {
       "displayName": "slot JSON 修复模板",
-      "variables": [
-        "{source_text}",
-        "{raw_parser_output}"
-      ]
+      "variables": ["{source_text}", "{raw_parser_output}"]
     },
     "prompt.intent_parse_system": {
       "displayName": "单轮 intent 解析"
@@ -289,9 +238,7 @@
     },
     "prompt.generate_request_context_template": {
       "displayName": "原始请求上下文",
-      "variables": [
-        "{request_text}"
-      ]
+      "variables": ["{request_text}"]
     },
     "prompt.generate_alignment_reminder": {
       "displayName": "生成对齐提醒"
@@ -310,9 +257,7 @@
     },
     "prompt.code_review_template": {
       "displayName": "语义 Review 模板",
-      "variables": [
-        "{code_preview}"
-      ]
+      "variables": ["{code_preview}"]
     },
     "prompt.qa_runtime_contract_block": {
       "displayName": "QA 运行时约束块",
@@ -335,31 +280,19 @@
     },
     "prompt.iterate_classify": {
       "displayName": "迭代反馈分类",
-      "variables": [
-        "{feedback}"
-      ]
+      "variables": ["{feedback}"]
     },
     "prompt.param_adjust": {
       "displayName": "参数调整",
-      "variables": [
-        "{feedback}",
-        "{code}"
-      ]
+      "variables": ["{feedback}", "{code}"]
     },
     "prompt.element_change": {
       "displayName": "元素调整",
-      "variables": [
-        "{feedback}",
-        "{code}"
-      ]
+      "variables": ["{feedback}", "{code}"]
     },
     "prompt.mechanic_change": {
       "displayName": "机制改动",
-      "variables": [
-        "{history}",
-        "{feedback}",
-        "{code}"
-      ]
+      "variables": ["{history}", "{feedback}", "{code}"]
     },
     "prompt.expand_prompt_system": {
       "displayName": "短描述扩写工具"

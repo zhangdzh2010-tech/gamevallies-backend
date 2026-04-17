@@ -59,10 +59,7 @@ class Settings(BaseSettings):
     LLM_ADAPTIVE_TOKEN_BUDGET_ENABLED: bool = True
     LLM_ADAPTIVE_TOKEN_BUDGET_HISTORY_SIZE: int = 20
 
-    # Slot Filling
-    SLOT_MIN_FILL_PCT: float = 0.6   # >=60% required slots → move to clarifying
-    DIALOGUE_SLOT_REQUEST_TIMEOUT_S: int = 4
-    DIALOGUE_SLOT_OVERALL_TIMEOUT_S: int = 5
+    # Intent parsing
     INTENT_PARSE_REQUEST_TIMEOUT_S: int = 45
     INTENT_PARSE_OVERALL_TIMEOUT_S: int = 90
 

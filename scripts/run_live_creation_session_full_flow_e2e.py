@@ -323,6 +323,49 @@ def collect_creation_session(
             break
         slot_key = current_question.get("slotKey")
         prompt = current_question.get("prompt")
+        if slot_key == "expanded_prompt":
+            revision = latest_snapshot.get("revision")
+            edited_prompt = case.get("edited_prompt")
+            if edited_prompt:
+                message_response = http_json(
+                    "POST",
+                    f"{base_url}/api/v1/games/creation-sessions/{session_id}/messages",
+                    payload={"content": str(edited_prompt), "revision": revision},
+                    headers=bearer_headers,
+                    timeout=60,
+                )
+                latest_snapshot = (message_response or {}).get("data") or {}
+                turns.append(
+                    {
+                        "turn": turn_index + 1,
+                        "action": "confirm_edit",
+                        "slotKey": slot_key,
+                        "prompt": prompt,
+                        "answer": str(edited_prompt),
+                        "revision": revision,
+                    }
+                )
+                continue
+
+            skip_response = http_json(
+                "POST",
+                f"{base_url}/api/v1/games/creation-sessions/{session_id}/skip",
+                payload={"revision": revision},
+                headers=bearer_headers,
+                timeout=60,
+            )
+            latest_snapshot = (skip_response or {}).get("data") or {}
+            turns.append(
+                {
+                    "turn": turn_index + 1,
+                    "action": "confirm_generated_prompt",
+                    "slotKey": slot_key,
+                    "prompt": prompt,
+                    "revision": revision,
+                }
+            )
+            continue
+
         answer = answer_for_slot(case, slot_key, prompt)
         revision = latest_snapshot.get("revision")
         if answer:

@@ -1,44 +1,9 @@
-import axios from 'axios';
-import { Readable } from 'stream';
-import { CreationSessionService } from '../src/game/creation-session.service';
+import axios from "axios";
+import { CreationSessionService } from "../src/game/creation-session.service";
 
-jest.mock('axios');
+jest.mock("axios");
 
-function buildSseEvent(event: string, payload: unknown) {
-  return `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
-}
-
-function buildAnalyzeTurnStream(payload: Record<string, any>) {
-  const reply = String(payload.reply || '');
-  const kind = payload.current_question ? 'question' : 'summary';
-  const midpoint = Math.max(1, Math.floor(reply.length / 2));
-  const firstDelta = reply.slice(0, midpoint);
-  const secondDelta = reply.slice(midpoint);
-
-  const events = [
-    buildSseEvent('delta', {
-      delta: firstDelta,
-      accumulated: firstDelta,
-      kind,
-    }),
-    ...(secondDelta
-      ? [buildSseEvent('delta', {
-          delta: secondDelta,
-          accumulated: `${firstDelta}${secondDelta}`,
-          kind,
-        })]
-      : []),
-    buildSseEvent('done', {
-      message: reply,
-      kind,
-    }),
-    buildSseEvent('final', payload),
-  ];
-
-  return Readable.from(events);
-}
-
-describe('CreationSessionService', () => {
+describe("CreationSessionService", () => {
   let service: CreationSessionService;
   let prisma: any;
   let repo: any;
@@ -58,7 +23,9 @@ describe('CreationSessionService', () => {
       gameCreationSession: repo,
     };
     gameService = {
-      getAiEngineBaseUrl: jest.fn().mockResolvedValue('https://ai-engine.example'),
+      getAiEngineBaseUrl: jest
+        .fn()
+        .mockResolvedValue("https://ai-engine.example"),
       getExpandPromptRequestTimeoutMs: jest.fn().mockResolvedValue(5000),
       getCreationSessionInitTimeoutMs: jest.fn().mockResolvedValue(45000),
       create: jest.fn(),
@@ -83,19 +50,28 @@ describe('CreationSessionService', () => {
     (axios.post as jest.Mock).mockReset();
   });
 
-  it('creates a session optimistically as initializing, then finalizes via async analysis', async () => {
+  it("creates a session optimistically, then expands into a collecting session waiting for confirmation", async () => {
     const originalSetTimeout = global.setTimeout;
-    const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((handler: any, timeout?: any, ...args: any[]) => {
+    const setTimeoutSpy = jest.spyOn(global, "setTimeout").mockImplementation(((
+      handler: any,
+      timeout?: any,
+      ...args: any[]
+    ) => {
       if (timeout === 45000) {
         return 0 as any;
       }
       return originalSetTimeout(handler, timeout as any, ...args);
     }) as typeof setTimeout);
-    // Phase 1: optimistic creation returns 'initializing' immediately
+
+    const expandedPrompt =
+      "Game Type: Funny stealth comedy\nCore Mechanic: Tap to swap between working and slacking states while hiding from surprise inspections\nTheme: Open-plan office satire\nInput Method: Single-tap interactions\nWin Condition: Stay undiscovered until the shift ends\nDifficulty Ramp: Boss inspections happen more often and react faster each round\nScoring: Earn points for every successful slacking streak\nVisual Direction: Exaggerated office comedy with bright props";
+    const confirmationQuestion =
+      "I expanded your idea into a generation prompt that covers game type, core mechanic, controls, win condition, and difficulty ramp. Confirm it as-is or edit the prompt before confirming.";
+
     repo.updateMany.mockResolvedValue({ count: 1 });
     repo.create.mockImplementation(async ({ data }: any) => ({
-      id: 'session-1',
-      userId: 'user-1',
+      id: "session-1",
+      userId: "user-1",
       status: data.status,
       entryMode: data.entryMode,
       initialPrompt: data.initialPrompt,
@@ -111,189 +87,151 @@ describe('CreationSessionService', () => {
       sourceGameId: data.sourceGameId,
       questionBudget: data.questionBudget,
       metadata: data.metadata,
-      createdAt: new Date('2026-03-30T10:00:00.000Z'),
-      updatedAt: new Date('2026-03-30T10:00:00.000Z'),
+      createdAt: new Date("2026-04-16T10:00:00.000Z"),
+      updatedAt: new Date("2026-04-16T10:00:00.000Z"),
     }));
-    // Phase 2: async _finalizeSessionInit will call analyzeTurn
     (axios.post as jest.Mock).mockResolvedValueOnce({
-      data: buildAnalyzeTurnStream({
-        reply: '我先补一个最关键的信息：玩家怎么才能赢？',
-        slots: {
-          game_type: 'funny',
-          core_mechanic: 'tap to hide',
-          theme: 'office',
-          input_method: 'tap',
-        },
-        slots_updated: ['game_type', 'core_mechanic', 'theme', 'input_method'],
-        missing_required: ['win_condition', 'difficulty'],
-        slot_fill_pct: 0.67,
-        ready_to_generate: true,
-        confidence_by_slot: {
-          game_type: 0.92,
-          core_mechanic: 0.86,
-          theme: 0.8,
-          input_method: 0.78,
-          win_condition: 0,
-          difficulty: 0,
-        },
-        ambiguity_flags: ['win_condition:missing', 'difficulty:missing'],
-        question_strategy: {
-          mode: 'missing_required',
-          slot_key: 'win_condition',
-          reason: '因为"Win Condition"会直接决定玩法能否成型，而当前还没有明确答案。',
-          impact: 0.95,
-          confidence: 0,
-          ambiguity_weight: 0.25,
-        },
-        plan_draft: {
-          title: '办公室摸鱼计划',
-          summary: '一款围绕办公室摸鱼展开的搞笑小游戏。',
-          concept: '在办公室场景里快速做出摸鱼选择。',
-          interaction: '点击不同摸鱼动作并及时躲避老板巡查。',
-          objective: '撑到下班并积累足够摸鱼值。',
-          pacing: '短局快节奏，每一轮都很快进入状态。',
-          visual_direction: '霓虹办公室喜剧风格。',
-          signature_moment: '老板突然巡查时触发夸张反转。',
-        },
-        current_question: {
-          slot_key: 'win_condition',
-          label: 'Win Condition',
-          prompt: '玩家怎么才算赢？',
-          skippable: true,
-        },
-      }),
+      data: {
+        expanded_prompt: expandedPrompt,
+      },
     });
-    // For the WS push findUnique after CAS update
     repo.findUnique.mockResolvedValue({
-      id: 'session-1',
-      userId: 'user-1',
-      status: 'ready',
-      entryMode: 'create',
-      initialPrompt: '做一个办公室摸鱼游戏',
-      titleDraft: '上班摸鱼',
+      id: "session-1",
+      userId: "user-1",
+      status: "collecting",
+      entryMode: "create",
+      initialPrompt: "Make an office slacking game",
+      titleDraft: "Slack Hero",
       revision: 2,
-      slotState: { game_type: 'funny', core_mechanic: 'tap to hide', theme: 'office', input_method: 'tap' },
-      missingRequired: ['win_condition', 'difficulty'],
+      slotState: {},
+      missingRequired: [],
       skippedSlots: [],
-      currentQuestion: { slotKey: 'win_condition', label: 'Win Condition', prompt: '玩家怎么才算赢？', skippable: true },
+      currentQuestion: {
+        slotKey: "expanded_prompt",
+        label: "Prompt Confirmation",
+        prompt: confirmationQuestion,
+        skippable: true,
+      },
       conversation: [
-        { role: 'user', content: '做一个办公室摸鱼游戏', kind: 'prompt' },
-        { role: 'assistant', content: '我先补一个最关键的信息：玩家怎么才能赢？' },
+        {
+          role: "user",
+          content: "Make an office slacking game",
+          kind: "prompt",
+        },
+        {
+          role: "assistant",
+          content: expandedPrompt,
+          kind: "summary",
+        },
       ],
       generatedGameId: null,
       generationTaskId: null,
       sourceGameId: null,
       questionBudget: 4,
       metadata: {
-        orientation: 'landscape',
-        generationTier: 'showcase',
-        readyToGenerate: true,
-        slotFillPct: 0.67,
+        orientation: "landscape",
+        generationTier: "showcase",
+        regionHint: "cn-shanghai",
+        expandedPrompt,
+        readyToGenerate: false,
+        slotFillPct: 1,
+        intentBuild: {
+          brief: expect.any(String),
+          frozenSpec: null,
+          intentFingerprint: "intent-fp",
+          specFingerprint: null,
+        },
       },
     });
 
-    const snapshot = await service.createSession('user-1', {
-      prompt: '做一个办公室摸鱼游戏',
-      title: '上班摸鱼',
-      orientation: 'landscape',
-      generationTier: 'showcase',
+    const snapshot = await service.createSession("user-1", {
+      prompt: "Make an office slacking game",
+      title: "Slack Hero",
+      orientation: "landscape",
+      generationTier: "showcase",
+      regionHint: "cn-shanghai",
     });
 
-    // Phase 1: optimistic creation stores 'initializing' status
-    expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({
-        status: 'initializing',
-        entryMode: 'create',
-        titleDraft: '上班摸鱼',
-        metadata: expect.objectContaining({
-          orientation: 'landscape',
-          generationTier: 'showcase',
-          readyToGenerate: false,
-          slotFillPct: 0,
-          intentBuild: expect.objectContaining({
-            brief: expect.any(String),
-            frozenSpec: null,
-            intentFingerprint: expect.any(String),
-            specFingerprint: null,
-          }),
-        }),
+    expect(snapshot).toEqual(
+      expect.objectContaining({
+        id: "session-1",
+        status: "initializing",
+        expandedPrompt: null,
+        readyToGenerate: false,
+        metadata: null,
       }),
-    }));
-    // Snapshot returned immediately reflects 'initializing'
-    expect(snapshot).toEqual(expect.objectContaining({
-      id: 'session-1',
-      status: 'initializing',
-      orientation: 'landscape',
-      generationTier: 'showcase',
-      intentBuild: expect.objectContaining({
-        brief: expect.any(String),
-      }),
-      confidenceSummary: null,
-      questionStrategy: null,
-      metadata: null,
-    }));
-    expect(gameService.getCreationSessionInitTimeoutMs).toHaveBeenCalledTimes(1);
-    expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 45000);
+    );
 
-    // Phase 2: wait for async _finalizeSessionInit to complete
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    // AI analysis was called in the background
     expect(axios.post).toHaveBeenCalledWith(
-      'https://ai-engine.example/api/v1/ai/dialogue/analyze-turn/stream',
-      expect.objectContaining({
-        session_id: 'session-1',
-        user_id: 'user-1',
-        title: '上班摸鱼',
-        generation_tier: 'showcase',
-        initial_prompt: '做一个办公室摸鱼游戏',
-      }),
-      { timeout: 5000, responseType: 'stream' },
+      "https://ai-engine.example/api/v1/ai/expand-prompt",
+      { description: "Make an office slacking game" },
+      { timeout: 5000 },
     );
-    // CAS update transitions from 'initializing' to 'ready'/'collecting'
-    expect(repo.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: expect.objectContaining({
-        id: 'session-1',
-        status: 'initializing',
-        revision: 1,
-      }),
-      data: expect.objectContaining({
-        status: 'ready',
-        revision: { increment: 1 },
-        metadata: expect.objectContaining({
-          intentBuild: expect.objectContaining({
-            brief: expect.any(String),
-            frozenSpec: null,
-            intentFingerprint: expect.any(String),
-            specFingerprint: null,
+    expect(repo.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: "session-1",
+          userId: "user-1",
+          status: "initializing",
+          revision: 1,
+        }),
+        data: expect.objectContaining({
+          status: "collecting",
+          slotState: {},
+          missingRequired: [],
+          currentQuestion: expect.objectContaining({
+            slotKey: "expanded_prompt",
+            prompt: confirmationQuestion,
+          }),
+          metadata: expect.objectContaining({
+            expandedPrompt,
+            readyToGenerate: false,
+            slotFillPct: 1,
           }),
         }),
       }),
-    }));
-    // WebSocket push was emitted with the finalized snapshot
+    );
+    expect(realtimeService.publishReplyDone).toHaveBeenCalledWith(
+      "user-1",
+      "session-1",
+      expandedPrompt,
+      "summary",
+    );
     expect(wsGateway.emitSessionUpdate).toHaveBeenCalledWith(
-      'user-1',
-      'session-1',
+      "user-1",
+      "session-1",
       expect.objectContaining({
-        status: 'ready',
-        readyToGenerate: true,
+        status: "collecting",
+        expandedPrompt,
+        readyToGenerate: false,
+        currentQuestion: expect.objectContaining({
+          slotKey: "expanded_prompt",
+        }),
       }),
     );
-    expect(realtimeService.publishReplyDelta).toHaveBeenCalled();
-    expect(realtimeService.publishReplyDone).toHaveBeenCalledWith(
-      'user-1',
-      'session-1',
-      expect.stringContaining('玩家怎么才能赢'),
-      'question',
-    );
+
     setTimeoutSpy.mockRestore();
   });
 
-  it('abandons initialization after a single transient analyze-turn failure without retrying', async () => {
+  it("abandons initialization when prompt expansion fails", async () => {
+    const originalSetTimeout = global.setTimeout;
+    const setTimeoutSpy = jest.spyOn(global, "setTimeout").mockImplementation(((
+      handler: any,
+      timeout?: any,
+      ...args: any[]
+    ) => {
+      if (timeout === 45000) {
+        return 0 as any;
+      }
+      return originalSetTimeout(handler, timeout as any, ...args);
+    }) as typeof setTimeout);
+
     repo.updateMany.mockResolvedValue({ count: 1 });
     repo.create.mockImplementation(async ({ data }: any) => ({
-      id: 'session-retryless',
-      userId: 'user-retryless',
+      id: "session-init-fail",
+      userId: "user-init-fail",
       status: data.status,
       entryMode: data.entryMode,
       initialPrompt: data.initialPrompt,
@@ -309,104 +247,122 @@ describe('CreationSessionService', () => {
       sourceGameId: data.sourceGameId,
       questionBudget: data.questionBudget,
       metadata: data.metadata,
-      createdAt: new Date('2026-03-30T10:00:00.000Z'),
-      updatedAt: new Date('2026-03-30T10:00:00.000Z'),
+      createdAt: new Date("2026-04-16T10:00:00.000Z"),
+      updatedAt: new Date("2026-04-16T10:00:00.000Z"),
     }));
     (axios.post as jest.Mock).mockRejectedValueOnce({
-      code: 'ETIMEDOUT',
-      message: 'timeout of 5000ms exceeded',
+      code: "ETIMEDOUT",
+      message: "timeout of 5000ms exceeded",
     });
 
-    const snapshot = await service.createSession('user-retryless', {
-      prompt: 'Make a quick arcade game.',
-      title: 'Retryless',
+    const snapshot = await service.createSession("user-init-fail", {
+      prompt: "Make a quick arcade game.",
+      title: "Retryless",
     });
 
-    expect(snapshot).toEqual(expect.objectContaining({
-      id: 'session-retryless',
-      status: 'initializing',
-    }));
+    expect(snapshot).toEqual(
+      expect.objectContaining({
+        id: "session-init-fail",
+        status: "initializing",
+        expandedPrompt: null,
+      }),
+    );
 
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    expect(axios.post).toHaveBeenCalledTimes(1);
     expect(repo.updateMany).toHaveBeenCalledWith({
-      where: { id: 'session-retryless', userId: 'user-retryless', status: 'initializing' },
+      where: {
+        id: "session-init-fail",
+        userId: "user-init-fail",
+        status: "initializing",
+      },
       data: expect.objectContaining({
-        status: 'abandoned',
+        status: "abandoned",
         metadata: expect.objectContaining({
-          initError: 'timeout of 5000ms exceeded',
+          expandedPrompt: null,
+          initError: "timeout of 5000ms exceeded",
         }),
       }),
     });
     expect(wsGateway.emitSessionError).toHaveBeenCalledWith(
-      'user-retryless',
-      'session-retryless',
-      'timeout of 5000ms exceeded',
-      expect.objectContaining({ reason: 'init_failed' }),
+      "user-init-fail",
+      "session-init-fail",
+      "timeout of 5000ms exceeded",
+      expect.objectContaining({ reason: "init_failed" }),
     );
+
+    setTimeoutSpy.mockRestore();
   });
 
-  it('appends a user answer and advances the session revision', async () => {
+  it("treats appended content as the edited prompt confirmation and moves the session to ready", async () => {
     const existingSession = {
-      id: 'session-2',
-      userId: 'user-2',
-      status: 'collecting',
-      entryMode: 'create',
-      initialPrompt: '做一个办公室摸鱼游戏',
-      titleDraft: '上班摸鱼',
+      id: "session-2",
+      userId: "user-2",
+      status: "collecting",
+      entryMode: "create",
+      initialPrompt: "Make an office stealth game",
+      titleDraft: "Slack Hero",
       revision: 1,
-      slotState: {
-        game_type: 'funny',
-        core_mechanic: 'tap to hide',
-        input_method: 'tap',
-      },
-      missingRequired: ['theme', 'win_condition', 'difficulty'],
+      slotState: {},
+      missingRequired: [],
       skippedSlots: [],
       currentQuestion: {
-        slotKey: 'theme',
-        label: 'Theme',
-        prompt: '它发生在什么场景里？',
+        slotKey: "expanded_prompt",
+        label: "Prompt Confirmation",
+        prompt:
+          "I expanded your idea into a generation prompt that covers game type, core mechanic, controls, win condition, and difficulty ramp. Confirm it as-is or edit the prompt before confirming.",
         skippable: true,
       },
       conversation: [
-        { role: 'user', content: '做一个办公室摸鱼游戏' },
-        { role: 'assistant', content: '我先补一个最关键的信息：它发生在什么场景里？' },
+        {
+          role: "user",
+          content: "Make an office stealth game",
+          kind: "prompt",
+        },
+        {
+          role: "assistant",
+          content: "Old expanded prompt",
+          kind: "summary",
+        },
       ],
       generatedGameId: null,
       generationTaskId: null,
       sourceGameId: null,
       questionBudget: 4,
       metadata: {
-        orientation: 'portrait',
-        generationTier: 'standard',
+        orientation: "portrait",
+        generationTier: "standard",
+        expandedPrompt: "Old expanded prompt",
         readyToGenerate: false,
-        slotFillPct: 0.4,
+        slotFillPct: 1,
       },
-      createdAt: new Date('2026-03-30T10:00:00.000Z'),
-      updatedAt: new Date('2026-03-30T10:00:00.000Z'),
+      createdAt: new Date("2026-04-16T10:00:00.000Z"),
+      updatedAt: new Date("2026-04-16T10:00:00.000Z"),
     };
     const updatedSession = {
       ...existingSession,
       revision: 2,
-      status: 'ready',
-      slotState: {
-        ...existingSession.slotState,
-        theme: 'office',
-        win_condition: 'stay undiscovered until the timer ends',
-        difficulty: 'medium',
-      },
-      missingRequired: [],
+      status: "ready",
       currentQuestion: null,
       conversation: [
         ...existingSession.conversation,
-        { role: 'user', content: '现代办公室，老板会突然巡查' },
-        { role: 'assistant', content: '我已经整理出一版可生成方案了。' },
+        {
+          role: "user",
+          content:
+            "Game Type: Funny stealth comedy\nCore Mechanic: Tap to fake working while dodging inspections\nTheme: Chaotic startup office\nInput Method: Single tap\nWin Condition: Survive until clock-out\nDifficulty Ramp: Inspections become more frequent each round",
+          kind: "prompt",
+        },
+        {
+          role: "assistant",
+          content: "This prompt is confirmed and ready for generation.",
+          kind: "summary",
+        },
       ],
       metadata: {
         ...existingSession.metadata,
+        expandedPrompt:
+          "Game Type: Funny stealth comedy\nCore Mechanic: Tap to fake working while dodging inspections\nTheme: Chaotic startup office\nInput Method: Single tap\nWin Condition: Survive until clock-out\nDifficulty Ramp: Inspections become more frequent each round",
         readyToGenerate: true,
-        slotFillPct: 1,
       },
     };
 
@@ -414,131 +370,116 @@ describe('CreationSessionService', () => {
       .mockResolvedValueOnce(existingSession)
       .mockResolvedValueOnce(updatedSession);
     repo.updateMany.mockResolvedValue({ count: 1 });
-    (axios.post as jest.Mock).mockResolvedValueOnce({
-      data: buildAnalyzeTurnStream({
-        reply: '我已经整理出一版可生成方案了。',
-        slots: updatedSession.slotState,
-        slots_updated: ['theme', 'win_condition', 'difficulty'],
-        missing_required: [],
-        slot_fill_pct: 1,
-        ready_to_generate: true,
-        current_question: null,
-      }),
-    });
 
-    const snapshot = await service.appendMessage('user-2', 'session-2', {
-      content: '现代办公室，老板会突然巡查',
+    const snapshot = await service.appendMessage("user-2", "session-2", {
+      content:
+        "Game Type: Funny stealth comedy\nCore Mechanic: Tap to fake working while dodging inspections\nTheme: Chaotic startup office\nInput Method: Single tap\nWin Condition: Survive until clock-out\nDifficulty Ramp: Inspections become more frequent each round",
       revision: 1,
     });
 
-    expect(axios.post).toHaveBeenCalledWith(
-      'https://ai-engine.example/api/v1/ai/dialogue/analyze-turn/stream',
+    expect(axios.post).not.toHaveBeenCalled();
+    expect(repo.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        session_id: 'session-2',
-        user_id: 'user-2',
-        generation_tier: 'standard',
-        answered_slot_key: 'theme',
-        answered_slot_prompt: '它发生在什么场景里？',
-        latest_user_answer: '现代办公室，老板会突然巡查',
-      }),
-      { timeout: 5000, responseType: 'stream' },
-    );
-    expect(repo.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: expect.objectContaining({
-        id: 'session-2',
-        revision: 1,
-      }),
-      data: expect.objectContaining({
-        status: 'ready',
-        revision: { increment: 1 },
-        metadata: expect.objectContaining({
-          intentBuild: expect.objectContaining({
-            brief: expect.any(String),
-            frozenSpec: null,
-            intentFingerprint: expect.any(String),
-            specFingerprint: null,
+        where: expect.objectContaining({
+          id: "session-2",
+          revision: 1,
+        }),
+        data: expect.objectContaining({
+          status: "ready",
+          slotState: {},
+          missingRequired: [],
+          currentQuestion: null,
+          metadata: expect.objectContaining({
+            expandedPrompt:
+              "Game Type: Funny stealth comedy\nCore Mechanic: Tap to fake working while dodging inspections\nTheme: Chaotic startup office\nInput Method: Single tap\nWin Condition: Survive until clock-out\nDifficulty Ramp: Inspections become more frequent each round",
+            readyToGenerate: true,
+            slotFillPct: 1,
           }),
         }),
       }),
-    }));
-    expect(snapshot).toEqual(expect.objectContaining({
-      id: 'session-2',
-      revision: 2,
-      readyToGenerate: true,
-      confidenceSummary: null,
-      questionStrategy: null,
-      metadata: null,
-      intentBuild: null,
-    }));
-    expect(realtimeService.publishReplyDelta).toHaveBeenCalled();
+    );
     expect(realtimeService.publishReplyDone).toHaveBeenCalledWith(
-      'user-2',
-      'session-2',
-      expect.stringContaining('可生成方案'),
-      'summary',
+      "user-2",
+      "session-2",
+      "This prompt is confirmed and ready for generation.",
+      "summary",
+    );
+    expect(snapshot).toEqual(
+      expect.objectContaining({
+        id: "session-2",
+        revision: 2,
+        status: "ready",
+        expandedPrompt:
+          "Game Type: Funny stealth comedy\nCore Mechanic: Tap to fake working while dodging inspections\nTheme: Chaotic startup office\nInput Method: Single tap\nWin Condition: Survive until clock-out\nDifficulty Ramp: Inspections become more frequent each round",
+        readyToGenerate: true,
+      }),
     );
   });
 
-  it('falls back to non-stream analyze-turn without synthetic delta chunks', async () => {
+  it("treats skip as confirming the expanded prompt as-is and moves the session to ready", async () => {
     const existingSession = {
-      id: 'session-fallback-1',
-      userId: 'user-fallback-1',
-      status: 'collecting',
-      entryMode: 'create',
-      initialPrompt: 'Make a layered office puzzle game.',
-      titleDraft: 'Office Layers',
+      id: "session-skip-1",
+      userId: "user-skip-1",
+      status: "collecting",
+      entryMode: "create",
+      initialPrompt: "Make an office puzzle game.",
+      titleDraft: "Office Layers",
       revision: 1,
-      slotState: {
-        game_type: 'puzzle',
-        core_mechanic: 'tap to clear three matching tiles',
-        input_method: 'tap',
-      },
-      missingRequired: ['theme', 'win_condition', 'difficulty'],
+      slotState: {},
+      missingRequired: [],
       skippedSlots: [],
       currentQuestion: {
-        slotKey: 'theme',
-        label: 'Theme',
-        prompt: 'What setting should the puzzle use?',
+        slotKey: "expanded_prompt",
+        label: "Prompt Confirmation",
+        prompt:
+          "I expanded your idea into a generation prompt that covers game type, core mechanic, controls, win condition, and difficulty ramp. Confirm it as-is or edit the prompt before confirming.",
         skippable: true,
       },
       conversation: [
-        { role: 'user', content: 'Make a layered office puzzle game.' },
-        { role: 'assistant', content: 'What setting should the puzzle use?' },
+        {
+          role: "user",
+          content: "Make an office puzzle game.",
+          kind: "prompt",
+        },
+        {
+          role: "assistant",
+          content:
+            "Game Type: Puzzle\nCore Mechanic: Tap to clear office clutter combos\nTheme: Overloaded office desk\nInput Method: Single tap\nWin Condition: Clear the target clutter before moves run out\nDifficulty Ramp: Add blockers and tighter move budgets each stage",
+          kind: "summary",
+        },
       ],
       generatedGameId: null,
       generationTaskId: null,
       sourceGameId: null,
       questionBudget: 4,
       metadata: {
-        orientation: 'portrait',
-        generationTier: 'standard',
+        orientation: "portrait",
+        generationTier: "standard",
+        expandedPrompt:
+          "Game Type: Puzzle\nCore Mechanic: Tap to clear office clutter combos\nTheme: Overloaded office desk\nInput Method: Single tap\nWin Condition: Clear the target clutter before moves run out\nDifficulty Ramp: Add blockers and tighter move budgets each stage",
         readyToGenerate: false,
-        slotFillPct: 0.4,
+        slotFillPct: 1,
       },
-      createdAt: new Date('2026-03-30T10:00:00.000Z'),
-      updatedAt: new Date('2026-03-30T10:00:00.000Z'),
+      createdAt: new Date("2026-04-16T10:00:00.000Z"),
+      updatedAt: new Date("2026-04-16T10:00:00.000Z"),
     };
     const updatedSession = {
       ...existingSession,
       revision: 2,
-      status: 'ready',
-      slotState: {
-        ...existingSession.slotState,
-        theme: 'funny office',
-        win_condition: 'clear the board before the move budget runs out',
-        difficulty: 'medium',
-      },
-      missingRequired: [],
+      status: "ready",
       currentQuestion: null,
+      skippedSlots: [],
       conversation: [
         ...existingSession.conversation,
-        { role: 'user', content: 'Funny office theme with sneaky coworkers.' },
-        { role: 'assistant', content: 'I have enough to start generating.' },
+        {
+          role: "assistant",
+          content: "This prompt is confirmed and ready for generation.",
+          kind: "summary",
+        },
       ],
       metadata: {
         ...existingSession.metadata,
         readyToGenerate: true,
-        slotFillPct: 1,
       },
     };
 
@@ -546,417 +487,264 @@ describe('CreationSessionService', () => {
       .mockResolvedValueOnce(existingSession)
       .mockResolvedValueOnce(updatedSession);
     repo.updateMany.mockResolvedValue({ count: 1 });
-    (axios.post as jest.Mock)
-      .mockRejectedValueOnce({
-        message: 'Request failed with status code 404',
-        response: { status: 404 },
-      })
-      .mockResolvedValueOnce({
-        data: {
-          reply: 'I have enough to start generating.',
-          slots: updatedSession.slotState,
-          slots_updated: ['theme', 'win_condition', 'difficulty'],
-          missing_required: [],
-          slot_fill_pct: 1,
-          ready_to_generate: true,
-          current_question: null,
-        },
-      });
 
-    const snapshot = await service.appendMessage('user-fallback-1', 'session-fallback-1', {
-      content: 'Funny office theme with sneaky coworkers.',
-      revision: 1,
-    });
-
-    expect((axios.post as jest.Mock).mock.calls[0]?.[0]).toContain('/api/v1/ai/dialogue/analyze-turn/stream');
-    expect((axios.post as jest.Mock).mock.calls[1]?.[0]).toContain('/api/v1/ai/dialogue/analyze-turn');
-    expect(realtimeService.publishReplyDelta).not.toHaveBeenCalled();
-    expect(realtimeService.publishReplyDone).toHaveBeenCalledWith(
-      'user-fallback-1',
-      'session-fallback-1',
-      'I have enough to start generating.',
-      'summary',
+    const snapshot = await service.skipCurrentQuestion(
+      "user-skip-1",
+      "session-skip-1",
+      {
+        revision: 1,
+      },
     );
-  expect(snapshot).toEqual(expect.objectContaining({
-      id: 'session-fallback-1',
-      revision: 2,
-      readyToGenerate: true,
-    }));
-  });
 
-  it('falls back to the non-stream analyze-turn endpoint when realtime streaming aborts mid-flight', async () => {
-    const existingSession = {
-      id: 'session-fallback-abort-1',
-      userId: 'user-fallback-abort-1',
-      status: 'collecting',
-      entryMode: 'create',
-      initialPrompt: 'Build a classroom wiring puzzle.',
-      titleDraft: 'Circuit Class',
-      revision: 1,
-      slotState: {
-        game_type: 'educational',
-        core_mechanic: 'connect matching circuits',
-        input_method: 'tap',
-      },
-      missingRequired: ['theme'],
-      skippedSlots: [],
-      currentQuestion: {
-        slotKey: 'theme',
-        label: 'Theme',
-        prompt: 'What classroom theme should this use?',
-        skippable: true,
-      },
-      conversation: [
-        { role: 'user', content: 'Build a classroom wiring puzzle.' },
-      ],
-      generatedGameId: null,
-      generationTaskId: null,
-      sourceGameId: null,
-      questionBudget: 4,
-      metadata: {
-        orientation: 'portrait',
-        generationTier: 'standard',
-        readyToGenerate: false,
-        slotFillPct: 0.5,
-      },
-      createdAt: new Date('2026-04-12T00:00:00.000Z'),
-      updatedAt: new Date('2026-04-12T00:00:00.000Z'),
-    };
-
-    const updatedSession = {
-      ...existingSession,
-      revision: 2,
-      status: 'ready',
-      slotState: {
-        ...existingSession.slotState,
-        theme: 'school lab',
-      },
-      missingRequired: [],
-      currentQuestion: null,
-      conversation: [
-        ...existingSession.conversation,
-        { role: 'user', content: 'school lab' },
-        { role: 'assistant', content: 'Nice, I have enough to generate it now.' },
-      ],
-      metadata: {
-        ...existingSession.metadata,
+    expect(axios.post).not.toHaveBeenCalled();
+    expect(repo.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: "ready",
+          skippedSlots: [],
+          currentQuestion: null,
+          metadata: expect.objectContaining({
+            expandedPrompt:
+              "Game Type: Puzzle\nCore Mechanic: Tap to clear office clutter combos\nTheme: Overloaded office desk\nInput Method: Single tap\nWin Condition: Clear the target clutter before moves run out\nDifficulty Ramp: Add blockers and tighter move budgets each stage",
+            readyToGenerate: true,
+            slotFillPct: 1,
+          }),
+        }),
+      }),
+    );
+    expect(realtimeService.publishReplyDone).toHaveBeenCalledWith(
+      "user-skip-1",
+      "session-skip-1",
+      "This prompt is confirmed and ready for generation.",
+      "summary",
+    );
+    expect(snapshot).toEqual(
+      expect.objectContaining({
+        id: "session-skip-1",
+        status: "ready",
+        expandedPrompt:
+          "Game Type: Puzzle\nCore Mechanic: Tap to clear office clutter combos\nTheme: Overloaded office desk\nInput Method: Single tap\nWin Condition: Clear the target clutter before moves run out\nDifficulty Ramp: Add blockers and tighter move budgets each stage",
         readyToGenerate: true,
-        slotFillPct: 1,
-      },
-    };
-
-    repo.findUnique
-      .mockResolvedValueOnce(existingSession)
-      .mockResolvedValueOnce(updatedSession);
-    repo.updateMany.mockResolvedValue({ count: 1 });
-    (axios.post as jest.Mock)
-      .mockRejectedValueOnce({
-        message: 'aborted',
-        response: { status: 500, data: { message: 'aborted' } },
-      })
-      .mockResolvedValueOnce({
-        data: {
-          reply: 'Nice, I have enough to generate it now.',
-          slots: updatedSession.slotState,
-          slots_updated: ['theme'],
-          missing_required: [],
-          slot_fill_pct: 1,
-          ready_to_generate: true,
-          current_question: null,
-        },
-      });
-
-    const snapshot = await service.appendMessage('user-fallback-abort-1', 'session-fallback-abort-1', {
-      content: 'school lab',
-      revision: 1,
-    });
-
-    expect((axios.post as jest.Mock).mock.calls[0]?.[0]).toContain('/api/v1/ai/dialogue/analyze-turn/stream');
-    expect((axios.post as jest.Mock).mock.calls[1]?.[0]).toContain('/api/v1/ai/dialogue/analyze-turn');
-    expect(realtimeService.publishReplyDone).toHaveBeenCalledWith(
-      'user-fallback-abort-1',
-      'session-fallback-abort-1',
-      'Nice, I have enough to generate it now.',
-      'summary',
+      }),
     );
-    expect(snapshot).toEqual(expect.objectContaining({
-      id: 'session-fallback-abort-1',
-      revision: 2,
-      readyToGenerate: true,
-    }));
   });
 
-  it('compiles slots into a source spec before generating the game', async () => {
+  it("uses the confirmed expanded prompt when generating the game", async () => {
+    const expandedPrompt =
+      "Game Type: Funny stealth comedy\nCore Mechanic: Tap to swap between working and slacking states while hiding from surprise inspections\nTheme: Open-plan office satire\nInput Method: Single-tap interactions\nWin Condition: Stay undiscovered until the shift ends\nDifficulty Ramp: Boss inspections happen more often and react faster each round\nScoring: Earn points for every successful slacking streak\nVisual Direction: Exaggerated office comedy with bright props";
     const existingSession = {
-      id: 'session-3',
-      userId: 'user-3',
-      status: 'ready',
-      entryMode: 'fork',
-      initialPrompt: '做一个搞笑办公室摸鱼游戏',
-      titleDraft: '端水大师',
+      id: "session-3",
+      userId: "user-3",
+      status: "ready",
+      entryMode: "fork",
+      initialPrompt: "Make an office slacking game",
+      titleDraft: "Slack Hero",
       revision: 3,
-      slotState: {
-        game_type: 'funny',
-        core_mechanic: 'tap to hide',
-        theme: 'office',
-        input_method: 'tap',
-        win_condition: 'survive the workday',
-        difficulty: 'medium',
-      },
+      slotState: {},
       missingRequired: [],
       skippedSlots: [],
       currentQuestion: null,
       conversation: [],
       generatedGameId: null,
       generationTaskId: null,
-      sourceGameId: 'game-source-1',
+      sourceGameId: "game-source-1",
       questionBudget: 4,
       metadata: {
-        orientation: 'landscape',
-        generationTier: 'showcase',
-        regionHint: 'cn-shanghai',
+        orientation: "landscape",
+        generationTier: "showcase",
+        regionHint: "cn-shanghai",
+        expandedPrompt,
         readyToGenerate: true,
         slotFillPct: 1,
       },
-      createdAt: new Date('2026-03-30T10:00:00.000Z'),
-      updatedAt: new Date('2026-03-30T10:00:00.000Z'),
+      createdAt: new Date("2026-04-16T10:00:00.000Z"),
+      updatedAt: new Date("2026-04-16T10:00:00.000Z"),
     };
-    const generatingSession = {
+    const completedSession = {
       ...existingSession,
       revision: 4,
-      status: 'generating',
-      generatedGameId: 'game-1',
-      generationTaskId: 'task-1',
+      status: "completed",
+      generatedGameId: "game-1",
+      generationTaskId: "task-1",
       metadata: {
         ...existingSession.metadata,
-        lastTaskStatus: 'queued',
+        lastTaskStatus: "queued",
       },
     };
 
     repo.findUnique
       .mockResolvedValueOnce(existingSession)
-      .mockResolvedValueOnce(generatingSession);
+      .mockResolvedValueOnce(completedSession);
     repo.updateMany.mockResolvedValue({ count: 1 });
-    (axios.post as jest.Mock).mockResolvedValueOnce({
-      data: {
-        spec: {
-          game_type: 'funny',
-          intent_summary: '办公室摸鱼躲避老板巡查',
-          generation_tier: 'showcase',
-        },
-        missing_required: [],
-        slot_fill_pct: 1,
-      },
-    });
+    repo.update.mockResolvedValue(completedSession);
     gameService.create.mockResolvedValue({
-      gameId: 'game-1',
+      gameId: "game-1",
       generationTask: {
-        taskId: 'task-1',
+        taskId: "task-1",
       },
     });
 
-    const result = await service.generateFromSession('user-3', 'session-3', {
+    const result = await service.generateFromSession("user-3", "session-3", {
       revision: 3,
       timeoutS: 900,
     });
 
-    expect(axios.post).toHaveBeenCalledWith(
-      'https://ai-engine.example/api/v1/ai/dialogue/spec-from-slots',
+    expect(gameService.create).toHaveBeenCalledTimes(1);
+    const createPayload = gameService.create.mock.calls[0][1];
+    expect(createPayload).toEqual(
       expect.objectContaining({
-        session_id: 'session-3',
-        source_description: '做一个搞笑办公室摸鱼游戏',
-        title: '端水大师',
-        generation_tier: 'showcase',
-        variation_seed: 'session-3',
+        title: "Slack Hero",
+        description: expandedPrompt,
+        timeoutS: 900,
+        regionHint: "cn-shanghai",
+        orientation: "landscape",
+        generationTier: "showcase",
+        creationSessionId: "session-3",
+        entryMode: "fork",
+        sourceGameId: "game-source-1",
       }),
-      { timeout: 5000 },
     );
-    expect(gameService.create).toHaveBeenCalledWith('user-3', expect.objectContaining({
-      title: '端水大师',
-      description: '做一个搞笑办公室摸鱼游戏',
-      timeoutS: 900,
-      regionHint: 'cn-shanghai',
-      orientation: 'landscape',
-      generationTier: 'showcase',
-      sourceSpec: expect.objectContaining({
-        game_type: 'funny',
-        generation_tier: 'showcase',
-      }),
-      creationSessionId: 'session-3',
-      entryMode: 'fork',
-      sourceGameId: 'game-source-1',
-    }));
-    expect(repo.update).toHaveBeenCalledWith(expect.objectContaining({
-      where: { id: 'session-3' },
-      data: expect.objectContaining({
-        metadata: expect.objectContaining({
-          intentBuild: expect.objectContaining({
-            brief: expect.any(String),
-            frozenSpec: expect.objectContaining({
-              game_type: 'funny',
+    expect(createPayload.sourceSpec).toBeUndefined();
+    expect(repo.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "session-3" },
+        data: expect.objectContaining({
+          status: "completed",
+          metadata: expect.objectContaining({
+            expandedPrompt,
+            intentBuild: expect.objectContaining({
+              brief: expect.any(String),
+              frozenSpec: null,
+              intentFingerprint: expect.any(String),
             }),
-            intentFingerprint: expect.any(String),
-            specFingerprint: expect.any(String),
           }),
         }),
       }),
-    }));
-    expect(result).toEqual(expect.objectContaining({
-      gameId: 'game-1',
-      creationSession: expect.objectContaining({
-        id: 'session-3',
-        status: 'generating',
-        generationTaskId: 'task-1',
+    );
+    expect(result).toEqual(
+      expect.objectContaining({
+        gameId: "game-1",
+        creationSession: expect.objectContaining({
+          id: "session-3",
+          status: "completed",
+          generationTaskId: "task-1",
+          expandedPrompt,
+        }),
       }),
-    }));
+    );
   });
 
-  it('strips internal diagnostics from public session snapshots', async () => {
+  it("strips internal diagnostics from public session snapshots while exposing expandedPrompt", async () => {
     repo.findUnique.mockResolvedValue({
-      id: 'session-public-1',
-      userId: 'user-public-1',
-      status: 'abandoned',
-      entryMode: 'create',
-      initialPrompt: '做一个办公室摸鱼游戏',
-      titleDraft: '上班摸鱼',
+      id: "session-public-1",
+      userId: "user-public-1",
+      status: "abandoned",
+      entryMode: "create",
+      initialPrompt: "Make an office slacking game",
+      titleDraft: "Slack Hero",
       revision: 2,
-      slotState: {
-        game_type: 'funny',
-        core_mechanic: 'tap to hide',
-      },
-      missingRequired: ['win_condition'],
+      slotState: {},
+      missingRequired: [],
       skippedSlots: [],
-      currentQuestion: {
-        slotKey: 'win_condition',
-        label: 'Win Condition',
-        prompt: '玩家怎么才算赢？',
-        skippable: true,
-      },
+      currentQuestion: null,
       conversation: [],
       generatedGameId: null,
       generationTaskId: null,
       sourceGameId: null,
       questionBudget: 4,
       metadata: {
-        orientation: 'portrait',
-        generationTier: 'standard',
+        orientation: "portrait",
+        generationTier: "standard",
+        expandedPrompt:
+          "Game Type: Funny stealth comedy\nCore Mechanic: Tap to fake working while dodging inspections\nTheme: Startup office\nInput Method: Single tap\nWin Condition: Reach clock-out without being caught\nDifficulty Ramp: Inspections accelerate each round",
         readyToGenerate: false,
-        slotFillPct: 0.4,
-        planDraft: {
-          title: '上班摸鱼',
-          summary: '一款围绕办公室摸鱼展开的搞笑小游戏。',
-        },
-        confidenceSummary: {
-          overallConfidence: 0.61,
-          strongestSlots: ['game_type'],
-          weakestSlots: ['win_condition'],
-          ambiguityFlags: ['win_condition:missing'],
-          missingCriticalSlots: ['win_condition'],
-        },
-        questionStrategy: {
-          mode: 'missing_required',
-          slotKey: 'win_condition',
-          reason: '需要先确认胜利目标',
-          impact: 0.95,
-          confidence: 0,
-          ambiguityWeight: 0.25,
-        },
+        slotFillPct: 1,
         intentBuild: {
-          brief: 'Summary: 一款围绕办公室摸鱼展开的搞笑小游戏。',
-          frozenSpec: { game_type: 'funny' },
-          intentFingerprint: 'intent-fp',
-          specFingerprint: 'spec-fp',
+          brief:
+            "Summary: Game Type: Funny stealth comedy\nConcept: Startup office\nInteraction: Tap to fake working while dodging inspections\nObjective: Reach clock-out without being caught\nPacing: Inspections accelerate each round",
+          frozenSpec: { game_type: "funny" },
+          intentFingerprint: "intent-fp",
+          specFingerprint: "spec-fp",
         },
         confidenceBySlot: {
           game_type: 0.91,
         },
         evidenceBySlot: {
-          game_type: '用户明确说要搞笑游戏',
+          game_type: "user clearly asked for a funny game",
         },
-        nextBestQuestionReason: '需要先确认胜利目标',
-        initError: 'Session initialization timed out',
-        abandonedAt: '2026-04-08T09:00:00.000Z',
+        initError: "Session initialization timed out",
+        abandonedAt: "2026-04-08T09:00:00.000Z",
       },
-      createdAt: new Date('2026-04-08T09:00:00.000Z'),
-      updatedAt: new Date('2026-04-08T09:00:00.000Z'),
+      createdAt: new Date("2026-04-08T09:00:00.000Z"),
+      updatedAt: new Date("2026-04-08T09:00:00.000Z"),
     });
 
-    const snapshot = await service.getSession('user-public-1', 'session-public-1');
+    const snapshot = await service.getSession(
+      "user-public-1",
+      "session-public-1",
+    );
 
-    expect(snapshot).toEqual(expect.objectContaining({
-      id: 'session-public-1',
-      status: 'abandoned',
-      orientation: 'portrait',
-      generationTier: 'standard',
-      planDraft: expect.objectContaining({
-        title: '上班摸鱼',
+    expect(snapshot).toEqual(
+      expect.objectContaining({
+        id: "session-public-1",
+        status: "abandoned",
+        expandedPrompt:
+          "Game Type: Funny stealth comedy\nCore Mechanic: Tap to fake working while dodging inspections\nTheme: Startup office\nInput Method: Single tap\nWin Condition: Reach clock-out without being caught\nDifficulty Ramp: Inspections accelerate each round",
+        orientation: "portrait",
+        generationTier: "standard",
+        intentBuild: {
+          brief:
+            "Summary: Game Type: Funny stealth comedy\nConcept: Startup office\nInteraction: Tap to fake working while dodging inspections\nObjective: Reach clock-out without being caught\nPacing: Inspections accelerate each round",
+        },
+        metadata: {
+          initError: "Session initialization timed out",
+          abandonedAt: "2026-04-08T09:00:00.000Z",
+        },
       }),
-      confidenceSummary: null,
-      questionStrategy: null,
-      intentBuild: {
-        brief: 'Summary: 一款围绕办公室摸鱼展开的搞笑小游戏。',
-      },
-      metadata: {
-        initError: 'Session initialization timed out',
-        abandonedAt: '2026-04-08T09:00:00.000Z',
-      },
-    }));
+    );
     expect((snapshot.intentBuild as any).frozenSpec).toBeUndefined();
     expect((snapshot.metadata as any).confidenceBySlot).toBeUndefined();
   });
 
-  it('surfaces nested ai-engine spec compilation errors as readable messages', async () => {
-    const existingSession = {
-      id: 'session-4',
-      userId: 'user-4',
-      status: 'ready',
-      entryMode: 'create',
-      initialPrompt: 'Make a landscape delivery game where the hero dashes across rooftops.',
-      titleDraft: 'Parkour Delivery',
-      revision: 2,
-      slotState: {
-        game_type: 'casual',
-        core_mechanic: ['dash', 'avoid', 'drop'],
-        theme: 'landscape delivery',
-        input_method: 'swipe',
-        win_condition: 'deliver parcels to target balconies',
-        difficulty: 'medium',
-      },
+  it("rejects generation before the session reaches ready", async () => {
+    repo.findUnique.mockResolvedValue({
+      id: "session-not-ready",
+      userId: "user-not-ready",
+      status: "collecting",
+      entryMode: "create",
+      initialPrompt: "Make a puzzle game.",
+      titleDraft: "Puzzle",
+      revision: 1,
+      slotState: {},
       missingRequired: [],
       skippedSlots: [],
-      currentQuestion: null,
+      currentQuestion: {
+        slotKey: "expanded_prompt",
+        label: "Prompt Confirmation",
+        prompt:
+          "I expanded your idea into a generation prompt that covers game type, core mechanic, controls, win condition, and difficulty ramp. Confirm it as-is or edit the prompt before confirming.",
+        skippable: true,
+      },
       conversation: [],
       generatedGameId: null,
       generationTaskId: null,
       sourceGameId: null,
       questionBudget: 4,
       metadata: {
-        orientation: 'landscape',
-        generationTier: 'showcase',
-        readyToGenerate: true,
+        generationTier: "standard",
+        expandedPrompt:
+          "Game Type: Puzzle\nCore Mechanic: Tap to clear matching desk items\nTheme: Office desk cleanup\nInput Method: Single tap\nWin Condition: Clear all clutter before moves run out\nDifficulty Ramp: Add blockers after each stage",
+        readyToGenerate: false,
         slotFillPct: 1,
       },
-      createdAt: new Date('2026-03-30T10:00:00.000Z'),
-      updatedAt: new Date('2026-03-30T10:00:00.000Z'),
-    };
-
-    repo.findUnique.mockResolvedValue(existingSession);
-    (axios.post as jest.Mock).mockRejectedValueOnce({
-      response: {
-        data: {
-          detail: [
-            {
-              loc: ['body', 'slots', 'core_mechanic'],
-              msg: 'Input should be a valid string',
-            },
-          ],
-        },
-      },
+      createdAt: new Date("2026-04-16T10:00:00.000Z"),
+      updatedAt: new Date("2026-04-16T10:00:00.000Z"),
     });
 
-    await expect(service.generateFromSession('user-4', 'session-4', {
-      revision: 2,
-      timeoutS: 900,
-    })).rejects.toThrow('Input should be a valid string');
+    await expect(
+      service.generateFromSession("user-not-ready", "session-not-ready", {
+        revision: 1,
+      }),
+    ).rejects.toThrow("Creation session is not ready to generate");
   });
 });

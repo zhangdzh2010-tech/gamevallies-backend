@@ -1,13 +1,16 @@
-import { CreateGameGenerationTier, CreateGameOrientation } from '../dto/create-game.dto';
+import {
+  CreateGameGenerationTier,
+  CreateGameOrientation,
+} from "../dto/create-game.dto";
 import {
   CreationSessionEntryMode,
   CreationSessionStatus,
-} from '../creation-session.constants';
+} from "../creation-session.constants";
 
 export interface CreationSessionConversationMessage {
-  role: 'user' | 'assistant';
+  role: "user" | "assistant";
   content: string;
-  kind?: 'prompt' | 'answer' | 'question' | 'summary' | 'system';
+  kind?: "prompt" | "answer" | "question" | "summary" | "system";
   createdAt?: string;
 }
 
@@ -38,7 +41,7 @@ export interface CreationSessionConfidenceSummary {
 }
 
 export interface CreationSessionQuestionStrategy {
-  mode: 'missing_required' | 'low_confidence' | 'ambiguity_resolution' | string;
+  mode: "missing_required" | "low_confidence" | "ambiguity_resolution" | string;
   slotKey: string | null;
   reason: string;
   impact: number;
@@ -61,6 +64,7 @@ export interface CreationSessionSnapshot {
   status: CreationSessionStatus;
   entryMode: CreationSessionEntryMode;
   initialPrompt: string;
+  expandedPrompt: string | null;
   titleDraft: string | null;
   revision: number;
   slotState: Record<string, unknown>;
@@ -83,14 +87,14 @@ export interface CreationSessionSnapshot {
   metadata: CreationSessionPublicMetadata | null;
 }
 
-export type CreationSessionReplyKind = 'question' | 'summary';
+export type CreationSessionReplyKind = "question" | "summary";
 
 export type CreationSessionPublicEventType =
-  | 'bootstrap'
-  | 'delta'
-  | 'done'
-  | 'snapshot'
-  | 'error';
+  | "bootstrap"
+  | "delta"
+  | "done"
+  | "snapshot"
+  | "error";
 
 interface CreationSessionStreamEventBase {
   sessionId: string;
@@ -98,17 +102,17 @@ interface CreationSessionStreamEventBase {
 }
 
 export interface CreationSessionBootstrapEvent extends CreationSessionStreamEventBase {
-  type: 'bootstrap';
+  type: "bootstrap";
   session: CreationSessionSnapshot;
 }
 
 export interface CreationSessionSnapshotEvent extends CreationSessionStreamEventBase {
-  type: 'snapshot';
+  type: "snapshot";
   session: CreationSessionSnapshot;
 }
 
 export interface CreationSessionDeltaEvent extends CreationSessionStreamEventBase {
-  type: 'delta';
+  type: "delta";
   messageId: string;
   delta: string;
   accumulated: string;
@@ -116,14 +120,14 @@ export interface CreationSessionDeltaEvent extends CreationSessionStreamEventBas
 }
 
 export interface CreationSessionDoneEvent extends CreationSessionStreamEventBase {
-  type: 'done';
+  type: "done";
   messageId: string;
   message: string;
   kind: CreationSessionReplyKind;
 }
 
 export interface CreationSessionErrorEvent extends CreationSessionStreamEventBase {
-  type: 'error';
+  type: "error";
   code: string;
   message: string;
   retryable: boolean;
@@ -131,7 +135,7 @@ export interface CreationSessionErrorEvent extends CreationSessionStreamEventBas
 }
 
 export interface CreationSessionHeartbeatEvent extends CreationSessionStreamEventBase {
-  type: 'heartbeat';
+  type: "heartbeat";
 }
 
 export type CreationSessionPublicEvent =
