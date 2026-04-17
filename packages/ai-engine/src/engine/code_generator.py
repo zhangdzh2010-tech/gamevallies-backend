@@ -35,6 +35,51 @@ from .section_patch import (
 )
 from .visual_pack_catalog import get_visual_pack, visual_pack_direction_lines
 
+# P1.1 GAP-1b / P1.3 PR-12: optional DiversityPlanner + template-inspiration
+# imports. Wrapped in try/except to keep code_generator importable in minimal
+# environments where the P1 modules might not be present yet.
+try:  # pragma: no cover - import guard
+    from .diversity_planner import plan_for as _p1_plan_for  # type: ignore
+except Exception:  # pragma: no cover
+    _p1_plan_for = None  # type: ignore
+
+try:  # pragma: no cover - import guard
+    from .template_inspiration import (  # type: ignore
+        decide_lane as _p1_decide_lane,
+        select_inspiration as _p1_select_inspiration,
+        render_inspiration_block as _p1_render_inspiration_block,
+    )
+except Exception:  # pragma: no cover
+    _p1_decide_lane = None  # type: ignore
+    _p1_select_inspiration = None  # type: ignore
+    _p1_render_inspiration_block = None  # type: ignore
+
+try:  # pragma: no cover - import guard (PR-07 wire-up)
+    from .creative_anchors import (  # type: ignore
+        CreativeAnchors as _p1_CreativeAnchors,
+        build_anchors_fallback as _p1_build_anchors_fallback,
+    )
+except Exception:  # pragma: no cover
+    _p1_CreativeAnchors = None  # type: ignore
+    _p1_build_anchors_fallback = None  # type: ignore
+
+try:  # pragma: no cover - import guard (P2.3 inspiration guard)
+    from .p2_inspiration_guard import (  # type: ignore
+        should_skip as _p2_inspiration_should_skip,
+        note_lane_decision as _p2_inspiration_note_decision,
+    )
+except Exception:  # pragma: no cover
+    def _p2_inspiration_should_skip(tier):  # type: ignore
+        return False
+    def _p2_inspiration_note_decision(key, tier, *, hit):  # type: ignore
+        return None
+
+try:  # pragma: no cover - import guard (P2.1 telemetry)
+    from .p2_telemetry import emit as _p2_emit  # type: ignore
+except Exception:  # pragma: no cover
+    def _p2_emit(event: str, **fields):  # type: ignore
+        return None
+
 logger = logging.getLogger(__name__)
 
 
@@ -464,6 +509,32 @@ class CodeGenerator:
         stripped = line.strip()
         return stripped.startswith("- ") or stripped.startswith("* ")
 
+    # PR-03: keywords to strip when computing a bullet's dedup key so that
+    # near-duplicates like "MUST use X" and "Use X" collapse together.
+    _BULLET_KEY_PREFIX_STRIP = re.compile(
+        r"^(?:[-*]\s+)?"
+        r"(?:must(?:\s+not)?|should(?:\s+not)?|required|requirement|important|note|tip|warning|caution|"
+        r"避免|禁止|必须|需要|确保|保证|注意|重要)"
+        r"[:：,， ]\s*",
+        re.IGNORECASE,
+    )
+    _BULLET_KEY_PUNCT_STRIP = re.compile(r"[\s。\.,;:!?\-\*\_`]+")
+
+    @classmethod
+    def _bullet_dedup_key(cls, line: str) -> str:
+        """Produce a normalized dedup key for a bullet line (PR-03).
+
+        Strips leading markers, common imperative prefixes (MUST / 必须 / etc.),
+        collapses whitespace, and removes trailing punctuation so that
+        stylistic variations of the same rule collapse into a single key.
+        """
+        key = line.strip()
+        key = re.sub(r"^[-*]\s+", "", key)
+        key = cls._BULLET_KEY_PREFIX_STRIP.sub("", key)
+        key = re.sub(r"\s+", " ", key).lower()
+        key = cls._BULLET_KEY_PUNCT_STRIP.sub(" ", key).strip()
+        return key
+
     @classmethod
     def _compact_prompt_section(
         cls,
@@ -494,7 +565,10 @@ class CodeGenerator:
             pending_blank = False
 
             if not in_code_fence and seen_bullets is not None and cls._is_prompt_bullet_line(line):
-                normalized_bullet = re.sub(r"\s+", " ", stripped).lower()
+                # PR-03: use more aggressive normalization for bullet-dedup
+                normalized_bullet = cls._bullet_dedup_key(line)
+                if not normalized_bullet:
+                    normalized_bullet = re.sub(r"\s+", " ", stripped).lower()
                 if normalized_bullet in seen_bullets:
                     continue
                 seen_bullets.add(normalized_bullet)
@@ -506,6 +580,23 @@ class CodeGenerator:
             compacted.pop()
         return "\n".join(compacted)
 
+    # PR-03: threshold above which two sections are considered semantic duplicates
+    # and the later occurrence will be dropped entirely.
+    _SECTION_JACCARD_DEDUP_THRESHOLD = 0.85
+
+    @classmethod
+    def _section_fingerprint(cls, section: str) -> frozenset[str]:
+        """Fingerprint a section as the set of normalized bullet-keys it contains."""
+        keys: set[str] = set()
+        for raw_line in section.splitlines():
+            line = raw_line.strip()
+            if not cls._is_prompt_bullet_line(line):
+                continue
+            key = cls._bullet_dedup_key(line)
+            if key:
+                keys.add(key)
+        return frozenset(keys)
+
     @classmethod
     def _compose_prompt_sections(
         cls,
@@ -514,6 +605,10 @@ class CodeGenerator:
         dedupe_bullets: bool = True,
     ) -> str:
         seen_sections: set[str] = set()
+        # PR-03: track bullet-set fingerprints of already-composed sections so we
+        # can drop a later section that substantially duplicates an earlier one
+        # (e.g. locked_contract vs product_policy often share 80%+ of their rules).
+        seen_fingerprints: List[frozenset[str]] = []
         seen_bullets: Optional[set[str]] = set() if dedupe_bullets else None
         composed: List[str] = []
 
@@ -524,6 +619,26 @@ class CodeGenerator:
             if normalized in seen_sections:
                 continue
             seen_sections.add(normalized)
+
+            # Semantic / bullet-set similarity dedup at section granularity.
+            fingerprint = cls._section_fingerprint(normalized)
+            if fingerprint:
+                is_duplicate = False
+                for prior in seen_fingerprints:
+                    if not prior:
+                        continue
+                    union = prior | fingerprint
+                    if not union:
+                        continue
+                    intersection = prior & fingerprint
+                    similarity = len(intersection) / len(union)
+                    if similarity >= cls._SECTION_JACCARD_DEDUP_THRESHOLD:
+                        is_duplicate = True
+                        break
+                if is_duplicate:
+                    continue
+                seen_fingerprints.append(fingerprint)
+
             compacted = cls._compact_prompt_section(
                 normalized,
                 seen_bullets=seen_bullets,
@@ -652,15 +767,219 @@ class CodeGenerator:
                 dedupe_bullets=False,
             )
 
+        # P1.3 PR-12: optional inspiration-lane injection — route a configurable
+        # fraction of requests to include top-k cached templates as
+        # reference-only snippets in the system prompt. Deterministic per
+        # variation_seed; no-op when flag disabled or helpers missing.
+        sampling_profile: Optional[Dict[str, Any]] = None
+        inspiration_block: str = ""
+        try:
+            if (
+                getattr(settings, "P1_TEMPLATE_INSPIRATION_ENABLED", False)
+                and _p1_decide_lane is not None
+                and _p1_select_inspiration is not None
+                and _p1_render_inspiration_block is not None
+            ):
+                tier_share = float(getattr(settings, "P1_TEMPLATE_LANE_SHARE", 0.2) or 0.2)
+                seed_for_lane = str(getattr(spec, "variation_seed", "") or "")
+                # P2.3 inspiration guard: if a regression has tripped the
+                # circuit for this tier, short-circuit to the miss branch
+                # regardless of what decide_lane would say. Always safe:
+                # should_skip returns False on any error / when flag is off.
+                _tier_for_guard = getattr(spec, "generation_tier", None)
+                _tier_value = getattr(_tier_for_guard, "value", None)
+                # R-3 correlation key: prefer the request-scoped task_id
+                # (unique per request, stable across hedging/retry within
+                # the same request context); fall back to variation_seed
+                # only if context lookup fails. Import is local to keep
+                # this path guarded — never break generation on telemetry.
+                _corr_key = seed_for_lane
+                try:
+                    from ..services.llm_gateway import (
+                        get_request_context as _p2_req_ctx,
+                    )
+                    _task_id_ctx = _p2_req_ctx().get("task_id")
+                    if _task_id_ctx:
+                        _corr_key = str(_task_id_ctx)
+                except Exception:  # noqa: BLE001
+                    _corr_key = seed_for_lane
+                _guard_skip = False
+                try:
+                    _guard_skip = bool(_p2_inspiration_should_skip(_tier_for_guard))
+                except Exception:  # noqa: BLE001 - guard must never break lane
+                    _guard_skip = False
+                if _guard_skip:
+                    # R-1 fix: emit ONLY the guard_skip event. Do not also
+                    # fall through to the inspiration_lane_miss branch —
+                    # doing so double-counts the request as both a
+                    # guard_skip and a natural miss, which inflates the miss
+                    # curve during a trip window. The guard window is still
+                    # fed via note_lane_decision(hit=False) below so
+                    # recovery logic keeps working.
+                    _p2_emit(
+                        "inspiration_guard_skip",
+                        tier=_tier_value,
+                        lane_share=tier_share,
+                    )
+                    try:
+                        _p2_inspiration_note_decision(
+                            _corr_key, _tier_for_guard, hit=False,
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                elif _p1_decide_lane(seed_for_lane, tier_share):
+                    search_fn = getattr(self.template_cache, "search", None)
+                    candidates = []
+                    if callable(search_fn):
+                        try:
+                            candidates = list(search_fn(spec, runtime_profile or "") or [])
+                        except Exception:  # noqa: BLE001 - reference-only
+                            candidates = []
+                    snippets = _p1_select_inspiration(
+                        candidates,
+                        k=int(getattr(settings, "P1_TEMPLATE_INSPIRATION_K", 2) or 2),
+                    )
+                    inspiration_block = _p1_render_inspiration_block(snippets)
+                    # P2.1 telemetry: emit lane-hit with candidate / snippet counts.
+                    _p2_emit(
+                        "inspiration_lane_hit",
+                        tier=_tier_value,
+                        lane_share=tier_share,
+                        candidate_count=len(candidates),
+                        snippet_count=len(snippets) if snippets else 0,
+                        rendered=bool(inspiration_block),
+                    )
+                    # P2.3: note the hit decision so runner can commit
+                    # fun_score once available. Keyed by task_id (R-3).
+                    try:
+                        _p2_inspiration_note_decision(
+                            _corr_key, _tier_for_guard, hit=True,
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                else:
+                    _p2_emit(
+                        "inspiration_lane_miss",
+                        tier=_tier_value,
+                        lane_share=tier_share,
+                    )
+                    # P2.3: note the miss decision symmetrically.
+                    try:
+                        _p2_inspiration_note_decision(
+                            _corr_key, _tier_for_guard, hit=False,
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+        except Exception:  # noqa: BLE001 - never block generation on inspiration path
+            logger.debug("PR-12 inspiration lane skipped due to unexpected error", exc_info=True)
+
+        # PR-07 wire-up: optional CreativeAnchors block. When
+        # P1_CREATIVE_ANCHORS_ENABLED is on, either parse a pre-supplied
+        # spec.creative_anchors dict or synthesize deterministically via
+        # build_anchors_fallback from source_description. The rendered block
+        # is bounded (<= ~500 chars) and appended to the system prompt to
+        # give the model structured pace/style/entity cues.
+        anchors_block: str = ""
+        try:
+            if (
+                getattr(settings, "P1_CREATIVE_ANCHORS_ENABLED", False)
+                and _p1_CreativeAnchors is not None
+            ):
+                anchors_obj = None
+                raw = getattr(spec, "creative_anchors", None)
+                if isinstance(raw, dict) and raw:
+                    try:
+                        anchors_obj = _p1_CreativeAnchors(**raw)
+                    except Exception:  # noqa: BLE001 - fall through to fallback
+                        anchors_obj = None
+                if anchors_obj is None and _p1_build_anchors_fallback is not None:
+                    try:
+                        anchors_obj = _p1_build_anchors_fallback(
+                            getattr(spec, "source_description", "") or "",
+                            expanded_prompt=getattr(spec, "intent_summary", "") or None,
+                        )
+                    except Exception:  # noqa: BLE001 - never block on fallback
+                        anchors_obj = None
+                if anchors_obj is not None:
+                    mood_txt = ", ".join(anchors_obj.mood) if anchors_obj.mood else "—"
+                    hints_txt = ", ".join(anchors_obj.entity_pool_hints) if anchors_obj.entity_pool_hints else "—"
+                    anchors_block = (
+                        "### Creative Anchors (advisory, reference only)\n"
+                        f"- Genre: {anchors_obj.genre}\n"
+                        f"- Pace: {anchors_obj.pace_axis}\n"
+                        f"- Style: {anchors_obj.style_axis}\n"
+                        f"- Mood: {mood_txt}\n"
+                        f"- Entity hints: {hints_txt}\n"
+                        "Use these as soft guidance; the GameSpec fields remain authoritative."
+                    )
+                    # P2.1 telemetry: distinguish spec-supplied anchors from
+                    # fallback-synthesized so we can measure upstream integration.
+                    _p2_emit(
+                        "creative_anchors_applied",
+                        source="spec" if (isinstance(raw, dict) and raw) else "fallback",
+                        genre=anchors_obj.genre,
+                        pace=anchors_obj.pace_axis,
+                        style=anchors_obj.style_axis,
+                        mood_n=len(anchors_obj.mood or []),
+                        hints_n=len(anchors_obj.entity_pool_hints or []),
+                    )
+        except Exception:  # noqa: BLE001 - never block generation on anchors path
+            logger.debug("PR-07 creative anchors skipped due to unexpected error", exc_info=True)
+            anchors_block = ""
+
+        # P1.1 GAP-1b: compute a DiversityPlan for this tier/seed and convert
+        # into a provider sampling_profile. Feature-flagged; when disabled the
+        # profile is None and providers use their built-in defaults.
+        try:
+            if (
+                getattr(settings, "P1_DIVERSITY_PLANNER_ENABLED", False)
+                and _p1_plan_for is not None
+            ):
+                plan = _p1_plan_for(
+                    tier=getattr(spec, "generation_tier", None),
+                    variation_seed=getattr(spec, "variation_seed", None),
+                )
+                if plan is not None:
+                    to_sp = getattr(plan, "to_sampling_profile", None)
+                    if callable(to_sp):
+                        sampling_profile = to_sp()
+                        # P2.1 telemetry: record the knobs that will actually
+                        # be passed to provider so we can correlate fun_score
+                        # deltas with sampling changes.
+                        if sampling_profile:
+                            _p2_emit(
+                                "sampling_profile_applied",
+                                tier=getattr(getattr(spec, "generation_tier", None), "value", None),
+                                temperature=sampling_profile.get("temperature"),
+                                top_p=sampling_profile.get("top_p"),
+                                top_k=sampling_profile.get("top_k"),
+                                seed=sampling_profile.get("seed"),
+                            )
+        except Exception:  # noqa: BLE001 - never block generation on planner errors
+            logger.debug("GAP-1b diversity planner skipped due to unexpected error", exc_info=True)
+            sampling_profile = None
+
         try:
             request_timeout_s = self._generation_request_timeout_budget_s(spec, budget_override)
             overall_timeout_s = self._generation_overall_timeout_budget_s(spec, budget_override)
             hedge_after_s = self._generation_provider_hedge_delay_s(spec, budget_override)
             token_budget = self._select_token_budget(spec, budget_override)
             truncation_retry_cap = self._select_truncation_retry_cap(spec, budget_override)
+            # P1.3 PR-12: compose inspiration block (if any) into the system
+            # prompt. Empty string is safe to append.
+            # PR-07 wire-up: additionally append the CreativeAnchors block if
+            # one was produced (order: base → anchors → inspiration, so
+            # concrete reference snippets come last for recency bias).
+            base_system = self._build_system_prompt(prompt_bundle_snapshot, spec=spec)
+            _parts = [base_system]
+            if anchors_block:
+                _parts.append(anchors_block)
+            if inspiration_block:
+                _parts.append(inspiration_block)
+            effective_system = "\n\n".join(_parts) if len(_parts) > 1 else base_system
             completion_result = await self._client.complete_with_truncation_retry(
                 max_tokens=token_budget,
-                system=self._build_system_prompt(prompt_bundle_snapshot, spec=spec),
+                system=effective_system,
                 messages=[{"role": "user", "content": full_prompt}],
                 step_key="code_generate.full",
                 stage="code_generating",
@@ -681,6 +1000,7 @@ class CodeGenerator:
                 excluded_provider_ids=excluded_provider_ids,
                 return_route_snapshot=True,
                 hedge_provider_fallback_after_s=hedge_after_s,
+                sampling_profile=sampling_profile,  # P1.1 GAP-1b
             )
             if isinstance(completion_result, tuple):
                 text, route_snapshot = completion_result

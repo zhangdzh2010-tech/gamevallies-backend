@@ -781,7 +781,39 @@ class LLMGateway:
             required_output_tokens=required_output_tokens,
         )
         if not providers:
-            return [self._fallback_route(step_key=step_key, prefer_fast=prefer_fast, model_override=model_override)]
+            # PR-05: promote capability-rejection visibility.  When a route was
+            # defined but every configured provider fails the capability matrix
+            # we must not silently fall back to env-default — that typically
+            # means the config is out of sync with step requirements.
+            if route is not None and capability_rejections:
+                logger.warning(
+                    "llm_gateway: step %s (route=%s, matched_step_key=%s) has no providers "
+                    "satisfying capability requirements; rejections=%s — emitting env-fallback route "
+                    "with capability_violation flag set.",
+                    step_key,
+                    route.id,
+                    matched_step_key,
+                    capability_rejections,
+                )
+            fallback_resolved = self._fallback_route(
+                step_key=step_key,
+                prefer_fast=prefer_fast,
+                model_override=model_override,
+            )
+            # Surface that this is an emergency fallback so upstream metrics/audits
+            # can flag it as a degraded path rather than a normal successful resolution.
+            try:
+                fallback_resolved.route_snapshot.update({
+                    "implicit_provider_failover": True,
+                    "emergency_fallback_reason": "no_providers_after_capability_filter"
+                    if capability_rejections else "no_enabled_providers",
+                    "capability_rejections": capability_rejections,
+                    "required_output_tokens": _coerce_optional_positive_int(required_output_tokens),
+                })
+            except Exception:
+                # route_snapshot is best-effort metadata; never break resolution on snapshot issues.
+                pass
+            return [fallback_resolved]
 
         return [
             self._build_resolved_route(
@@ -797,6 +829,16 @@ class LLMGateway:
                     "implicit_provider_failover": False,
                     "required_output_tokens": _coerce_optional_positive_int(required_output_tokens),
                     "capability_rejections": capability_rejections,
+                    # PR-05: expose fallback chain depth so callers/metrics can reason
+                    # about how "close to failure" the route is (0 = primary in use).
+                    "fallback_chain_depth": (
+                        0 if route is None
+                        else (
+                            [route.provider_id, *route.fallback_provider_ids].index(provider.id)
+                            if provider.id in [route.provider_id, *route.fallback_provider_ids]
+                            else -1
+                        )
+                    ),
                 },
             )
             for provider in providers

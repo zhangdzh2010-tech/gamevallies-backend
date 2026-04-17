@@ -170,6 +170,17 @@ class GameSpec(BaseModel):
     generation_tier: GenerationTier = GenerationTier.standard
     source_description: str = ""
     intent_summary: str = ""
+    # P1.1 GAP-2: variation_seed persists the randomness anchor from the
+    # ParseIntentRequest all the way into downstream stages (designer,
+    # code_generator, qa_pipeline). Optional for backwards compatibility.
+    variation_seed: Optional[str] = None
+    # PR-07 wire-up: optional structured creative brief. Stored as a plain
+    # dict on the spec to avoid cross-layer import of
+    # engine.creative_anchors.CreativeAnchors into api.models. Consumers
+    # (e.g. code_generator) parse this lazily via CreativeAnchors(**dict).
+    # None means "no upstream brief"; downstream may auto-synthesize via
+    # build_anchors_fallback when P1_CREATIVE_ANCHORS_ENABLED is on.
+    creative_anchors: Optional[Dict[str, Any]] = None
     ui_language: str = "en-US"
     core_mechanics: List[CoreMechanic] = Field(default_factory=list)
     entities: List[GameEntity] = Field(default_factory=list)

@@ -81,6 +81,39 @@ class Settings(BaseSettings):
 
     PORT: int = 8000
 
+    # ------------------------------------------------------------------
+    # P1 feature flags (PR-07 .. PR-12) — rolled out ON by default.
+    # Each flag remains independently toggleable via env override so any
+    # single component can be disabled without redeploy if a regression
+    # is observed. All paths retain guarded-import + try/except fallbacks
+    # so disabling a flag at runtime degrades cleanly to legacy behavior.
+    # ------------------------------------------------------------------
+    P1_CREATIVE_ANCHORS_ENABLED: bool = True             # PR-07
+    P1_RANGE_SAMPLING_ENABLED: bool = True               # PR-08
+    P1_DIVERSITY_PLANNER_ENABLED: bool = True            # PR-09
+    P1_QA_TIERING_ENABLED: bool = True                   # PR-10
+    P1_QA_CREATIVE_PRESERVE_THRESHOLD: float = 7.0       # PR-10
+    P1_RUNTIME_QA_DEFERRED_ENABLED: bool = True          # PR-11
+    P1_TEMPLATE_INSPIRATION_ENABLED: bool = True         # PR-12
+    P1_TEMPLATE_LANE_SHARE: float = 0.2                  # PR-12 wire-up lane share
+    P1_TEMPLATE_INSPIRATION_K: int = 2                   # PR-12 top-k references
+    P1_GENERIC_ENTITY_MIX_SHARE: float = 0.2             # PR-08 generic-pool mix
+
+    # ------------------------------------------------------------------
+    # P2 feature flags — observability & adaptive policies. Rolled out ON
+    # by default; disable via env override for targeted rollback.
+    # ------------------------------------------------------------------
+    P2_TELEMETRY_ENABLED: bool = True                    # P2.1 structured log telemetry
+    # P2.2 adaptive creative-preserve threshold — reshape the PR-10 preserve
+    # line per (tier, game_type).
+    P2_ADAPTIVE_THRESHOLD_ENABLED: bool = True
+    # P2.3 inspiration quality regression guard — circuit-breaker on the
+    # PR-12 inspiration lane.
+    P2_INSPIRATION_GUARD_ENABLED: bool = True
+    P2_GUARD_WINDOW_SIZE: int = 20                       # rolling window per tier
+    P2_GUARD_MIN_SAMPLES: int = 6                        # minimum hits AND misses before judging
+    P2_GUARD_TRIP_DELTA: float = 0.75                    # miss_mean − hit_mean gap that trips
+
     class Config:
         env_file = ".env"
         case_sensitive = True
