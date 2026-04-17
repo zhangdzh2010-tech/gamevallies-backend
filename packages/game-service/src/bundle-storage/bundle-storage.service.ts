@@ -15,8 +15,8 @@ function getPrisma(): PrismaClient {
 }
 
 @Injectable()
-export class MongoService {
-  private readonly logger = new Logger(MongoService.name);
+export class BundleStorageService {
+  private readonly logger = new Logger(BundleStorageService.name);
 
   private get prisma(): PrismaClient {
     return getPrisma();

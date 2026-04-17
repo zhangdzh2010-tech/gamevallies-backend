@@ -2,38 +2,34 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Iterable, Tuple
 
-DEFAULT_RUNTIME_PROFILE_ID = "casual_arcade"
+def _contract_path(name: str) -> Path:
+    candidates = (
+        Path(__file__).resolve().parents[4] / "contracts" / "generation" / name,
+        Path(__file__).resolve().parents[2] / "contracts" / "generation" / name,
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    checked = ", ".join(str(candidate) for candidate in candidates)
+    raise FileNotFoundError(f"Unable to locate generation contract {name!r}. Checked: {checked}")
+
+
+_CONTRACT = json.loads(_contract_path("runtime-profiles.json").read_text(encoding="utf-8"))
+
+DEFAULT_RUNTIME_PROFILE_ID = str(_CONTRACT["defaultRuntimeProfileId"])
 
 LEGACY_TO_CANONICAL_RUNTIME_PROFILE_IDS = {
-    "portrait_arcade": "casual_arcade",
-    "lane_runner": "casual_lane",
-    "grid_puzzle": "puzzle_grid",
-    "topdown_action": "casual_action",
-    "tap_timing": "tap_challenge",
-    "topdown_dodge": "casual_action",
-    "topdown_shooter": "casual_action",
+    str(key): str(value)
+    for key, value in dict(_CONTRACT["legacyToCanonical"]).items()
 }
 
 CANONICAL_TO_LEGACY_RUNTIME_PROFILE_IDS = {
-    "casual_arcade": ("portrait_arcade",),
-    "casual_arcade_burst": ("portrait_arcade",),
-    "casual_arcade_orbit": ("portrait_arcade",),
-    "casual_arcade_rescue": ("portrait_arcade",),
-    "casual_lane": ("lane_runner",),
-    "casual_lane_dash": ("lane_runner",),
-    "casual_lane_chase": ("lane_runner",),
-    "puzzle_grid": ("grid_puzzle",),
-    "puzzle_grid_match": ("grid_puzzle",),
-    "puzzle_grid_merge": ("grid_puzzle",),
-    "puzzle_grid_route": ("grid_puzzle",),
-    "casual_action": ("topdown_action", "topdown_dodge", "topdown_shooter"),
-    "casual_action_arena": ("topdown_action", "topdown_dodge", "topdown_shooter"),
-    "casual_action_survival": ("topdown_action", "topdown_dodge", "topdown_shooter"),
-    "tap_challenge": ("tap_timing",),
-    "tap_challenge_timing": ("tap_timing",),
-    "tap_challenge_combo": ("tap_timing",),
+    str(key): tuple(str(item) for item in value)
+    for key, value in dict(_CONTRACT["canonicalToLegacy"]).items()
 }
 
 

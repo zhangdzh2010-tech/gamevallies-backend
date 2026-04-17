@@ -685,6 +685,11 @@ const DEFAULT_RUNTIME_PROFILE_CATALOG = Array.isArray(runtimeProfileCatalog)
 export class GameSchemaBootstrapService implements OnModuleInit {
   private readonly logger = new Logger(GameSchemaBootstrapService.name);
 
+  private isLegacyRuntimeSchemaBootstrapEnabled(): boolean {
+    const raw = String(process.env.ENABLE_LEGACY_RUNTIME_SCHEMA_BOOTSTRAP || 'true').trim().toLowerCase();
+    return raw !== '0' && raw !== 'false' && raw !== 'no' && raw !== 'off';
+  }
+
   constructor(private readonly prisma: PrismaService) {}
 
   private resolveLegacyExecutionRegion(): string {
@@ -913,36 +918,43 @@ export class GameSchemaBootstrapService implements OnModuleInit {
 
   async onModuleInit(): Promise<void> {
     try {
-      for (const statement of GAME_SCHEMA_STATEMENTS) {
-        await this.prisma.$executeRawUnsafe(statement);
-      }
-
-      const patchGroups = new Map<string, ColumnPatch[]>();
-      for (const patch of TABLE_COLUMN_PATCHES) {
-        const group = patchGroups.get(patch.table) || [];
-        group.push(patch);
-        patchGroups.set(patch.table, group);
-      }
-
-      for (const [tableName, patches] of patchGroups.entries()) {
-        const existingColumns = await this.prisma.$queryRawUnsafe<
-          Array<{ columnName: string }>
-        >(
-          `SELECT COLUMN_NAME AS columnName
-           FROM INFORMATION_SCHEMA.COLUMNS
-           WHERE TABLE_SCHEMA = DATABASE()
-             AND TABLE_NAME = '${tableName}'
-             AND COLUMN_NAME IN (${patches.map((patch) => `'${patch.name}'`).join(", ")})`,
+      if (this.isLegacyRuntimeSchemaBootstrapEnabled()) {
+        this.logger.warn(
+          'Legacy runtime DDL bootstrap is enabled for compatibility. Prefer Prisma-managed migrations when they are available.',
         );
+        for (const statement of GAME_SCHEMA_STATEMENTS) {
+          await this.prisma.$executeRawUnsafe(statement);
+        }
 
-        const existing = new Set(
-          existingColumns.map((column) => column.columnName),
-        );
-        for (const patch of patches) {
-          if (!existing.has(patch.name)) {
-            await this.prisma.$executeRawUnsafe(patch.sql);
+        const patchGroups = new Map<string, ColumnPatch[]>();
+        for (const patch of TABLE_COLUMN_PATCHES) {
+          const group = patchGroups.get(patch.table) || [];
+          group.push(patch);
+          patchGroups.set(patch.table, group);
+        }
+
+        for (const [tableName, patches] of patchGroups.entries()) {
+          const existingColumns = await this.prisma.$queryRawUnsafe<
+            Array<{ columnName: string }>
+          >(
+            `SELECT COLUMN_NAME AS columnName
+             FROM INFORMATION_SCHEMA.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = '${tableName}'
+               AND COLUMN_NAME IN (${patches.map((patch) => `'${patch.name}'`).join(", ")})`,
+          );
+
+          const existing = new Set(
+            existingColumns.map((column) => column.columnName),
+          );
+          for (const patch of patches) {
+            if (!existing.has(patch.name)) {
+              await this.prisma.$executeRawUnsafe(patch.sql);
+            }
           }
         }
+      } else {
+        this.logger.log('Skipping legacy runtime DDL bootstrap because ENABLE_LEGACY_RUNTIME_SCHEMA_BOOTSTRAP is explicitly disabled');
       }
 
       await this.prisma.$executeRawUnsafe(

@@ -18,19 +18,18 @@ The service is built on NestJS with the following modules:
 
 - **GameModule**: Core game creation, retrieval, publishing, and iteration
 - **ForkModule**: Game forking functionality with lineage tracking
-- **BundleModule**: Game code bundle storage and versioning (MongoDB)
+- **BundleModule**: Game code bundle storage and versioning
 - **StatsModule**: Game statistics and metrics tracking
 - **WebSocketModule**: Real-time communication with clients
-- **PrismaModule**: PostgreSQL ORM integration
-- **MongoModule**: MongoDB connection for bundle storage
+- **PrismaModule**: Prisma/MySQL integration
+- **BundleStorageModule**: Shared bundle storage abstraction backed by Prisma
 
 ## Getting Started
 
 ### Prerequisites
 
 - Node.js 20+
-- PostgreSQL 13+
-- MongoDB 5+
+- MySQL 8+
 - Redis (optional, for caching)
 
 ### Installation
@@ -48,8 +47,7 @@ cp .env.example .env
 ```
 
 Key variables:
-- `DATABASE_URL`: PostgreSQL connection string
-- `MONGO_URL`: MongoDB connection string
+- `DATABASE_URL`: MySQL connection string
 - `JWT_SECRET`: JWT signing secret
 - `AI_ENGINE_URL`: AI Engine URL (default `http://localhost:8000`)
 - `APP_URL`: This service's base URL, used to construct game preview links
@@ -290,7 +288,7 @@ Connect to `ws://localhost:3002/ws?token=<jwt_token>`
 
 ## Database Schema
 
-### Games Table (PostgreSQL)
+### Games Table (MySQL)
 - `id` (UUID, Primary Key)
 - `authorId` (UUID, Foreign Key to users)
 - `title` (String)
@@ -316,8 +314,8 @@ Connect to `ws://localhost:3002/ws?token=<jwt_token>`
 - `retryCount` (Integer)
 - `lastErrorAt` (DateTime, nullable)
 
-### Game Bundles Collection (MongoDB)
-- `_id` (MongoDB ObjectId)
+### Game Bundles Table (MySQL)
+- `id` (UUID, Primary Key)
 - `gameId` (String, indexed)
 - `version` (Integer)
 - `htmlCode` (String)
@@ -352,7 +350,7 @@ Error responses include:
 
 - Game generation and iteration are asynchronous (via `setImmediate`); clients track progress via WebSocket
 - Pipeline calls go to `AI_ENGINE_URL/api/v1/ai/pipeline/run` (generate) and `/pipeline/iterate` (iterate)
-- Bundle retrieval uses MongoDB indexes on `gameId`
+- Bundle retrieval uses MySQL indexes on `gameId` and a unique key on `(gameId, version)`
 - Pagination limits enforced (max 100 items per page)
 - WebSocket connections validated on connection using JWT Base64 decode
 

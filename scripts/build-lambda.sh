@@ -59,6 +59,9 @@ build_service() {
     mkdir -p "$OUT_DIR/prisma"
     cp "$ROOT_DIR/prisma/schema.prisma" "$OUT_DIR/prisma/"
   fi
+  if [ -d "$ROOT_DIR/contracts" ]; then
+    cp -r "$ROOT_DIR/contracts" "$OUT_DIR/"
+  fi
 
   # 7. 安装生产依赖到输出目录
   echo "📦 安装生产依赖..."

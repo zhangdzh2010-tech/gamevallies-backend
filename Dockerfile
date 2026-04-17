@@ -20,19 +20,16 @@ WORKDIR /app
 
 # 安装所有依赖（含 devDeps，nest build 需要）
 COPY package.json package-lock.json* ./
-COPY packages/shared ./packages/shared
 COPY packages/${SERVICE} ./packages/${SERVICE}
+COPY packages/platform-config ./packages/platform-config
 COPY tsconfig.base.json ./
+COPY contracts ./contracts
 COPY prisma ./prisma
 
 RUN npm install --legacy-peer-deps
 
 # 生成 Prisma Client（linux-musl 目标）
 RUN npx prisma generate
-
-# 编译 shared 包（服务依赖它）
-WORKDIR /app/packages/shared
-RUN npx tsc
 
 # 编译目标服务
 WORKDIR /app/packages/${SERVICE}
@@ -52,13 +49,13 @@ WORKDIR /app
 
 # 安装生产依赖
 COPY package.json package-lock.json* ./
-COPY packages/shared/package.json  ./packages/shared/
 COPY packages/${SERVICE}/package.json ./packages/${SERVICE}/
+COPY packages/platform-config ./packages/platform-config
+COPY contracts ./contracts
 RUN npm install --omit=dev --legacy-peer-deps
 
 # 复制编译产物
 COPY --from=builder /app/packages/${SERVICE}/dist  ./packages/${SERVICE}/dist
-COPY --from=builder /app/packages/shared/dist       ./packages/shared/dist
 
 # 复制 Prisma Client（二进制引擎）
 COPY --from=builder /app/node_modules/.prisma       ./node_modules/.prisma

@@ -31,7 +31,7 @@ const prisma = new PrismaClient({
 });
 
 // ============================================================
-// 桌面端游戏 HTML（来自 seed-games.mjs，适配 MySQL 架构）
+// 桌面端游戏 HTML
 // ============================================================
 
 const SNAKE_HTML = `<!DOCTYPE html>
@@ -600,7 +600,7 @@ C.addEventListener('touchend',()=>{ touchShoot=false; });
 </html>`;
 
 // ============================================================
-// 移动端游戏 HTML（来自 seed-mobile-games.mjs）
+// 移动端游戏 HTML
 // ============================================================
 
 const STACK_TOWER_HTML = `<!DOCTYPE html>

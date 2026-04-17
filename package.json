@@ -4,7 +4,7 @@
   "private": true,
   "description": "PlayForge Backend - AI-Powered Game Creation Platform",
   "workspaces": [
-    "packages/shared",
+    "packages/platform-config",
     "packages/user-service",
     "packages/game-service",
     "packages/social-service",

@@ -347,7 +347,7 @@ pytest tests/test_intent_parser.py::TestIntentDetection::test_dodge_detection -v
 
 ```bash
 ENVIRONMENT=development
-MONGO_URL=mongodb://localhost:27017
+DATABASE_URL=mysql://gamevallies_user:change_me@localhost:3306/gamevallies
 REDIS_URL=redis://localhost:6379
 LLM_MODE=mock
 LLM_API_KEY=

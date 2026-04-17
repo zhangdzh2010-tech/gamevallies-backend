@@ -7,7 +7,7 @@ import { BundleModule } from './bundle/bundle.module';
 import { StatsModule } from './stats/stats.module';
 import { WebSocketModule } from './websocket/websocket.module';
 import { PrismaModule } from './prisma/prisma.module';
-import { MongoModule } from './mongo/mongo.module';
+import { BundleStorageModule } from './bundle-storage/bundle-storage.module';
 import { AdminModule } from './admin/admin.module';
 import { GrowthModule } from './growth/growth.module';
 
@@ -18,7 +18,7 @@ import { GrowthModule } from './growth/growth.module';
       envFilePath: '.env',
     }),
     PrismaModule,
-    MongoModule,
+    BundleStorageModule,
     GameModule,
     ForkModule,
     BundleModule,

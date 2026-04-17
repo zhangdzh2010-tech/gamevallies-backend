@@ -1,11 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { MongoService } from '../mongo/mongo.service';
+import { BundleStorageService } from '../bundle-storage/bundle-storage.service';
 
 @Injectable()
 export class BundleService {
   private readonly logger = new Logger(BundleService.name);
 
-  constructor(private mongoService: MongoService) {}
+  constructor(private bundleStorageService: BundleStorageService) {}
 
   async saveBundle(bundleData: {
     gameId: string;
@@ -17,7 +17,7 @@ export class BundleService {
     previewUrl?: string;
   }): Promise<any> {
     try {
-      return await this.mongoService.saveBundleDoc(bundleData);
+      return await this.bundleStorageService.saveBundleDoc(bundleData);
     } catch (error) {
       this.logger.error(`Failed to save bundle: ${error.message}`);
       throw error;
@@ -26,7 +26,7 @@ export class BundleService {
 
   async getBundle(gameId: string, version?: number): Promise<any | null> {
     try {
-      return await this.mongoService.getBundleByGameId(gameId, version);
+      return await this.bundleStorageService.getBundleByGameId(gameId, version);
     } catch (error) {
       this.logger.error(`Failed to get bundle: ${error.message}`);
       throw error;
@@ -35,7 +35,7 @@ export class BundleService {
 
   async getBundleHistory(gameId: string): Promise<any[]> {
     try {
-      return await this.mongoService.getBundleHistory(gameId);
+      return await this.bundleStorageService.getBundleHistory(gameId);
     } catch (error) {
       this.logger.error(`Failed to get bundle history: ${error.message}`);
       throw error;
@@ -44,7 +44,7 @@ export class BundleService {
 
   async getLatestBundle(gameId: string): Promise<any | null> {
     try {
-      return await this.mongoService.getBundleByGameId(gameId);
+      return await this.bundleStorageService.getBundleByGameId(gameId);
     } catch (error) {
       this.logger.error(`Failed to get latest bundle: ${error.message}`);
       throw error;

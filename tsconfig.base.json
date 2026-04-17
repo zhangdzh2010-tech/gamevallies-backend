@@ -18,11 +18,7 @@
     "forceConsistentCasingInFileNames": true,
     "noFallthroughCasesInSwitch": true,
     "esModuleInterop": true,
-    "resolveJsonModule": true,
-    "paths": {
-      "@gamevallies/shared": ["packages/shared/src"],
-      "@gamevallies/shared/*": ["packages/shared/src/*"]
-    }
+    "resolveJsonModule": true
   },
   "exclude": ["node_modules", "dist"]
 }

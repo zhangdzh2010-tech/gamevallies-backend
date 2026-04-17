@@ -17,7 +17,7 @@
 #### `requirements.txt` (11 lines)
 - FastAPI 0.110.0 with Uvicorn
 - WebSocket support (websockets 12.0)
-- Async MongoDB driver (motor 3.3.2)
+- MySQL client (PyMySQL 1.1.1)
 - Redis cache driver (redis 5.0.1)
 - Pydantic v2 with settings
 - JWT authentication dependencies
@@ -87,7 +87,7 @@
 #### `src/config/settings.py` (45 lines)
 **Pydantic BaseSettings with:**
 - ENVIRONMENT (development/production/testing)
-- MongoDB URL and database name
+- MySQL DATABASE_URL
 - Redis connection URL
 - LLM configuration (mode, API key, model)
 - API metadata

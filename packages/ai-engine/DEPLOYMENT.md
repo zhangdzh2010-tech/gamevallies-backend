@@ -220,16 +220,10 @@ services:
     environment:
       ENVIRONMENT: production
       LLM_MODE: mock
-      MONGO_URL: mongodb://mongo:27017
+      DATABASE_URL: mysql://gamevallies_user:change_me@mysql:3306/gamevallies
       REDIS_URL: redis://redis:6379
     depends_on:
-      - mongo
       - redis
-
-  mongo:
-    image: mongo:latest
-    ports:
-      - "27017:27017"
 
   redis:
     image: redis:latest
@@ -284,8 +278,7 @@ spec:
 ENVIRONMENT=development              # development, production, testing
 
 # Database
-MONGO_URL=mongodb://localhost:27017
-MONGO_DB_NAME=gamevallies
+DATABASE_URL=mysql://gamevallies_user:change_me@localhost:3306/gamevallies
 
 # Cache
 REDIS_URL=redis://localhost:6379
@@ -389,7 +382,7 @@ Default: `dodge` if no match
 - [ ] Python 3.12+ installed
 - [ ] Dependencies installed: `pip install -r requirements.txt`
 - [ ] `.env` file configured
-- [ ] MongoDB/Redis available (if using real mode)
+- [ ] MySQL/Redis available
 - [ ] Port 8000 available
 - [ ] CORS origins configured
 - [ ] LLM API key set (if using real mode)
@@ -479,7 +472,7 @@ Check all 5 templates exist in `src/templates/`
 3. Monitor performance metrics
 
 ### Short-term (1-2 weeks)
-1. Integrate with MongoDB
+1. Expand MySQL-backed configuration stores
 2. Add Redis caching
 3. Real LLM integration (GPT-4)
 4. Advanced analytics
