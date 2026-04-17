@@ -45,6 +45,31 @@ from .quality_scorer import LLMReviewResult, QAStaticResult, QualityScorer, Runt
 from .restart_entry import has_restart_entry
 from .runtime_profile_ids import DEFAULT_RUNTIME_PROFILE_ID, normalize_runtime_profile_id
 from .runtime_qa import run_runtime_qa
+# P1.3 PR-11 wire-up: optional fire-and-forget scheduler for runtime_qa.
+# Guarded import so pipeline runner still loads in stripped deploys.
+try:  # pragma: no cover
+    from .runtime_qa_scheduler import (  # type: ignore
+        should_defer as _p1_should_defer,
+        schedule_runtime_qa as _p1_schedule_runtime_qa,
+    )
+except Exception:  # pragma: no cover
+    _p1_should_defer = None  # type: ignore
+    _p1_schedule_runtime_qa = None  # type: ignore
+# P2.1 telemetry — guarded import so runner still loads in stripped deploys.
+try:  # pragma: no cover
+    from .p2_telemetry import emit as _p2_emit  # type: ignore
+except Exception:  # pragma: no cover
+    def _p2_emit(event: str, **fields):  # type: ignore
+        return None
+
+# P2.3 inspiration-quality guard — guarded import so runner still loads in
+# stripped deploys. commit_fun_score pops the pending decision recorded by
+# code_generator and feeds the observed fun_score into the guard window.
+try:  # pragma: no cover
+    from .p2_inspiration_guard import commit_fun_score as _p2_guard_commit  # type: ignore
+except Exception:  # pragma: no cover
+    def _p2_guard_commit(key, fun_score):  # type: ignore
+        return {}
 from .scoring_loop import has_visible_scoring_loop
 from .terminal_state import has_required_state_presence, has_terminal_state_transition
 from .visual_pack_catalog import apply_visual_pack_defaults
@@ -482,16 +507,27 @@ class V2PipelineRunner:
             )
         )
         stage_context: dict[str, str] = {"stage": "spec_build"}
+        task_id_for_timing = self._current_task_id()
+        pipeline_status = "unknown"
         try:
-            return await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 self._run_create_impl(request, progress_cb, stage_context),
                 timeout=effective_timeout_s,
             )
+            pipeline_status = "success"
+            return result
         except asyncio.TimeoutError as exc:
+            pipeline_status = "timeout"
             raise PipelineExecutionError(
                 f"Pipeline timed out during {stage_context.get('stage', 'failed')} after {effective_timeout_s}s",
                 stage=stage_context.get("stage", "failed"),
             ) from exc
+        except Exception:
+            pipeline_status = "error"
+            raise
+        finally:
+            # PR-06: emit structured stage-duration breakdown regardless of outcome.
+            self._flush_stage_timings(task_id_for_timing, status=pipeline_status)
 
     async def iterate(
         self,
@@ -512,16 +548,27 @@ class V2PipelineRunner:
             )
         )
         stage_context: dict[str, str] = {"stage": "spec_build"}
+        task_id_for_timing = self._current_task_id()
+        pipeline_status = "unknown"
         try:
-            return await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 self._run_iterate_impl(request, progress_cb, stage_context),
                 timeout=effective_timeout_s,
             )
+            pipeline_status = "success"
+            return result
         except asyncio.TimeoutError as exc:
+            pipeline_status = "timeout"
             raise PipelineExecutionError(
                 f"Iteration timed out during {stage_context.get('stage', 'failed')} after {effective_timeout_s}s",
                 stage=stage_context.get("stage", "failed"),
             ) from exc
+        except Exception:
+            pipeline_status = "error"
+            raise
+        finally:
+            # PR-06: emit structured stage-duration breakdown regardless of outcome.
+            self._flush_stage_timings(task_id_for_timing, status=pipeline_status)
 
     async def _run_create_impl(
         self,
@@ -530,6 +577,13 @@ class V2PipelineRunner:
         stage_context: dict[str, str],
     ) -> RunPipelineResponse:
         start_ms = int(time.time() * 1000)
+        # P1.2 GAP-3: reset per-request fun_score so PR-10's filter_fixable
+        # starts from a clean slate instead of inheriting a prior request's
+        # score when the same pipeline instance serves multiple games.
+        try:
+            self.qa_pipeline._last_fun_score = None
+        except AttributeError:
+            pass
         self._notify(progress_cb, "spec_build", 15, "Building structured game spec", {
             "gameId": request.game_id,
             "userId": request.user_id,
@@ -651,6 +705,7 @@ class V2PipelineRunner:
                     user_id=request.user_id,
                     stage_context=stage_context,
                     allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
+                    operation="create",  # P1.3 PR-11
                 )
                 if qa_result.needs_regeneration:
                     error_messages = "; ".join(error.message for error in qa_result.last_errors[:5])
@@ -751,6 +806,50 @@ class V2PipelineRunner:
             review=review,
             code=qa_result.code,
         )
+        # P1.2 GAP-3: persist fun_score into QAPipeline so PR-10's
+        # filter_fixable can honor the CREATIVE-preserve threshold on
+        # iterate-style follow-up runs. Only set when review actually ran;
+        # otherwise leave as None so the filter defaults to "skip creative".
+        if getattr(review, "ran", False):
+            try:
+                self.qa_pipeline._last_fun_score = float(review.fun_score)
+            except (TypeError, ValueError, AttributeError):
+                pass
+            # P2.1 telemetry: record fun_score distribution by tier/operation
+            # so downstream analysis can chart quality per cohort.
+            try:
+                _p2_emit(
+                    "fun_score_observed",
+                    tier=getattr(getattr(spec, "generation_tier", None), "value", None),
+                    game_type=getattr(spec, "game_type", None),
+                    fun_score=float(review.fun_score),
+                    passes=bool(getattr(review, "passes", False)),
+                    final_score=float(getattr(quality, "final_score", 0.0) or 0.0),
+                )
+            except Exception:  # noqa: BLE001 - telemetry must never crash runner
+                pass
+
+            # P2.3: commit the lane decision that code_generator stashed.
+            # R-3 correlation key: prefer the request-scoped task_id
+            # (matches the generator side, unique per request even across
+            # hedge/retry); fall back to variation_seed for backward
+            # compatibility with older notes still in _PENDING.
+            try:
+                _guard_key = str(self._current_task_id() or "") or str(
+                    getattr(spec, "variation_seed", "") or ""
+                )
+                if _guard_key:
+                    _guard_event = _p2_guard_commit(_guard_key, float(review.fun_score))
+                    if _guard_event and _guard_event.get("event"):
+                        _p2_emit(
+                            _guard_event["event"],
+                            tier=_guard_event.get("tier"),
+                            hit_mean=_guard_event.get("hit_mean"),
+                            miss_mean=_guard_event.get("miss_mean"),
+                            gap=_guard_event.get("gap"),
+                        )
+            except Exception:  # noqa: BLE001 - guard must never crash runner
+                pass
 
         if qa_result.success and quality.final_score >= 5.0:
             self.code_generator.template_cache.store(
@@ -799,6 +898,12 @@ class V2PipelineRunner:
         stage_context: dict[str, str],
     ) -> IterateResponse:
         start_ms = int(time.time() * 1000)
+        # P1.2 GAP-3: mirror the create-path reset so iterate runs also start
+        # with a clean fun_score slate for PR-10 filter_fixable.
+        try:
+            self.qa_pipeline._last_fun_score = None
+        except AttributeError:
+            pass
         self._notify(progress_cb, "spec_build", 15, "Compiling iteration spec", {
             "gameId": request.game_id,
             "userId": request.user_id,
@@ -864,6 +969,7 @@ class V2PipelineRunner:
             user_id=request.user_id,
             stage_context=stage_context,
             allow_runtime_qa_unavailable=self._should_allow_runtime_qa_unavailable(spec),
+            operation="iterate",  # P1.3 PR-11
         )
 
         elapsed = int(time.time() * 1000) - start_ms
@@ -1627,6 +1733,9 @@ class V2PipelineRunner:
         user_id: str,
         stage_context: dict[str, str],
         allow_runtime_qa_unavailable: bool,
+        # P1.3 PR-11: operation="create" | "iterate" — enables the runtime-QA
+        # scheduler to consult should_defer() with an accurate tier/op pair.
+        operation: str = "create",
     ) -> tuple[QAResult, Any, int, list[dict[str, Any]]]:
         stage_context["stage"] = "contract_qa"
         self._notify(progress_cb, "contract_qa", 76, "Running contract QA", {
@@ -1661,6 +1770,9 @@ class V2PipelineRunner:
                 game_id=game_id,
                 user_id=user_id,
                 allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
+                tier=getattr(getattr(spec, "generation_tier", None), "value", None)
+                    or str(getattr(spec, "generation_tier", "") or ""),
+                operation=operation,  # P1.3 PR-11
             )
             return QAResult(
                 success=True,
@@ -1721,6 +1833,9 @@ class V2PipelineRunner:
             game_id=game_id,
             user_id=user_id,
             allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
+            tier=getattr(getattr(spec, "generation_tier", None), "value", None)
+                or str(getattr(spec, "generation_tier", "") or ""),
+            operation=operation,  # P1.3 PR-11
         )
         return QAResult(
             success=True,
@@ -1801,9 +1916,71 @@ class V2PipelineRunner:
         game_id: str,
         user_id: str,
         allow_runtime_qa_unavailable: bool = False,
+        tier: Optional[str] = None,          # P1.3 PR-11
+        operation: Optional[str] = None,     # P1.3 PR-11
     ) -> tuple[str, Any, int, list[dict[str, Any]]]:
         qa_warnings: list[dict[str, Any]] = []
         runtime_qa_timeout_s = self._resolve_runtime_qa_timeout(code)
+
+        # P1.3 PR-11: when the flag is on AND should_defer approves this
+        # (tier, operation) pair, fire-and-forget the runtime_qa coroutine
+        # instead of awaiting it inline. The pipeline immediately proceeds
+        # with an "all-clear" placeholder result so the user gets their code
+        # without the 3-8s Playwright penalty. Background task records state
+        # via runtime_qa_scheduler for later observation.
+        try:
+            deferred_enabled = getattr(settings, "P1_RUNTIME_QA_DEFERRED_ENABLED", False)
+        except Exception:  # noqa: BLE001
+            deferred_enabled = False
+        if (
+            deferred_enabled
+            and _p1_should_defer is not None
+            and _p1_schedule_runtime_qa is not None
+            and _p1_should_defer(tier, operation)
+        ):
+            task_id = self._current_task_id() or f"{game_id}:runtime_qa"
+            try:
+                await _p1_schedule_runtime_qa(
+                    task_id,
+                    lambda code=code, to=runtime_qa_timeout_s: run_runtime_qa(
+                        code, timeout_s=to
+                    ),
+                    tier=tier,
+                    operation=operation,
+                )
+            except Exception:  # noqa: BLE001 - scheduler must never block hot path
+                logger.debug(
+                    "PR-11 schedule_runtime_qa failed; falling back to inline runtime QA",
+                    exc_info=True,
+                )
+            else:
+                self._notify(
+                    progress_cb,
+                    "runtime_simulation_qa",
+                    99,
+                    "Runtime QA deferred to background",
+                    {
+                        "gameId": game_id,
+                        "userId": user_id,
+                        "runtimeQaDeferred": True,
+                        "tier": tier,
+                        "operation": operation,
+                    },
+                )
+                # P2.1 telemetry: count deferrals per (tier, operation).
+                _p2_emit(
+                    "runtime_qa_deferred",
+                    tier=tier,
+                    operation=operation,
+                    task_id=task_id,
+                )
+                deferred_qa = RuntimeQAResult(
+                    ran=True,
+                    canvas_renders=True,
+                    phase_metrics={"deferred": True, "reason": "pr11_scheduler"},
+                )
+                return code, deferred_qa, 0, qa_warnings
+
         runtime_qa = await run_runtime_qa(code, timeout_s=runtime_qa_timeout_s)
         if not runtime_qa.ran:
             unavailable_reason = getattr(runtime_qa, "unavailable_reason", None)
@@ -2451,13 +2628,64 @@ class V2PipelineRunner:
         )
         return any(marker in message for marker in retryable_markers)
 
-    @staticmethod
     def _notify(
+        self,
         progress_cb: ProgressCallback,
         stage: str,
         pct: int,
         message: str,
         details: Optional[dict[str, Any]] = None,
     ) -> None:
+        # PR-06: mark stage transition so we can emit structured stage-timings on completion.
+        self._record_stage_start(self._current_task_id(), stage)
         if progress_cb:
             progress_cb(stage, pct, message, details or {})
+
+    # --- PR-06: stage-timing observability baseline ----------------------------
+    # Maintains a per-run map of stage → (started_ms, ended_ms) so we can emit
+    # structured stage-duration log lines at the end of a pipeline run.  The
+    # map is stored on the running request via a weak map keyed by task_id so
+    # we never cross-contaminate between concurrent requests.
+    _stage_timings_by_task: "dict[str, dict[str, dict[str, float]]]" = {}
+
+    @classmethod
+    def _record_stage_start(cls, task_id: Optional[str], stage: str) -> None:
+        if not task_id:
+            return
+        now = time.time() * 1000
+        bucket = cls._stage_timings_by_task.setdefault(task_id, {})
+        # Close the previous open stage (if any) so adjacent stages have contiguous timings.
+        for existing_stage, record in bucket.items():
+            if record.get("ended_ms") is None:
+                record["ended_ms"] = now
+        bucket[stage] = {"started_ms": now, "ended_ms": None}
+
+    @classmethod
+    def _flush_stage_timings(cls, task_id: Optional[str], *, status: str) -> None:
+        if not task_id:
+            return
+        bucket = cls._stage_timings_by_task.pop(task_id, None)
+        if not bucket:
+            return
+        now = time.time() * 1000
+        entries: list[dict[str, Any]] = []
+        total_ms = 0.0
+        for stage, record in bucket.items():
+            started = float(record.get("started_ms") or 0.0)
+            ended = float(record.get("ended_ms") or now)
+            duration_ms = max(0.0, ended - started)
+            total_ms += duration_ms
+            entries.append({
+                "stage": stage,
+                "started_ms": int(started),
+                "ended_ms": int(ended),
+                "duration_ms": int(duration_ms),
+            })
+        entries.sort(key=lambda item: item.get("started_ms") or 0)
+        logger.info(
+            "pipeline_v2.stage_timings task_id=%s status=%s total_ms=%d breakdown=%s",
+            task_id,
+            status,
+            int(total_ms),
+            entries,
+        )

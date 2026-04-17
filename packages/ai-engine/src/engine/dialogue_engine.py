@@ -1476,7 +1476,29 @@ def _select_entity_variant(
     source_description: str,
     theme: str,
     variation_seed: Optional[str] = None,
+    entity_pool_hints: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
+    # PR-08: when range-sampling is enabled, defer to numeric_sampler.
+    # sample_entities, which can mix a small fraction of generic entities
+    # to widen output diversity and honour CreativeAnchors.entity_pool_hints.
+    try:
+        from ..config.settings import settings as _settings  # local import
+        if getattr(_settings, "P1_RANGE_SAMPLING_ENABLED", False):
+            from .numeric_sampler import sample_entities as _p1_sample_entities
+            pool = ENTITY_VARIANTS.get(game_type, GENERIC_ENTITY_VARIANTS)
+            generic = GENERIC_ENTITY_VARIANTS
+            mix_share = float(getattr(_settings, "P1_GENERIC_ENTITY_MIX_SHARE", 0.2))
+            return _p1_sample_entities(
+                variation_seed or "",
+                game_type,
+                variant_pool=pool,
+                generic_pool=generic,
+                mix_generic=mix_share,
+                entity_pool_hints=entity_pool_hints,
+            )
+    except Exception:  # pragma: no cover — never block on sampler issues
+        pass
+
     variants = ENTITY_VARIANTS.get(game_type, GENERIC_ENTITY_VARIANTS)
     index = _stable_variant_index(game_type, theme, source_description, variation_seed or "", count=len(variants))
     return variants[index]
@@ -2069,6 +2091,7 @@ def _build_game_spec(
         game_type=game_type,
         source_description=normalized_description,
         intent_summary=intent_summary,
+        variation_seed=variation_seed,  # P1.1 GAP-2: persist seed into spec
         ui_language=ui_language,
         core_mechanics=mechanics,
         entities=entities,

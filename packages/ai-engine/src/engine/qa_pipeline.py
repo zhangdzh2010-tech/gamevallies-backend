@@ -1578,6 +1578,65 @@ class QAPipeline:
         prompt_bundle_snapshot: Optional[Dict[str, Any]] = None,
     ) -> str:
         syntax_errors = self._syntax_repair_errors(errors)
+        # PR-10: when QA tiering is enabled, drop CREATIVE-tier issues so the
+        # fixer does not chase aesthetic complaints and rewrite working code.
+        # HARD and SOFT issues pass through unchanged.
+        try:
+            from ..config.settings import settings as _p1_settings
+            if getattr(_p1_settings, "P1_QA_TIERING_ENABLED", False):
+                from .qa_tiers import filter_fixable as _p1_filter_fixable
+                fun_score = getattr(self, "_last_fun_score", None)
+                base_threshold = float(
+                    getattr(_p1_settings, "P1_QA_CREATIVE_PRESERVE_THRESHOLD", 7.0)
+                )
+                threshold = base_threshold
+                # P2.2 adaptive threshold: nudge the preserve line per
+                # (tier, game_type) when the flag is on. Always non-raising;
+                # falls back to the static base threshold on any error.
+                try:
+                    if getattr(_p1_settings, "P2_ADAPTIVE_THRESHOLD_ENABLED", False):
+                        from .p2_adaptive_thresholds import (
+                            compute_adjusted_threshold as _p2_adjust,
+                        )
+                        _tier_val = getattr(game_spec, "generation_tier", None) if game_spec else None
+                        _gtype_val = getattr(game_spec, "game_type", None) if game_spec else None
+                        adjusted, delta = _p2_adjust(
+                            base_threshold,
+                            tier=_tier_val,
+                            game_type=_gtype_val,
+                        )
+                        threshold = float(adjusted)
+                        # P2.1 telemetry: emit base/adjusted/delta so the
+                        # rollout can correlate fix-drop rates with threshold
+                        # changes per cohort.
+                        try:
+                            from .p2_telemetry import emit as _p2_emit_local
+                            _p2_emit_local(
+                                "adaptive_threshold_applied",
+                                tier=getattr(_tier_val, "value", _tier_val),
+                                game_type=_gtype_val,
+                                base=base_threshold,
+                                adjusted=threshold,
+                                delta=delta,
+                                fun_score=fun_score,
+                            )
+                        except Exception:  # pragma: no cover
+                            pass
+                except Exception:  # pragma: no cover — fall back to base
+                    threshold = base_threshold
+                syntax_errors, dropped = _p1_filter_fixable(
+                    syntax_errors,
+                    fun_score=fun_score,
+                    creative_preserve_threshold=threshold,
+                )
+                if dropped.get("CREATIVE_preserved"):
+                    logger.info(
+                        "qa_pipeline.pr10_creative_preserved fix_round=%s dropped=%s",
+                        fix_round, dropped["CREATIVE_preserved"],
+                    )
+        except Exception:  # pragma: no cover — never block on filter issues
+            pass
+
         if not syntax_errors:
             return code
         await task_memory.remember_qa_findings(
@@ -1586,8 +1645,29 @@ class QAPipeline:
             repair_family=SYNTAX_REPAIR_FAMILY,
             fix_round=fix_round,
         )
-        error_list = "\n".join(f"  - [{e.type}] {e.message}" for e in syntax_errors)
-        runtime_contract_block = self._build_runtime_contract_block(runtime_contract)
+        # PR-04: cap error list passed to LLM to avoid token bloat on failure-heavy rounds.
+        # Keep first N by original order (already severity-sorted by upstream); append
+        # summary line so the model knows there are more un-surfaced errors.
+        _QA_FIX_MAX_ERRORS_PER_ROUND = 8
+        if len(syntax_errors) > _QA_FIX_MAX_ERRORS_PER_ROUND:
+            shown = syntax_errors[:_QA_FIX_MAX_ERRORS_PER_ROUND]
+            remaining = len(syntax_errors) - _QA_FIX_MAX_ERRORS_PER_ROUND
+            error_list = "\n".join(f"  - [{e.type}] {e.message}" for e in shown)
+            error_list += f"\n  - (+{remaining} more errors omitted; fix the above first, remainder will be surfaced next round)"
+        else:
+            error_list = "\n".join(f"  - [{e.type}] {e.message}" for e in syntax_errors)
+
+        # PR-04: on rounds >= 2 the model already has the runtime contract in its
+        # prompt-cache from round 1 — send a short reference instead of the full block
+        # to save 300-600 tokens per round.
+        if fix_round >= 2 and runtime_contract is not None:
+            runtime_contract_block = (
+                f"\n- Runtime contract: unchanged from fix round 1 "
+                f"(version={runtime_contract.version}, profile={runtime_contract.runtime_profile}). "
+                "Continue to honor its canvas/state/input/safety requirements."
+            )
+        else:
+            runtime_contract_block = self._build_runtime_contract_block(runtime_contract)
         prompt_key, prompt_template = self._resolve_syntax_repair_prompt(
             prompt_bundle_snapshot=prompt_bundle_snapshot,
         )

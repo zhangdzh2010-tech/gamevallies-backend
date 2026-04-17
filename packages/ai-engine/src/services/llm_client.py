@@ -157,6 +157,11 @@ class _PreparedCompletionAttempt:
     messages: List[Message]
     system: Optional[str]
     max_tokens: int
+    # P1.1 GAP-1a: sampling_profile carries diversity knobs (temperature,
+    # top_p, top_k, frequency_penalty, presence_penalty, seed) from
+    # DiversityPlanner → provider payload. Optional: when None, providers
+    # fall back to their own defaults, preserving pre-P1 behavior.
+    sampling_profile: Optional[Dict[str, Any]] = None
 
 
 def _build_openai_compatible_chat_url(base_url: str) -> str:
@@ -1177,6 +1182,7 @@ class LLMClient:
         response_size_hint: Optional[str],
         context_scope: str,
         compression_policy: Optional[str],
+        sampling_profile: Optional[Dict[str, Any]] = None,  # P1.1 GAP-1a
     ) -> _PreparedCompletionAttempt:
         effective_request_timeout_s = request_timeout_s
         if deadline is not None:
@@ -1263,11 +1269,18 @@ class LLMClient:
             "prompt_dedup_removed_blocks": list(admission.prompt_dedup_removed_blocks),
             "prompt_dedup_summary": list(admission.prompt_dedup_summary),
         }
+        # P1.1 GAP-1a: log sampling_profile into route_snapshot for diagnostics.
+        if sampling_profile:
+            route.route_snapshot = {
+                **route.route_snapshot,
+                "sampling_profile": dict(sampling_profile),
+            }
         return _PreparedCompletionAttempt(
             route=route,
             messages=admission.messages,
             system=admission.system,
             max_tokens=effective_max_tokens,
+            sampling_profile=sampling_profile,  # P1.1 GAP-1a
         )
 
     async def _run_prepared_completion_attempt(
@@ -1285,6 +1298,7 @@ class LLMClient:
             system=prepared.system,
             step_key=step_key,
             stage=stage,
+            sampling_profile=prepared.sampling_profile,  # P1.1 GAP-1a
         )
         if return_route_snapshot:
             return text, dict(prepared.route.route_snapshot or {})
@@ -1306,6 +1320,7 @@ class LLMClient:
         context_scope: str,
         compression_policy: Optional[str],
         return_route_snapshot: bool,
+        sampling_profile: Optional[Dict[str, Any]] = None,  # P1.1 GAP-1a
     ) -> Any:
         total_attempts = len(routes)
         deadline = None
@@ -1339,6 +1354,7 @@ class LLMClient:
                 response_size_hint=response_size_hint,
                 context_scope=context_scope,
                 compression_policy=compression_policy,
+                sampling_profile=sampling_profile,  # P1.1 GAP-1a
             )
             launched_routes.append(prepared.route)
             task = asyncio.create_task(
@@ -1431,6 +1447,10 @@ class LLMClient:
         excluded_provider_ids: Optional[list[str]] = None,
         return_route_snapshot: bool = False,
         hedge_provider_fallback_after_s: Optional[float] = None,
+        # P1.1 GAP-1a: optional sampling knobs from DiversityPlanner.
+        # Keys: temperature, top_p, top_k, frequency_penalty,
+        # presence_penalty, seed. Passed verbatim into provider payload.
+        sampling_profile: Optional[Dict[str, Any]] = None,
     ) -> Any:
         if not self.is_enabled():
             raise RuntimeError("Real LLM mode is not configured")
@@ -1515,6 +1535,7 @@ class LLMClient:
                 context_scope=context_scope,
                 compression_policy=compression_policy,
                 return_route_snapshot=return_route_snapshot,
+                sampling_profile=sampling_profile,  # P1.1 GAP-1a
             )
         for attempt_index, resolved_route in enumerate(routes, start=1):
             try:
@@ -1533,6 +1554,7 @@ class LLMClient:
                     response_size_hint=response_size_hint,
                     context_scope=context_scope,
                     compression_policy=compression_policy,
+                    sampling_profile=sampling_profile,  # P1.1 GAP-1a
                 )
                 attempted_routes.append(prepared.route)
             except Exception as exc:
@@ -1629,6 +1651,7 @@ class LLMClient:
         excluded_provider_ids: Optional[list[str]] = None,
         return_route_snapshot: bool = False,
         hedge_provider_fallback_after_s: Optional[float] = None,
+        sampling_profile: Optional[Dict[str, Any]] = None,  # P1.1 GAP-1a
     ) -> Any:
         resolved_route = None
         try:
@@ -1721,6 +1744,7 @@ class LLMClient:
                     excluded_provider_ids=excluded_provider_ids,
                     return_route_snapshot=return_route_snapshot,
                     hedge_provider_fallback_after_s=hedge_provider_fallback_after_s,
+                    sampling_profile=sampling_profile,  # P1.1 GAP-1a
                 )
             except LLMResponseTruncatedError as exc:
                 if truncation_attempt >= max_retry_attempts:
@@ -1910,6 +1934,7 @@ class LLMClient:
         system: Optional[str],
         step_key: str,
         stage: str,
+        sampling_profile: Optional[Dict[str, Any]] = None,  # P1.1 GAP-1a
     ) -> str:
         semaphore = _llm_call_semaphore(_llm_max_concurrency())
         queue_started = time.perf_counter()
@@ -1946,6 +1971,7 @@ class LLMClient:
                     messages=messages,
                     max_tokens=max_tokens,
                     system=system,
+                    sampling_profile=sampling_profile,  # P1.1 GAP-1a
                 ))
             elif route.provider_type == "openai_compatible":
                 try:
@@ -1954,6 +1980,7 @@ class LLMClient:
                         messages=messages,
                         max_tokens=max_tokens,
                         system=system,
+                        sampling_profile=sampling_profile,  # P1.1 GAP-1a
                     ))
                 except Exception as exc:
                     if not _is_anthropic_protocol_mismatch(exc):
@@ -1970,6 +1997,7 @@ class LLMClient:
                         messages=messages,
                         max_tokens=max_tokens,
                         system=system,
+                        sampling_profile=sampling_profile,  # P1.1 GAP-1a
                     ))
             else:
                 raise RuntimeError(f"Unsupported provider type: {route.provider_type}")
@@ -2305,6 +2333,7 @@ class LLMClient:
         messages: List[Message],
         max_tokens: int,
         system: Optional[str],
+        sampling_profile: Optional[Dict[str, Any]] = None,  # P1.1 GAP-1a
     ) -> LLMCompletionResult:
         timeout_s = max(1, int(getattr(route, "request_timeout_s", 0) or 1))
         try:
@@ -2316,6 +2345,7 @@ class LLMClient:
                         messages=messages,
                         max_tokens=max_tokens,
                         system=system,
+                        sampling_profile=sampling_profile,  # P1.1 GAP-1a
                     ),
                 ),
                 timeout=timeout_s,
@@ -2339,6 +2369,7 @@ class LLMClient:
         messages: List[Message],
         max_tokens: int,
         system: Optional[str],
+        sampling_profile: Optional[Dict[str, Any]] = None,  # P1.1 GAP-1a
     ) -> LLMCompletionResult:
         client = self._get_anthropic_client(
             api_key=route.api_key,
@@ -2351,6 +2382,15 @@ class LLMClient:
         }
         if system:
             kwargs["system"] = system
+
+        # P1.1 GAP-1a: inject diversity-planner sampling knobs that the
+        # Anthropic SDK accepts. We whitelist per the Messages API to avoid
+        # breaking forward-compatibility if the planner emits extras.
+        if sampling_profile:
+            for k in ("temperature", "top_p", "top_k"):
+                v = sampling_profile.get(k)
+                if v is not None:
+                    kwargs[k] = v
 
         response = client.messages.create(**kwargs)
         parts = []
@@ -2385,6 +2425,7 @@ class LLMClient:
         messages: List[Message],
         max_tokens: int,
         system: Optional[str],
+        sampling_profile: Optional[Dict[str, Any]] = None,  # P1.1 GAP-1a
     ) -> LLMCompletionResult:
         payload_messages: List[Message] = []
         if system:
@@ -2396,6 +2437,18 @@ class LLMClient:
             "messages": payload_messages,
             "max_tokens": max_tokens,
         }
+        # P1.1 GAP-1a: whitelist common OpenAI-compatible sampling knobs.
+        if sampling_profile:
+            for k in (
+                "temperature",
+                "top_p",
+                "frequency_penalty",
+                "presence_penalty",
+                "seed",
+            ):
+                v = sampling_profile.get(k)
+                if v is not None:
+                    payload[k] = v
         headers = {
             "Authorization": f"Bearer {route.api_key}",
             "Content-Type": "application/json",

@@ -211,7 +211,20 @@ class GameDesigner:
     # ------------------------------------------------------------------
 
     def _derive_numerics(self, spec: GameSpec) -> NumericsConfig:
-        base = GAME_TYPE_NUMERICS.get(spec.game_type, DEFAULT_NUMERICS).copy()
+        # PR-08: when range-sampling is enabled, draw each numeric knob from
+        # a per-game-type range table keyed by the variation seed. When the
+        # flag is off, behaviour is identical to the pre-P1 constant table.
+        if getattr(settings, "P1_RANGE_SAMPLING_ENABLED", False):
+            from .numeric_sampler import sample_numerics as _p1_sample_numerics
+            variation_seed = (
+                getattr(spec, "variation_seed", None)
+                or getattr(spec, "request_variation_seed", None)
+                or getattr(spec, "source_description", "")
+                or ""
+            )
+            base = _p1_sample_numerics(str(variation_seed), spec.game_type)
+        else:
+            base = GAME_TYPE_NUMERICS.get(spec.game_type, DEFAULT_NUMERICS).copy()
 
         diff_mult = DIFFICULTY_MULTIPLIERS.get(spec.difficulty_curve, 1.0)
 

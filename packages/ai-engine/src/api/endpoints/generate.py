@@ -1885,6 +1885,86 @@ async def expand_prompt(request: dict):
         }
 
 
+@router.post("/v2/creative-anchors")
+async def creative_anchors_v2(request: dict):
+    """PR-07: Merged expand_prompt + intent endpoint.
+
+    Produces a CreativeAnchors structured brief in a single LLM call.
+    Falls back to the deterministic builder on any error. Additive —
+    clients may still call the legacy /expand-prompt endpoint.
+    """
+    from ...engine.creative_anchors import CreativeAnchors, build_anchors_fallback
+    from ...services.llm_client import LLMClient
+
+    description = (request or {}).get("description", "")
+    if not description:
+        raise HTTPException(status_code=400, detail="description is required")
+
+    client = LLMClient()
+    if not client.is_enabled():
+        # Deterministic fallback path — cheap, offline-safe.
+        return build_anchors_fallback(description).model_dump()
+
+    try:
+        text = await client.complete(
+            max_tokens=1024,
+            system=(
+                "You merge prompt expansion and intent parsing into a single "
+                "JSON brief. Respond with ONLY a JSON object matching the "
+                "CreativeAnchors schema: "
+                "{genre, pace_axis, mood, style_axis, entity_pool_hints, expanded_prompt}. "
+                "pace_axis must be one of: slow, steady, fast, chaotic. "
+                "style_axis must be one of: pixel, painterly, neon, minimal, cartoon. "
+                "mood is a short list of adjectives; entity_pool_hints is a short list of nouns. "
+                "expanded_prompt is a 1-3 paragraph expansion of the user idea."
+            ),
+            messages=[{"role": "user", "content": description}],
+            step_key="creative_anchors",
+            stage="prompt_expand",
+            prefer_fast=True,
+        )
+        cleaned = (text or "").strip()
+        try:
+            import json as _json
+            payload = _json.loads(cleaned)
+            anchors = CreativeAnchors(**payload)
+            return anchors.model_dump()
+        except Exception as parse_err:
+            logger.warning(
+                "creative_anchors parse failed, using fallback: %s", parse_err
+            )
+            return {
+                **build_anchors_fallback(
+                    description, expanded_prompt=cleaned
+                ).model_dump(),
+                "fallback_used": True,
+                "fallback_reason": "llm_parse_failed",
+            }
+    except Exception as exc:
+        logger.error(f"creative_anchors_v2 LLM call failed: {exc}")
+        return {
+            **build_anchors_fallback(description).model_dump(),
+            "fallback_used": True,
+            "fallback_reason": str(exc),
+        }
+
+
+@router.get("/games/{task_id}/runtime-qa")
+async def get_runtime_qa_state(task_id: str):
+    """PR-11: Read the deferred runtime_qa state for a task.
+
+    Returns {state, updated_at, history?} where state is one of
+    pending / running / success / failed / skipped. If the task is not
+    tracked (e.g. the server restarted, or runtime_qa was never scheduled)
+    returns state=unknown.
+    """
+    from ...engine.runtime_qa_scheduler import get_state
+    snap = await get_state(task_id)
+    if not snap:
+        return {"task_id": task_id, "state": "unknown"}
+    return {"task_id": task_id, **snap}
+
+
 @router.post("/prompts/refresh")
 async def refresh_prompts(
     x_admin_token: Optional[str] = Header(default=None, alias="x-admin-token"),
