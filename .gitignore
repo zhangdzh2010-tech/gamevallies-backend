@@ -52,6 +52,7 @@ __pycache__/
 .eggs/
 venv/
 .venv/
+.venv312/
 .Python
 pip-log.txt
 
@@ -67,3 +68,9 @@ tmp/
 temp/
 .env.deploy
 .docker/
+
+# Local tsc verification output (scratch)
+packages/game-service/dist-verify/
+
+# Sensitive payment credentials (NEVER commit)
+docs/integration/微信支付/
