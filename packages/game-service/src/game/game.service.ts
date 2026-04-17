@@ -326,6 +326,13 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   private timeoutConfigLoadedAt = 0;
   private timeoutConfigRefreshPromise: Promise<void> | null = null;
   private currentSweepIntervalMs = 0;
+  // PR-02: short-TTL cache for prompt bundle identity / runtime profile catalog lookups
+  // These are read on every generation request but change at most a few times per day.
+  // TTL = 30s keeps tail-latency low while still picking up catalog updates quickly.
+  private static readonly PROMPT_BUNDLE_CACHE_TTL_MS = 30_000;
+  private static readonly RUNTIME_PROFILE_CACHE_TTL_MS = 30_000;
+  private promptBundleIdentityCache: { value: { id: string; version: number }; cachedAt: number } | null = null;
+  private runtimeProfileCache = new Map<string, { value: { id: string; contractSchema?: Prisma.JsonValue | null; metadata?: Prisma.JsonValue | null }; cachedAt: number }>();
 
   constructor(
     private prisma: PrismaService,
@@ -667,6 +674,12 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async resolveActivePromptBundleIdentity(): Promise<{ id: string; version: number }> {
+    // PR-02: TTL cache to avoid hitting promptBundle table on every generation request.
+    const now = Date.now();
+    const cached = this.promptBundleIdentityCache;
+    if (cached && (now - cached.cachedAt) < GameService.PROMPT_BUNDLE_CACHE_TTL_MS) {
+      return cached.value;
+    }
     const bundle = await this.prisma.promptBundle.findFirst({
       where: { status: 'active' },
       orderBy: [{ updatedAt: 'desc' }, { version: 'desc' }],
@@ -678,6 +691,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     if (!bundle) {
       throw new ServiceUnavailableException('No active prompt bundle is configured');
     }
+    this.promptBundleIdentityCache = { value: bundle, cachedAt: now };
     return bundle;
   }
 
@@ -714,6 +728,13 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     contractSchema?: Prisma.JsonValue | null;
     metadata?: Prisma.JsonValue | null;
   }> {
+    // PR-02: TTL cache keyed by profileHint (undefined hint → "__default__").
+    const cacheKey = profileHint && profileHint.trim() ? profileHint.trim() : '__default__';
+    const now = Date.now();
+    const cached = this.runtimeProfileCache.get(cacheKey);
+    if (cached && (now - cached.cachedAt) < GameService.RUNTIME_PROFILE_CACHE_TTL_MS) {
+      return cached.value;
+    }
     const profiles = await this.prisma.runtimeProfileCatalog.findMany({
       where: { enabled: true },
       select: {
@@ -737,19 +758,23 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       for (const candidate of runtimeProfileLookupCandidates(normalizedHint)) {
         const hintedProfile = profiles.find((profile) => profile.id === candidate);
         if (hintedProfile) {
-          return {
+          const resolved = {
             ...hintedProfile,
             id: normalizeRuntimeProfileId(hintedProfile.id) || DEFAULT_RUNTIME_PROFILE_ID,
           };
+          this.runtimeProfileCache.set(cacheKey, { value: resolved, cachedAt: now });
+          return resolved;
         }
       }
     }
 
     const selected = defaultProfile || profiles[0];
-    return {
+    const resolved = {
       ...selected,
       id: normalizeRuntimeProfileId(selected.id) || DEFAULT_RUNTIME_PROFILE_ID,
     };
+    this.runtimeProfileCache.set(cacheKey, { value: resolved, cachedAt: now });
+    return resolved;
   }
 
   private normalizeRuntimeContractSchema(
@@ -1267,11 +1292,6 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         entrypoint: 'create',
         region: params.executionRegion,
         pipeline_version: 'v2',
-        metadata: {
-          game_id: params.gameId,
-          generation_tier: generationTier,
-          ...(params.orientation ? { orientation: params.orientation } : {}),
-        },
       },
       entitlement: this.buildEntitlementSnapshot({
         canPlay: params.access?.canPlay ?? true,
@@ -1289,15 +1309,12 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         source_spec: params.sourceSpec || null,
         prompt_bundle_snapshot: params.promptBundleSnapshot,
         runtime_contract: params.runtimeContract,
+        // normalized_request retained as minimal fallback for ai-engine description lookup
+        // (see pipeline_v2_runner.py: request.normalized_request.get("description", ""))
         normalized_request: {
           description: params.description,
-          title: params.title || null,
-          region: params.executionRegion,
-          entrypoint: 'create',
-          generation_tier: generationTier,
-          ...(params.orientation ? { orientation: params.orientation } : {}),
-          ...(params.creationSessionId ? { creation_session_id: params.creationSessionId } : {}),
         },
+        // single source of truth for adapter + dimensional metadata (generation_tier, orientation, ids)
         metadata: {
           adapter: 'compat_v1',
           pipeline_version: 'v2',
@@ -1587,12 +1604,6 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         entrypoint: 'iterate',
         region: params.executionRegion,
         pipeline_version: 'v2',
-        metadata: {
-          game_id: params.gameId,
-          live_bundle_version: game.version ?? null,
-          generation_tier: generationTier,
-          ...(orientation ? { orientation } : {}),
-        },
       },
       iteration_intent: {
         feedback: params.feedback,
@@ -1624,18 +1635,17 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       }),
       prompt_bundle_snapshot: params.promptBundleSnapshot,
       runtime_contract: params.runtimeContract,
+      // normalized_request retained as minimal fallback for ai-engine lookups
       normalized_request: {
         feedback: params.feedback,
-        region: params.executionRegion,
-        entrypoint: 'iterate',
-        generation_tier: generationTier,
-        ...(orientation ? { orientation } : {}),
       },
+      // single source of truth for adapter + dimensional metadata
       metadata: {
         adapter: 'compat_v1',
         pipeline_version: 'v2',
         generation_tier: generationTier,
         ...(orientation ? { orientation } : {}),
+        live_bundle_version: game.version ?? null,
       },
     };
   }
@@ -3650,12 +3660,13 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           description,
           dto.title,
         );
-      const promptBundleSnapshot = pipelineVersion === 'v2'
-        ? await this.buildPromptBundleSnapshot('create', runtimeProfileHint, requestedGenerationTier)
-        : null;
-      const runtimeContract = pipelineVersion === 'v2'
-        ? await this.buildDefaultRuntimeContract('create', runtimeProfileHint, requestedOrientation, requestedGenerationTier)
-        : null;
+      // PR-02: parallelize independent bundle-snapshot and runtime-contract builds
+      const [promptBundleSnapshot, runtimeContract] = pipelineVersion === 'v2'
+        ? await Promise.all([
+            this.buildPromptBundleSnapshot('create', runtimeProfileHint, requestedGenerationTier),
+            this.buildDefaultRuntimeContract('create', runtimeProfileHint, requestedOrientation, requestedGenerationTier),
+          ])
+        : [null, null];
       const { access, task } = await this.prisma.$transaction(async (tx) => {
         await this.markExpiredSubscriptions(tx, userId);
         const quota = await this.ensureUserQuota(tx, userId);
@@ -4918,12 +4929,17 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       description,
       normalizedTitle,
     );
-    const promptBundleSnapshot = pipelineVersion === 'v2'
-      ? (options.promptBundleSnapshot ?? await this.buildPromptBundleSnapshot('create', runtimeProfileHint, generationTier))
-      : null;
-    const runtimeContract = pipelineVersion === 'v2'
-      ? (options.runtimeContract ?? await this.buildDefaultRuntimeContract('create', runtimeProfileHint, options.orientation, generationTier))
-      : null;
+    // PR-02: parallelize bundle-snapshot and runtime-contract builds for create-path launch
+    const [promptBundleSnapshot, runtimeContract] = pipelineVersion === 'v2'
+      ? await Promise.all([
+          options.promptBundleSnapshot
+            ? Promise.resolve(options.promptBundleSnapshot)
+            : this.buildPromptBundleSnapshot('create', runtimeProfileHint, generationTier),
+          options.runtimeContract
+            ? Promise.resolve(options.runtimeContract)
+            : this.buildDefaultRuntimeContract('create', runtimeProfileHint, options.orientation, generationTier),
+        ])
+      : [null, null];
 
     const handle = await this.requestUpstreamAsyncTask({
       aiEngineBaseUrls,
@@ -4998,12 +5014,17 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       this.resolveRuntimeHintGameType(options.sourceSpec, options.game),
       feedback,
     );
-    const promptBundleSnapshot = pipelineVersion === 'v2'
-      ? (options.promptBundleSnapshot ?? await this.buildPromptBundleSnapshot('iterate', runtimeProfileHint, generationTier))
-      : null;
-    const runtimeContract = pipelineVersion === 'v2'
-      ? (options.runtimeContract ?? await this.buildDefaultRuntimeContract('iterate', runtimeProfileHint, options.orientation, generationTier))
-      : null;
+    // PR-02: parallelize bundle-snapshot and runtime-contract builds for iterate-path launch
+    const [promptBundleSnapshot, runtimeContract] = pipelineVersion === 'v2'
+      ? await Promise.all([
+          options.promptBundleSnapshot
+            ? Promise.resolve(options.promptBundleSnapshot)
+            : this.buildPromptBundleSnapshot('iterate', runtimeProfileHint, generationTier),
+          options.runtimeContract
+            ? Promise.resolve(options.runtimeContract)
+            : this.buildDefaultRuntimeContract('iterate', runtimeProfileHint, options.orientation, generationTier),
+        ])
+      : [null, null];
 
     if (taskId) {
       await this.generationTaskService.markRunning(taskId);
@@ -6163,21 +6184,23 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       });
       const timeoutS = this.resolveTaskTimeoutForPipelineVersion(dto.timeoutS, pipelineVersion);
       const runtimeHintGameType = this.resolveRuntimeHintGameType(sourceSpec, game);
-      const promptBundleSnapshot = pipelineVersion === 'v2'
-        ? await this.buildPromptBundleSnapshot(
-          'iterate',
-          this.inferRuntimeProfileHint(runtimeHintGameType, dto.feedback),
-          requestedGenerationTier,
-        )
-        : null;
-      const runtimeContract = pipelineVersion === 'v2'
-        ? await this.buildDefaultRuntimeContract(
-          'iterate',
-          this.inferRuntimeProfileHint(runtimeHintGameType, dto.feedback),
-          requestedOrientation,
-          requestedGenerationTier,
-        )
-        : null;
+      // PR-02: parallelize bundle-snapshot and runtime-contract builds for iterate entrypoint
+      const iterateRuntimeProfileHint = this.inferRuntimeProfileHint(runtimeHintGameType, dto.feedback);
+      const [promptBundleSnapshot, runtimeContract] = pipelineVersion === 'v2'
+        ? await Promise.all([
+            this.buildPromptBundleSnapshot(
+              'iterate',
+              iterateRuntimeProfileHint,
+              requestedGenerationTier,
+            ),
+            this.buildDefaultRuntimeContract(
+              'iterate',
+              iterateRuntimeProfileHint,
+              requestedOrientation,
+              requestedGenerationTier,
+            ),
+          ])
+        : [null, null];
       const baseStatus = this.getIterationBaseStatus(null, game);
       const inFlightStatus = this.getInFlightIterationStatus(baseStatus);
 
