@@ -5346,6 +5346,51 @@ export class AdminService {
     return key.replace(/^(prompt|bundle)\./, "");
   }
 
+  /**
+   * R-PREVIEW-1: Replace `{var}` placeholders in template with values, returning
+   * (rendered, missing, unused). Non-raising: missing variables stay as literal
+   * `{var}` in the output so the caller can still see the un-bound slot.
+   */
+  private renderTemplate(
+    template: string,
+    variables: Record<string, any> | null | undefined,
+  ): { rendered: string; missing: string[]; unused: string[] } {
+    const src = typeof template === "string" ? template : "";
+    const vars =
+      variables && typeof variables === "object"
+        ? variables
+        : ({} as Record<string, any>);
+
+    const declared = new Set<string>();
+    const placeholderRe = /\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+    let match: RegExpExecArray | null;
+    while ((match = placeholderRe.exec(src)) !== null) {
+      declared.add(match[1]);
+    }
+
+    const missing: string[] = [];
+    const rendered = src.replace(placeholderRe, (full, name) => {
+      if (Object.prototype.hasOwnProperty.call(vars, name)) {
+        const raw = vars[name];
+        return raw === null || raw === undefined ? "" : String(raw);
+      }
+      if (!missing.includes(name)) missing.push(name);
+      return full;
+    });
+
+    const unused = Object.keys(vars).filter((k) => !declared.has(k));
+    return { rendered, missing, unused };
+  }
+
+  /** Non-throwing variant of getConfig — returns null if missing. */
+  private async safeGetConfig(key: string): Promise<any> {
+    try {
+      return await this.getConfig(key);
+    } catch {
+      return null;
+    }
+  }
+
   private mergePromptConfigs(configs: any[]) {
     const existingMap = new Map(
       configs.map((config) => [config.configKey, config]),
@@ -5502,6 +5547,174 @@ export class AdminService {
       throw new NotFoundException(`Config '${key}' not found`);
     }
     return config;
+  }
+
+  /**
+   * P0-1: Render a prompt template with the supplied variable bindings. Returns
+   * the rendered text plus bookkeeping that the admin UI can surface (missing
+   * placeholders, unused vars, declared-but-not-in-template vars).
+   */
+  async renderPromptPreview(
+    key: string,
+    variables: Record<string, any> | null | undefined,
+  ) {
+    const config = await this.getConfig(key);
+    const template = String((config as any).configValue ?? "");
+    const metaVars = Array.isArray((config as any).variables)
+      ? ((config as any).variables as string[])
+      : [];
+    const declaredByMeta = metaVars
+      .map((v) => v.replace(/^\{|\}$/g, ""))
+      .filter((v) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(v));
+
+    const { rendered, missing, unused } = this.renderTemplate(
+      template,
+      variables,
+    );
+
+    const declaredNotInTemplate = declaredByMeta.filter(
+      (v) => !new RegExp(`\\{${v}\\}`).test(template),
+    );
+
+    return {
+      configKey: key,
+      category: (config as any).category || "prompt",
+      templateLength: template.length,
+      declaredVariables: declaredByMeta,
+      missingVariables: missing,
+      unusedVariables: unused,
+      declaredButNotInTemplate: declaredNotInTemplate,
+      rendered,
+      source: (config as any).source || "db",
+      isDefault: Boolean((config as any).isDefault),
+    };
+  }
+
+  /**
+   * P0-2: Compose the Step-3 (logic_generate) system prompt by concatenating
+   * code_gen_system + tier override + alignment reminder + request-context
+   * template + optional bundle policy/locked-contract, each rendered with the
+   * supplied variables. Returns both the assembled text and a per-piece
+   * breakdown so admins can see provenance.
+   */
+  async assembleStage3Prompt(input: {
+    tier?: string;
+    gameType?: string;
+    bundleId?: string;
+    bundleVersion?: number;
+    variables?: Record<string, any>;
+  }) {
+    const tier = (input.tier || "").toUpperCase().trim();
+    const variables = input.variables || {};
+
+    const codeGenSystem = await this.getConfig("prompt.code_gen_system");
+    const alignmentReminder = await this.safeGetConfig(
+      "prompt.generate_alignment_reminder",
+    );
+    const tierOverride = tier
+      ? await this.safeGetConfig(
+          `prompt.code_gen_system_${tier.toLowerCase()}`,
+        )
+      : null;
+    const requestContext = await this.safeGetConfig(
+      "prompt.generate_request_context_template",
+    );
+
+    let activeBundle: any = null;
+    if (input.bundleId) {
+      const bundles = await this.listPromptBundles();
+      activeBundle =
+        bundles.find(
+          (b: any) =>
+            b.id === input.bundleId &&
+            (input.bundleVersion === undefined ||
+              Number(b.version) === Number(input.bundleVersion)),
+        ) || null;
+    }
+
+    const pieces: Array<{ label: string; source: string; text: string }> = [];
+    const allMissing: string[] = [];
+
+    const pushPiece = (label: string, source: string, text: string) => {
+      if (!text.trim()) return;
+      const r = this.renderTemplate(text, variables);
+      pieces.push({ label, source, text: r.rendered });
+      for (const m of r.missing) {
+        if (!allMissing.includes(m)) allMissing.push(m);
+      }
+    };
+
+    pushPiece(
+      "prompt.code_gen_system",
+      (codeGenSystem as any).source || "db",
+      String((codeGenSystem as any).configValue ?? ""),
+    );
+
+    if (tierOverride) {
+      pushPiece(
+        `prompt.code_gen_system_${tier.toLowerCase()}`,
+        (tierOverride as any).source || "db",
+        String((tierOverride as any).configValue ?? ""),
+      );
+    }
+
+    if (alignmentReminder) {
+      pushPiece(
+        "prompt.generate_alignment_reminder",
+        (alignmentReminder as any).source || "db",
+        String((alignmentReminder as any).configValue ?? ""),
+      );
+    }
+
+    if (requestContext) {
+      pushPiece(
+        "prompt.generate_request_context_template",
+        (requestContext as any).source || "db",
+        String((requestContext as any).configValue ?? ""),
+      );
+    }
+
+    if (activeBundle) {
+      if (
+        activeBundle.productPolicy &&
+        String(activeBundle.productPolicy).trim()
+      ) {
+        pushPiece(
+          `bundle.product.policy@${activeBundle.id}:v${activeBundle.version}`,
+          activeBundle.source || "db",
+          String(activeBundle.productPolicy),
+        );
+      }
+      if (
+        activeBundle.lockedContractOverride &&
+        String(activeBundle.lockedContractOverride).trim()
+      ) {
+        pushPiece(
+          `bundle.runtime.locked_contract@${activeBundle.id}:v${activeBundle.version}`,
+          activeBundle.source || "db",
+          String(activeBundle.lockedContractOverride),
+        );
+      }
+    }
+
+    const assembled = pieces
+      .map((p) => `--- ${p.label} ---\n${p.text}`)
+      .join("\n\n");
+
+    return {
+      tier: tier || null,
+      gameType: input.gameType || null,
+      bundleId: input.bundleId || null,
+      bundleVersion:
+        input.bundleVersion !== undefined ? Number(input.bundleVersion) : null,
+      pieces,
+      assembled,
+      assembledLength: assembled.length,
+      pieceCount: pieces.length,
+      warnings: {
+        missingVariables: allMissing,
+      },
+    };
   }
 
   async upsertConfig(

@@ -687,6 +687,18 @@ export class AdminController {
     return ok(await this.adminService.upsertConfig(key, body), "Config saved");
   }
 
+  @Post("admin/configs/:key/preview")
+  async previewConfig(
+    @Headers("x-admin-token") token: string,
+    @Param("key") key: string,
+    @Body() body: { variables?: Record<string, any> },
+  ) {
+    checkAdminToken(token);
+    return ok(
+      await this.adminService.renderPromptPreview(key, body?.variables || {}),
+    );
+  }
+
   @Post("admin/configs/init-prompts")
   async initPrompts(@Headers("x-admin-token") token: string) {
     checkAdminToken(token);
@@ -774,6 +786,22 @@ export class AdminController {
   async getPromptPipeline(@Headers("x-admin-token") token: string) {
     checkAdminToken(token);
     return ok(await this.adminService.getPromptPipeline());
+  }
+
+  @Post("admin/pipeline/assemble")
+  async assemblePipelineStage3(
+    @Headers("x-admin-token") token: string,
+    @Body()
+    body: {
+      tier?: string;
+      gameType?: string;
+      bundleId?: string;
+      bundleVersion?: number;
+      variables?: Record<string, any>;
+    },
+  ) {
+    checkAdminToken(token);
+    return ok(await this.adminService.assembleStage3Prompt(body || {}));
   }
 
   @Post("admin/migrate")
