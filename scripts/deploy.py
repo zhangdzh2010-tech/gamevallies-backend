@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 火山引擎函数服务 — 容器镜像部署脚本（官方 Python SDK）
 
@@ -146,6 +147,7 @@ APIG_PATCH_SAFE_METHOD = "PATCH"
 DEFAULT_FUNCTION_REQUEST_TIMEOUT_S = 180
 AI_ENGINE_TIMEOUT_HEADROOM_S = 60
 APIG_TIMEOUT_MS_PER_SECOND = 1000
+DEPLOY_PREFER_REMOTE_ENV = _is_truthy(os.environ.get("DEPLOY_PREFER_REMOTE_ENV"))
 
 COMMON_DEPLOY_ENV_KEYS = [
     "VOLCENGINE_ACCESS_KEY",
@@ -244,6 +246,13 @@ FEED_SERVICE_MANAGED_ENV_KEYS = set(COMMON_RUNTIME_ENV_KEYS + [
     "AI_ENGINE_URL",
     "APP_URL",
 ])
+
+REMOTE_FALLBACK_RUNTIME_ENV_KEYS = set().union(
+    USER_SERVICE_MANAGED_ENV_KEYS,
+    GAME_SERVICE_MANAGED_ENV_KEYS,
+    FEED_SERVICE_MANAGED_ENV_KEYS,
+    AI_ENGINE_MANAGED_ENV_KEYS,
+)
 
 SERVICE_REQUIRED_ENV_KEYS = {
     "user-service": [
@@ -966,6 +975,56 @@ def _extract_existing_envs(function) -> dict[str, str]:
     return existing
 
 
+def hydrate_remote_runtime_env(target_services: list[dict]) -> None:
+    if not DEPLOY_PREFER_REMOTE_ENV:
+        return
+
+    print("ℹ️  DEPLOY_PREFER_REMOTE_ENV=1，优先使用线上函数当前运行时环境变量")
+    adopted_from_remote: dict[str, str] = {}
+    drift_warnings: list[str] = []
+
+    for svc in target_services:
+        api = get_api(svc.get("cloud_region"))
+        try:
+            func_id = get_function_id(api, svc["name"])
+            if not func_id:
+                print(f"  ↪ 跳过 {svc['name']}：线上函数不存在，继续使用本地部署环境")
+                continue
+            function = api.get_function(volcenginesdkvefaas.GetFunctionRequest(id=func_id))
+        except Exception as exc:
+            print(f"  ⚠️  读取 {svc['name']} 线上环境失败，继续使用本地部署环境: {exc}")
+            continue
+
+        existing_envs = _extract_existing_envs(function)
+        adopted_count = 0
+        for key in REMOTE_FALLBACK_RUNTIME_ENV_KEYS:
+            remote_value = (existing_envs.get(key) or "").strip()
+            if not remote_value:
+                continue
+
+            current_value = (os.environ.get(key) or "").strip()
+            adopted_source = adopted_from_remote.get(key)
+            if adopted_source and current_value and current_value != remote_value:
+                drift_warnings.append(
+                    f"{key}: {adopted_source} 与 {svc['name']} 的线上值不一致"
+                )
+                continue
+
+            os.environ[key] = remote_value
+            adopted_from_remote.setdefault(key, svc["name"])
+            adopted_count += 1
+
+        if adopted_count:
+            print(f"  ✅ 已从 {svc['name']} 注入/覆盖 {adopted_count} 个运行时环境变量")
+
+    if drift_warnings:
+        print("  ⚠️  检测到线上函数之间存在环境变量漂移，保留首次读取到的值：")
+        for warning in drift_warnings[:10]:
+            print(f"     - {warning}")
+        if len(drift_warnings) > 10:
+            print(f"     - ... 其余 {len(drift_warnings) - 10} 条已省略")
+
+
 def _managed_env_keys(*, ai: bool = False, svc: dict | None = None) -> set[str]:
     if ai:
         return set(AI_ENGINE_MANAGED_ENV_KEYS)
@@ -1380,6 +1439,7 @@ def main():
         print(f"❌ 未匹配到任何服务，可选: {[s['svc'] for s in SERVICES]} | ai-engine-cn | all")
         sys.exit(1)
 
+    hydrate_remote_runtime_env(services)
     validate_env(services)
     IMAGE_TAG = resolve_image_tag(services)
 
