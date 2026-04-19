@@ -22,7 +22,8 @@ class TestQualityScorer:
         static = make_static(strategy="llm", code_size_bytes=15_000)
         runtime = RuntimeQAResult(ran=True, canvas_renders=True, js_errors=[], fps=60)
         review = LLMReviewResult(ran=True, is_complete_game=True, has_real_gameplay=True,
-                                 difficulty_balanced=True, fun_score=8.0)
+                                 difficulty_balanced=True, fun_score=8.0,
+                                 visual_polish_score=8.0, character_quality_score=7.5)
         bd = scorer.compute(static, runtime, review)
         assert bd.final_score >= 8.0
 
@@ -31,7 +32,7 @@ class TestQualityScorer:
                              code_size_bytes=500)
         runtime = RuntimeQAResult(ran=True, canvas_renders=False, js_errors=["Error: x"], fps=0)
         review = LLMReviewResult(ran=True, is_complete_game=False, has_real_gameplay=False,
-                                 fun_score=2.0)
+                                 fun_score=2.0, visual_polish_score=2.0, character_quality_score=2.0)
         bd = scorer.compute(static, runtime, review)
         assert bd.final_score <= 2.0
 
@@ -68,6 +69,46 @@ class TestQualityScorer:
         assert "strategy" in bd.details
         assert "size_kb" in bd.details
 
+    def test_visual_and_character_scores_affect_quality(self):
+        static = make_static(strategy="llm", code_size_bytes=12_000)
+        runtime = RuntimeQAResult(ran=True, canvas_renders=True, js_errors=[], fps=60)
+        low_review = LLMReviewResult(
+            ran=True,
+            is_complete_game=True,
+            has_real_gameplay=True,
+            difficulty_balanced=True,
+            fun_score=7.0,
+            visual_polish_score=4.0,
+            character_quality_score=4.0,
+        )
+        high_review = LLMReviewResult(
+            ran=True,
+            is_complete_game=True,
+            has_real_gameplay=True,
+            difficulty_balanced=True,
+            fun_score=7.0,
+            visual_polish_score=8.0,
+            character_quality_score=8.0,
+        )
+        assert scorer.compute(static, runtime, high_review).final_score > scorer.compute(static, runtime, low_review).final_score
+
+    def test_prototype_like_visuals_do_not_score_as_premium(self):
+        static = make_static(strategy="llm", code_size_bytes=28_000)
+        runtime = RuntimeQAResult(ran=True, canvas_renders=True, js_errors=[], fps=55)
+        review = LLMReviewResult(
+            ran=True,
+            is_complete_game=True,
+            has_real_gameplay=True,
+            difficulty_balanced=True,
+            fun_score=7.0,
+            visual_polish_score=5.0,
+            character_quality_score=4.5,
+        )
+
+        breakdown = scorer.compute(static, runtime, review)
+
+        assert breakdown.final_score < 7.0
+
     def test_behavior_score_not_updated_below_10_plays(self):
         score = scorer.compute_from_behavior(
             current_ai_score=7.0, play_count=5, like_count=3,
@@ -99,12 +140,14 @@ class TestCodeReviewerParsing:
         self.reviewer = CodeReviewer()
 
     def test_valid_json_parsed(self):
-        raw = '{"is_complete_game": true, "has_real_gameplay": true, "difficulty_balanced": false, "fun_score": 7, "issues": ["too easy"]}'
+        raw = '{"is_complete_game": true, "has_real_gameplay": true, "difficulty_balanced": false, "fun_score": 7, "visual_polish_score": 8, "character_quality_score": 6, "issues": ["too easy"]}'
         result = self.reviewer._parse_review(raw)
         assert result.ran is True
         assert result.is_complete_game is True
         assert result.difficulty_balanced is False
         assert result.fun_score == 7.0
+        assert result.visual_polish_score == 8.0
+        assert result.character_quality_score == 6.0
         assert result.issues == ["too easy"]
 
     def test_json_with_markdown_fences_parsed(self):
@@ -126,6 +169,12 @@ class TestCodeReviewerParsing:
         raw = '{"is_complete_game": true, "has_real_gameplay": true, "difficulty_balanced": true, "fun_score": -5, "issues": []}'
         result = self.reviewer._parse_review(raw)
         assert result.fun_score == 1.0
+
+    def test_visual_and_character_scores_are_clamped(self):
+        raw = '{"is_complete_game": true, "has_real_gameplay": true, "difficulty_balanced": true, "fun_score": 8, "visual_polish_score": 12, "character_quality_score": 0, "issues": []}'
+        result = self.reviewer._parse_review(raw)
+        assert result.visual_polish_score == 10.0
+        assert result.character_quality_score == 1.0
 
 
 class TestPipelineOrchestratorReviewRepairGate:

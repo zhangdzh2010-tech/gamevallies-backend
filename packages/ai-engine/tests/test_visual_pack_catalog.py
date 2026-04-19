@@ -20,3 +20,21 @@ class TestVisualPackCatalog(TestCase):
             catalog = visual_pack_catalog.get_visual_pack_catalog()
         self.assertGreaterEqual(len(catalog), 1)
         self.assertEqual(catalog[0]["id"], visual_pack_catalog.DEFAULT_VISUAL_PACKS[0]["id"])
+
+    def test_select_visual_pack_prefers_clean_edu_for_stem_classroom_puzzle_showcase(self) -> None:
+        pack = visual_pack_catalog.select_visual_pack(
+            game_type="puzzle",
+            theme="k12 physics circuit education, classroom learning scenario",
+            generation_tier="showcase",
+            variation_seed="circuit-classroom",
+        )
+        self.assertEqual(pack["id"], "clean_edu")
+
+    def test_select_visual_pack_keeps_retro_terminal_for_neon_terminal_themes(self) -> None:
+        pack = visual_pack_catalog.select_visual_pack(
+            game_type="puzzle",
+            theme="retro neon terminal hacker puzzle in a cyber city",
+            generation_tier="showcase",
+            variation_seed="retro-terminal",
+        )
+        self.assertEqual(pack["id"], "retro_terminal")

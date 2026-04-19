@@ -80,7 +80,7 @@
     "palette": ["#0f172a", "#0ea5e9", "#14b8a6", "#facc15", "#f8fafc"],
     "effects": ["soft_glow"],
     "preferredArtStyle": "clean",
-    "suitableThemes": ["ocean", "forest", "toy", "arcade"],
+    "suitableThemes": ["ocean", "forest", "toy", "arcade", "classroom", "school", "education", "science", "lab", "circuit"],
     "suitableGameTypes": ["educational", "puzzle"],
     "showcasePreferred": false
   },

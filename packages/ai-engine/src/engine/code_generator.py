@@ -19,7 +19,7 @@ from ..config.settings import settings
 from ..config.timeout_store import get_int as get_timeout_int
 from ..services.llm_client import LLMClient
 from .code_template_cache import CodeTemplateCache
-from .prompt_store import get_prompt, get_runtime_profile, require_prompt
+from .prompt_store import get_runtime_profile, require_prompt
 from .runtime_profile_ids import normalize_runtime_profile_id
 from .section_patch import (
     PATCH_SECTION_BODY,
@@ -1479,6 +1479,18 @@ class CodeGenerator:
             lines.append(f"- {rule}")
         return "\n".join(lines)
 
+    @staticmethod
+    def _build_visual_quality_hint(spec: GameSpec) -> str:
+        theme = (spec.visual_style.theme or "the requested world").strip()
+        art_style = (spec.visual_style.art_style or "stylized premium canvas art").strip()
+        palette = ", ".join((spec.visual_style.palette or [])[:4]).strip()
+        template = require_prompt("prompt.visual_quality_bar")
+        return template.format_map(_SafePromptFormatDict({
+            "theme": theme,
+            "art_style": art_style,
+            "palette_line": (f"- Keep the art cohesive around a controlled palette such as {palette}." if palette else ""),
+        }))
+
     def _build_critical_intent_block(
         self,
         spec: GameSpec,
@@ -1509,9 +1521,9 @@ class CodeGenerator:
         base_block = self._strip_ui_language_line(base_block)
         base_block = self._strip_reference_and_special_rules(base_block, structured_design)
         distinctive_hint = self._build_distinctive_loop_hint(spec, request_text, runtime_profile)
-        if distinctive_hint:
-            return "\n".join([base_block, distinctive_hint])
-        return base_block
+        visual_quality_hint = self._build_visual_quality_hint(spec)
+        extra_blocks = [block for block in (base_block, visual_quality_hint, distinctive_hint) if block]
+        return "\n".join(extra_blocks)
 
     @staticmethod
     def _strip_ui_language_line(prompt: str) -> str:
@@ -1645,31 +1657,7 @@ class CodeGenerator:
     @classmethod
     def _build_generation_tier_block(cls, spec: Optional[GameSpec]) -> str:
         generation_tier = cls._resolve_generation_tier(spec)
-        if generation_tier == "safe":
-            return (
-                "GENERATION TIER: SAFE\n"
-                "- Prioritize stability, clarity, and QA-friendly structure.\n"
-                "- Keep the implementation compact, but do not collapse the brief into a generic stock loop."
-            )
-        if generation_tier == "showcase":
-            custom = get_prompt("prompt.generation_tier_showcase")
-            if custom:
-                return custom.strip()
-            return (
-                "GENERATION TIER: SHOWCASE\n"
-                "- Aim for a premium-feeling result with stronger presentation, richer feedback, and a more distinctive loop.\n"
-                "- It is acceptable to add 2-3 linked subsystems as long as they share one main update/render loop.\n"
-                "- Prefer a memorable mechanic framing, stronger pacing, and more expressive HUD/FX instead of the smallest generic implementation."
-            )
-        custom = get_prompt("prompt.generation_tier_standard")
-        if custom:
-            return custom.strip()
-        return (
-            "GENERATION TIER: STANDARD\n"
-            "- Balance stability with delight.\n"
-            "- Build a more polished and distinctive result than the minimal safe baseline.\n"
-            "- Allow one supporting subsystem, stronger presentation, and clearer progression when they fit the brief."
-        )
+        return require_prompt(f"prompt.generation_tier_{generation_tier}").strip()
 
     @staticmethod
     def _build_mechanic_diversity_block(
@@ -1981,23 +1969,7 @@ class CodeGenerator:
         )
         normalized_aliases = [alias for alias in terminal_state_aliases if (alias or "").strip()]
         bundle_id = str((prompt_bundle_snapshot or {}).get("bundle_id") or "").strip()
-        template = get_prompt(
-            "prompt.runtime_contract_summary",
-            (
-                "RUNTIME CONTRACT (MUST STAY FUNCTIONAL):\n"
-                "- Runtime profile: {runtime_profile} (contract v{contract_version})\n"
-                "- Core state flow must support {required_states} with a restart path back into active play.\n"
-                "- Input must work through {input_modes}; expected gestures: {gestures}.\n"
-                "- Forbidden APIs: {forbidden_apis}.\n"
-                "- Mobile layout: {orientation}, {ui_scale_mode} scaling, HUD {hud_min}-{hud_max}px, title {title_min}-{title_max}px.\n"
-                "- Platform target: mobile H5 browser / WebView with a single main canvas.\n"
-                "- Prevent accidental page scrolling during play and keep gameplay local with no external network or asset requests.\n"
-                "- Accepted terminal/completion state aliases: {terminal_state_aliases}\n"
-                "- Prompt bundle: {bundle_id}\n"
-                "- Prompt layers: {layer_keys}\n"
-                "- The final code must respect every contract rule explicitly, not implicitly."
-            ),
-        )
+        template = require_prompt("prompt.runtime_contract_summary")
         rendered = template.format_map(_SafePromptFormatDict({
             "runtime_profile": profile_value,
             "contract_version": contract_version,
@@ -2209,10 +2181,10 @@ class CodeGenerator:
         return "\n".join(compacted).strip()
 
     def _build_platform_standard_fallback(self) -> str:
-        runtime_contract_template = get_prompt("prompt.runtime_contract_summary", "").lower()
+        runtime_contract_template = require_prompt("prompt.runtime_contract_summary").lower()
         if "mobile h5 browser" in runtime_contract_template or "platform target" in runtime_contract_template:
             return ""
-        return get_prompt("prompt.platform_standard", "")
+        return require_prompt("prompt.platform_standard")
 
     @staticmethod
     def _resolved_bundle_prompt(
@@ -2309,54 +2281,7 @@ class CodeGenerator:
         rewritten = system_prompt or ""
         if generation_tier == "safe":
             return rewritten
-
-        replacements: List[Tuple[str, str]] = [
-            (
-                r"(?im)^.*smallest implementation.*$",
-                (
-                    "Choose the smallest implementation that still feels polished, intentional, "
-                    "and distinct from stock examples."
-                    if generation_tier == "standard"
-                    else "Choose the most distinctive implementation that still stays stable, readable, and mobile-friendly."
-                ),
-            ),
-            (
-                r"(?im)^.*one clear gameplay loop.*$",
-                (
-                    "Prefer one clear primary loop, but a supporting subsystem is allowed when it improves pacing or delight."
-                    if generation_tier == "standard"
-                    else "Prefer one signature primary loop with up to two linked support systems when they enhance pacing, progression, or spectacle."
-                ),
-            ),
-            (
-                r"(?im)^.*avoid optional polish before core loop.*$",
-                (
-                    "Secure the core loop first, then spend remaining budget on stronger feedback, pacing, and presentation."
-                    if generation_tier == "standard"
-                    else "Secure boot, input, restart, and visible feedback first, then actively spend budget on presentation, juice, and memorable payoff."
-                ),
-            ),
-        ]
-        for pattern, replacement in replacements:
-            rewritten = re.sub(pattern, replacement, rewritten)
-
-        extra_block = get_prompt(f"prompt.code_gen_system_{generation_tier}")
-        if extra_block:
-            extra = extra_block.strip()
-        elif generation_tier == "showcase":
-            extra = (
-                "SHOWCASE OVERRIDE:\n"
-                "- A premium-feeling result is preferred over the smallest generic implementation.\n"
-                "- Strong visual hierarchy, richer feedback, and clearer progression are encouraged.\n"
-                "- Preserve mobile readability, restartability, and performance while aiming for a more memorable result."
-            )
-        else:
-            extra = (
-                "STANDARD OVERRIDE:\n"
-                "- Do not collapse the brief into the safest stock demo.\n"
-                "- Favor clearer progression, stronger feedback, and a more intentional presentation when they fit the request."
-            )
-
+        extra = require_prompt(f"prompt.code_gen_system_{generation_tier}").strip()
         if extra:
             rewritten = "\n\n".join(part for part in [rewritten.strip(), extra] if part)
         return rewritten
@@ -2776,7 +2701,10 @@ class CodeGenerator:
             return candidate
         except Exception as exc:
             logger.error("LLM iterate failed: %s", exc)
-            raise RuntimeError(f"LLM iterate failed: {exc}") from exc
+            exc_name = exc.__class__.__name__
+            exc_message = str(exc).strip()
+            detail = f"{exc_name}: {exc_message}" if exc_message else exc_name
+            raise RuntimeError(f"LLM iterate failed: {detail}") from exc
 
 def _extract_html(text: str) -> str:
     """Extract clean HTML from LLM output."""

@@ -15,6 +15,7 @@ from ..api.models import (
     GameEntity,
     GameRuntimeContract,
     GameSpec,
+    IterationType,
     IterateResponse,
     IterateV2Request,
     QACheckError,
@@ -147,6 +148,76 @@ PROFILE_KEYWORD_FALLBACKS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("drag", ("casual_arcade_orbit", "puzzle_grid_route", "casual_action")),
 )
 
+ACTION_RUNTIME_MARKERS: tuple[str, ...] = (
+    "action",
+    "battle",
+    "combat",
+    "fight",
+    "slash",
+    "sword",
+    "katana",
+    "ronin",
+    "ninja",
+    "warrior",
+    "hero",
+    "guardian",
+    "boss",
+    "enemy",
+    "drone",
+    "dash",
+    "dodge",
+    "rooftop",
+    "leap",
+    "jump",
+    "survive",
+    "hazard",
+    "rescue",
+    "escort",
+    "spirit",
+    "fox",
+    "\u52a8\u4f5c",
+    "\u6218\u6597",
+    "\u4e3b\u89d2",
+    "\u82f1\u96c4",
+    "\u5b88\u62a4",
+    "\u654c\u4eba",
+    "\u51b2\u523a",
+    "\u8e32\u907f",
+    "\u6551\u63f4",
+)
+
+PUZZLE_RUNTIME_MARKERS: tuple[str, ...] = (
+    "puzzle",
+    "match",
+    "merge",
+    "quiz",
+    "lesson",
+    "teacher",
+    "learn",
+    "logic",
+    "connect",
+    "route",
+    "word",
+    "math",
+    "answer",
+    "sort",
+    "\u8c1c\u9898",
+    "\u6d88\u9664",
+    "\u5408\u6210",
+    "\u8fde\u7ebf",
+    "\u95ee\u7b54",
+    "\u6559\u5b66",
+    "\u5b66\u4e60",
+)
+
+ACTION_FOCUSED_RUNTIME_PROFILES: tuple[str, ...] = (
+    "casual_action_arena",
+    "casual_action_survival",
+    "casual_lane_dash",
+    "casual_lane_chase",
+    "casual_arcade_rescue",
+)
+
 PROFILE_TO_GAME_TYPE_HINT: dict[str, str] = {
     "casual_arcade": "casual",
     "casual_lane": "casual",
@@ -276,8 +347,12 @@ class V2PipelineRunner:
 
     def _should_run_code_review(self, spec: GameSpec) -> bool:
         current_tier = CodeGenerator._resolve_generation_tier(spec)
-        min_tier = str(getattr(settings, "LLM_CODE_REVIEW_MIN_TIER", "showcase") or "showcase")
+        min_tier = str(getattr(settings, "LLM_CODE_REVIEW_MIN_TIER", "standard") or "standard")
         return self._generation_tier_rank(current_tier) >= self._generation_tier_rank(min_tier)
+
+    @staticmethod
+    def _is_structured_review_required(spec: GameSpec) -> bool:
+        return CodeGenerator._resolve_generation_tier(spec) == "showcase"
 
     def _select_generation_budget_override(self, spec: GameSpec) -> str:
         return CodeGenerator._resolve_budget_profile(spec)
@@ -293,6 +368,262 @@ class V2PipelineRunner:
             "showcase": ("showcase", "complex"),
         }
         return plan_by_budget.get(normalized, ("standard", "standard"))[:DEFAULT_CREATE_FULL_GENERATION_ATTEMPTS]
+
+    @staticmethod
+    def _quality_gate_thresholds(spec: GameSpec) -> dict[str, float]:
+        generation_tier = CodeGenerator._resolve_generation_tier(spec)
+        if generation_tier == "showcase":
+            return {
+                "fun_score": 8.0,
+                "visual_polish_score": 8.0,
+                "character_quality_score": 7.5,
+                "abstract_character_floor": 7.0,
+                "final_score": 8.5,
+                "min_review_bonus": -1.5,
+            }
+        if generation_tier == "safe":
+            return {
+                "fun_score": 6.0,
+                "visual_polish_score": 5.8,
+                "character_quality_score": 5.2,
+                "abstract_character_floor": 4.8,
+                "final_score": 5.8,
+            }
+        return {
+            "fun_score": 6.8,
+            "visual_polish_score": 6.8,
+            "character_quality_score": 6.4,
+            "abstract_character_floor": 6.0,
+            "final_score": 6.6,
+        }
+
+    @staticmethod
+    def _is_character_driven_spec(spec: GameSpec) -> bool:
+        searchable = " ".join(
+            part
+            for part in (
+                spec.source_description,
+                spec.intent_summary,
+                getattr(spec.visual_style, "theme", ""),
+                getattr(spec.visual_style, "art_style", ""),
+                spec.reference_game,
+                spec.reference_style,
+                spec.signature_moment,
+                spec.reward_loop,
+                " ".join(spec.special_rules or []),
+                " ".join(entity.name for entity in (spec.entities or [])),
+            )
+            if str(part or "").strip()
+        ).lower()
+        if any(
+            marker in searchable
+            for marker in (
+                "character",
+                "hero",
+                "girl",
+                "boy",
+                "man",
+                "woman",
+                "fighter",
+                "warrior",
+                "soldier",
+                "driver",
+                "teacher",
+                "student",
+                "chef",
+                "pirate",
+                "ninja",
+                "monster",
+                "dragon",
+                "cat",
+                "dog",
+                "animal",
+                "人物",
+                "角色",
+                "主角",
+                "怪物",
+                "动物",
+                "老师",
+                "学生",
+            )
+        ):
+            return True
+        if any(entity.role in {"enemy", "npc"} for entity in (spec.entities or [])):
+            return True
+        return False
+
+    @staticmethod
+    def _profile_selection_text(spec: GameSpec) -> str:
+        return " ".join(
+            part
+            for part in (
+                spec.game_type,
+                spec.source_description,
+                spec.intent_summary,
+                " ".join(spec.special_rules or []),
+                spec.reference_game,
+                " ".join(entity.name for entity in (spec.entities or [])),
+            )
+            if str(part or "").strip()
+        ).lower()
+
+    @classmethod
+    def _looks_like_action_runtime_request(cls, spec: GameSpec) -> bool:
+        searchable = cls._profile_selection_text(spec)
+        return any(marker in searchable for marker in ACTION_RUNTIME_MARKERS)
+
+    @classmethod
+    def _looks_like_puzzle_runtime_request(cls, spec: GameSpec) -> bool:
+        searchable = cls._profile_selection_text(spec)
+        return any(marker in searchable for marker in PUZZLE_RUNTIME_MARKERS)
+
+    @staticmethod
+    def _looks_like_quiz_show_runtime_request(spec: GameSpec) -> bool:
+        searchable = V2PipelineRunner._profile_selection_text(spec)
+        return any(
+            marker in searchable
+            for marker in (
+                "quiz show",
+                "game show",
+                "trivia show",
+                "millionaire",
+                "host",
+                "buzzer",
+                "streak",
+                "combo",
+                "stage",
+                "spotlight",
+                "答题秀",
+                "答题节目",
+                "节目答题",
+                "综艺答题",
+                "综艺节目",
+                "舞台秀",
+                "舞台答题",
+                "主持人",
+                "连击",
+                "连胜",
+                "节奏感",
+                "演出效果",
+            )
+        )
+
+    @classmethod
+    def _preferred_quiz_show_profile(cls, spec: GameSpec) -> str:
+        searchable = cls._profile_selection_text(spec)
+        if any(marker in searchable for marker in ("combo", "streak", "连击", "连胜")):
+            return "tap_challenge_combo"
+        return "tap_challenge_timing"
+
+    @staticmethod
+    def _merge_profile_candidates(*candidate_groups: tuple[str, ...] | list[str]) -> list[str]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for group in candidate_groups:
+            for candidate in group:
+                normalized = normalize_runtime_profile_id(candidate)
+                if not normalized or normalized in seen:
+                    continue
+                seen.add(normalized)
+                ordered.append(normalized)
+        return ordered
+
+    @classmethod
+    def _quality_gate_errors(
+        cls,
+        spec: GameSpec,
+        review: LLMReviewResult,
+        quality: Any,
+        *,
+        review_required: bool = False,
+    ) -> list[str]:
+        if review_required and not getattr(review, "ran", False):
+            return [
+                "Structured code review did not return a valid quality assessment.",
+            ]
+        if not getattr(review, "ran", False):
+            return []
+
+        thresholds = cls._quality_gate_thresholds(spec)
+        character_threshold = (
+            thresholds["character_quality_score"]
+            if cls._is_character_driven_spec(spec)
+            else thresholds["abstract_character_floor"]
+        )
+        errors: list[str] = []
+
+        if not review.is_complete_game:
+            errors.append("Return a complete, polished game instead of an incomplete or placeholder output.")
+        if not review.has_real_gameplay:
+            errors.append("Strengthen the moment-to-moment gameplay so the result has a real playable loop.")
+        if review.fun_score < thresholds["fun_score"]:
+            errors.append(
+                f"Raise gameplay excitement and payoff: fun_score {review.fun_score:.1f} is below the required {thresholds['fun_score']:.1f}."
+            )
+        if review.visual_polish_score < thresholds["visual_polish_score"]:
+            errors.append(
+                f"Raise visual polish: visual_polish_score {review.visual_polish_score:.1f} is below the required {thresholds['visual_polish_score']:.1f}."
+            )
+        if review.character_quality_score < character_threshold:
+            errors.append(
+                f"Raise character quality: character_quality_score {review.character_quality_score:.1f} is below the required {character_threshold:.1f}."
+            )
+        if float(getattr(quality, "final_score", 0.0) or 0.0) < thresholds["final_score"]:
+            errors.append(
+                f"Raise the overall quality score from {float(getattr(quality, 'final_score', 0.0) or 0.0):.1f} to at least {thresholds['final_score']:.1f}."
+            )
+        min_review_bonus = thresholds.get("min_review_bonus")
+        review_bonus = float(getattr(quality, "review_bonus", 0.0) or 0.0)
+        if min_review_bonus is not None and review_bonus < min_review_bonus:
+            errors.append(
+                f"Reduce the structured code review penalty: review_bonus {review_bonus:.1f} is below the allowed {min_review_bonus:.1f}."
+            )
+        return errors
+
+    @classmethod
+    def _build_review_quality_guidance(
+        cls,
+        spec: GameSpec,
+        review: LLMReviewResult,
+        quality: Any,
+        errors: list[str],
+    ) -> str:
+        thresholds = cls._quality_gate_thresholds(spec)
+        character_driven = cls._is_character_driven_spec(spec)
+        lines = [
+            "QUALITY AND PRESENTATION CORRECTIONS (MUST FIX BEFORE RETURNING HTML):",
+            f"- The previous candidate missed the quality gate for the {CodeGenerator._resolve_generation_tier(spec)} tier.",
+        ]
+        for error in errors[:6]:
+            lines.append(f"- Fix this explicitly: {error}")
+        if review.fun_score < thresholds["fun_score"]:
+            lines.append(
+                "- Strengthen the first 5-10 seconds with a clearer hook, faster reward loop, visible escalation, and a more satisfying payoff."
+            )
+        if review.visual_polish_score < thresholds["visual_polish_score"]:
+            lines.append(
+                "- Upgrade presentation with layered backgrounds/foregrounds, controlled palette choices, readable depth separation, and richer impact feedback."
+            )
+        if review.character_quality_score < (
+            thresholds["character_quality_score"] if character_driven else thresholds["abstract_character_floor"]
+        ):
+            if character_driven:
+                lines.append(
+                    "- Make the hero, rival, creature, or NPC feel believable and intentionally designed: stronger silhouette, consistent proportions, expressive pose/facing, and reactive animation detail."
+                )
+            else:
+                lines.append(
+                    "- Even if the design is abstract, the main pieces and props must look premium and intentional rather than like stock rectangles or circles."
+                )
+        if float(getattr(quality, "final_score", 0.0) or 0.0) < thresholds["final_score"]:
+            lines.append(
+                "- Improve gameplay payoff and visual finish together; a technically valid prototype is not enough to pass."
+            )
+        for issue in (review.issues or [])[:4]:
+            normalized_issue = str(issue or "").strip()
+            if normalized_issue:
+                lines.append(f"- Reviewer issue to address: {normalized_issue}")
+        return "\n".join(lines)
 
     @staticmethod
     def _normalize_provider_exclusions(excluded_provider_ids: Optional[list[str]]) -> list[str]:
@@ -642,7 +973,7 @@ class V2PipelineRunner:
         })
         stage_context["stage"] = "logic_generate"
         allow_runtime_qa_unavailable = self._should_allow_runtime_qa_unavailable(spec)
-        attempt_plan = self._build_create_generation_attempt_plan(initial_budget_override)
+        attempt_plan = list(self._build_create_generation_attempt_plan(initial_budget_override))
         provider_exclusions: list[str] = []
         generated = None
         last_route_snapshot: Optional[dict[str, Any]] = None
@@ -650,10 +981,17 @@ class V2PipelineRunner:
         runtime_qa = None
         runtime_retries = 0
         qa_warnings: list[dict[str, Any]] = []
+        review = LLMReviewResult(ran=False)
+        quality = None
+        code_bytes = 0
         last_quality_exc: Exception | None = None
         generation_guidance: Optional[str] = None
+        extra_preflight_retry_granted = False
 
-        for quality_attempt, attempt_budget in enumerate(attempt_plan, start=1):
+        quality_attempt = 0
+        while quality_attempt < len(attempt_plan):
+            quality_attempt += 1
+            attempt_budget = attempt_plan[quality_attempt - 1]
             generated = None
             try:
                 generated, preflight_issues = await self._generate_create_code(
@@ -677,7 +1015,11 @@ class V2PipelineRunner:
                         failure_family="code_generation",
                     )
                     if quality_attempt >= len(attempt_plan):
-                        raise last_quality_exc
+                        if not extra_preflight_retry_granted and len(attempt_plan) < DEFAULT_STAGE_TOTAL_ATTEMPTS:
+                            attempt_plan.append(attempt_budget)
+                            extra_preflight_retry_granted = True
+                        else:
+                            raise last_quality_exc
                     self._notify(
                         progress_cb,
                         "logic_generate",
@@ -738,11 +1080,69 @@ class V2PipelineRunner:
                     )
                     await asyncio.sleep(min(quality_attempt, 2))
                     continue
+
+                final_check = self.qa_pipeline.check(qa_result.code)
+                code_bytes = len(qa_result.code.encode("utf-8"))
+                review = LLMReviewResult(ran=False)
+                review_requested = self._should_run_code_review(spec)
+                if review_requested:
+                    review = await self.code_reviewer.review(qa_result.code)
+                quality = self.quality_scorer.compute(
+                    static=QAStaticResult(
+                        passed=final_check.passed,
+                        error_count=len(final_check.errors),
+                        warning_count=len(final_check.warnings),
+                        retries=qa_result.retries + runtime_retries,
+                        strategy=generated.strategy,
+                        code_size_bytes=code_bytes,
+                    ),
+                    runtime=runtime_qa,
+                    review=review,
+                    code=qa_result.code,
+                )
+                quality_gate_errors = self._quality_gate_errors(
+                    spec,
+                    review,
+                    quality,
+                    review_required=self._is_structured_review_required(spec),
+                )
+                if quality_gate_errors:
+                    last_quality_exc = PipelineExecutionError(
+                        "Generated code failed quality gate: " + "; ".join(quality_gate_errors[:4]),
+                        stage="code_review",
+                        retry_count=max(0, quality_attempt - 1),
+                        failure_family="quality_gate",
+                    )
+                    if quality_attempt >= len(attempt_plan):
+                        raise last_quality_exc
+                    generation_guidance = self._build_review_quality_guidance(
+                        spec,
+                        review,
+                        quality,
+                        quality_gate_errors,
+                    )
+                    self._notify(
+                        progress_cb,
+                        "logic_generate",
+                        68,
+                        "Regenerating with gameplay and presentation quality guidance",
+                        {
+                            "gameId": request.game_id,
+                            "userId": request.user_id,
+                            "runtimeProfile": runtime_profile,
+                            "attempt": quality_attempt,
+                            "maxAttempts": len(attempt_plan),
+                            "failedStage": "code_review",
+                            "failedProviderId": (last_route_snapshot or {}).get("provider_id"),
+                        },
+                    )
+                    await asyncio.sleep(min(quality_attempt, 2))
+                    continue
                 break
             except PipelineExecutionError as exc:
                 last_quality_exc = exc
                 last_route_snapshot = getattr(exc, "route_snapshot", None) or last_route_snapshot
-                if quality_attempt >= len(attempt_plan) or exc.stage not in {"logic_generate", "contract_qa", "runtime_simulation_qa"}:
+                if quality_attempt >= len(attempt_plan) or exc.stage not in {"logic_generate", "contract_qa", "runtime_simulation_qa", "code_review"}:
                     raise
                 generation_guidance = self._build_quality_regeneration_guidance(
                     stage=exc.stage,
@@ -780,32 +1180,14 @@ class V2PipelineRunner:
                 await asyncio.sleep(min(quality_attempt, 2))
                 continue
 
-        if qa_result is None or runtime_qa is None or generated is None:
+        if qa_result is None or runtime_qa is None or generated is None or quality is None:
             raise last_quality_exc or PipelineExecutionError(
                 "Create generation failed before QA completed",
                 stage=stage_context.get("stage", "logic_generate"),
             )
 
         elapsed = int(time.time() * 1000) - start_ms
-        code_bytes = len(qa_result.code.encode("utf-8"))
-        final_check = self.qa_pipeline.check(qa_result.code)
         await self._remember_code(qa_result.code, label="final_code")
-        review = LLMReviewResult(ran=False)
-        if self._should_run_code_review(spec):
-            review = await self.code_reviewer.review(qa_result.code)
-        quality = self.quality_scorer.compute(
-            static=QAStaticResult(
-                passed=final_check.passed,
-                error_count=len(final_check.errors),
-                warning_count=len(final_check.warnings),
-                retries=qa_result.retries + runtime_retries,
-                strategy=generated.strategy,
-                code_size_bytes=code_bytes,
-            ),
-            runtime=runtime_qa,
-            review=review,
-            code=qa_result.code,
-        )
         # P1.2 GAP-3: persist fun_score into QAPipeline so PR-10's
         # filter_fixable can honor the CREATIVE-preserve threshold on
         # iterate-style follow-up runs. Only set when review actually ran;
@@ -851,7 +1233,7 @@ class V2PipelineRunner:
             except Exception:  # noqa: BLE001 - guard must never crash runner
                 pass
 
-        if qa_result.success and quality.final_score >= 5.0:
+        if qa_result.success and quality.final_score >= 6.0:
             self.code_generator.template_cache.store(
                 spec,
                 runtime_profile,
@@ -952,25 +1334,56 @@ class V2PipelineRunner:
             "runtimeProfile": runtime_profile,
         })
         stage_context["stage"] = "logic_generate"
-        updated_code, iteration_type = await self._generate_iteration_code(request, spec, runtime_contract)
-        await self._remember_code(updated_code, label=f"iteration_{iteration_type.value}")
-        await task_memory.append_decision(
-            self._current_task_id(),
-            f"Iteration classified as {iteration_type.value}",
-        )
+        qa_result = None
+        runtime_qa = None
+        runtime_retries = 0
+        qa_warnings: list[dict[str, Any]] = []
+        iteration_type = IterationType.element_change
+        retryable_validation_stages = {"contract_qa", "runtime_simulation_qa"}
+        last_iteration_exc: PipelineExecutionError | None = None
+        for iteration_attempt in range(1, DEFAULT_STAGE_TOTAL_ATTEMPTS + 1):
+            updated_code, iteration_type = await self._generate_iteration_code(request, spec, runtime_contract)
+            await self._remember_code(updated_code, label=f"iteration_{iteration_type.value}_{iteration_attempt}")
+            await task_memory.append_decision(
+                self._current_task_id(),
+                f"Iteration classified as {iteration_type.value}",
+            )
 
-        qa_result, runtime_qa, runtime_retries, qa_warnings = await self._run_contract_and_runtime_flow(
-            code=updated_code,
-            spec=spec,
-            runtime_contract=runtime_contract,
-            prompt_bundle_snapshot=request.prompt_bundle_snapshot.model_dump(),
-            progress_cb=progress_cb,
-            game_id=request.game_id,
-            user_id=request.user_id,
-            stage_context=stage_context,
-            allow_runtime_qa_unavailable=self._should_allow_runtime_qa_unavailable(spec),
-            operation="iterate",  # P1.3 PR-11
-        )
+            try:
+                qa_result, runtime_qa, runtime_retries, qa_warnings = await self._run_contract_and_runtime_flow(
+                    code=updated_code,
+                    spec=spec,
+                    runtime_contract=runtime_contract,
+                    prompt_bundle_snapshot=request.prompt_bundle_snapshot.model_dump(),
+                    progress_cb=progress_cb,
+                    game_id=request.game_id,
+                    user_id=request.user_id,
+                    stage_context=stage_context,
+                    allow_runtime_qa_unavailable=self._should_allow_runtime_qa_unavailable(spec),
+                    operation="iterate",  # P1.3 PR-11
+                )
+                break
+            except PipelineExecutionError as exc:
+                last_iteration_exc = exc
+                if iteration_attempt >= DEFAULT_STAGE_TOTAL_ATTEMPTS or exc.stage not in retryable_validation_stages:
+                    raise
+                self._notify(progress_cb, "logic_generate", 66, "Regenerating iteration after validation failure", {
+                    "gameId": request.game_id,
+                    "userId": request.user_id,
+                    "runtimeProfile": runtime_profile,
+                    "attempt": iteration_attempt,
+                    "maxAttempts": DEFAULT_STAGE_TOTAL_ATTEMPTS,
+                    "failedStage": exc.stage,
+                })
+                await asyncio.sleep(min(iteration_attempt, 2))
+                stage_context["stage"] = "logic_generate"
+
+        if qa_result is None or runtime_qa is None:
+            raise last_iteration_exc or PipelineExecutionError(
+                "Iteration validation failed before a recoverable result was produced.",
+                stage=stage_context.get("stage", "runtime_simulation_qa"),
+                failure_family="runtime_qa",
+            )
 
         elapsed = int(time.time() * 1000) - start_ms
         await self._remember_code(qa_result.code, label="final_code")
@@ -1217,26 +1630,52 @@ class V2PipelineRunner:
         variation_seed: Optional[str] = None,
     ) -> str:
         requested = normalize_runtime_profile_id((requested_profile or "").strip())
+        selection_text = self._profile_selection_text(spec)
+        action_request = self._looks_like_action_runtime_request(spec)
+        puzzle_request = self._looks_like_puzzle_runtime_request(spec)
+        quiz_show_request = self._looks_like_quiz_show_runtime_request(spec)
+        generation_tier = CodeGenerator._resolve_generation_tier(spec)
         if requested:
             try:
                 default_profile = _default_runtime_profile_id()
             except PipelineExecutionError:
                 default_profile = requested
             if requested != default_profile:
-                return requested
+                should_override_requested_profile = (
+                    quiz_show_request
+                    and generation_tier == "showcase"
+                    and requested == "puzzle_grid"
+                )
+                if not should_override_requested_profile:
+                    return requested
+        if quiz_show_request and not action_request:
+            return self._preferred_quiz_show_profile(spec)
         if _looks_like_educational_request(
             spec.source_description,
             spec.intent_summary,
             " ".join(spec.special_rules or []),
-        ):
+        ) and not action_request:
             return "puzzle_grid"
         normalized = re.sub(r"[^a-z0-9]+", " ", (spec.game_type or "").lower()).strip()
-        candidates = list(PROFILE_CANDIDATES_BY_GAME_TYPE.get(normalized, ()))
-        if not candidates:
-            for token, fallback_candidates in PROFILE_KEYWORD_FALLBACKS:
-                if token in normalized:
-                    candidates = list(fallback_candidates)
-                    break
+        game_type_candidates = list(PROFILE_CANDIDATES_BY_GAME_TYPE.get(normalized, ()))
+        keyword_candidates: list[str] = []
+        for token, fallback_candidates in PROFILE_KEYWORD_FALLBACKS:
+            if token in selection_text:
+                keyword_candidates.extend(fallback_candidates)
+
+        action_candidates: list[str] = []
+        if action_request and not puzzle_request:
+            action_candidates.extend(ACTION_FOCUSED_RUNTIME_PROFILES)
+
+        candidates = self._merge_profile_candidates(
+            action_candidates,
+            keyword_candidates,
+            game_type_candidates,
+        )
+        if action_request and not puzzle_request:
+            filtered = [candidate for candidate in candidates if not candidate.startswith("puzzle_grid")]
+            if filtered:
+                candidates = filtered
         if candidates:
             ranked = self._rank_runtime_profile_candidates(spec, candidates)
             if len(ranked) == 1 or not self._should_allow_profile_variation(spec):
@@ -1259,16 +1698,15 @@ class V2PipelineRunner:
         return [profile for _, _, profile in ordered]
 
     def _score_runtime_profile_candidate(self, spec: GameSpec, profile: str) -> int:
-        combined = " ".join([
-            spec.source_description or "",
-            spec.intent_summary or "",
-            spec.rules.win_condition or "",
-            " ".join(spec.special_rules or []),
-        ]).lower()
+        combined = self._profile_selection_text(spec)
         input_mode = (spec.platform_constraints.input_mode or "").lower()
         sparse = self._should_allow_profile_variation(spec)
         raw_generation_tier = getattr(spec, "generation_tier", GenerationTier.standard)
         generation_tier = str(getattr(raw_generation_tier, "value", raw_generation_tier))
+        action_request = self._looks_like_action_runtime_request(spec)
+        puzzle_request = self._looks_like_puzzle_runtime_request(spec)
+        quiz_show_request = self._looks_like_quiz_show_runtime_request(spec)
+        character_driven = self._is_character_driven_spec(spec)
         score = 0
 
         base_scores = (
@@ -1320,6 +1758,10 @@ class V2PipelineRunner:
 
         if any(token in combined for token in ("quiz", "lesson", "teacher", "learn", "math", "word", "spell", "answer")) and profile in {"puzzle_grid", "puzzle_grid_match", "puzzle_grid_route", "tap_challenge_timing"}:
             score += 4
+        if quiz_show_request and profile in {"tap_challenge_timing", "tap_challenge_combo"}:
+            score += 6
+        if quiz_show_request and profile.startswith("puzzle_grid"):
+            score -= 2
         if any(token in combined for token in ("match", "sort", "logic", "connect", "solve")) and profile in {"puzzle_grid", "puzzle_grid_match", "puzzle_grid_route"}:
             score += 3
         if "merge" in combined and profile in {"puzzle_grid_merge", "puzzle_grid_match"}:
@@ -1341,6 +1783,16 @@ class V2PipelineRunner:
         if any(token in combined for token in ("funny", "comedy", "meme", "prank", "office", "goose", "slacker")) and profile in {"casual_arcade", "casual_arcade_burst", "casual_action_arena", "tap_challenge_combo"}:
             score += 3
 
+        if action_request:
+            if profile in ACTION_FOCUSED_RUNTIME_PROFILES:
+                score += 5
+            if profile.startswith("puzzle_grid"):
+                score -= 6
+        if character_driven and profile.startswith("puzzle_grid"):
+            score -= 4
+        if puzzle_request and not action_request and profile.startswith("puzzle_grid"):
+            score += 3
+
         if sparse and profile in {"casual_arcade_burst", "casual_arcade_orbit", "casual_arcade_rescue", "puzzle_grid_route", "tap_challenge_combo"}:
             score += 2
         if sparse and profile in {"casual_action", "puzzle_grid", "casual_arcade"}:
@@ -1350,6 +1802,8 @@ class V2PipelineRunner:
             score += 2 if profile in BASELINE_RUNTIME_PROFILES else -2
         elif generation_tier == "showcase":
             score += 3 if profile not in BASELINE_RUNTIME_PROFILES else -1
+            if action_request and profile in ACTION_FOCUSED_RUNTIME_PROFILES:
+                score += 2
 
         return score
 
@@ -2620,6 +3074,8 @@ class V2PipelineRunner:
         message = str(exc).lower()
         retryable_markers = (
             "timeout",
+            "timed out",
+            "readtimeout",
             "temporarily unavailable",
             "rate limit",
             "connection reset",

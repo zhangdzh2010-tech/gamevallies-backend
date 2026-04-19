@@ -39,15 +39,16 @@ class TestExpandPromptEndpoint(unittest.TestCase):
         self.assertNotIn("Game Type:", expanded_prompt)
         self.assertNotIn("Core Mechanic:", expanded_prompt)
 
-    def test_expand_prompt_rejects_internal_slot_style_output_and_rewrites_in_user_language(self):
+    def test_expand_prompt_rejects_legacy_template_style_output(self):
         low_quality_output = "\n".join(
             [
-                "Game Type: 根据原始想法确定游戏方向",
-                "Core Mechanic: 提炼玩家最常执行的核心动作",
-                "Theme: 保留原始想法里的题材、场景或情绪",
-                "Input Method: 采用适合手机的点击、滑动或拖拽操作",
-                "Win Condition: 明确玩家这一局如何过关或获胜",
-                "Difficulty Ramp: 说明难度如何逐步提升",
+                "Original Idea: Make a premium-feeling landscape action game for mobile web where a cyber ronin hero dashes across neon rooftops, slices hunter drones, and collects energy shards.",
+                "",
+                "Please turn this brief into a mobile-friendly game generation prompt that covers at least these elements:",
+                "Game Type: Choose the most fitting direction from the original idea",
+                "Core Mechanic: Describe the main repeated player action",
+                "Theme: Preserve the setting, fantasy, or mood implied by the brief",
+                "Input Method: Use touch-friendly tap, swipe, or drag controls",
             ]
         )
 
@@ -64,7 +65,9 @@ class TestExpandPromptEndpoint(unittest.TestCase):
             with TestClient(app) as client:
                 response = client.post(
                     "/api/v1/ai/expand-prompt",
-                    json={"description": "做一个上班摸鱼的游戏，5个关卡，要抓住现代办公室的梗，整体要好笑。"},
+                    json={
+                        "description": "Make a premium-feeling landscape action game for mobile web where a cyber ronin hero dashes across neon rooftops and slices hunter drones.",
+                    },
                 )
 
         self.assertEqual(response.status_code, 200)
@@ -72,11 +75,11 @@ class TestExpandPromptEndpoint(unittest.TestCase):
         self.assertTrue(data.get("fallback_used"))
         self.assertEqual(data.get("fallback_reason"), "low_quality_llm_output")
         expanded_prompt = data.get("expanded_prompt", "")
+        self.assertIn("cyber ronin", expanded_prompt.lower())
+        self.assertNotIn("Original Idea:", expanded_prompt)
+        self.assertNotIn("Please turn this brief", expanded_prompt)
         self.assertNotIn("Game Type:", expanded_prompt)
         self.assertNotIn("Core Mechanic:", expanded_prompt)
-        self.assertIn("摸鱼", expanded_prompt)
-        self.assertIn("手机", expanded_prompt)
-        self.assertIn("5个关卡", expanded_prompt)
 
 
 if __name__ == "__main__":

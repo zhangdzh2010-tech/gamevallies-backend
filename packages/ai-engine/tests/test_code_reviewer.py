@@ -36,6 +36,8 @@ def test_review_uses_safe_prompt_format_for_literal_json_examples():
                 '  "has_real_gameplay": false,\n'
                 '  "difficulty_balanced": false,\n'
                 '  "fun_score": 5,\n'
+                '  "visual_polish_score": 5,\n'
+                '  "character_quality_score": 5,\n'
                 '  "issues": []\n'
                 "}\n"
                 "Preview:\n{code_preview}"
@@ -48,11 +50,13 @@ def test_review_uses_safe_prompt_format_for_literal_json_examples():
         return_value=True,
     ), patch.object(
         reviewer._client,
-        "complete",
-        new=AsyncMock(return_value='{"is_complete_game": true, "has_real_gameplay": true, "difficulty_balanced": true, "fun_score": 8, "issues": []}'),
+        "complete_with_truncation_retry",
+        new=AsyncMock(return_value='{"is_complete_game": true, "has_real_gameplay": true, "difficulty_balanced": true, "fun_score": 8, "visual_polish_score": 7, "character_quality_score": 6, "issues": []}'),
     ):
         result = asyncio.run(reviewer.review("<html><body>ok</body></html>"))
 
     assert result.ran is True
     assert result.is_complete_game is True
     assert result.has_real_gameplay is True
+    assert result.visual_polish_score == 7.0
+    assert result.character_quality_score == 6.0

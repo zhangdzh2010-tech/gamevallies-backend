@@ -285,6 +285,44 @@ def test_code_preflight_auto_repair_wraps_nested_grid_reads_with_safe_helper():
     assert not any(issue.code == "unsafe_nested_grid_read" for issue in issues)
 
 
+def test_code_preflight_auto_repair_targets_primary_script_not_just_first_script():
+    validator = CodePreflightValidator()
+    html = """
+    <!DOCTYPE html>
+    <html>
+      <body>
+        <canvas id="gameCanvas"></canvas>
+        <script>
+          window.__BOOT = true;
+        </script>
+        <script>
+          const canvas = document.getElementById('gameCanvas');
+          canvas.width = 360;
+          canvas.height = 640;
+          function updateTween(grid, row, col) {
+            return grid[row][col].targetX + ':' + grid[row][col].targetY;
+          }
+        </script>
+      </body>
+    </html>
+    """
+
+    repaired = validator.auto_repair(
+        html,
+        runtime_contract=GameRuntimeContract(runtime_profile="puzzle_grid_merge"),
+    )
+    issues = validator.validate(
+        repaired,
+        runtime_contract=GameRuntimeContract(runtime_profile="puzzle_grid_merge"),
+    )
+
+    assert "window.__BOOT = true;" in repaired
+    assert "__safeGridCell" in repaired
+    assert "grid[row][col].targetX" not in repaired
+    assert "grid[row][col].targetY" not in repaired
+    assert not any(issue.code == "unsafe_nested_grid_read" for issue in issues)
+
+
 def test_code_preflight_auto_repair_replaces_null_ctx_with_safe_canvas_context():
     validator = CodePreflightValidator()
     html = """

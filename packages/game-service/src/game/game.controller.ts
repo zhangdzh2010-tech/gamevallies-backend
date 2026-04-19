@@ -63,27 +63,14 @@ export class GameController {
       throw new BadRequestException('description is required');
     }
 
-    try {
-      const aiEngineUrl = await this.gameService.getAiEngineBaseUrl(body.regionHint);
-      const timeoutMs = await this.gameService.getExpandPromptRequestTimeoutMs();
-      const response = await require('axios').post(
-        `${aiEngineUrl}/api/v1/ai/expand-prompt`,
-        { description },
-        { timeout: timeoutMs },
-      );
-      return ok(response.data);
-    } catch (error) {
-      this.logger.error(`Expand prompt failed: ${error.message}`);
-      const status = error?.response?.status;
-      const detail = error?.response?.data?.detail
-        || error?.response?.data?.message
-        || error?.message
-        || 'Expand prompt failed';
-      if (typeof status === 'number') {
-        throw new HttpException(detail, status);
-      }
-      throw error;
-    }
+    const expandedPrompt = await this.creationSessionService.expandPromptForUser(
+      description,
+      body.regionHint,
+    );
+    return ok({
+      expandedPrompt,
+      expanded_prompt: expandedPrompt,
+    });
   }
 
   @Post('/generate')

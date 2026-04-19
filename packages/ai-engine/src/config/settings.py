@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     RUNTIME_QA_REQUIRED: bool = False
     MAX_ITERATIONS: int = 20
     PIPELINE_UPGRADE_LEGACY_ENDPOINTS_TO_V2: bool = True
-    LLM_CODE_REVIEW_MIN_TIER: Literal["safe", "standard", "showcase"] = "showcase"
+    LLM_CODE_REVIEW_MIN_TIER: Literal["safe", "standard", "showcase"] = "standard"
 
     # Provider capability governance
     LLM_PROVIDER_VERIFICATION_ENABLED: bool = False

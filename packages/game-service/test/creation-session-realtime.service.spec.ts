@@ -20,7 +20,7 @@ describe("CreationSessionRealtimeService", () => {
         slotKey: "expanded_prompt",
         label: "Prompt Confirmation",
         prompt:
-          "I expanded your idea into a generation prompt that covers game type, core mechanic, controls, win condition, and difficulty ramp. Confirm it as-is or edit the prompt before confirming.",
+      "I turned your idea into a user-facing game brief. Confirm it as-is, or edit the wording first if you want to refine it before generation.",
         skippable: true,
       },
       conversation: [],
@@ -152,7 +152,7 @@ describe("CreationSessionRealtimeService", () => {
         slotKey: "expanded_prompt",
         label: "Prompt Confirmation",
         prompt:
-          "I expanded your idea into a generation prompt that covers game type, core mechanic, controls, win condition, and difficulty ramp. Confirm it as-is or edit the prompt before confirming.",
+        "I turned your idea into a user-facing game brief. Confirm it as-is, or edit the wording first if you want to refine it before generation.",
         skippable: true,
       },
       slotFillPct: 1,

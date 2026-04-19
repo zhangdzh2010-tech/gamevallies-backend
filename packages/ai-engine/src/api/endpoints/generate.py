@@ -1547,6 +1547,15 @@ _EXPAND_PROMPT_META_RULE_MARKERS = (
     "\u4f18\u5148\u4fdd\u7559\u539f\u6709\u4e3b\u9898\u5e76\u6269\u5c55\u5185\u5bb9",
 )
 
+_EXPAND_PROMPT_TEMPLATE_MARKERS = (
+    "original idea:",
+    "please turn this brief into a mobile-friendly game generation prompt",
+    "covers at least these elements:",
+    "\u539f\u59cb\u60f3\u6cd5\uff1a",
+    "\u8bf7\u628a\u8fd9\u6761\u60f3\u6cd5\u6574\u7406\u6210",
+    "\u81f3\u5c11\u8981\u8986\u76d6\u8fd9\u4e9b\u8981\u7d20",
+)
+
 _EXPAND_PROMPT_GAME_TYPE_DISPLAY = {
     "casual": {
         "en-US": "casual arcade game",
@@ -1835,6 +1844,20 @@ def _looks_like_low_quality_expand_prompt(text: str, description: str) -> bool:
         return True
 
     lowered = normalized.lower()
+    if any(marker in lowered or marker in normalized for marker in _EXPAND_PROMPT_TEMPLATE_MARKERS):
+        return True
+
+    heading_line_hits = sum(
+        1
+        for raw_line in normalized.splitlines()
+        if any(
+            _normalize_free_text(raw_line).lower().startswith(marker.lower())
+            for marker in _EXPAND_PROMPT_INTERNAL_LABELS
+        )
+    )
+    if heading_line_hits >= 3:
+        return True
+
     internal_label_hits = sum(
         1 for marker in _EXPAND_PROMPT_INTERNAL_LABELS if marker in lowered or marker in normalized
     )
