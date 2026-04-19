@@ -6,6 +6,8 @@ structured JSON assessment:
   - has_real_gameplay: bool
   - difficulty_balanced: bool
   - fun_score: 1-10
+  - visual_polish_score: 1-10
+  - character_quality_score: 1-10
   - issues: list[str]
 
 Returns LLMReviewResult(ran=False) if LLM is unavailable or review fails.
@@ -107,8 +109,16 @@ class CodeReviewer:
             logger.warning(f"No JSON found in review response: {raw[:200]}")
             return LLMReviewResult(ran=False)
 
-        fun_score = float(data.get("fun_score", 5.0))
-        fun_score = max(1.0, min(10.0, fun_score))
+        def _clamp_score(field: str, default: float = 5.0) -> float:
+            try:
+                value = float(data.get(field, default))
+            except (TypeError, ValueError):
+                value = default
+            return max(1.0, min(10.0, value))
+
+        fun_score = _clamp_score("fun_score")
+        visual_polish_score = _clamp_score("visual_polish_score")
+        character_quality_score = _clamp_score("character_quality_score")
 
         issues = data.get("issues", [])
         if not isinstance(issues, list):
@@ -120,11 +130,15 @@ class CodeReviewer:
             has_real_gameplay=bool(data.get("has_real_gameplay", False)),
             difficulty_balanced=bool(data.get("difficulty_balanced", False)),
             fun_score=fun_score,
+            visual_polish_score=visual_polish_score,
+            character_quality_score=character_quality_score,
             issues=issues[:10],
         )
         logger.info(
             f"Code review: complete={result.is_complete_game}, "
             f"gameplay={result.has_real_gameplay}, fun={result.fun_score:.1f}, "
+            f"visual={result.visual_polish_score:.1f}, "
+            f"character={result.character_quality_score:.1f}, "
             f"issues={len(result.issues)}"
         )
         return result

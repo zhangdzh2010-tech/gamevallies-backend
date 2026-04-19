@@ -54,6 +54,8 @@ class LLMReviewResult:
     has_real_gameplay: bool = True
     difficulty_balanced: bool = True
     fun_score: float = 5.0      # 1-10
+    visual_polish_score: float = 5.0
+    character_quality_score: float = 5.0
     issues: List[str] = field(default_factory=list)
 
 
@@ -89,7 +91,7 @@ class QualityScorer:
         review: Optional[LLMReviewResult] = None,
         code: str = "",
     ) -> QualityScoreBreakdown:
-        base = 7.0
+        base = 5.0
 
         # ── Static QA penalties ──────────────────────────────────────
         qa_penalty = (
@@ -120,29 +122,35 @@ class QualityScorer:
         runtime_bonus = 0.0
         if runtime and runtime.ran:
             if runtime.canvas_renders:
-                runtime_bonus += 0.8
+                runtime_bonus += 0.6
             if not runtime.js_errors:
-                runtime_bonus += 0.5
+                runtime_bonus += 0.3
             if runtime.fps >= 50:
-                runtime_bonus += 0.5
+                runtime_bonus += 0.3
             elif runtime.fps >= 30:
-                runtime_bonus += 0.2
+                runtime_bonus += 0.15
             if runtime.js_errors:
-                runtime_bonus -= len(runtime.js_errors) * 0.3
+                runtime_bonus -= len(runtime.js_errors) * 0.4
             if not runtime.canvas_renders:
-                runtime_bonus -= 2.0   # blank canvas is critical
+                runtime_bonus -= 2.5   # blank canvas is critical
 
         # ── LLM review bonus ─────────────────────────────────────────
         review_bonus = 0.0
         if review and review.ran:
             if not review.is_complete_game:
-                review_bonus -= 2.0
+                review_bonus -= 2.5
             if not review.has_real_gameplay:
-                review_bonus -= 1.5
+                review_bonus -= 2.0
             if not review.difficulty_balanced:
-                review_bonus -= 0.5
+                review_bonus -= 0.6
             # fun_score: 5 = neutral, each point above/below = ±0.2
-            review_bonus += (review.fun_score - 5.0) * 0.2
+            review_bonus += (review.fun_score - 5.0) * 0.35
+            review_bonus += (review.visual_polish_score - 5.0) * 0.30
+            review_bonus += (review.character_quality_score - 5.0) * 0.25
+            if review.visual_polish_score < 6.0:
+                review_bonus -= (6.0 - review.visual_polish_score) * 0.5
+            if review.character_quality_score < 6.0:
+                review_bonus -= (6.0 - review.character_quality_score) * 0.45
 
         # ── Gameplay depth bonus ──────────────────────────────────────
         gameplay_depth_bonus = self._compute_gameplay_depth_bonus(code) if code else 0.0
@@ -168,6 +176,9 @@ class QualityScorer:
                 "qa_retries": static.retries,
                 "runtime_ran": runtime.ran if runtime else False,
                 "review_ran": review.ran if review else False,
+                "review_fun_score": round(review.fun_score, 2) if review and review.ran else None,
+                "review_visual_polish_score": round(review.visual_polish_score, 2) if review and review.ran else None,
+                "review_character_quality_score": round(review.character_quality_score, 2) if review and review.ran else None,
             },
         )
 

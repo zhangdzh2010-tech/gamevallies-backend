@@ -93,6 +93,13 @@ interface FailureContext {
   primaryArtifactId?: string;
 }
 
+interface CreateQualityGate {
+  generationTier: GenerationTier;
+  minQualityScore: number;
+  requireStructuredReview: boolean;
+  minReviewBonus?: number;
+}
+
 interface AccessGrantDecision {
   canPlay: boolean;
   requireSubscription: boolean;
@@ -600,6 +607,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       return undefined;
     }
 
+    if (/(quiz show|game show|trivia show|who wants to be a millionaire|主持人|答题秀|答题节目|节目答题|综艺答题|综艺节目|舞台秀|舞台答题|连击|连胜|节奏感|演出效果|buzzer|streak|combo|host)/.test(text)) {
+      return /(连击|连胜|streak|combo)/.test(text)
+        ? 'tap_challenge_combo'
+        : 'tap_challenge_timing';
+    }
     if (/(classroom|teacher|lesson|quiz|worksheet|practice question|practice quiz|learning game|teaching|knowledge point|课堂|教学|老师|练习题|知识点|问答|测验|小测|学习游戏|教学游戏)/.test(text)) {
       return 'puzzle_grid';
     }
@@ -855,6 +867,147 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     return {
       generationTier: normalizedGenerationTier,
     };
+  }
+
+  private resolveCreateQualityGate(
+    generationTier?: GenerationTier | null,
+  ): CreateQualityGate {
+    const normalizedGenerationTier = this.normalizeRequestedGenerationTier(generationTier) || 'standard';
+    if (normalizedGenerationTier === 'showcase') {
+      return {
+        generationTier: normalizedGenerationTier,
+        minQualityScore: 8.5,
+        requireStructuredReview: true,
+        minReviewBonus: -1.5,
+      };
+    }
+    if (normalizedGenerationTier === 'safe') {
+      return {
+        generationTier: normalizedGenerationTier,
+        minQualityScore: 5.8,
+        requireStructuredReview: false,
+      };
+    }
+    return {
+      generationTier: normalizedGenerationTier,
+      minQualityScore: 6.6,
+      requireStructuredReview: false,
+    };
+  }
+
+  private normalizeQualityScore(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === 'string') {
+      const parsed = Number.parseFloat(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  }
+
+  private extractQualityBreakdownMetric(
+    qualityBreakdown: unknown,
+    ...keys: string[]
+  ): number | null {
+    if (!qualityBreakdown || typeof qualityBreakdown !== 'object' || Array.isArray(qualityBreakdown)) {
+      return null;
+    }
+
+    for (const key of keys) {
+      const value = this.normalizeQualityScore((qualityBreakdown as Record<string, unknown>)[key]);
+      if (value !== null) {
+        return value;
+      }
+    }
+
+    return null;
+  }
+
+  private didStructuredReviewRun(qualityBreakdown: unknown): boolean {
+    if (!qualityBreakdown || typeof qualityBreakdown !== 'object' || Array.isArray(qualityBreakdown)) {
+      return false;
+    }
+
+    const rawReviewRan = (qualityBreakdown as Record<string, unknown>).reviewRan
+      ?? (qualityBreakdown as Record<string, unknown>).review_ran;
+    if (typeof rawReviewRan === 'boolean') {
+      return rawReviewRan;
+    }
+    if (typeof rawReviewRan === 'string') {
+      const normalized = rawReviewRan.trim().toLowerCase();
+      return normalized === 'true' || normalized === '1' || normalized === 'yes';
+    }
+
+    return false;
+  }
+
+  private buildCreateQualityGateError(params: {
+    generationTier: GenerationTier;
+    message: string;
+  }): Error & {
+    failedStage: string;
+    failureFamily: string;
+    retryCount: number;
+  } {
+    const error = new Error(params.message) as Error & {
+      failedStage: string;
+      failureFamily: string;
+      retryCount: number;
+    };
+    error.name = 'CreateQualityGateError';
+    error.failedStage = 'code_review';
+    error.failureFamily = 'quality_gate';
+    error.retryCount = 0;
+    return error;
+  }
+
+  private assertCreateResultMeetsQualityGate(params: {
+    generationTier?: GenerationTier | null;
+    qualityScore: unknown;
+    qualityBreakdown: unknown;
+  }): void {
+    const gate = this.resolveCreateQualityGate(params.generationTier);
+    const qualityScore = this.normalizeQualityScore(params.qualityScore);
+    const reviewRan = this.didStructuredReviewRun(params.qualityBreakdown);
+    const reviewBonus = this.extractQualityBreakdownMetric(
+      params.qualityBreakdown,
+      'review_bonus',
+      'reviewBonus',
+    );
+    const tierLabel = gate.generationTier.charAt(0).toUpperCase() + gate.generationTier.slice(1);
+
+    if (gate.requireStructuredReview && !reviewRan) {
+      throw this.buildCreateQualityGateError({
+        generationTier: gate.generationTier,
+        message: `${tierLabel} quality gate failed: structured code review did not produce a usable result.`,
+      });
+    }
+
+    if (qualityScore === null) {
+      throw this.buildCreateQualityGateError({
+        generationTier: gate.generationTier,
+        message: `${tierLabel} quality gate failed: qualityScore was not produced.`,
+      });
+    }
+
+    if (qualityScore + Number.EPSILON < gate.minQualityScore) {
+      throw this.buildCreateQualityGateError({
+        generationTier: gate.generationTier,
+        message: `${tierLabel} quality gate failed: qualityScore ${qualityScore.toFixed(1)} is below required ${gate.minQualityScore.toFixed(1)}.`,
+      });
+    }
+
+    if (
+      gate.minReviewBonus !== undefined
+      && reviewBonus !== null
+      && reviewBonus + Number.EPSILON < gate.minReviewBonus
+    ) {
+      throw this.buildCreateQualityGateError({
+        generationTier: gate.generationTier,
+        message: `${tierLabel} quality gate failed: structured code review penalty ${reviewBonus.toFixed(1)} is below allowed ${gate.minReviewBonus.toFixed(1)}.`,
+      });
+    }
   }
 
   private resolveNextIterationVersion(params: {
@@ -3089,7 +3242,22 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       if (error instanceof TaskAbortedError) {
         return this.prisma.generationTask.findUnique({ where: { id: task.id } });
       }
-      throw error;
+      if (task.taskType === GenerationTaskType.pipeline_run) {
+        await this.failPipelineTask({
+          gameId: task.gameId,
+          userId: task.userId,
+          taskId: task.id,
+          error,
+        });
+      } else {
+        await this.failIterationTask({
+          gameId: task.gameId,
+          userId: task.userId,
+          taskId: task.id,
+          error,
+        });
+      }
+      return this.prisma.generationTask.findUnique({ where: { id: task.id } });
     }
   }
 
@@ -3991,6 +4159,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     } else {
       await this.assertTaskCanPersistResult(taskId, gameId);
     }
+    this.assertCreateResultMeetsQualityGate({
+      generationTier,
+      qualityScore,
+      qualityBreakdown,
+    });
 
     const bundlePreviewUrl = this.buildPreviewUrl(gameId);
     const coverUrl = await this.resolvePersistedCoverUrl({

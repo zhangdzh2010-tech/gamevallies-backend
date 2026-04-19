@@ -14,6 +14,7 @@ from src.api.models import (
     GameRuntimeContract,
     GameSpec,
     GenerateCodeResult,
+    IterationType,
     IterateV2Request,
     QACheckError,
     RunPipelineV2Request,
@@ -24,6 +25,7 @@ from src.config.settings import settings
 from src.engine.code_generator import CodeGenerator
 from src.engine.pipeline_v2_runner import V2PipelineRunner
 from src.engine.pipeline_orchestrator import PipelineExecutionError
+from src.engine.quality_scorer import LLMReviewResult
 
 
 def test_function_keyword_is_not_flagged_as_function_constructor():
@@ -537,6 +539,19 @@ def test_select_runtime_profile_biases_educational_requests_to_puzzle_grid():
     assert runner._select_runtime_profile(spec, "casual_arcade") == "puzzle_grid"
 
 
+def test_select_runtime_profile_prefers_tap_challenge_for_showcase_quiz_show_brief():
+    runner = V2PipelineRunner()
+
+    spec = GameSpec(
+        game_type="educational",
+        generation_tier="showcase",
+        source_description="Create a history quiz show for mobile web with a playful host, stage lights, and combo streak rewards.",
+        intent_summary="A timed game show trivia challenge with combo streak rewards.",
+    )
+
+    assert runner._select_runtime_profile(spec, None) == "tap_challenge_combo"
+
+
 def test_select_runtime_profile_can_vary_for_sparse_diversity_seed():
     runner = V2PipelineRunner()
     spec = GameSpec(
@@ -552,8 +567,26 @@ def test_select_runtime_profile_can_vary_for_sparse_diversity_seed():
         first = runner._select_runtime_profile(spec, "casual_arcade", variation_seed="game-a")
         second = runner._select_runtime_profile(spec, "casual_arcade", variation_seed="game-b")
 
-    assert first in {"casual_action", "casual_arcade", "casual_lane", "casual_arcade_orbit", "casual_arcade_burst"}
-    assert second in {"casual_action", "casual_arcade", "casual_lane", "casual_arcade_orbit", "casual_arcade_burst"}
+    assert first in {
+        "casual_action",
+        "casual_action_arena",
+        "casual_action_survival",
+        "casual_arcade",
+        "casual_arcade_burst",
+        "casual_arcade_orbit",
+        "casual_arcade_rescue",
+        "casual_lane",
+    }
+    assert second in {
+        "casual_action",
+        "casual_action_arena",
+        "casual_action_survival",
+        "casual_arcade",
+        "casual_arcade_burst",
+        "casual_arcade_orbit",
+        "casual_arcade_rescue",
+        "casual_lane",
+    }
     assert first != second
 
 
@@ -1935,6 +1968,161 @@ def test_run_create_impl_retries_preflight_once_with_consolidated_guidance():
     assert "PRE-FLIGHT CORRECTIONS" in second_call["generation_guidance"]
 
 
+def test_run_create_impl_grants_one_final_retry_when_last_attempt_hits_preflight():
+    runner = V2PipelineRunner()
+    request = RunPipelineV2Request(
+        game_id="game-preflight-final-retry",
+        user_id="user-preflight-final-retry",
+        raw_user_input="make a fruit merge puzzle",
+    )
+    spec = GameSpec(
+        game_type="puzzle",
+        generation_tier="standard",
+        entities=[],
+        special_rules=[],
+        core_mechanics=[{"type": "merge"}],
+    )
+    runtime_contract = GameRuntimeContract(runtime_profile="puzzle_grid_merge")
+    generated_first = GenerateCodeResult(
+        html_code="<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas><script>const canvas=document.getElementById('gameCanvas'); canvas.width = 360; canvas.height = 640; function draw() { return true; }</script></body></html>",
+        strategy="llm",
+        generation_time_ms=10,
+        code_size_bytes=100,
+        route_snapshot={"provider_id": "provider-a"},
+    )
+    generated_preflight_invalid = GenerateCodeResult(
+        html_code="<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas><script>function inspect(grid,row,col){ return grid[row][col].fruit + ':' + grid[row][col].anim; }</script></body></html>",
+        strategy="llm",
+        generation_time_ms=10,
+        code_size_bytes=100,
+        route_snapshot={"provider_id": "provider-b"},
+    )
+    generated_final = GenerateCodeResult(
+        html_code="<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas><script>const canvas=document.getElementById('gameCanvas'); canvas.width = 360; canvas.height = 640; const ctx = canvas.getContext('2d'); function draw() { ctx.clearRect(0,0,canvas.width,canvas.height); }</script></body></html>",
+        strategy="llm",
+        generation_time_ms=10,
+        code_size_bytes=100,
+        route_snapshot={"provider_id": "provider-c"},
+    )
+    qa_needs_regeneration = SimpleNamespace(
+        success=False,
+        code=generated_first.html_code,
+        retries=0,
+        needs_regeneration=True,
+        issue_list=None,
+        last_errors=[SimpleNamespace(message="Missing deterministic merge cleanup helper")],
+    )
+    qa_success = SimpleNamespace(
+        success=True,
+        code=generated_final.html_code,
+        retries=0,
+        needs_regeneration=False,
+        issue_list=None,
+    )
+    quality_result = SimpleNamespace(
+        final_score=8.0,
+        details={},
+        qa_penalty=0.0,
+        strategy_bonus=0.0,
+        size_bonus=0.0,
+        retry_penalty=0.0,
+        runtime_bonus=0.0,
+        review_bonus=0.0,
+        gameplay_depth_bonus=0.0,
+    )
+    preflight_issue = SimpleNamespace(
+        message="Guard nested grid reads before accessing `grid[row][col].fruit`; check that both the row bucket and cell exist, or read through a safe helper first.",
+        code="unsafe_nested_grid_read",
+    )
+    runtime_qa = SimpleNamespace(ran=True)
+
+    with patch.object(
+        runner,
+        "_build_create_spec",
+        new=AsyncMock(return_value=spec),
+    ), patch.object(
+        runner,
+        "_select_runtime_profile",
+        return_value="puzzle_grid_merge",
+    ), patch.object(
+        runner,
+        "_compose_runtime_contract",
+        return_value=runtime_contract,
+    ), patch.object(
+        runner,
+        "_build_gdd",
+        new=AsyncMock(return_value=GDD()),
+    ), patch.object(
+        runner,
+        "_remember_spec",
+        new=AsyncMock(),
+    ), patch.object(
+        runner,
+        "_remember_runtime_contract",
+        new=AsyncMock(),
+    ), patch.object(
+        runner,
+        "_remember_code",
+        new=AsyncMock(),
+    ), patch(
+        "src.engine.pipeline_v2_runner.task_memory.append_decision",
+        new=AsyncMock(),
+    ), patch.object(
+        runner.pre_gen_validator,
+        "validate",
+        return_value=[],
+    ), patch.object(
+        runner,
+        "_generate_create_code",
+        new=AsyncMock(side_effect=[
+            (generated_first, []),
+            (generated_preflight_invalid, [preflight_issue]),
+            (generated_final, []),
+        ]),
+    ) as mock_generate, patch.object(
+        runner,
+        "_run_contract_and_runtime_flow",
+        new=AsyncMock(side_effect=[
+            (qa_needs_regeneration, runtime_qa, 0, []),
+            (qa_success, runtime_qa, 0, []),
+        ]),
+    ), patch.object(
+        runner.qa_pipeline,
+        "check",
+        return_value=SimpleNamespace(passed=True, errors=[], warnings=[]),
+    ), patch.object(
+        runner,
+        "_should_run_code_review",
+        return_value=False,
+    ), patch.object(
+        runner.quality_scorer,
+        "compute",
+        return_value=quality_result,
+    ), patch.object(
+        runner,
+        "_serialize_runtime_qa",
+        return_value={},
+    ):
+        response = asyncio.run(
+            runner._run_create_impl(
+                request,
+                progress_cb=None,
+                stage_context={"stage": "spec_build"},
+            )
+        )
+
+    assert response.html_code == generated_final.html_code
+    assert mock_generate.await_count == 3
+    first_call = mock_generate.await_args_list[0].kwargs
+    second_call = mock_generate.await_args_list[1].kwargs
+    third_call = mock_generate.await_args_list[2].kwargs
+    assert first_call["budget_override"] == "simple"
+    assert "QUALITY GATE CORRECTIONS" in second_call["generation_guidance"]
+    assert second_call["budget_override"] == "standard"
+    assert third_call["budget_override"] == "standard"
+    assert "PRE-FLIGHT CORRECTIONS" in third_call["generation_guidance"]
+
+
 def test_run_create_impl_excludes_failed_provider_when_logic_generate_transport_error_exposes_route_snapshot():
     runner = V2PipelineRunner()
     request = RunPipelineV2Request(
@@ -2069,7 +2257,7 @@ def test_run_create_impl_keeps_provider_pool_after_runtime_qa_regeneration():
     )
     spec = GameSpec(
         game_type="casual",
-        generation_tier="showcase",
+        generation_tier="standard",
         entities=[],
         special_rules=[],
         core_mechanics=[{"type": "runner"}],
@@ -2185,3 +2373,436 @@ def test_run_create_impl_keeps_provider_pool_after_runtime_qa_regeneration():
     assert mock_generate.await_count == 2
     second_call = mock_generate.await_args_list[1].kwargs
     assert second_call["excluded_provider_ids"] == []
+
+
+def test_should_run_code_review_for_standard_tier_when_default_min_tier_is_standard():
+    runner = V2PipelineRunner()
+    spec = GameSpec(game_type="casual", generation_tier="standard")
+
+    with patch.object(settings, "LLM_CODE_REVIEW_MIN_TIER", "standard"):
+        assert runner._should_run_code_review(spec) is True
+
+
+def test_select_runtime_profile_avoids_puzzle_grid_for_showcase_action_character_brief():
+    runner = V2PipelineRunner()
+    description = (
+        "Make a premium-feeling landscape action game for mobile web where a cyber ronin "
+        "hero dashes across neon rooftops, slices hunter drones, and collects energy shards."
+    )
+    spec = GameSpec(
+        game_type="casual",
+        generation_tier="showcase",
+        source_description=description,
+        intent_summary=description,
+        entities=[],
+        special_rules=[],
+    )
+
+    profile = runner._select_runtime_profile(spec, None)
+
+    assert profile != "puzzle_grid"
+    assert profile in {
+        "casual_action_arena",
+        "casual_action_survival",
+        "casual_lane_dash",
+        "casual_lane_chase",
+        "casual_arcade_rescue",
+    }
+
+
+def test_select_runtime_profile_keeps_educational_brief_on_puzzle_grid():
+    runner = V2PipelineRunner()
+    description = "Create a classroom quiz game where students answer math questions before time runs out."
+    spec = GameSpec(
+        game_type="educational",
+        generation_tier="standard",
+        source_description=description,
+        intent_summary=description,
+        entities=[],
+        special_rules=[],
+    )
+
+    profile = runner._select_runtime_profile(spec, None)
+
+    assert profile == "puzzle_grid"
+
+
+def test_select_runtime_profile_can_override_requested_puzzle_grid_for_showcase_quiz_show():
+    runner = V2PipelineRunner()
+    description = "Create a history quiz show with a host, stage lights, and combo streak rewards."
+    spec = GameSpec(
+        game_type="educational",
+        generation_tier="showcase",
+        source_description=description,
+        intent_summary=description,
+        entities=[],
+        special_rules=[],
+    )
+
+    profile = runner._select_runtime_profile(spec, "puzzle_grid")
+
+    assert profile == "tap_challenge_combo"
+
+
+def test_quality_gate_errors_cover_visual_and_character_requirements():
+    spec = GameSpec(
+        game_type="casual",
+        generation_tier="standard",
+        source_description="A heroic cat rescues runners in a neon city.",
+        entities=[],
+    )
+    review = LLMReviewResult(
+        ran=True,
+        is_complete_game=True,
+        has_real_gameplay=True,
+        difficulty_balanced=True,
+        fun_score=6.0,
+        visual_polish_score=5.0,
+        character_quality_score=4.5,
+        issues=["Visual feedback feels flat"],
+    )
+    quality = SimpleNamespace(final_score=5.8)
+
+    errors = V2PipelineRunner._quality_gate_errors(spec, review, quality)
+
+    assert any("fun_score" in error for error in errors)
+    assert any("visual_polish_score" in error for error in errors)
+    assert any("character_quality_score" in error for error in errors)
+    assert any("overall quality score" in error for error in errors)
+
+
+def test_quality_gate_requires_structured_review_when_review_is_expected():
+    spec = GameSpec(
+        game_type="casual",
+        generation_tier="showcase",
+        source_description="A premium action game with a hero character.",
+        entities=[],
+    )
+    review = LLMReviewResult(ran=False)
+    quality = SimpleNamespace(final_score=9.0)
+
+    errors = V2PipelineRunner._quality_gate_errors(
+        spec,
+        review,
+        quality,
+        review_required=True,
+    )
+
+    assert errors == [
+        "Structured code review did not return a valid quality assessment.",
+    ]
+
+
+def test_quality_gate_allows_standard_tier_when_structured_review_is_missing():
+    spec = GameSpec(
+        game_type="casual",
+        generation_tier="standard",
+        source_description="A polished delivery runner.",
+        entities=[],
+    )
+    review = LLMReviewResult(ran=False)
+    quality = SimpleNamespace(final_score=7.2)
+
+    errors = V2PipelineRunner._quality_gate_errors(
+        spec,
+        review,
+        quality,
+        review_required=V2PipelineRunner._is_structured_review_required(spec),
+    )
+
+    assert errors == []
+
+
+def test_quality_gate_blocks_showcase_results_with_heavy_review_penalty():
+    spec = GameSpec(
+        game_type="casual",
+        generation_tier="showcase",
+        source_description="A premium cyber ronin action game with a realistic hero.",
+        entities=[],
+    )
+    review = LLMReviewResult(
+        ran=True,
+        is_complete_game=True,
+        has_real_gameplay=True,
+        difficulty_balanced=True,
+        fun_score=8.4,
+        visual_polish_score=8.2,
+        character_quality_score=8.1,
+        issues=[],
+    )
+    quality = SimpleNamespace(final_score=8.7, review_bonus=-2.7)
+
+    errors = V2PipelineRunner._quality_gate_errors(
+        spec,
+        review,
+        quality,
+        review_required=V2PipelineRunner._is_structured_review_required(spec),
+    )
+
+    assert any("review_bonus -2.7" in error for error in errors)
+
+
+def test_run_create_impl_retries_when_review_quality_gate_fails():
+    runner = V2PipelineRunner()
+    request = RunPipelineV2Request(
+        game_id="game-quality-gate",
+        user_id="user-quality-gate",
+        raw_user_input="make a realistic animal rescue runner",
+    )
+    spec = GameSpec(
+        game_type="casual",
+        generation_tier="standard",
+        source_description="A realistic animal rescue runner with a cat hero.",
+        entities=[],
+        special_rules=[],
+        core_mechanics=[{"type": "runner"}],
+    )
+    runtime_contract = GameRuntimeContract(runtime_profile="casual_lane_dash")
+    generated_first = GenerateCodeResult(
+        html_code="<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas><script>const canvas=document.getElementById('gameCanvas'); canvas.width = 360; canvas.height = 640; const ctx = canvas.getContext('2d'); function render(){ctx.clearRect(0,0,canvas.width,canvas.height);} </script></body></html>",
+        strategy="llm",
+        generation_time_ms=10,
+        code_size_bytes=100,
+        route_snapshot={"provider_id": "provider-a"},
+    )
+    generated_second = GenerateCodeResult(
+        html_code="<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas><script>const canvas=document.getElementById('gameCanvas'); canvas.width = 360; canvas.height = 640; const ctx = canvas.getContext('2d'); function render(){ctx.fillRect(0,0,canvas.width,canvas.height);} </script></body></html>",
+        strategy="llm",
+        generation_time_ms=10,
+        code_size_bytes=100,
+        route_snapshot={"provider_id": "provider-b"},
+    )
+    qa_success_first = SimpleNamespace(
+        success=True,
+        code=generated_first.html_code,
+        retries=0,
+        needs_regeneration=False,
+        issue_list=None,
+    )
+    qa_success_second = SimpleNamespace(
+        success=True,
+        code=generated_second.html_code,
+        retries=0,
+        needs_regeneration=False,
+        issue_list=None,
+    )
+    low_review = LLMReviewResult(
+        ran=True,
+        is_complete_game=True,
+        has_real_gameplay=True,
+        difficulty_balanced=True,
+        fun_score=6.0,
+        visual_polish_score=5.0,
+        character_quality_score=4.8,
+        issues=["Character presentation feels like placeholder geometry"],
+    )
+    high_review = LLMReviewResult(
+        ran=True,
+        is_complete_game=True,
+        has_real_gameplay=True,
+        difficulty_balanced=True,
+        fun_score=7.4,
+        visual_polish_score=7.2,
+        character_quality_score=6.6,
+        issues=[],
+    )
+    low_quality = SimpleNamespace(
+        final_score=5.9,
+        details={},
+        qa_penalty=0.0,
+        strategy_bonus=0.0,
+        size_bonus=0.0,
+        retry_penalty=0.0,
+        runtime_bonus=0.0,
+        review_bonus=0.0,
+        gameplay_depth_bonus=0.0,
+    )
+    high_quality = SimpleNamespace(
+        final_score=7.1,
+        details={},
+        qa_penalty=0.0,
+        strategy_bonus=0.0,
+        size_bonus=0.0,
+        retry_penalty=0.0,
+        runtime_bonus=0.0,
+        review_bonus=0.0,
+        gameplay_depth_bonus=0.0,
+    )
+
+    with patch.object(
+        runner,
+        "_build_create_spec",
+        new=AsyncMock(return_value=spec),
+    ), patch.object(
+        runner,
+        "_select_runtime_profile",
+        return_value="casual_lane_dash",
+    ), patch.object(
+        runner,
+        "_compose_runtime_contract",
+        return_value=runtime_contract,
+    ), patch.object(
+        runner,
+        "_build_gdd",
+        new=AsyncMock(return_value=GDD()),
+    ), patch.object(
+        runner,
+        "_remember_spec",
+        new=AsyncMock(),
+    ), patch.object(
+        runner,
+        "_remember_runtime_contract",
+        new=AsyncMock(),
+    ), patch.object(
+        runner,
+        "_remember_code",
+        new=AsyncMock(),
+    ), patch(
+        "src.engine.pipeline_v2_runner.task_memory.append_decision",
+        new=AsyncMock(),
+    ), patch.object(
+        runner.pre_gen_validator,
+        "validate",
+        return_value=[],
+    ), patch.object(
+        runner,
+        "_generate_create_code",
+        new=AsyncMock(side_effect=[(generated_first, []), (generated_second, [])]),
+    ) as mock_generate, patch.object(
+        runner,
+        "_run_contract_and_runtime_flow",
+        new=AsyncMock(side_effect=[
+            (qa_success_first, SimpleNamespace(ran=True), 0, []),
+            (qa_success_second, SimpleNamespace(ran=True), 0, []),
+        ]),
+    ), patch.object(
+        runner.qa_pipeline,
+        "check",
+        side_effect=[
+            SimpleNamespace(passed=True, errors=[], warnings=[]),
+            SimpleNamespace(passed=True, errors=[], warnings=[]),
+        ],
+    ), patch.object(
+        runner,
+        "_should_run_code_review",
+        return_value=True,
+    ), patch.object(
+        runner.code_reviewer,
+        "review",
+        new=AsyncMock(side_effect=[low_review, high_review]),
+    ), patch.object(
+        runner.quality_scorer,
+        "compute",
+        side_effect=[low_quality, high_quality],
+    ), patch.object(
+        runner.code_generator.template_cache,
+        "store",
+    ), patch.object(
+        runner,
+        "_serialize_runtime_qa",
+        return_value={},
+    ):
+        response = asyncio.run(
+            runner._run_create_impl(
+                request,
+                progress_cb=None,
+                stage_context={"stage": "spec_build"},
+            )
+        )
+
+    assert response.html_code == generated_second.html_code
+    assert mock_generate.await_count == 2
+    second_call = mock_generate.await_args_list[1].kwargs
+    assert "QUALITY AND PRESENTATION CORRECTIONS" in second_call["generation_guidance"]
+
+
+def test_run_iterate_impl_retries_after_runtime_qa_failure():
+    runner = V2PipelineRunner()
+    request = IterateV2Request(
+        game_id="game-iterate-runtime-qa-retry",
+        user_id="user-iterate-runtime-qa-retry",
+        current_code="<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas></body></html>",
+        iteration_intent={"feedback": "make the combo finale more dramatic", "conversation": []},
+        source_spec=GameSpec(game_type="educational", generation_tier="showcase"),
+        source_bundle_context=SourceBundleContext(title="History Quiz Show"),
+        runtime_contract=GameRuntimeContract(runtime_profile="puzzle_grid"),
+    )
+    spec = GameSpec(
+        game_type="educational",
+        generation_tier="showcase",
+        entities=[],
+        special_rules=[],
+    )
+    runtime_contract = GameRuntimeContract(runtime_profile="puzzle_grid")
+    qa_success = SimpleNamespace(
+        success=True,
+        code="<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas><script>console.log('ok')</script></body></html>",
+        retries=0,
+        issue_list=None,
+    )
+    runtime_qa = SimpleNamespace(unavailable_reason=None, js_errors=[])
+    runtime_failure = PipelineExecutionError(
+        "Generated code failed runtime QA: Runtime QA detected no visible state change after user interaction",
+        stage="runtime_simulation_qa",
+        failure_family="runtime_qa",
+    )
+
+    with patch.object(
+        runner,
+        "_build_iteration_spec",
+        new=AsyncMock(return_value=spec),
+    ), patch.object(
+        runner,
+        "_select_runtime_profile",
+        return_value="puzzle_grid",
+    ), patch.object(
+        runner,
+        "_compose_runtime_contract",
+        return_value=runtime_contract,
+    ), patch.object(
+        runner,
+        "_remember_spec",
+        new=AsyncMock(),
+    ), patch.object(
+        runner,
+        "_remember_runtime_contract",
+        new=AsyncMock(),
+    ), patch.object(
+        runner,
+        "_remember_code",
+        new=AsyncMock(),
+    ), patch(
+        "src.engine.pipeline_v2_runner.task_memory.append_decision",
+        new=AsyncMock(),
+    ), patch.object(
+        runner,
+        "_generate_iteration_code",
+        new=AsyncMock(side_effect=[
+            ("<!DOCTYPE html><html><body>bad</body></html>", IterationType.element_change),
+            ("<!DOCTYPE html><html><body>good</body></html>", IterationType.element_change),
+        ]),
+    ) as mock_generate_iteration, patch.object(
+        runner,
+        "_run_contract_and_runtime_flow",
+        new=AsyncMock(side_effect=[
+            runtime_failure,
+            (qa_success, runtime_qa, 0, []),
+        ]),
+    ):
+        response = asyncio.run(
+            runner._run_iterate_impl(
+                request,
+                progress_cb=None,
+                stage_context={"stage": "spec_build"},
+            )
+        )
+
+    assert response.html_code == qa_success.code
+    assert response.iteration_type == IterationType.element_change.value
+    assert mock_generate_iteration.await_count == 2
+
+
+def test_retryable_generation_error_detects_wrapped_readtimeout():
+    exc = RuntimeError("LLM iterate failed: ReadTimeout")
+
+    assert V2PipelineRunner._is_retryable_generation_error(exc) is True

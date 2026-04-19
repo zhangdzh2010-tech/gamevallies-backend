@@ -48,6 +48,40 @@ type ExpandPromptResponsePayload = {
   expandedPrompt?: string;
 };
 
+const LOW_QUALITY_EXPAND_PROMPT_LABELS = [
+  "game type:",
+  "core mechanic:",
+  "theme:",
+  "input method:",
+  "win condition:",
+  "difficulty ramp:",
+  "scoring / rewards:",
+  "visual direction:",
+  "special rules or reference inspiration:",
+  "游戏类型：",
+  "核心玩法：",
+  "主题：",
+  "操作方式：",
+  "胜利条件：",
+  "难度节奏：",
+] as const;
+
+const LOW_QUALITY_EXPAND_PROMPT_MARKERS = [
+  "original idea:",
+  "please turn this brief into a mobile-friendly game generation prompt",
+  "covers at least these elements:",
+  "choose the most fitting direction",
+  "describe the main repeated player action",
+  "preserve the setting, fantasy, or mood implied by the brief",
+  "use touch-friendly tap, swipe, or drag controls",
+  "define a clear round objective or victory condition",
+  "explain how the challenge escalates over time",
+  "suggest an art direction that matches the brief",
+  "原始想法：",
+  "请把这条想法整理成",
+  "至少要覆盖这些要素",
+] as const;
+
 @Injectable()
 export class CreationSessionService {
   private readonly logger = new Logger(CreationSessionService.name);
@@ -200,7 +234,7 @@ export class CreationSessionService {
     const repo = this.getRepo();
     let expandedPrompt = "";
     try {
-      expandedPrompt = await this.expandPrompt(initialPrompt, regionHint);
+        expandedPrompt = await this.expandPromptForUser(initialPrompt, regionHint);
     } catch (error: any) {
       const initError = this.extractAiError(
         error,
@@ -676,7 +710,7 @@ export class CreationSessionService {
     return snapshot;
   }
 
-  private async expandPrompt(
+  async expandPromptForUser(
     description: string,
     regionHint?: string,
   ): Promise<string> {
@@ -696,7 +730,7 @@ export class CreationSessionService {
           "Creation session prompt expansion returned an empty prompt",
         );
       }
-      return expandedPrompt;
+      return this.sanitizeExpandedPrompt(description, expandedPrompt);
     } catch (error: any) {
       if (error instanceof BadRequestException) {
         throw error;
@@ -718,6 +752,72 @@ export class CreationSessionService {
       }
       throw new InternalServerErrorException(message);
     }
+  }
+
+  private sanitizeExpandedPrompt(
+    sourcePrompt: string,
+    expandedPrompt: string,
+  ): string {
+    if (this.looksLikeLowQualityExpandedPrompt(sourcePrompt, expandedPrompt)) {
+      this.logger.warn(
+        "Replacing low-quality expanded prompt with local user-facing fallback",
+      );
+      return this.buildExpandedPromptFallback(sourcePrompt);
+    }
+    return expandedPrompt;
+  }
+
+  private looksLikeLowQualityExpandedPrompt(
+    sourcePrompt: string,
+    expandedPrompt: string,
+  ): boolean {
+    const normalized = String(expandedPrompt || "").trim();
+    if (!normalized) {
+      return true;
+    }
+
+    const sourceLooksChinese = this.prefersChineseCopy(sourcePrompt);
+    const expandedLooksChinese = this.prefersChineseCopy(normalized);
+    if (sourceLooksChinese !== expandedLooksChinese) {
+      return true;
+    }
+
+    const lowered = normalized.toLowerCase();
+    const markerHits = LOW_QUALITY_EXPAND_PROMPT_MARKERS.filter(
+      (marker) => lowered.includes(marker.toLowerCase()) || normalized.includes(marker),
+    ).length;
+    const labelHits = LOW_QUALITY_EXPAND_PROMPT_LABELS.filter(
+      (marker) => lowered.includes(marker.toLowerCase()) || normalized.includes(marker),
+    ).length;
+    const headingLineHits = normalized
+      .split(/\r?\n/)
+      .map((line) => line.trim().toLowerCase())
+      .filter((line) =>
+        LOW_QUALITY_EXPAND_PROMPT_LABELS.some((marker) =>
+          line.startsWith(marker.toLowerCase()),
+        ),
+      ).length;
+
+    return markerHits >= 1 || labelHits >= 3 || headingLineHits >= 3;
+  }
+
+  private buildExpandedPromptFallback(sourcePrompt: string): string {
+    const normalized = String(sourcePrompt || "").trim();
+    if (this.prefersChineseCopy(normalized)) {
+      return [
+        `请围绕“${normalized}”生成一款适合手机网页的小游戏。`,
+        "保留原始想法里的关键动作、场景、角色或情绪，让玩家通过触屏操作在几秒内看懂目标并立刻开始游玩。",
+        "每一局都要有清晰的成功条件、逐步增强的压力，以及和题材一致的分数、奖励或反馈演出。",
+        "画面、场景和主角设计要直接服务这个题材，避免空泛描述和占位几何图形。",
+      ].join("\n");
+    }
+
+    return [
+      `Create a mobile HTML5 game based on this brief: "${normalized}".`,
+      "Keep the core actions, setting, character fantasy, and mood from the original idea so the player understands the goal almost immediately through touch-first controls.",
+      "Each round should have a clear success condition, visible escalation, and rewards or feedback that reinforce the same fantasy instead of drifting into generic filler.",
+      "Make the scene, props, and any main character feel intentionally designed and visually coherent rather than like placeholder geometry.",
+    ].join("\n");
   }
 
   private extractAiError(error: any, fallback: string): string {
@@ -1099,7 +1199,7 @@ export class CreationSessionService {
         slotKey: "expanded_prompt",
         label: "Prompt Confirmation",
         prompt:
-          "我已经把你的想法扩写成一版包含游戏类型、核心玩法、操作方式、胜负条件和难度节奏的生成提示词。请直接确认，或修改这段提示词后再确认。",
+          "我已经把你的想法整理成一版可直接用于生成的游戏需求说明。你可以直接确认，也可以先按自己的表达改一改，再继续生成。",
         skippable: true,
       };
     }
@@ -1108,7 +1208,7 @@ export class CreationSessionService {
       slotKey: "expanded_prompt",
       label: "Prompt Confirmation",
       prompt:
-        "I expanded your idea into a generation prompt that covers game type, core mechanic, controls, win condition, and difficulty ramp. Confirm it as-is or edit the prompt before confirming.",
+        "I turned your idea into a user-facing game brief. Confirm it as-is, or edit the wording first if you want to refine it before generation.",
       skippable: true,
     };
   }

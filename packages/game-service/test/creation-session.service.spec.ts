@@ -63,10 +63,16 @@ describe("CreationSessionService", () => {
       return originalSetTimeout(handler, timeout as any, ...args);
     }) as typeof setTimeout);
 
-    const expandedPrompt =
-      "Game Type: Funny stealth comedy\nCore Mechanic: Tap to swap between working and slacking states while hiding from surprise inspections\nTheme: Open-plan office satire\nInput Method: Single-tap interactions\nWin Condition: Stay undiscovered until the shift ends\nDifficulty Ramp: Boss inspections happen more often and react faster each round\nScoring: Earn points for every successful slacking streak\nVisual Direction: Exaggerated office comedy with bright props";
+    const rawExpandedPrompt =
+      'Original Idea: Make an office slacking game\n\nPlease turn this brief into a mobile-friendly game generation prompt that covers at least these elements:\nGame Type: Funny stealth comedy\nCore Mechanic: Tap to swap between working and slacking states while hiding from surprise inspections\nTheme: Open-plan office satire';
+    const expandedPrompt = [
+      'Create a mobile HTML5 game based on this brief: "Make an office slacking game".',
+      "Keep the core actions, setting, character fantasy, and mood from the original idea so the player understands the goal almost immediately through touch-first controls.",
+      "Each round should have a clear success condition, visible escalation, and rewards or feedback that reinforce the same fantasy instead of drifting into generic filler.",
+      "Make the scene, props, and any main character feel intentionally designed and visually coherent rather than like placeholder geometry.",
+    ].join("\n");
     const confirmationQuestion =
-      "I expanded your idea into a generation prompt that covers game type, core mechanic, controls, win condition, and difficulty ramp. Confirm it as-is or edit the prompt before confirming.";
+      "I turned your idea into a user-facing game brief. Confirm it as-is, or edit the wording first if you want to refine it before generation.";
 
     repo.updateMany.mockResolvedValue({ count: 1 });
     repo.create.mockImplementation(async ({ data }: any) => ({
@@ -92,7 +98,7 @@ describe("CreationSessionService", () => {
     }));
     (axios.post as jest.Mock).mockResolvedValueOnce({
       data: {
-        expanded_prompt: expandedPrompt,
+        expanded_prompt: rawExpandedPrompt,
       },
     });
     repo.findUnique.mockResolvedValue({
@@ -310,7 +316,7 @@ describe("CreationSessionService", () => {
         slotKey: "expanded_prompt",
         label: "Prompt Confirmation",
         prompt:
-          "I expanded your idea into a generation prompt that covers game type, core mechanic, controls, win condition, and difficulty ramp. Confirm it as-is or edit the prompt before confirming.",
+        "I turned your idea into a user-facing game brief. Confirm it as-is, or edit the wording first if you want to refine it before generation.",
         skippable: true,
       },
       conversation: [
@@ -432,7 +438,7 @@ describe("CreationSessionService", () => {
         slotKey: "expanded_prompt",
         label: "Prompt Confirmation",
         prompt:
-          "I expanded your idea into a generation prompt that covers game type, core mechanic, controls, win condition, and difficulty ramp. Confirm it as-is or edit the prompt before confirming.",
+        "I turned your idea into a user-facing game brief. Confirm it as-is, or edit the wording first if you want to refine it before generation.",
         skippable: true,
       },
       conversation: [
@@ -722,7 +728,7 @@ describe("CreationSessionService", () => {
         slotKey: "expanded_prompt",
         label: "Prompt Confirmation",
         prompt:
-          "I expanded your idea into a generation prompt that covers game type, core mechanic, controls, win condition, and difficulty ramp. Confirm it as-is or edit the prompt before confirming.",
+        "I turned your idea into a user-facing game brief. Confirm it as-is, or edit the wording first if you want to refine it before generation.",
         skippable: true,
       },
       conversation: [],

@@ -29,6 +29,7 @@
       "border": "#99f6e4",
       "promptKeys": [
         "prompt.intent_detail_template",
+        "prompt.visual_quality_bar",
         "prompt.runtime_contract_summary",
         "prompt.mobile_layout_guardrails",
         "prompt.iteration_spec_context_template",
@@ -59,6 +60,11 @@
       "promptKeys": [
         "prompt.game_design_template",
         "prompt.code_gen_system",
+        "prompt.code_gen_system_standard",
+        "prompt.code_gen_system_showcase",
+        "prompt.generation_tier_safe",
+        "prompt.generation_tier_standard",
+        "prompt.generation_tier_showcase",
         "prompt.generate_request_context_template",
         "prompt.generate_alignment_reminder",
         "bundle.runtime.locked_contract",
@@ -167,6 +173,10 @@
         "{special_rules_block}"
       ]
     },
+    "prompt.visual_quality_bar": {
+      "displayName": "Visual / Character Quality Bar",
+      "variables": ["{theme}", "{art_style}", "{palette_line}"]
+    },
     "prompt.runtime_contract_summary": {
       "displayName": "运行时约束摘要",
       "variables": [
@@ -232,9 +242,24 @@
     "prompt.code_gen_system": {
       "displayName": "代码生成系统层"
     },
+    "prompt.code_gen_system_standard": {
+      "displayName": "Code generation / standard override"
+    },
+    "prompt.code_gen_system_showcase": {
+      "displayName": "Code generation / showcase override"
+    },
     "prompt.platform_standard": {
       "displayName": "Platform standard (legacy fallback)",
       "note": "Only used when prompt.runtime_contract_summary does not already declare platform constraints."
+    },
+    "prompt.generation_tier_safe": {
+      "displayName": "Generation tier / safe"
+    },
+    "prompt.generation_tier_standard": {
+      "displayName": "Generation tier / standard"
+    },
+    "prompt.generation_tier_showcase": {
+      "displayName": "Generation tier / showcase"
     },
     "prompt.generate_request_context_template": {
       "displayName": "原始请求上下文",

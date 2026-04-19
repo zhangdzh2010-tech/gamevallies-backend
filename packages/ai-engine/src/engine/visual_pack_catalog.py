@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -209,15 +210,38 @@ def _pack_score(
     generation_tier: str,
 ) -> int:
     score = 0
+    theme_text = str(theme or "").strip().lower()
     if game_type in (pack.get("suitableGameTypes") or []):
         score += 4
     if theme and theme in (pack.get("suitableThemes") or []):
         score += 5
+    elif theme_text:
+        for suitable in pack.get("suitableThemes") or []:
+            normalized = str(suitable or "").strip().lower()
+            if normalized and normalized in theme_text:
+                score += 3
+                break
+    if pack.get("id") == "clean_edu" and _looks_like_stem_classroom_theme(theme_text):
+        score += 4
+        if generation_tier == "showcase":
+            score += 1
+    if pack.get("id") == "retro_terminal" and _looks_like_terminal_theme(theme_text):
+        score += 4
+    if pack.get("id") == "retro_terminal" and _looks_like_stem_classroom_theme(theme_text) and not _looks_like_terminal_theme(theme_text):
+        score -= 3
     if generation_tier == "showcase" and bool(pack.get("showcasePreferred")):
         score += 4
     if generation_tier == "safe" and bool(pack.get("showcasePreferred")):
         score -= 2
     return score
+
+
+def _looks_like_stem_classroom_theme(theme: str) -> bool:
+    return bool(re.search(r"\b(classroom|school|teacher|lesson|study|learning|education|educational|science|physics|chemistry|biology|stem|lab|laboratory|circuit|voltage|battery)\b", theme))
+
+
+def _looks_like_terminal_theme(theme: str) -> bool:
+    return bool(re.search(r"\b(terminal|retro|cyber|arcade|neon|sci[- ]?fi|space|console|matrix)\b", theme))
 
 
 def select_visual_pack(
@@ -229,12 +253,18 @@ def select_visual_pack(
 ) -> Dict[str, Any]:
     catalog = list(get_visual_pack_catalog())
     candidates = [pack for pack in catalog if game_type in (pack.get("suitableGameTypes") or [])] or catalog
-    scored = sorted(
-        candidates,
-        key=lambda pack: _pack_score(pack, game_type=game_type, theme=theme, generation_tier=generation_tier),
+    scored_pairs = sorted(
+        (
+            (_pack_score(pack, game_type=game_type, theme=theme, generation_tier=generation_tier), pack)
+            for pack in candidates
+        ),
+        key=lambda item: item[0],
         reverse=True,
     )
-    pool = scored[: min(3, len(scored))]
+    if not scored_pairs:
+        return dict(catalog[0])
+    top_score = scored_pairs[0][0]
+    pool = [pack for score, pack in scored_pairs if score == top_score] or [scored_pairs[0][1]]
     index = _stable_variant_index(game_type, theme, generation_tier, variation_seed or "", count=len(pool))
     return dict(pool[index])
 

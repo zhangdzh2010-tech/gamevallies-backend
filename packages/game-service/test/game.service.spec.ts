@@ -29,9 +29,23 @@ describe('GameService', () => {
   let wsGateway: any;
   let generationTaskService: any;
   let generationQueueService: any;
+  let timeoutConfigService: any;
+  let runtimeProfileService: any;
+  let systemConfigRepository: any;
   let ensureCreateSourceSpecSpy: jest.SpyInstance;
 
   const mockAsyncSuccess = (upstreamTaskId: string, result: Record<string, unknown>) => {
+    const qualityBreakdown = result.quality_breakdown && typeof result.quality_breakdown === 'object' && !Array.isArray(result.quality_breakdown)
+      ? result.quality_breakdown as Record<string, unknown>
+      : {};
+    const normalizedResult = {
+      quality_score: 7.0,
+      ...result,
+      quality_breakdown: {
+        reviewRan: true,
+        ...qualityBreakdown,
+      },
+    };
     mockedAxios.post.mockResolvedValueOnce({
       data: {
         task_id: upstreamTaskId,
@@ -42,7 +56,7 @@ describe('GameService', () => {
       data: {
         task_id: upstreamTaskId,
         status: 'succeeded',
-        result,
+        result: normalizedResult,
       },
     } as any);
   };
@@ -161,6 +175,67 @@ describe('GameService', () => {
       closeWorker: jest.fn(async () => undefined),
       closeQueue: jest.fn(async () => undefined),
     };
+    timeoutConfigService = {
+      isWarm: jest.fn(() => true),
+      refresh: jest.fn(async () => undefined),
+      ensureLoaded: jest.fn(async () => undefined),
+      getAiEngineTargetCacheTtlMs: jest.fn(() => 30_000),
+      getActiveTaskSweepIntervalMs: jest.fn((fallback: number) => fallback),
+      getExpandPromptRequestTimeoutMs: jest.fn(async () => 30_000),
+      getSourceSpecParseTimeoutMs: jest.fn(async () => 30_000),
+      getCreationSessionInitTimeoutMs: jest.fn(async () => 30_000),
+      getUpstreamRequestTimeoutMs: jest.fn(() => 30_000),
+      getUpstreamRequestRetryDelayMs: jest.fn(() => 250),
+      getUpstreamSnapshotTimeoutMs: jest.fn(() => 10_000),
+      getUpstreamCancelTimeoutMs: jest.fn(() => 10_000),
+      getUpstreamPollIntervalMs: jest.fn(() => 250),
+      getUpstreamTimeoutBufferS: jest.fn(() => 30),
+      getUpstreamDeadlineGraceMs: jest.fn(() => 30_000),
+      resolveCatalogValue: jest.fn((_key: string, options?: { min?: number; max?: number }) => {
+        const min = options?.min ?? 0;
+        const max = options?.max ?? Number.MAX_SAFE_INTEGER;
+        return Math.min(max, Math.max(min, 1800));
+      }),
+      resolvePipelineTimeout: jest.fn((rawValue?: unknown) => {
+        const parsed = Number(rawValue);
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : 1800;
+      }),
+    };
+    runtimeProfileService = {
+      resolveActivePromptBundleIdentity: jest.fn(async () => ({
+        id: 'runtime-v2-default',
+        version: 1,
+      })),
+      resolveRuntimeProfile: jest.fn(async (profileHint?: string) => {
+        const resolvedId = typeof profileHint === 'string' && profileHint.trim()
+          ? profileHint.trim()
+          : 'casual_arcade';
+        return {
+          id: resolvedId,
+          contractSchema: {
+            inputContract: {
+              requiredModes: ['pointer', 'touch'],
+            },
+            stateContract: {
+              requiredStates: ['boot', 'ready', 'playing', 'game_over'],
+              restartable: true,
+            },
+            mobileLayoutContract: {
+              orientation: 'portrait_first',
+              uiScaleMode: 'short_edge',
+            },
+            renderContract: {
+              requiresCanvas2D: true,
+              mustRenderWithinMs: 1500,
+            },
+          },
+          metadata: {},
+        };
+      }),
+    };
+    systemConfigRepository = {
+      findValueByKey: jest.fn(async () => null),
+    };
     jwtService = {
       sign: jest.fn((payload: any) => Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')),
       verify: jest.fn((token: string) => JSON.parse(Buffer.from(token, 'base64url').toString('utf8'))),
@@ -269,6 +344,9 @@ describe('GameService', () => {
       wsGateway,
       generationTaskService,
       generationQueueService,
+      timeoutConfigService,
+      runtimeProfileService,
+      systemConfigRepository,
     );
     ensureCreateSourceSpecSpy = jest
       .spyOn(service as any, 'ensureCreateSourceSpec')
@@ -466,6 +544,15 @@ describe('GameService', () => {
         '浮力的故事',
       ),
     ).toBe('puzzle_grid');
+  });
+
+  it('routes quiz-show showcase prompts toward tap challenge runtime profiles', () => {
+    expect(
+      (service as any).inferRuntimeProfileHint(
+        '做一个历史知识闯关小游戏，像节目答题秀一样有节奏感，并且答对后有连击奖励和主持人播报',
+        '历史答题舞台秀',
+      ),
+    ).toBe('tap_challenge_combo');
   });
 
   it('prefers persisted upstream base URLs when fetching upstream snapshots', async () => {
@@ -1149,6 +1236,113 @@ describe('GameService', () => {
         runtimeOrientation: 'landscape_first',
       }),
     }));
+  });
+
+  it('rejects low-quality showcase create results before persisting them', async () => {
+    const persistGeneratedGameResultSpy = jest
+      .spyOn(service as any, 'persistGeneratedGameResult')
+      .mockResolvedValue(undefined);
+    const assertTaskCanPersistResultSpy = jest
+      .spyOn(service as any, 'assertTaskCanPersistResult')
+      .mockResolvedValue(undefined);
+
+    await expect((service as any).completePipelineTask({
+      gameId: 'game-showcase-quality-gate',
+      userId: 'user-showcase-quality-gate',
+      description: 'make a premium forest guardian showcase game',
+      taskId: 'task-showcase-quality-gate',
+      generationTier: 'showcase',
+      responseData: {
+        html_code: '<!DOCTYPE html><html><head><title>Forest Guardian</title></head><body></body></html>',
+        game_spec: {
+          game_type: 'action',
+        },
+        quality_score: 6.3,
+        quality_breakdown: {
+          reviewRan: true,
+        },
+      },
+    })).rejects.toMatchObject({
+      failedStage: 'code_review',
+      failureFamily: 'quality_gate',
+      message: expect.stringContaining('Showcase quality gate failed'),
+    });
+
+    expect(persistGeneratedGameResultSpy).not.toHaveBeenCalled();
+    expect(generationTaskService.markSucceeded).not.toHaveBeenCalled();
+
+    assertTaskCanPersistResultSpy.mockRestore();
+    persistGeneratedGameResultSpy.mockRestore();
+  });
+
+  it('rejects showcase results when structured review still reports a heavy quality penalty', async () => {
+    const persistGeneratedGameResultSpy = jest
+      .spyOn(service as any, 'persistGeneratedGameResult')
+      .mockResolvedValue(undefined);
+    const assertTaskCanPersistResultSpy = jest
+      .spyOn(service as any, 'assertTaskCanPersistResult')
+      .mockResolvedValue(undefined);
+
+    await expect((service as any).completePipelineTask({
+      gameId: 'game-showcase-review-penalty',
+      userId: 'user-showcase-review-penalty',
+      description: 'make a placeholder geometry showcase game',
+      taskId: 'task-showcase-review-penalty',
+      generationTier: 'showcase',
+      responseData: {
+        html_code: '<!DOCTYPE html><html><head><title>Placeholder Hop</title></head><body></body></html>',
+        game_spec: {
+          game_type: 'action',
+        },
+        quality_score: 8.6,
+        quality_breakdown: {
+          reviewRan: true,
+          review_bonus: -2.7,
+        },
+      },
+    })).rejects.toMatchObject({
+      failedStage: 'code_review',
+      failureFamily: 'quality_gate',
+      message: expect.stringContaining('structured code review penalty'),
+    });
+
+    expect(persistGeneratedGameResultSpy).not.toHaveBeenCalled();
+    expect(generationTaskService.markSucceeded).not.toHaveBeenCalled();
+
+    assertTaskCanPersistResultSpy.mockRestore();
+    persistGeneratedGameResultSpy.mockRestore();
+  });
+
+  it('allows standard create results without structured review when the quality score is strong enough', async () => {
+    const persistGeneratedGameResultSpy = jest
+      .spyOn(service as any, 'persistGeneratedGameResult')
+      .mockResolvedValue(undefined);
+    const assertTaskCanPersistResultSpy = jest
+      .spyOn(service as any, 'assertTaskCanPersistResult')
+      .mockResolvedValue(undefined);
+
+    await expect((service as any).completePipelineTask({
+      gameId: 'game-standard-quality-pass',
+      userId: 'user-standard-quality-pass',
+      description: 'make a polished office chaos runner',
+      taskId: 'task-standard-quality-pass',
+      generationTier: 'standard',
+      responseData: {
+        html_code: '<!DOCTYPE html><html><head><title>Office Chaos</title></head><body></body></html>',
+        game_spec: {
+          game_type: 'casual',
+        },
+        quality_score: 7.2,
+        quality_breakdown: {
+          reviewRan: false,
+        },
+      },
+    })).resolves.toBeUndefined();
+
+    expect(persistGeneratedGameResultSpy).toHaveBeenCalled();
+
+    assertTaskCanPersistResultSpy.mockRestore();
+    persistGeneratedGameResultSpy.mockRestore();
   });
 
   it('normalizes generated game types into the curated 4-category catalog when create completes', async () => {
@@ -2048,6 +2242,73 @@ describe('GameService', () => {
       failureFamily: 'contract_qa',
       primaryArtifactId: 'artifact-relayed-failure',
     }));
+  });
+
+  it('converts completion-time quality gate errors into persisted pipeline failures during reconciliation', async () => {
+    const qualityGateError = Object.assign(
+      new Error('Showcase quality gate failed: structured code review penalty -2.7 is below allowed -1.5.'),
+      {
+        failedStage: 'code_review',
+        failureFamily: 'quality_gate',
+      },
+    );
+    const completePipelineTaskSpy = jest
+      .spyOn(service as any, 'completePipelineTask')
+      .mockRejectedValue(qualityGateError);
+    const failPipelineTaskSpy = jest
+      .spyOn(service as any, 'failPipelineTask')
+      .mockResolvedValue(undefined);
+    const fetchUpstreamTaskSnapshotWithFailoverSpy = jest
+      .spyOn(service as any, 'fetchUpstreamTaskSnapshotWithFailover')
+      .mockResolvedValue({
+        task_id: 'upstream-quality-gate',
+        status: 'succeeded',
+        result: {
+          html_code: '<!DOCTYPE html><html><body>placeholder</body></html>',
+        },
+      });
+
+    prisma.generationTask.findUnique.mockResolvedValue({
+      id: 'task-reconcile-quality-gate',
+      status: 'failed',
+      gameId: 'game-reconcile-quality-gate',
+    });
+
+    const result = await (service as any).reconcileTaskWithUpstream({
+      id: 'task-reconcile-quality-gate',
+      gameId: 'game-reconcile-quality-gate',
+      userId: 'user-reconcile-quality-gate',
+      taskType: 'pipeline_run',
+      status: 'running',
+      progressStage: 'completed',
+      metadata: {
+        description: 'placeholder showcase game',
+        generationTier: 'showcase',
+      },
+      upstreamTaskId: 'upstream-quality-gate',
+      game: {
+        id: 'game-reconcile-quality-gate',
+        status: 'generating',
+      },
+    });
+
+    expect(failPipelineTaskSpy).toHaveBeenCalledWith(expect.objectContaining({
+      gameId: 'game-reconcile-quality-gate',
+      userId: 'user-reconcile-quality-gate',
+      taskId: 'task-reconcile-quality-gate',
+      error: expect.objectContaining({
+        failedStage: 'code_review',
+        failureFamily: 'quality_gate',
+      }),
+    }));
+    expect(result).toEqual(expect.objectContaining({
+      id: 'task-reconcile-quality-gate',
+      status: 'failed',
+    }));
+
+    completePipelineTaskSpy.mockRestore();
+    failPipelineTaskSpy.mockRestore();
+    fetchUpstreamTaskSnapshotWithFailoverSpy.mockRestore();
   });
 
   it('recovers missing upstream snapshots from durable llm failure signals', async () => {

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Iterable, List, Optional
 
 from ..api.models import GameRuntimeContract
-from .section_patch import extract_script_content
+from .section_patch import extract_script_content, replace_script_content
 
 logger = logging.getLogger(__name__)
 
@@ -269,39 +269,38 @@ class CodePreflightValidator:
         return repaired or html_code
 
     def _repair_nullable_canvas_runtime_objects(self, html_code: str) -> str:
-        def replace_block(match: re.Match[str]) -> str:
-            body = match.group("body")
-            has_ctx_helper = "__safeCanvasContext" in body
-            has_canvas_helper = "__safeCanvasElement" in body
-            needs_ctx_helper = bool(_CTX_NULL_DECL_RE.search(body)) and (
-                "getContext('2d')" in body or 'getContext("2d")' in body
-            )
-            needs_canvas_helper = bool(_CANVAS_NULL_DECL_RE.search(body)) and (
-                "gameCanvas" in body or ".getContext(" in body or "canvas." in body
-            )
-            if not needs_ctx_helper and not needs_canvas_helper:
-                return match.group(0)
+        body = extract_script_content(html_code or "")
+        if body is None:
+            return html_code
 
-            updated_body = body
-            helper_prefix = ""
-            if needs_ctx_helper:
-                updated_body = _CTX_NULL_DECL_RE.sub("let ctx = __safeCanvasContext()", updated_body, count=1)
-                if not has_ctx_helper:
-                    helper_prefix += self._SAFE_CTX_HELPER
-                    has_ctx_helper = True
-            if needs_canvas_helper:
-                updated_body = _CANVAS_NULL_DECL_RE.sub("let canvas = __safeCanvasElement()", updated_body, count=1)
-                if not has_ctx_helper:
-                    helper_prefix += self._SAFE_CTX_HELPER
-                    has_ctx_helper = True
-                if not has_canvas_helper:
-                    helper_prefix += self._SAFE_CANVAS_HELPER
+        has_ctx_helper = "__safeCanvasContext" in body
+        has_canvas_helper = "__safeCanvasElement" in body
+        needs_ctx_helper = bool(_CTX_NULL_DECL_RE.search(body)) and (
+            "getContext('2d')" in body or 'getContext("2d")' in body
+        )
+        needs_canvas_helper = bool(_CANVAS_NULL_DECL_RE.search(body)) and (
+            "gameCanvas" in body or ".getContext(" in body or "canvas." in body
+        )
+        if not needs_ctx_helper and not needs_canvas_helper:
+            return html_code
 
-            updated_body = f"{helper_prefix}{updated_body}"
-            return f"{match.group(1)}{updated_body}{match.group(3)}"
+        updated_body = body
+        helper_prefix = ""
+        if needs_ctx_helper:
+            updated_body = _CTX_NULL_DECL_RE.sub("let ctx = __safeCanvasContext()", updated_body, count=1)
+            if not has_ctx_helper:
+                helper_prefix += self._SAFE_CTX_HELPER
+                has_ctx_helper = True
+        if needs_canvas_helper:
+            updated_body = _CANVAS_NULL_DECL_RE.sub("let canvas = __safeCanvasElement()", updated_body, count=1)
+            if not has_ctx_helper:
+                helper_prefix += self._SAFE_CTX_HELPER
+                has_ctx_helper = True
+            if not has_canvas_helper:
+                helper_prefix += self._SAFE_CANVAS_HELPER
 
-        repaired = _SCRIPT_BLOCK_RE.sub(replace_block, html_code, count=1)
-        return repaired if repaired != html_code else html_code
+        updated_body = f"{helper_prefix}{updated_body}"
+        return replace_script_content(html_code, updated_body)
 
     def render_guidance(self, issues: Iterable[CodePreflightIssue]) -> str:
         visible = []
@@ -475,11 +474,9 @@ class CodePreflightValidator:
         if "puzzle_grid" not in profile:
             return html_code
 
-        script_match = _SCRIPT_BLOCK_RE.search(html_code or "")
-        if not script_match:
+        script = extract_script_content(html_code or "")
+        if script is None:
             return html_code
-
-        script = script_match.group("body") or ""
         replaced_any = False
 
         def _replace(match: re.Match[str]) -> str:
@@ -500,16 +497,12 @@ class CodePreflightValidator:
             return html_code
         if "__safeGridCell(" not in repaired_script:
             repaired_script = self._SAFE_GRID_HELPER + repaired_script.lstrip()
-
-        start, end = script_match.span("body")
-        return f"{html_code[:start]}{repaired_script}{html_code[end:]}"
+        return replace_script_content(html_code, repaired_script)
 
     def _repair_unsafe_color_alpha_concat(self, html_code: str) -> str:
-        script_match = _SCRIPT_BLOCK_RE.search(html_code or "")
-        if not script_match:
+        script = extract_script_content(html_code or "")
+        if script is None:
             return html_code
-
-        script = script_match.group("body") or ""
         if not _COLOR_ALPHA_SUFFIX_RE.search(script):
             return html_code
 
@@ -549,9 +542,7 @@ class CodePreflightValidator:
         repaired_script = "".join(repaired_lines)
         if "function __withAlpha(" not in repaired_script:
             repaired_script = self._SAFE_ALPHA_HELPER + repaired_script.lstrip()
-
-        start, end = script_match.span("body")
-        return f"{html_code[:start]}{repaired_script}{html_code[end:]}"
+        return replace_script_content(html_code, repaired_script)
 
     @staticmethod
     def _check_canvas_dimensions(

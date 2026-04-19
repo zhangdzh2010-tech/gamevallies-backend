@@ -38,6 +38,12 @@ COMMON_CODEGEN_PROMPTS = {
         "{reference_line}\n"
         "{special_rules_block}"
     ),
+    "prompt.visual_quality_bar": (
+        "VISUAL / CHARACTER QUALITY BAR:\n"
+        "- Presentation must feel polished and premium for mobile H5: cohesive {theme} world-building, {art_style} direction, readable depth, and strong moment-to-moment feedback.\n"
+        "{palette_line}\n"
+        "- Character quality must feel intentional and premium."
+    ),
     "prompt.mobile_layout_guardrails": (
         "NON-NEGOTIABLE MOBILE LAYOUT RULES:\n"
         "- Treat {canvas_w}x{canvas_h} as a portrait reference playfield.\n"
@@ -63,6 +69,27 @@ COMMON_CODEGEN_PROMPTS = {
         "- Prompt bundle: {bundle_id}\n"
         "- Prompt layers: {layer_keys}\n"
         "- The final code must respect every contract rule explicitly, not implicitly."
+    ),
+    "prompt.generation_tier_safe": (
+        "GENERATION TIER: SAFE\n"
+        "- Prioritize stability, clarity, and QA-friendly structure."
+    ),
+    "prompt.generation_tier_standard": (
+        "GENERATION TIER: STANDARD\n"
+        "- Balance stability with delight.\n"
+        "- Build a more polished and distinctive result than the minimal safe baseline."
+    ),
+    "prompt.generation_tier_showcase": (
+        "GENERATION TIER: SHOWCASE\n"
+        "- Aim for a premium-feeling result with stronger presentation and a more distinctive loop."
+    ),
+    "prompt.code_gen_system_standard": (
+        "STANDARD OVERRIDE:\n"
+        "- Favor clearer progression, stronger feedback, and a more intentional presentation."
+    ),
+    "prompt.code_gen_system_showcase": (
+        "SHOWCASE OVERRIDE:\n"
+        "- A premium-feeling result is preferred over the smallest generic implementation."
     ),
 }
 
@@ -638,11 +665,15 @@ class TestPromptIntegration(unittest.TestCase):
     def test_runtime_contract_block_uses_compact_default_summary(self):
         generator = CodeGenerator(llm_mode="real")
 
-        block = generator._build_runtime_contract_block(
-            runtime_contract=None,
-            runtime_profile="casual_arcade",
-            prompt_bundle_snapshot={"bundle_id": "arcade_v3", "layers": {"resolved_prompts": {}}},
-        )
+        with patch(
+            "src.engine.code_generator.require_prompt",
+            side_effect=lambda key, default=None: COMMON_CODEGEN_PROMPTS.get(key, default),
+        ):
+            block = generator._build_runtime_contract_block(
+                runtime_contract=None,
+                runtime_profile="casual_arcade",
+                prompt_bundle_snapshot={"bundle_id": "arcade_v3", "layers": {"resolved_prompts": {}}},
+            )
 
         self.assertIn("Runtime profile: casual_arcade (contract v1.0)", block)
         self.assertIn("Core state flow must support boot, ready, playing, game_over", block)
@@ -662,11 +693,15 @@ class TestPromptIntegration(unittest.TestCase):
             gameplay={"terminal_state_aliases": ["game_over", "victory", "complete", "failed", "won", "lost", "clear", "solved", "finished"]},
         )
 
-        block = generator._build_runtime_contract_block(
-            runtime_contract=contract,
-            runtime_profile=None,
-            prompt_bundle_snapshot=None,
-        )
+        with patch(
+            "src.engine.code_generator.require_prompt",
+            side_effect=lambda key, default=None: COMMON_CODEGEN_PROMPTS.get(key, default),
+        ):
+            block = generator._build_runtime_contract_block(
+                runtime_contract=contract,
+                runtime_profile=None,
+                prompt_bundle_snapshot=None,
+            )
 
         self.assertIn("touch, pointer, keyboard, gamepad, +1 more", block)
         self.assertIn("tap, drag, swipe, hold, +1 more", block)
@@ -725,7 +760,7 @@ class TestPromptIntegration(unittest.TestCase):
         generator = CodeGenerator(llm_mode="real")
 
         with patch(
-            "src.engine.code_generator.get_prompt",
+            "src.engine.code_generator.require_prompt",
             side_effect=lambda key, default=None: (
                 "RUNTIME CONTRACT:\n- Runtime profile: {runtime_profile}\n- Orientation: {orientation}"
                 if key == "prompt.runtime_contract_summary"
@@ -1445,7 +1480,7 @@ class TestPromptIntegration(unittest.TestCase):
         self.assertIn("signature mechanic", block)
         self.assertNotIn("smallest complete mechanic", block)
 
-    def test_showcase_system_prompt_rewrites_minimalism_bias(self):
+    def test_showcase_system_prompt_appends_db_override_without_code_fallback(self):
         generator = CodeGenerator(llm_mode="real")
         showcase_spec = GameSpec(game_type="casual", generation_tier="showcase")
 
@@ -1464,7 +1499,7 @@ class TestPromptIntegration(unittest.TestCase):
                 spec=showcase_spec,
             )
 
-        self.assertNotIn("Choose the smallest implementation that fully satisfies the brief.", system_prompt)
+        self.assertIn("Choose the smallest implementation that fully satisfies the brief.", system_prompt)
         self.assertIn("SHOWCASE OVERRIDE", system_prompt)
         self.assertIn("premium-feeling result", system_prompt)
 
