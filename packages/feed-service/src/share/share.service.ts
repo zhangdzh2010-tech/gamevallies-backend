@@ -1,5 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { sanitizeUserIdea } from '../common/sanitize-idea';
+import { pickPublicAuthorName } from '../common/feed-presenter';
 
 @Injectable()
 export class ShareService {
@@ -34,7 +36,9 @@ export class ShareService {
       include: {
         author: {
           select: {
+            id: true,
             username: true,
+            displayName: true,
           },
         },
       },
@@ -47,12 +51,21 @@ export class ShareService {
     const appUrl = process.env.PUBLIC_API_BASE_URL || process.env.APP_URL || 'https://playforge.app';
     const gameUrl = `${appUrl}/games/${gameId}`;
 
+    // H.5.1 - Prefer the curated `userIdea` tagline; fall back to a sanitized
+    // version of the legacy LLM-expanded `description` so C-end share previews
+    // never surface raw prompt scaffolding.
+    const shareDescription =
+      (game.userIdea && String(game.userIdea).trim()) ||
+      sanitizeUserIdea(game.description);
+
     return {
       title: game.title,
-      description: game.description,
+      description: shareDescription,
       thumbnailUrl: game.thumbnailUrl,
       url: gameUrl,
-      author: game.author.username,
+      // H.7.1 - Avoid leaking raw `wx_<openid>` style usernames into the share
+      // card author line.
+      author: pickPublicAuthorName(game.author),
       stats: {
         plays: Number(game.playCount),
         likes: Number(game.likeCount),

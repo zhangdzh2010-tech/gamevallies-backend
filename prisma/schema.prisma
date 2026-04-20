@@ -155,6 +155,11 @@ model Game {
   authorId     String     @map("author_id") @db.VarChar(36)
   title        String     @db.VarChar(64)
   description  String?    @db.Text
+  // H.5.1 - Clean, user-facing idea (the user's original tagline) for C-end display.
+  // `description` may still hold the LLM-expanded prompt for pipeline compatibility;
+  // presenters should prefer `userIdea` and only fall back to a sanitized
+  // `description` when this field is empty (legacy rows).
+  userIdea     String?    @map("user_idea") @db.Text
   slug         String?    @unique @db.VarChar(128)
   status       GameStatus @default(draft)
   failedStage  String?    @map("failed_stage") @db.VarChar(64)

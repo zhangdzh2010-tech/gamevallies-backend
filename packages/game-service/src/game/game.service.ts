@@ -51,6 +51,8 @@ import {
 import { RuntimeProfileService } from '../platform/config/runtime-profile.service';
 import { SystemConfigRepository } from '../platform/config/system-config.repository';
 import { TimeoutConfigService } from '../platform/config/timeout-config.service';
+import { sanitizeUserIdea } from '../common/sanitize-idea';
+import { pickPublicAuthorName as pickPublicShareAuthorName } from '../common/game-presenter';
 
 const STAGE_PCT: Record<string, number> = {
   intent_parsing: 15,
@@ -178,6 +180,10 @@ interface CreateGameCommand extends CreateGameDto {
   creationSessionId?: string | null;
   entryMode?: string | null;
   sourceGameId?: string | null;
+  // H.5.1 - Clean, user-facing idea (the user's original 1-line typed text or
+  // creation-session initialPrompt). Stored separately from `description`,
+  // which historically holds the LLM-expanded prompt and must not leak to UI.
+  userIdea?: string | null;
 }
 
 interface CreateExecutionOptions {
@@ -3643,6 +3649,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     try {
       const gameId = randomUUID();
       const description = dto.description || dto.prompt || '';
+      // H.5.1 - userIdea is the clean, user-facing tagline. For direct create,
+      // dto.description IS the user's typed text. For creation-session,
+      // dto.userIdea is set explicitly to session.initialPrompt while
+      // dto.description carries the LLM-expanded prompt.
+      const userIdea = sanitizeUserIdea(dto.userIdea ?? description);
       const title = dto.title?.trim() || `Game ${gameId.substring(0, 8)}`;
       const requestedOrientation = this.normalizeRequestedOrientation(dto.orientation)
         ?? this.inferRequestedOrientationFromText(description, title);
@@ -3718,6 +3729,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
             id: gameId,
             authorId: userId,
             description,
+            userIdea,
             status: 'generating',
             failedStage: null,
             failedReason: null,
@@ -6472,7 +6484,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       where: { id },
       include: {
         author: {
-          select: { username: true },
+          select: { id: true, username: true, displayName: true },
         },
       },
     });
@@ -6482,12 +6494,23 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
 
     const gameUrl = `${this.getPublicBaseUrl()}/games/${id}`;
 
+    // H.5.1 - Share payload must stay clean for social previews. Prefer the
+    // curated `userIdea` tagline and fall back to sanitized `description` so
+    // WeChat / OG previews never surface LLM prompt scaffolding.
+    const shareDescription =
+      (game.userIdea && String(game.userIdea).trim()) ||
+      sanitizeUserIdea(game.description);
+
+    // H.7.1 - Avoid leaking raw `wx_<openid>` style usernames into the share
+    // card author line; fall back to a stable anonymous handle.
+    const shareAuthor = pickPublicShareAuthorName(game.author);
+
     return {
       title: game.title,
-      description: game.description,
+      description: shareDescription,
       thumbnailUrl: game.thumbnailUrl,
       url: gameUrl,
-      author: game.author?.username || '',
+      author: shareAuthor,
       stats: {
         plays: Number(game.playCount || 0),
         likes: Number(game.likeCount || 0),

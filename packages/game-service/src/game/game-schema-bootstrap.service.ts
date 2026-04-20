@@ -34,6 +34,13 @@ const TABLE_COLUMN_PATCHES: ColumnPatch[] = [
     sql: "ALTER TABLE games ADD COLUMN access_grant_subscription_id VARCHAR(36) NULL",
   },
   {
+    // H.5.1 - clean, user-facing tagline. `description` keeps the LLM-expanded
+    // prompt for pipeline compatibility; presenters expose `user_idea` instead.
+    table: "games",
+    name: "user_idea",
+    sql: "ALTER TABLE games ADD COLUMN user_idea TEXT NULL AFTER description",
+  },
+  {
     table: "llm_gateway_providers",
     name: "region_target_id",
     sql: "ALTER TABLE llm_gateway_providers ADD COLUMN region_target_id VARCHAR(36) NULL",

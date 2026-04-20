@@ -265,6 +265,33 @@ export class AuthService {
     return username;
   }
 
+  // H.7.1 - Build a friendly anonymous handle so registration paths never store
+  // a raw `wx_<openid>` style identifier into `users.display_name`. The 4-char
+  // suffix derives from the user UUID, so it is stable across reloads while
+  // staying short enough to fit comment lists / cards.
+  private buildAnonymousDisplayName(userId: string): string {
+    const suffix = (userId || '').replace(/-/g, '').slice(0, 4) || 'xxxx';
+    return `匿名玩家_${suffix}`;
+  }
+
+  // Returns the supplied nickname when it is non-empty and not an openid-like
+  // identifier; otherwise falls back to the anonymous handle for `userId`.
+  private resolveDisplayName(
+    userId: string,
+    candidate?: string | null,
+  ): string {
+    const trimmed = (candidate || '').trim();
+    const looksLikeOpenId =
+      trimmed &&
+      /^(wx_|wxopenid_|wxunionid_|openid_|unionid_|oauth_)[a-zA-Z0-9_.\-]+$/i.test(
+        trimmed,
+      );
+    if (trimmed && !looksLikeOpenId) {
+      return trimmed;
+    }
+    return this.buildAnonymousDisplayName(userId);
+  }
+
   async loginByPassword(account: string, password: string): Promise<AuthResponse> {
     const normalizedAccount = account.trim().toLowerCase();
     const user = await this.prisma.user.findFirst({
@@ -528,12 +555,14 @@ export class AuthService {
 
     const passwordHash = password ? await bcrypt.hash(password, 10) : undefined;
 
+    const userId = randomUUID();
     const user = await this.prisma.user.create({
       data: {
-        id: randomUUID(),
+        id: userId,
         username,
         phone,
-        displayName: nickname || username,
+        // H.7.1 - never store a raw `wx_/openid_` style identifier as displayName.
+        displayName: this.resolveDisplayName(userId, nickname),
         authProvider: 'phone',
         passwordHash,
         role: 'user',
@@ -600,11 +629,15 @@ export class AuthService {
 
     if (!user) {
       const username = await this.generateWechatUsername(session.openid);
+      const userId = randomUUID();
       user = await this.prisma.user.create({
         data: {
-          id: randomUUID(),
+          id: userId,
           username,
-          displayName: nickname || username,
+          // H.7.1 - never store the openid-derived `wx_xxxx` username as the
+          // user-visible displayName. Use the WeChat-provided nickname if any,
+          // otherwise a friendly anonymous handle.
+          displayName: this.resolveDisplayName(userId, nickname),
           avatarUrl: avatarUrl || null,
           authProvider: 'wechat',
           wxOpenId: session.openid,
@@ -621,7 +654,12 @@ export class AuthService {
           authProvider: 'wechat',
           wxOpenId: session.openid,
           wxUnionId: session.unionid || user.wxUnionId || null,
-          displayName: nickname || user.displayName,
+          // Only overwrite displayName when WeChat provides a real nickname;
+          // otherwise leave whatever (clean) name the user has set.
+          displayName: this.resolveDisplayName(
+            user.id,
+            nickname || user.displayName,
+          ),
           avatarUrl: avatarUrl || user.avatarUrl || null,
         },
       });
@@ -675,11 +713,13 @@ export class AuthService {
 
     if (!user) {
       const username = await this.generateWechatUsername(session.openid);
+      const userId = randomUUID();
       user = await this.prisma.user.create({
         data: {
-          id: randomUUID(),
+          id: userId,
           username,
-          displayName: displayName || username,
+          // H.7.1 - same anti-leak rule as the miniapp path.
+          displayName: this.resolveDisplayName(userId, displayName),
           avatarUrl: avatarUrl || null,
           authProvider: 'wechat',
           wxOpenId: session.openid,
@@ -690,13 +730,22 @@ export class AuthService {
         },
       });
     } else {
+      // H.7.1 - Even on the WeChat H5 re-login update branch the nickname must
+      // be funneled through `resolveDisplayName` so we never persist raw
+      // `wx_<openid>` / `openid_*` style strings (which happens when a WeChat
+      // profile is missing or the caller passes back the username unchanged).
+      const resolvedDisplayName = displayName
+        ? this.resolveDisplayName(user.id, displayName)
+        : null;
+      const shouldUpdateDisplayName =
+        resolvedDisplayName !== null && resolvedDisplayName !== user.displayName;
       user = await this.prisma.user.update({
         where: { id: user.id },
         data: {
           authProvider: 'wechat',
           wxUnionId: session.unionid || profile?.unionid || user.wxUnionId || null,
           ...(user.wxOpenId ? {} : { wxOpenId: session.openid }),
-          ...(displayName ? { displayName } : {}),
+          ...(shouldUpdateDisplayName ? { displayName: resolvedDisplayName } : {}),
           ...(avatarUrl ? { avatarUrl } : {}),
         },
       });
