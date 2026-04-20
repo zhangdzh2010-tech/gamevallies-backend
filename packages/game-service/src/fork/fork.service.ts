@@ -38,8 +38,13 @@ export class ForkService {
           where: { id: gameId },
           select: {
             id: true,
+            authorId: true,
             title: true,
             description: true,
+            // H.5.1 - userIdea must follow the fork so the cloned game keeps
+            // a clean, user-facing tagline instead of falling back to the
+            // raw LLM-expanded `description`.
+            userIdea: true,
             gameType: true,
             tags: true,
             status: true,
@@ -52,11 +57,33 @@ export class ForkService {
         });
 
         if (!sourceGame || !this.isPublicForkVisible(sourceGame)) {
-          throw new NotFoundException('Game not found');
+          // H.9.1 - The frontend surfaces this message directly to the user
+          // when it can't parse a structured errorCode from the response body,
+          // so keep it in Chinese and phrased as "source missing" rather than
+          // the engineering term "Game not found".
+          throw new NotFoundException({
+            errorCode: 'GAME_NOT_FOUND',
+            message: '这个作品找不到了',
+          });
+        }
+
+        // H.9.1 - Forbid forking your own game with a structured error code so
+        // the frontend can navigate to "继续创作" instead of showing an
+        // ambiguous "加载失败" toast.
+        if (sourceGame.authorId === userId) {
+          throw new ForbiddenException({
+            errorCode: 'FORK_FORBIDDEN_SELF',
+            message: '不能复刻自己的作品',
+            authorId: sourceGame.authorId,
+          });
         }
 
         if (sourceGame.allowFork === false) {
-          throw new ForbiddenException('Forking is disabled for this game');
+          throw new ForbiddenException({
+            errorCode: 'FORK_FORBIDDEN_BY_AUTHOR',
+            message: '作者还没开放复刻',
+            authorId: sourceGame.authorId,
+          });
         }
 
         const sourceBundle = await tx.gameBundle.findFirst({
@@ -65,7 +92,14 @@ export class ForkService {
         });
 
         if (!sourceBundle || !this.isBundlePlayable(sourceBundle)) {
-          throw new BadRequestException('Game bundle is not ready for forking');
+          // H.9.1 - Prefer a user-facing phrasing so the frontend can show this
+          // directly instead of an engineering "Game bundle is not ready"
+          // string.
+          throw new BadRequestException({
+            errorCode: 'FORK_BUNDLE_NOT_READY',
+            message: '作品还在构建中，稍后再试',
+            authorId: sourceGame.authorId,
+          });
         }
 
         const forkGameId = randomUUID();
@@ -85,6 +119,7 @@ export class ForkService {
             authorId: userId,
             title: sourceGame.title,
             description: sourceGame.description,
+            userIdea: sourceGame.userIdea,
             status: 'draft',
             failedStage: null,
             failedReason: null,

@@ -607,6 +607,10 @@ export class CreationSessionService {
       const result = await this.gameService.create(userId, {
         title: session.titleDraft || undefined,
         description: finalPrompt,
+        // H.5.1 - userIdea preserves the user's original 1-line typed text
+        // (initialPrompt) so the C-end never has to display the LLM-expanded
+        // finalPrompt, which contains internal "Game Type: ..." spec scaffolding.
+        userIdea: session.initialPrompt || undefined,
         timeoutS: dto.timeoutS,
         regionHint: this.asOptionalString(metadata.regionHint),
         orientation: this.normalizeOrientationValue(metadata.orientation),

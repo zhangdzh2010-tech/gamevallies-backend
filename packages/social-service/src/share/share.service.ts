@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { pickPublicShareDescription, pickPublicShareAuthorName } from '../common/share-helpers';
 
 @Injectable()
 export class ShareService {
@@ -34,7 +35,9 @@ export class ShareService {
       include: {
         author: {
           select: {
+            id: true,
             username: true,
+            displayName: true,
           },
         },
       },
@@ -49,10 +52,13 @@ export class ShareService {
 
     return {
       title: game.title,
-      description: game.description,
+      // H.5.1 - Prefer curated tagline, fall back to sanitized description so
+      // share previews never surface LLM prompt scaffolding.
+      description: pickPublicShareDescription(game),
       thumbnailUrl: game.thumbnailUrl,
       url: gameUrl,
-      author: game.author.username,
+      // H.7.1 - Keep raw `wx_<openid>` style usernames out of the share card.
+      author: pickPublicShareAuthorName(game.author),
       stats: {
         plays: Number(game.playCount),
         likes: Number(game.likeCount),

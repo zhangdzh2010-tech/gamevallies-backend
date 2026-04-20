@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { ForkService } from '../src/fork/fork.service';
 
 describe('ForkService', () => {
@@ -80,5 +80,81 @@ describe('ForkService', () => {
     });
 
     await expect(service.getForkLineage('game-private')).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  // H.9.1 - cannot fork your own game; the error must carry FORK_FORBIDDEN_SELF
+  // and the authorId so the frontend can route to "继续创作" instead of toasting
+  // "加载失败".
+  it('rejects forking your own game with FORK_FORBIDDEN_SELF', async () => {
+    prisma.$transaction = jest.fn(async (cb: any) =>
+      cb({
+        game: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'game-mine',
+            authorId: 'author-self',
+            title: 'Mine',
+            description: 'desc',
+            userIdea: 'desc',
+            gameType: 'casual',
+            tags: [],
+            status: 'published',
+            visibility: 'public',
+            allowComments: true,
+            allowFork: true,
+            forkDepth: 0,
+            thumbnailUrl: null,
+          }),
+          create: jest.fn(),
+        },
+        gameBundle: { findFirst: jest.fn(), create: jest.fn() },
+      }),
+    );
+
+    await expect(
+      service.forkGame('game-mine', 'author-self'),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        errorCode: 'FORK_FORBIDDEN_SELF',
+        authorId: 'author-self',
+      }),
+    });
+    await expect(
+      service.forkGame('game-mine', 'author-self'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('rejects forking a game whose author disabled forking with FORK_FORBIDDEN_BY_AUTHOR', async () => {
+    prisma.$transaction = jest.fn(async (cb: any) =>
+      cb({
+        game: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'game-locked',
+            authorId: 'author-other',
+            title: 'Locked',
+            description: 'desc',
+            userIdea: 'desc',
+            gameType: 'casual',
+            tags: [],
+            status: 'published',
+            visibility: 'public',
+            allowComments: true,
+            allowFork: false,
+            forkDepth: 0,
+            thumbnailUrl: null,
+          }),
+          create: jest.fn(),
+        },
+        gameBundle: { findFirst: jest.fn(), create: jest.fn() },
+      }),
+    );
+
+    await expect(
+      service.forkGame('game-locked', 'visitor'),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        errorCode: 'FORK_FORBIDDEN_BY_AUTHOR',
+        authorId: 'author-other',
+      }),
+    });
   });
 });
