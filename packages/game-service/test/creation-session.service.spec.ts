@@ -63,14 +63,12 @@ describe("CreationSessionService", () => {
       return originalSetTimeout(handler, timeout as any, ...args);
     }) as typeof setTimeout);
 
-    const rawExpandedPrompt =
-      'Original Idea: Make an office slacking game\n\nPlease turn this brief into a mobile-friendly game generation prompt that covers at least these elements:\nGame Type: Funny stealth comedy\nCore Mechanic: Tap to swap between working and slacking states while hiding from surprise inspections\nTheme: Open-plan office satire';
-    const expandedPrompt = [
-      'Create a mobile HTML5 game based on this brief: "Make an office slacking game".',
-      "Keep the core actions, setting, character fantasy, and mood from the original idea so the player understands the goal almost immediately through touch-first controls.",
-      "Each round should have a clear success condition, visible escalation, and rewards or feedback that reinforce the same fantasy instead of drifting into generic filler.",
-      "Make the scene, props, and any main character feel intentionally designed and visually coherent rather than like placeholder geometry.",
-    ].join("\n");
+    // Content-rich natural prose expansion (no key:value labels, no bullet
+    // headings). The service now trusts ai-engine's output and must pass it
+    // through verbatim; any rewriting here used to silently replace a good
+    // LLM brief with a four-line boilerplate template.
+    const expandedPrompt =
+      "Build a portrait mobile HTML5 office-slacking comedy where the player taps to toggle their avatar between frantic fake typing and leaning-back phone scrolling while the boss patrols between cubicles. The round ends when the shift-clock reaches 18:00 without the boss catching the player slacking three times; shift lengths grow from 60 seconds to 180 seconds and the boss's patrol speeds up across five workdays. Feedback comes from a wiggly 'suspicion' meter that shakes the cubicle and tints the monitor red when the boss gets close, and a confetti storm of crumpled paper balls when the end-of-day chime rings. The setting is a cozy cramped 90s cubicle with stained coffee rings on the mousepad, a dusty CRT monitor, a wobbly desk fan, and co-worker heads bobbing up in the neighboring cubicles. Keep the art in exaggerated hand-drawn comedy with visible outlines on every character, thick squash-and-stretch on the boss walk cycle, and readable facial reactions instead of flat vector shapes.";
     const confirmationQuestion =
       "I turned your idea into a user-facing game brief. Confirm it as-is, or edit the wording first if you want to refine it before generation.";
 
@@ -98,7 +96,8 @@ describe("CreationSessionService", () => {
     }));
     (axios.post as jest.Mock).mockResolvedValueOnce({
       data: {
-        expanded_prompt: rawExpandedPrompt,
+        expanded_prompt: expandedPrompt,
+        fallback_used: false,
       },
     });
     repo.findUnique.mockResolvedValue({
@@ -193,6 +192,8 @@ describe("CreationSessionService", () => {
           }),
           metadata: expect.objectContaining({
             expandedPrompt,
+            expandFallbackUsed: false,
+            expandFallbackReason: null,
             readyToGenerate: false,
             slotFillPct: 1,
           }),
@@ -705,6 +706,8 @@ describe("CreationSessionService", () => {
         metadata: {
           initError: "Session initialization timed out",
           abandonedAt: "2026-04-08T09:00:00.000Z",
+          expandFallbackUsed: false,
+          expandFallbackReason: null,
         },
       }),
     );

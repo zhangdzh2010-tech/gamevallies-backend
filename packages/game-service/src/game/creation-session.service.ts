@@ -46,41 +46,11 @@ const REQUIRED_SLOT_KEYS = [
 type ExpandPromptResponsePayload = {
   expanded_prompt?: string;
   expandedPrompt?: string;
+  fallback_used?: boolean;
+  fallbackUsed?: boolean;
+  fallback_reason?: string;
+  fallbackReason?: string;
 };
-
-const LOW_QUALITY_EXPAND_PROMPT_LABELS = [
-  "game type:",
-  "core mechanic:",
-  "theme:",
-  "input method:",
-  "win condition:",
-  "difficulty ramp:",
-  "scoring / rewards:",
-  "visual direction:",
-  "special rules or reference inspiration:",
-  "游戏类型：",
-  "核心玩法：",
-  "主题：",
-  "操作方式：",
-  "胜利条件：",
-  "难度节奏：",
-] as const;
-
-const LOW_QUALITY_EXPAND_PROMPT_MARKERS = [
-  "original idea:",
-  "please turn this brief into a mobile-friendly game generation prompt",
-  "covers at least these elements:",
-  "choose the most fitting direction",
-  "describe the main repeated player action",
-  "preserve the setting, fantasy, or mood implied by the brief",
-  "use touch-friendly tap, swipe, or drag controls",
-  "define a clear round objective or victory condition",
-  "explain how the challenge escalates over time",
-  "suggest an art direction that matches the brief",
-  "原始想法：",
-  "请把这条想法整理成",
-  "至少要覆盖这些要素",
-] as const;
 
 @Injectable()
 export class CreationSessionService {
@@ -233,8 +203,16 @@ export class CreationSessionService {
   ): Promise<void> {
     const repo = this.getRepo();
     let expandedPrompt = "";
+    let expandFallbackUsed = false;
+    let expandFallbackReason: string | null = null;
     try {
-        expandedPrompt = await this.expandPromptForUser(initialPrompt, regionHint);
+        const detail = await this.expandPromptForUserDetailed(
+          initialPrompt,
+          regionHint,
+        );
+        expandedPrompt = detail.expandedPrompt;
+        expandFallbackUsed = detail.fallbackUsed;
+        expandFallbackReason = detail.fallbackReason;
     } catch (error: any) {
       const initError = this.extractAiError(
         error,
@@ -267,6 +245,8 @@ export class CreationSessionService {
       initialPrompt,
       dto,
       expandedPrompt,
+      expandFallbackUsed,
+      expandFallbackReason,
     });
 
     const result = await repo.updateMany({
@@ -718,6 +698,34 @@ export class CreationSessionService {
     description: string,
     regionHint?: string,
   ): Promise<string> {
+    const { expandedPrompt } = await this.expandPromptForUserDetailed(
+      description,
+      regionHint,
+    );
+    return expandedPrompt;
+  }
+
+  /**
+   * Same as {@link expandPromptForUser} but also surfaces whether the ai-engine
+   * had to fall back to deterministic output and why. Callers that persist the
+   * expanded prompt on a session (e.g. creation session init) should use this
+   * variant so the UI can show a "AI fell back to a default brief, please edit"
+   * hint instead of silently displaying a lower-quality result.
+   *
+   * Trust boundary: sanitization of low-quality LLM output lives in ai-engine
+   * (`_looks_like_low_quality_expand_prompt` + `_build_expand_prompt_fallback`).
+   * This service must not re-reject or rewrite what ai-engine returns; doing so
+   * previously caused well-formed LLM output to be silently replaced by a
+   * four-sentence static template that contained no content expansion at all.
+   */
+  async expandPromptForUserDetailed(
+    description: string,
+    regionHint?: string,
+  ): Promise<{
+    expandedPrompt: string;
+    fallbackUsed: boolean;
+    fallbackReason: string | null;
+  }> {
     const aiEngineUrl = await this.gameService.getAiEngineBaseUrl(regionHint);
     const timeoutMs = await this.gameService.getExpandPromptRequestTimeoutMs();
     try {
@@ -734,7 +742,19 @@ export class CreationSessionService {
           "Creation session prompt expansion returned an empty prompt",
         );
       }
-      return this.sanitizeExpandedPrompt(description, expandedPrompt);
+      const fallbackUsed = Boolean(
+        response.data?.fallback_used ?? response.data?.fallbackUsed ?? false,
+      );
+      const fallbackReason =
+        this.asOptionalString(
+          response.data?.fallback_reason ?? response.data?.fallbackReason,
+        ) || null;
+      if (fallbackUsed) {
+        this.logger.warn(
+          `ai-engine expand-prompt fallback used (reason=${fallbackReason ?? "unknown"})`,
+        );
+      }
+      return { expandedPrompt, fallbackUsed, fallbackReason };
     } catch (error: any) {
       if (error instanceof BadRequestException) {
         throw error;
@@ -756,72 +776,6 @@ export class CreationSessionService {
       }
       throw new InternalServerErrorException(message);
     }
-  }
-
-  private sanitizeExpandedPrompt(
-    sourcePrompt: string,
-    expandedPrompt: string,
-  ): string {
-    if (this.looksLikeLowQualityExpandedPrompt(sourcePrompt, expandedPrompt)) {
-      this.logger.warn(
-        "Replacing low-quality expanded prompt with local user-facing fallback",
-      );
-      return this.buildExpandedPromptFallback(sourcePrompt);
-    }
-    return expandedPrompt;
-  }
-
-  private looksLikeLowQualityExpandedPrompt(
-    sourcePrompt: string,
-    expandedPrompt: string,
-  ): boolean {
-    const normalized = String(expandedPrompt || "").trim();
-    if (!normalized) {
-      return true;
-    }
-
-    const sourceLooksChinese = this.prefersChineseCopy(sourcePrompt);
-    const expandedLooksChinese = this.prefersChineseCopy(normalized);
-    if (sourceLooksChinese !== expandedLooksChinese) {
-      return true;
-    }
-
-    const lowered = normalized.toLowerCase();
-    const markerHits = LOW_QUALITY_EXPAND_PROMPT_MARKERS.filter(
-      (marker) => lowered.includes(marker.toLowerCase()) || normalized.includes(marker),
-    ).length;
-    const labelHits = LOW_QUALITY_EXPAND_PROMPT_LABELS.filter(
-      (marker) => lowered.includes(marker.toLowerCase()) || normalized.includes(marker),
-    ).length;
-    const headingLineHits = normalized
-      .split(/\r?\n/)
-      .map((line) => line.trim().toLowerCase())
-      .filter((line) =>
-        LOW_QUALITY_EXPAND_PROMPT_LABELS.some((marker) =>
-          line.startsWith(marker.toLowerCase()),
-        ),
-      ).length;
-
-    return markerHits >= 1 || labelHits >= 3 || headingLineHits >= 3;
-  }
-
-  private buildExpandedPromptFallback(sourcePrompt: string): string {
-    const normalized = String(sourcePrompt || "").trim();
-    if (this.prefersChineseCopy(normalized)) {
-      return [
-        `请围绕“${normalized}”生成一款适合手机网页的小游戏。`,
-        "保留原始想法里的关键动作、场景、角色或情绪，让玩家通过触屏操作在几秒内看懂目标并立刻开始游玩。",
-        "每一局都要有清晰的成功条件、逐步增强的压力，以及和题材一致的分数、奖励或反馈演出。",
-        "画面、场景和主角设计要直接服务这个题材，避免空泛描述和占位几何图形。",
-      ].join("\n");
-    }
-
-    return [
-      `Create a mobile HTML5 game based on this brief: "${normalized}".`,
-      "Keep the core actions, setting, character fantasy, and mood from the original idea so the player understands the goal almost immediately through touch-first controls.",
-      "Each round should have a clear success condition, visible escalation, and rewards or feedback that reinforce the same fantasy instead of drifting into generic filler.",
-      "Make the scene, props, and any main character feel intentionally designed and visually coherent rather than like placeholder geometry.",
-    ].join("\n");
   }
 
   private extractAiError(error: any, fallback: string): string {
@@ -1028,12 +982,19 @@ export class CreationSessionService {
   ): CreationSessionSnapshot["metadata"] {
     const initError = this.asOptionalString(metadata.initError);
     const abandonedAt = this.asOptionalString(metadata.abandonedAt);
-    if (!initError && !abandonedAt) {
+    const expandFallbackUsed =
+      metadata.expandFallbackUsed === true ||
+      metadata.expandFallbackUsed === "true";
+    const expandFallbackReason =
+      this.asOptionalString(metadata.expandFallbackReason) || null;
+    if (!initError && !abandonedAt && !expandFallbackUsed) {
       return null;
     }
     return {
       initError: initError || null,
       abandonedAt: abandonedAt || null,
+      expandFallbackUsed: expandFallbackUsed || false,
+      expandFallbackReason,
     };
   }
 
@@ -1277,6 +1238,8 @@ export class CreationSessionService {
     initialPrompt: string;
     dto: CreateCreationSessionDto;
     expandedPrompt: string;
+    expandFallbackUsed?: boolean;
+    expandFallbackReason?: string | null;
   }): {
     nextStatus: "collecting";
     slotState: Record<string, unknown>;
@@ -1312,6 +1275,11 @@ export class CreationSessionService {
         generationTier: params.dto.generationTier || "standard",
         regionHint: params.dto.regionHint || null,
         expandedPrompt: params.expandedPrompt,
+        // Surface ai-engine's fallback signal so the UI can show a hint like
+        // "AI expansion fell back to a default brief, please edit" instead of
+        // pretending a low-quality brief came straight from the model.
+        expandFallbackUsed: Boolean(params.expandFallbackUsed),
+        expandFallbackReason: params.expandFallbackReason ?? null,
         readyToGenerate: false,
         slotFillPct: 1,
         planDraft: null,
