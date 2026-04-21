@@ -63,13 +63,17 @@ export class GameController {
       throw new BadRequestException('description is required');
     }
 
-    const expandedPrompt = await this.creationSessionService.expandPromptForUser(
+    const detail = await this.creationSessionService.expandPromptForUserDetailed(
       description,
       body.regionHint,
     );
     return ok({
-      expandedPrompt,
-      expanded_prompt: expandedPrompt,
+      expandedPrompt: detail.expandedPrompt,
+      expanded_prompt: detail.expandedPrompt,
+      fallbackUsed: detail.fallbackUsed,
+      fallback_used: detail.fallbackUsed,
+      fallbackReason: detail.fallbackReason,
+      fallback_reason: detail.fallbackReason,
     });
   }
 

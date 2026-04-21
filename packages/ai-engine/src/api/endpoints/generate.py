@@ -1880,13 +1880,18 @@ async def expand_prompt(request: dict):
         raise HTTPException(status_code=503, detail="Real LLM mode is required for prompt expansion")
 
     try:
+        # Prompt expansion is a once-per-session, high-leverage creative call
+        # (its output feeds every downstream generation step). Spend the
+        # budget on the full-quality model and a larger token window so the
+        # LLM can actually produce content-rich prose instead of short stubs
+        # that trigger the low-quality fallback.
         text = await client.complete(
-            max_tokens=1024,
+            max_tokens=1600,
             system=require_prompt("prompt.expand_prompt_system"),
             messages=[{"role": "user", "content": description}],
             step_key="expand_prompt",
             stage="prompt_expand",
-            prefer_fast=True,
+            prefer_fast=False,
         )
         expanded_prompt = text.strip()
         if _looks_like_low_quality_expand_prompt(expanded_prompt, description):
