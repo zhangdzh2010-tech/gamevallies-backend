@@ -33,6 +33,7 @@ import {
   buildIntentBuildSnapshot,
   normalizeIntentBuildSnapshot,
 } from "./intent-build.util";
+import { sanitizeUserIdea } from "../common/sanitize-idea";
 
 const REQUIRED_SLOT_KEYS = [
   "game_type",
@@ -712,11 +713,13 @@ export class CreationSessionService {
    * variant so the UI can show a "AI fell back to a default brief, please edit"
    * hint instead of silently displaying a lower-quality result.
    *
-   * Trust boundary: sanitization of low-quality LLM output lives in ai-engine
-   * (`_looks_like_low_quality_expand_prompt` + `_build_expand_prompt_fallback`).
-   * This service must not re-reject or rewrite what ai-engine returns; doing so
-   * previously caused well-formed LLM output to be silently replaced by a
-   * four-sentence static template that contained no content expansion at all.
+   * Trust boundary:
+   *   - ai-engine `/expand-prompt` is the single source of truth for quality
+   *     detection and deterministic fallback content.
+   *   - game-service still runs the returned brief through `sanitizeUserIdea`
+   *     as a defensive layer so that no scaffolding text can land in
+   *     `session.metadata.expandedPrompt` even if the ai-engine deploy is
+   *     stale or a third-party tool writes directly to that field.
    */
   async expandPromptForUserDetailed(
     description: string,
@@ -734,27 +737,85 @@ export class CreationSessionService {
         { description },
         { timeout: timeoutMs },
       );
-      const expandedPrompt = this.asOptionalString(
+      const rawExpanded = this.asOptionalString(
         response.data?.expanded_prompt ?? response.data?.expandedPrompt,
       );
-      if (!expandedPrompt) {
+      if (!rawExpanded) {
         throw new BadRequestException(
           "Creation session prompt expansion returned an empty prompt",
         );
       }
-      const fallbackUsed = Boolean(
+      const sanitizedExpanded = sanitizeUserIdea(rawExpanded);
+      let fallbackUsed = Boolean(
         response.data?.fallback_used ?? response.data?.fallbackUsed ?? false,
       );
-      const fallbackReason =
+      let fallbackReason =
         this.asOptionalString(
           response.data?.fallback_reason ?? response.data?.fallbackReason,
         ) || null;
+      const sanitizedLen = sanitizedExpanded.length;
+      const rawLen = rawExpanded.length;
+      const normalizedDescription = (description || "").trim();
+      const normalizedSanitized = sanitizedExpanded.trim();
+      // Defensive: detect cases where the ai-engine output is not really an
+      // expansion at all and flag them as a fallback so the frontend can
+      // warn the user:
+      //   1. Sanitization wiped almost everything — the LLM only produced
+      //      scaffolding.
+      //   2. The sanitized brief is basically the user's idea echoed back
+      //      verbatim; that isn't an expansion, it's a no-op.
+      //   3. The sanitized brief is suspiciously short relative to what the
+      //      model returned, meaning the output was >40% scaffolding.
+      if (!sanitizedExpanded || sanitizedLen < 20) {
+        this.logger.warn(
+          `expand-prompt output still looked like scaffolding after sanitization ` +
+            `(raw_len=${rawLen}, sanitized_len=${sanitizedLen}); ` +
+            `marking as fallback so the UI warns the user.`,
+        );
+        fallbackUsed = true;
+        if (!fallbackReason) {
+          fallbackReason = "empty_after_sanitization";
+        }
+      } else if (
+        normalizedDescription.length > 0 &&
+        (normalizedSanitized === normalizedDescription ||
+          (sanitizedLen <= normalizedDescription.length * 1.15 &&
+            normalizedSanitized.includes(normalizedDescription)))
+      ) {
+        // The "expanded" brief is essentially just the user's idea echoed
+        // back — no expansion actually happened.
+        this.logger.warn(
+          `expand-prompt output is an echo of the user's idea ` +
+            `(description_len=${normalizedDescription.length}, sanitized_len=${sanitizedLen}); ` +
+            `marking as fallback.`,
+        );
+        fallbackUsed = true;
+        if (!fallbackReason) {
+          fallbackReason = "echoed_user_idea";
+        }
+      } else if (
+        fallbackUsed === false &&
+        rawLen > 0 &&
+        sanitizedLen < rawLen * 0.6
+      ) {
+        // Substantial scaffolding was stripped even though ai-engine claimed
+        // the output was clean. Log so we can spot drift between services,
+        // but don't raise the banner — the remaining prose is still usable.
+        this.logger.warn(
+          `expand-prompt output lost >40% of content to sanitization ` +
+            `(raw_len=${rawLen}, sanitized_len=${sanitizedLen}).`,
+        );
+      }
       if (fallbackUsed) {
         this.logger.warn(
           `ai-engine expand-prompt fallback used (reason=${fallbackReason ?? "unknown"})`,
         );
       }
-      return { expandedPrompt, fallbackUsed, fallbackReason };
+      return {
+        expandedPrompt: sanitizedExpanded || rawExpanded,
+        fallbackUsed,
+        fallbackReason,
+      };
     } catch (error: any) {
       if (error instanceof BadRequestException) {
         throw error;

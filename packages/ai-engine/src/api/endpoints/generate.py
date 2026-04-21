@@ -61,6 +61,10 @@ from ...engine.dialogue_engine import (
     _detect_ui_language,
     _normalize_free_text,
 )
+from ...engine.expand_prompt_sanitizer import (
+    has_meaningful_brief,
+    strip_user_facing_scaffolding,
+)
 from ...engine.pipeline_orchestrator import PipelineExecutionError, PipelineOrchestrator
 from ...engine.pipeline_v2_runner import V2PipelineRunner
 from ...engine.prompt_bundle_resolver import resolve_prompt_bundle_snapshot
@@ -1459,44 +1463,6 @@ async def _run_iteration_v2_internal(
 # Prompt expansion - user idea -> detailed game design prompt
 # ===========================================================================
 
-def _legacy_build_expand_prompt_fallback_unused(description: str) -> str:
-    normalized = re.sub(r"\s+", " ", str(description or "").strip())
-    if re.search(r"[\u4e00-\u9fff]", normalized):
-        return "\n".join(
-            [
-                f"原始想法：{normalized}",
-                "",
-                "请把这条想法整理成一个适合移动端小游戏生成的确认稿，并至少覆盖这些要素：",
-                "Game Type: 根据原始想法确定游戏方向",
-                "Core Mechanic: 提炼玩家最常执行的核心动作",
-                "Theme: 保留原始想法里的题材、场景或情绪",
-                "Input Method: 采用适合手机的点击、滑动或拖拽操作",
-                "Win Condition: 明确玩家这一局如何过关或获胜",
-                "Difficulty Ramp: 说明难度如何逐步提升",
-                "Scoring / Rewards: 补充积分、连击、奖励或解锁节奏",
-                "Visual Direction: 给出匹配题材的视觉风格",
-                "Special Rules or Reference Inspiration: 仅在确有帮助时补充",
-            ]
-        )
-
-    return "\n".join(
-        [
-            f"Original Idea: {normalized}",
-            "",
-            "Please turn this brief into a mobile-friendly game generation prompt that covers at least these elements:",
-            "Game Type: Choose the most fitting direction from the original idea",
-            "Core Mechanic: Describe the main repeated player action",
-            "Theme: Preserve the setting, fantasy, or mood implied by the brief",
-            "Input Method: Use touch-friendly tap, swipe, or drag controls",
-            "Win Condition: Define a clear round objective or victory condition",
-            "Difficulty Ramp: Explain how the challenge escalates over time",
-            "Scoring / Rewards: Add points, streaks, rewards, or unlocks that reinforce the loop",
-            "Visual Direction: Suggest an art direction that matches the brief",
-            "Special Rules or Reference Inspiration: Add only when it materially helps the concept",
-        ]
-    )
-
-
 _EXPAND_PROMPT_INTERNAL_LABELS = (
     "game type:",
     "core mechanic:",
@@ -1867,9 +1833,49 @@ def _looks_like_low_quality_expand_prompt(text: str, description: str) -> bool:
     return internal_label_hits >= 3 or generic_marker_hits >= 2
 
 
+def _build_sanitized_fallback(description: str) -> str:
+    """Build the deterministic fallback brief and strip any leftover scaffolding.
+
+    The deterministic builder already produces clean prose, but routing the
+    text through :func:`strip_user_facing_scaffolding` is a cheap defense in
+    case anyone ever extends the builder with template-style lines.
+    """
+
+    return strip_user_facing_scaffolding(_build_expand_prompt_fallback(description))
+
+
+def _build_expand_prompt_response(
+    *,
+    expanded_prompt: str,
+    fallback_used: bool,
+    fallback_reason: str | None,
+) -> dict:
+    """Assemble the JSON payload returned by `/expand-prompt`.
+
+    Keeps the response shape consistent across the success/fallback branches
+    and guarantees the user-facing brief is sanitized.
+    """
+
+    sanitized = strip_user_facing_scaffolding(expanded_prompt)
+    payload: dict = {"expanded_prompt": sanitized}
+    if fallback_used:
+        payload["fallback_used"] = True
+        payload["fallback_reason"] = fallback_reason
+    return payload
+
+
 @router.post("/expand-prompt")
 async def expand_prompt(request: dict):
-    """Expand a short user description into a detailed game design prompt."""
+    """Expand a short user description into a detailed game design prompt.
+
+    Trust boundary: this endpoint is the single source of truth for the brief
+    that the customer reads in the creation workspace. No matter what the
+    upstream LLM produces, the response is guaranteed to be free of
+    engineering scaffolding (label-prefixed lines, ``原始想法：…`` echoes,
+    meta-instructions). Downstream services (game-service, frontend) layer
+    additional defensive sanitizers, but the contract is enforced here.
+    """
+
     from ...services.llm_client import LLMClient
     client = LLMClient()
     description = request.get("description", "")
@@ -1893,24 +1899,46 @@ async def expand_prompt(request: dict):
             stage="prompt_expand",
             prefer_fast=False,
         )
-        expanded_prompt = text.strip()
-        if _looks_like_low_quality_expand_prompt(expanded_prompt, description):
-            logger.warning("Using deterministic expand-prompt fallback after low-quality LLM output")
-            return {
-                "expanded_prompt": _build_expand_prompt_fallback(description),
-                "fallback_used": True,
-                "fallback_reason": "low_quality_llm_output",
-            }
-        return {"expanded_prompt": expanded_prompt}
+        raw_expanded = (text or "").strip()
+        sanitized_expanded = strip_user_facing_scaffolding(raw_expanded)
+        # Reject if the model returned only scaffolding, or the heuristic
+        # quality detector still flags the sanitized text. Either case means
+        # we have no usable brief to show the user.
+        is_low_quality = _looks_like_low_quality_expand_prompt(
+            sanitized_expanded, description
+        )
+        if not has_meaningful_brief(sanitized_expanded) or is_low_quality:
+            logger.warning(
+                "Using deterministic expand-prompt fallback "
+                "(reason=%s, raw_chars=%d, sanitized_chars=%d)",
+                "low_quality_llm_output"
+                if is_low_quality
+                else "empty_after_sanitization",
+                len(raw_expanded),
+                len(sanitized_expanded),
+            )
+            return _build_expand_prompt_response(
+                expanded_prompt=_build_sanitized_fallback(description),
+                fallback_used=True,
+                fallback_reason="low_quality_llm_output"
+                if is_low_quality
+                else "empty_after_sanitization",
+            )
+        return _build_expand_prompt_response(
+            expanded_prompt=sanitized_expanded,
+            fallback_used=False,
+            fallback_reason=None,
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Prompt expansion failed: {e}")
-        fallback = _build_expand_prompt_fallback(description)
         logger.warning("Using deterministic expand-prompt fallback after LLM failure")
-        return {
-            "expanded_prompt": fallback,
-            "fallback_used": True,
-            "fallback_reason": str(e),
-        }
+        return _build_expand_prompt_response(
+            expanded_prompt=_build_sanitized_fallback(description),
+            fallback_used=True,
+            fallback_reason=str(e),
+        )
 
 
 @router.post("/v2/creative-anchors")
