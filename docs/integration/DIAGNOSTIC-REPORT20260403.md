@@ -855,7 +855,6 @@ CURRENT SAFE PATCH ANCHORS:
 | | prompt.qa_instruction_generic | 通用修复指令 |
 | **审查** | prompt.code_review_system | 代码审查系统提示 |
 | | prompt.code_review_template | 审查模板（含 {code_preview}） |
-| **扩展** | prompt.expand_prompt_system | Prompt 扩展系统提示 |
 | **Bundle** | bundle.runtime.locked_contract | 运行时锁定契约 |
 | | bundle.product.policy | 产品策略 |
 | | bundle.product.logic_generate | 生成逻辑策略 |

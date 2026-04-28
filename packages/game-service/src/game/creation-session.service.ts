@@ -2,15 +2,10 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
-  InternalServerErrorException,
-  Logger,
   NotFoundException,
-  ServiceUnavailableException,
 } from "@nestjs/common";
-import axios from "axios";
 import { PrismaService } from "../prisma/prisma.service";
 import { GameService } from "./game.service";
-import { GameWebSocketGateway } from "../websocket/websocket.gateway";
 import { CreationSessionRealtimeService } from "./creation-session-realtime.service";
 import {
   CreateCreationSessionDto,
@@ -21,6 +16,7 @@ import {
 import {
   CREATION_SESSION_GENERATING_EXPIRE_MS,
   CREATION_SESSION_INTERACTIVE_STATUSES,
+  DEFAULT_CREATION_SESSION_GENERATION_TIER,
   DEFAULT_CREATION_SESSION_QUESTION_BUDGET,
 } from "./creation-session.constants";
 import {
@@ -33,7 +29,6 @@ import {
   buildIntentBuildSnapshot,
   normalizeIntentBuildSnapshot,
 } from "./intent-build.util";
-import { sanitizeUserIdea } from "../common/sanitize-idea";
 
 const REQUIRED_SLOT_KEYS = [
   "game_type",
@@ -44,23 +39,11 @@ const REQUIRED_SLOT_KEYS = [
   "difficulty",
 ] as const;
 
-type ExpandPromptResponsePayload = {
-  expanded_prompt?: string;
-  expandedPrompt?: string;
-  fallback_used?: boolean;
-  fallbackUsed?: boolean;
-  fallback_reason?: string;
-  fallbackReason?: string;
-};
-
 @Injectable()
 export class CreationSessionService {
-  private readonly logger = new Logger(CreationSessionService.name);
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly gameService: GameService,
-    private readonly wsGateway: GameWebSocketGateway,
     private readonly realtimeService: CreationSessionRealtimeService,
   ) {}
 
@@ -78,12 +61,13 @@ export class CreationSessionService {
       this.userMessage(prompt, "prompt"),
     ];
 
-    // Phase 1: optimistic creation (synchronous, <200ms).
-    // Create the session immediately with status='initializing' and
-    // return it to the client. Prompt expansion runs in the background.
+    const generationTier =
+      this.normalizeGenerationTierValue(dto.generationTier) ||
+      DEFAULT_CREATION_SESSION_GENERATION_TIER;
+
     const createData = {
       userId,
-      status: "initializing" as const,
+      status: "ready" as const,
       entryMode: dto.entryMode || "create",
       initialPrompt: prompt,
       titleDraft: dto.title?.trim() || null,
@@ -97,16 +81,20 @@ export class CreationSessionService {
       questionBudget: DEFAULT_CREATION_SESSION_QUESTION_BUDGET,
       metadata: {
         orientation: dto.orientation || null,
-        generationTier: dto.generationTier || "standard",
+        generationTier,
         regionHint: dto.regionHint || null,
-        expandedPrompt: null,
-        readyToGenerate: false,
-        slotFillPct: 0,
+        userPrompt: prompt,
+        // Backward-compatible alias for older frontends. This is no longer an
+        // AI-expanded prompt; it mirrors the user's editable generation brief.
+        expandedPrompt: prompt,
+        readyToGenerate: true,
+        slotFillPct: 1,
+        planDraft: null,
         intentBuild: this.buildSessionIntentBuild({
           initialPrompt: prompt,
           title: dto.title,
           entryMode: dto.entryMode || "create",
-          generationTier: dto.generationTier || "standard",
+          generationTier,
         }),
       },
     };
@@ -164,174 +152,16 @@ export class CreationSessionService {
           return repo.create({ data: createData });
         })();
 
-    // Phase 2: async prompt expansion (fire-and-forget).
-    this._finalizeSessionInit(
-      created.id,
-      userId,
-      prompt,
-      dto,
-      dto.regionHint,
-    ).catch((err) =>
-      this.logger.error(
-        `Session init async phase failed: ${created.id} - ${err?.message}`,
-        err?.stack,
-      ),
-    );
-
-    const initTimeoutMs =
-      await this.gameService.getCreationSessionInitTimeoutMs();
-
-    // Timeout safety net: if analysis is still running after the init watchdog,
-    // auto-abandon the session so it doesn't stay stuck in 'initializing'.
-    setTimeout(
-      () => this._expireStaleInit(created.id).catch(() => undefined),
-      initTimeoutMs,
-    );
-
     return this.toSnapshot(created);
-  }
-
-  /**
-   * Background async phase of session creation: expand the user's idea into
-   * a ready-to-edit generation prompt and persist it on the session.
-   */
-  private async _finalizeSessionInit(
-    sessionId: string,
-    userId: string,
-    initialPrompt: string,
-    dto: CreateCreationSessionDto,
-    regionHint?: string,
-  ): Promise<void> {
-    const repo = this.getRepo();
-    let expandedPrompt = "";
-    let expandFallbackUsed = false;
-    let expandFallbackReason: string | null = null;
-    try {
-        const detail = await this.expandPromptForUserDetailed(
-          initialPrompt,
-          regionHint,
-        );
-        expandedPrompt = detail.expandedPrompt;
-        expandFallbackUsed = detail.fallbackUsed;
-        expandFallbackReason = detail.fallbackReason;
-    } catch (error: any) {
-      const initError = this.extractAiError(
-        error,
-        "Creation session prompt expansion failed",
-      );
-      await repo.updateMany({
-        where: { id: sessionId, userId, status: "initializing" },
-        data: {
-          status: "abandoned",
-          metadata: {
-            orientation: dto.orientation || null,
-            generationTier: dto.generationTier || "standard",
-            regionHint: dto.regionHint || null,
-            expandedPrompt: null,
-            initError,
-            abandonedAt: new Date().toISOString(),
-          },
-        },
-      });
-      this.wsGateway.emitSessionError(userId, sessionId, initError, {
-        reason: "init_failed",
-      });
-      this.realtimeService.publishError(userId, sessionId, initError, {
-        reason: "init_failed",
-      });
-      return;
-    }
-
-    const resolution = this.buildInitSessionResolution({
-      initialPrompt,
-      dto,
-      expandedPrompt,
-      expandFallbackUsed,
-      expandFallbackReason,
-    });
-
-    const result = await repo.updateMany({
-      where: { id: sessionId, userId, status: "initializing", revision: 1 },
-      data: {
-        revision: { increment: 1 },
-        status: resolution.nextStatus,
-        slotState: resolution.slotState,
-        missingRequired: resolution.missingRequired,
-        currentQuestion: resolution.currentQuestion,
-        conversation: resolution.conversation,
-        metadata: resolution.metadata,
-      },
-    });
-
-    if (result.count !== 1) {
-      this.logger.warn(
-        `Session init CAS miss: ${sessionId} (likely abandoned)`,
-      );
-      return;
-    }
-
-    if (resolution.assistantReply) {
-      this.realtimeService.publishReplyDone(
-        userId,
-        sessionId,
-        resolution.assistantReply,
-        "summary",
-      );
-    }
-
-    await this.publishRealtimeSessionSnapshot(userId, sessionId);
-  }
-  /**
-   * Timeout safety: abandon sessions stuck in 'initializing' too long.
-   */
-  private async _expireStaleInit(sessionId: string): Promise<void> {
-    const repo = this.getRepo();
-    // Look up the session first so we can get the userId for WS push.
-    const session = await repo.findUnique({ where: { id: sessionId } });
-    if (!session || session.status !== "initializing") {
-      return; // Already transitioned; nothing to expire.
-    }
-
-    const existingMetadata = this.normalizeMetadata(session.metadata);
-    const result = await repo.updateMany({
-      where: { id: sessionId, status: "initializing" },
-      data: {
-        status: "abandoned",
-        metadata: {
-          ...existingMetadata,
-          initError: "Session initialization timed out",
-          abandonedAt: new Date().toISOString(),
-        },
-      },
-    });
-    if (result.count > 0) {
-      this.logger.warn(`Session init expired: ${sessionId}`);
-      this.wsGateway.emitSessionError(
-        session.userId,
-        sessionId,
-        "Session initialization timed out",
-        {
-          reason: "init_timeout",
-        },
-      );
-      this.realtimeService.publishError(
-        session.userId,
-        sessionId,
-        "Session initialization timed out",
-        {
-          reason: "init_timeout",
-        },
-      );
-    }
   }
 
   async getActiveSession(
     userId: string,
   ): Promise<CreationSessionSnapshot | null> {
     const repo = this.getRepo();
-    // Return interactive sessions: initializing (prompt expansion pending),
-    // collecting (waiting for prompt confirmation, plus legacy question rows),
-    // or ready (can generate).
+    // Return interactive sessions. New sessions are ready immediately; legacy
+    // initializing/collecting rows are still included so old clients can
+    // recover instead of losing their active workspace.
     // Generating sessions no longer occupy the active slot.
     const session = await repo.findFirst({
       where: {
@@ -361,26 +191,28 @@ export class CreationSessionService {
     this.assertSessionMutable(session);
     this.assertRevision(session, dto.revision);
 
-    const nextExpandedPrompt = String(dto.content || "").trim();
-    if (!nextExpandedPrompt) {
+    const nextPrompt = String(dto.content || "").trim();
+    if (!nextPrompt) {
       throw new BadRequestException("content is required");
     }
 
     const metadata = this.normalizeMetadata(session.metadata);
-    const confirmationReply =
-      this.buildPromptConfirmedReply(nextExpandedPrompt);
+    const confirmationReply = this.buildPromptUpdatedReply(nextPrompt);
     const conversation = [
       ...this.normalizeConversation(session.conversation),
-      this.userMessage(nextExpandedPrompt, "prompt"),
+      this.userMessage(nextPrompt, "prompt"),
       this.assistantMessage(confirmationReply, "summary"),
     ];
+    const generationTier =
+      this.normalizeGenerationTierValue(metadata.generationTier) ||
+      DEFAULT_CREATION_SESSION_GENERATION_TIER;
     const intentBuild = this.buildSessionIntentBuild({
-      initialPrompt: nextExpandedPrompt,
+      initialPrompt: nextPrompt,
       title: session.titleDraft,
       slotState: {},
       skippedSlots: [],
       entryMode: String(session.entryMode || "create"),
-      generationTier: String(metadata.generationTier || "standard"),
+      generationTier,
       missingRequired: [],
     });
 
@@ -400,7 +232,9 @@ export class CreationSessionService {
         conversation,
         metadata: {
           ...metadata,
-          expandedPrompt: nextExpandedPrompt,
+          generationTier,
+          userPrompt: nextPrompt,
+          expandedPrompt: nextPrompt,
           readyToGenerate: true,
           slotFillPct: 1,
           planDraft: null,
@@ -436,24 +270,30 @@ export class CreationSessionService {
     this.assertSessionMutable(session);
     this.assertRevision(session, dto.revision);
 
+    if (session.status === "ready" && !session.currentQuestion) {
+      return this.toSnapshot(session);
+    }
+
     const metadata = this.normalizeMetadata(session.metadata);
     const skippedSlots = this.normalizeStringList(session.skippedSlots);
-    const expandedPrompt = this.resolveSessionPrompt(session, metadata);
-    const confirmationReply = this.buildPromptConfirmedReply(
-      expandedPrompt || session.initialPrompt,
-    );
+    const finalPrompt =
+      this.resolveSessionPrompt(session, metadata) || session.initialPrompt;
+    const confirmationReply = this.buildPromptUpdatedReply(finalPrompt);
     const conversation = [
       ...this.normalizeConversation(session.conversation),
       this.assistantMessage(confirmationReply, "summary"),
     ];
+    const generationTier =
+      this.normalizeGenerationTierValue(metadata.generationTier) ||
+      DEFAULT_CREATION_SESSION_GENERATION_TIER;
     const intentBuild = this.buildSessionIntentBuild({
-      initialPrompt: expandedPrompt || session.initialPrompt,
+      initialPrompt: finalPrompt,
       title: session.titleDraft,
       planDraft: null,
       slotState: {},
       skippedSlots,
       entryMode: String(session.entryMode || "create"),
-      generationTier: String(metadata.generationTier || "standard"),
+      generationTier,
       missingRequired: [],
     });
 
@@ -473,7 +313,9 @@ export class CreationSessionService {
         conversation,
         metadata: {
           ...metadata,
-          expandedPrompt: expandedPrompt || session.initialPrompt,
+          generationTier,
+          userPrompt: finalPrompt,
+          expandedPrompt: finalPrompt,
           readyToGenerate: true,
           slotFillPct: 1,
           planDraft: null,
@@ -526,9 +368,12 @@ export class CreationSessionService {
     const finalPrompt = this.resolveSessionPrompt(session, metadata);
     if (!finalPrompt) {
       throw new ConflictException(
-        "Creation session does not have a confirmed prompt",
+        "Creation session does not have a generation prompt",
       );
     }
+    const generationTier =
+      this.normalizeGenerationTierValue(metadata.generationTier) ||
+      DEFAULT_CREATION_SESSION_GENERATION_TIER;
     const intentBuild = this.buildSessionIntentBuild({
       initialPrompt: finalPrompt,
       title: session.titleDraft,
@@ -536,7 +381,7 @@ export class CreationSessionService {
       slotState: {},
       skippedSlots: [],
       entryMode: String(session.entryMode || "create"),
-      generationTier: String(metadata.generationTier || "standard"),
+      generationTier,
       missingRequired: [],
     });
     const claimResult = await repo.updateMany({
@@ -551,6 +396,8 @@ export class CreationSessionService {
         status: "generating",
         metadata: {
           ...metadata,
+          generationTier,
+          userPrompt: finalPrompt,
           expandedPrompt: finalPrompt,
           readyToGenerate: true,
           slotFillPct: 1,
@@ -575,6 +422,8 @@ export class CreationSessionService {
         status: "generating",
         metadata: {
           ...metadata,
+          generationTier,
+          userPrompt: finalPrompt,
           expandedPrompt: finalPrompt,
           readyToGenerate: true,
           slotFillPct: 1,
@@ -588,16 +437,12 @@ export class CreationSessionService {
       const result = await this.gameService.create(userId, {
         title: session.titleDraft || undefined,
         description: finalPrompt,
-        // H.5.1 - userIdea preserves the user's original 1-line typed text
-        // (initialPrompt) so the C-end never has to display the LLM-expanded
-        // finalPrompt, which contains internal "Game Type: ..." spec scaffolding.
+        // Keep C-end display copy anchored to the user's own wording.
         userIdea: session.initialPrompt || undefined,
         timeoutS: dto.timeoutS,
         regionHint: this.asOptionalString(metadata.regionHint),
         orientation: this.normalizeOrientationValue(metadata.orientation),
-        generationTier: this.normalizeGenerationTierValue(
-          metadata.generationTier,
-        ),
+        generationTier,
         creationSessionId: session.id,
         entryMode: session.entryMode,
         sourceGameId: session.sourceGameId,
@@ -615,6 +460,8 @@ export class CreationSessionService {
           generationTaskId: result.generationTask?.taskId || null,
           metadata: {
             ...metadata,
+            generationTier,
+            userPrompt: finalPrompt,
             expandedPrompt: finalPrompt,
             readyToGenerate: true,
             slotFillPct: 1,
@@ -640,6 +487,8 @@ export class CreationSessionService {
             status: "ready",
             metadata: {
               ...metadata,
+              generationTier,
+              userPrompt: finalPrompt,
               expandedPrompt: finalPrompt,
               readyToGenerate: true,
               slotFillPct: 1,
@@ -695,149 +544,6 @@ export class CreationSessionService {
     return snapshot;
   }
 
-  async expandPromptForUser(
-    description: string,
-    regionHint?: string,
-  ): Promise<string> {
-    const { expandedPrompt } = await this.expandPromptForUserDetailed(
-      description,
-      regionHint,
-    );
-    return expandedPrompt;
-  }
-
-  /**
-   * Same as {@link expandPromptForUser} but also surfaces whether the ai-engine
-   * had to fall back to deterministic output and why. Callers that persist the
-   * expanded prompt on a session (e.g. creation session init) should use this
-   * variant so the UI can show a "AI fell back to a default brief, please edit"
-   * hint instead of silently displaying a lower-quality result.
-   *
-   * Trust boundary:
-   *   - ai-engine `/expand-prompt` is the single source of truth for quality
-   *     detection and deterministic fallback content.
-   *   - game-service still runs the returned brief through `sanitizeUserIdea`
-   *     as a defensive layer so that no scaffolding text can land in
-   *     `session.metadata.expandedPrompt` even if the ai-engine deploy is
-   *     stale or a third-party tool writes directly to that field.
-   */
-  async expandPromptForUserDetailed(
-    description: string,
-    regionHint?: string,
-  ): Promise<{
-    expandedPrompt: string;
-    fallbackUsed: boolean;
-    fallbackReason: string | null;
-  }> {
-    const aiEngineUrl = await this.gameService.getAiEngineBaseUrl(regionHint);
-    const timeoutMs = await this.gameService.getExpandPromptRequestTimeoutMs();
-    try {
-      const response = await axios.post<ExpandPromptResponsePayload>(
-        `${aiEngineUrl}/api/v1/ai/expand-prompt`,
-        { description },
-        { timeout: timeoutMs },
-      );
-      const rawExpanded = this.asOptionalString(
-        response.data?.expanded_prompt ?? response.data?.expandedPrompt,
-      );
-      if (!rawExpanded) {
-        throw new BadRequestException(
-          "Creation session prompt expansion returned an empty prompt",
-        );
-      }
-      const sanitizedExpanded = sanitizeUserIdea(rawExpanded);
-      let fallbackUsed = Boolean(
-        response.data?.fallback_used ?? response.data?.fallbackUsed ?? false,
-      );
-      let fallbackReason =
-        this.asOptionalString(
-          response.data?.fallback_reason ?? response.data?.fallbackReason,
-        ) || null;
-      const sanitizedLen = sanitizedExpanded.length;
-      const rawLen = rawExpanded.length;
-      const normalizedDescription = (description || "").trim();
-      const normalizedSanitized = sanitizedExpanded.trim();
-      // Defensive: detect cases where the ai-engine output is not really an
-      // expansion at all and flag them as a fallback so the frontend can
-      // warn the user:
-      //   1. Sanitization wiped almost everything — the LLM only produced
-      //      scaffolding.
-      //   2. The sanitized brief is basically the user's idea echoed back
-      //      verbatim; that isn't an expansion, it's a no-op.
-      //   3. The sanitized brief is suspiciously short relative to what the
-      //      model returned, meaning the output was >40% scaffolding.
-      if (!sanitizedExpanded || sanitizedLen < 20) {
-        this.logger.warn(
-          `expand-prompt output still looked like scaffolding after sanitization ` +
-            `(raw_len=${rawLen}, sanitized_len=${sanitizedLen}); ` +
-            `marking as fallback so the UI warns the user.`,
-        );
-        fallbackUsed = true;
-        if (!fallbackReason) {
-          fallbackReason = "empty_after_sanitization";
-        }
-      } else if (
-        normalizedDescription.length > 0 &&
-        (normalizedSanitized === normalizedDescription ||
-          (sanitizedLen <= normalizedDescription.length * 1.15 &&
-            normalizedSanitized.includes(normalizedDescription)))
-      ) {
-        // The "expanded" brief is essentially just the user's idea echoed
-        // back — no expansion actually happened.
-        this.logger.warn(
-          `expand-prompt output is an echo of the user's idea ` +
-            `(description_len=${normalizedDescription.length}, sanitized_len=${sanitizedLen}); ` +
-            `marking as fallback.`,
-        );
-        fallbackUsed = true;
-        if (!fallbackReason) {
-          fallbackReason = "echoed_user_idea";
-        }
-      } else if (
-        fallbackUsed === false &&
-        rawLen > 0 &&
-        sanitizedLen < rawLen * 0.6
-      ) {
-        // Substantial scaffolding was stripped even though ai-engine claimed
-        // the output was clean. Log so we can spot drift between services,
-        // but don't raise the banner — the remaining prose is still usable.
-        this.logger.warn(
-          `expand-prompt output lost >40% of content to sanitization ` +
-            `(raw_len=${rawLen}, sanitized_len=${sanitizedLen}).`,
-        );
-      }
-      if (fallbackUsed) {
-        this.logger.warn(
-          `ai-engine expand-prompt fallback used (reason=${fallbackReason ?? "unknown"})`,
-        );
-      }
-      return {
-        expandedPrompt: sanitizedExpanded || rawExpanded,
-        fallbackUsed,
-        fallbackReason,
-      };
-    } catch (error: any) {
-      if (error instanceof BadRequestException) {
-        throw error;
-      }
-      const message = this.extractAiError(
-        error,
-        "Creation session prompt expansion failed",
-      );
-      const status = error?.response?.status;
-      if (status && status >= 400 && status < 500) {
-        throw new BadRequestException(message);
-      }
-      if (
-        error?.code === "ECONNABORTED" ||
-        error?.code === "ECONNREFUSED" ||
-        error?.code === "ETIMEDOUT"
-      ) {
-        throw new ServiceUnavailableException(message);
-      }
-      throw new InternalServerErrorException(message);
-    }
-  }
 
   private extractAiError(error: any, fallback: string): string {
     const raw =
@@ -953,7 +659,8 @@ export class CreationSessionService {
       sourceSpec: params.sourceSpec || null,
       entryMode: this.asOptionalString(params.entryMode) || "create",
       generationTier:
-        this.asOptionalString(params.generationTier) || "standard",
+        this.asOptionalString(params.generationTier) ||
+        DEFAULT_CREATION_SESSION_GENERATION_TIER,
       missingRequired: params.missingRequired || [],
     });
   }
@@ -966,12 +673,15 @@ export class CreationSessionService {
     const planDraft = this.normalizePlanDraft(metadata.planDraft);
     const intentBuild = normalizeIntentBuildSnapshot(metadata.intentBuild);
     const expandedPrompt =
-      this.asOptionalString(metadata.expandedPrompt) || null;
+      this.asOptionalString(metadata.userPrompt) ||
+      this.asOptionalString(session?.initialPrompt) ||
+      this.asOptionalString(metadata.expandedPrompt) ||
+      null;
     const sessionStatus = String(session.status || "collecting");
 
     // Bug 3 fix: when status is ready/generating/completed/initializing, clear currentQuestion.
     // - ready/generating/completed: "can generate", not "please answer more"
-    // - initializing: AI analysis hasn't produced a question yet
+    // - initializing: legacy rows should not surface stale questions
     const effectiveQuestion =
       sessionStatus === "initializing" ||
       sessionStatus === "ready" ||
@@ -1015,7 +725,9 @@ export class CreationSessionService {
       orientation: metadata.orientation
         ? (String(metadata.orientation) as any)
         : null,
-      generationTier: String(metadata.generationTier || "standard") as any,
+      generationTier: String(
+        metadata.generationTier || DEFAULT_CREATION_SESSION_GENERATION_TIER,
+      ) as any,
       questionBudget: Number(
         session.questionBudget || DEFAULT_CREATION_SESSION_QUESTION_BUDGET,
       ),
@@ -1043,19 +755,12 @@ export class CreationSessionService {
   ): CreationSessionSnapshot["metadata"] {
     const initError = this.asOptionalString(metadata.initError);
     const abandonedAt = this.asOptionalString(metadata.abandonedAt);
-    const expandFallbackUsed =
-      metadata.expandFallbackUsed === true ||
-      metadata.expandFallbackUsed === "true";
-    const expandFallbackReason =
-      this.asOptionalString(metadata.expandFallbackReason) || null;
-    if (!initError && !abandonedAt && !expandFallbackUsed) {
+    if (!initError && !abandonedAt) {
       return null;
     }
     return {
       initError: initError || null,
       abandonedAt: abandonedAt || null,
-      expandFallbackUsed: expandFallbackUsed || false,
-      expandFallbackReason,
     };
   }
 
@@ -1217,37 +922,11 @@ export class CreationSessionService {
     };
   }
 
-  private buildPromptConfirmationQuestion(
-    expandedPrompt: string,
-  ): CreationSessionQuestion {
-    if (this.prefersChineseCopy(expandedPrompt)) {
-      return {
-        slotKey: "expanded_prompt",
-        label: "Prompt Confirmation",
-        prompt:
-          "我已经把你的想法整理成一版可直接用于生成的游戏需求说明。你可以直接确认，也可以先按自己的表达改一改，再继续生成。",
-        skippable: true,
-      };
+  private buildPromptUpdatedReply(prompt: string): string {
+    if (/[\u3400-\u9fff]/.test(String(prompt || ""))) {
+      return "已更新创意，可以开始生成了。";
     }
-
-    return {
-      slotKey: "expanded_prompt",
-      label: "Prompt Confirmation",
-      prompt:
-        "I turned your idea into a user-facing game brief. Confirm it as-is, or edit the wording first if you want to refine it before generation.",
-      skippable: true,
-    };
-  }
-
-  private buildPromptConfirmedReply(expandedPrompt: string): string {
-    if (this.prefersChineseCopy(expandedPrompt)) {
-      return "这版生成提示词已确认，可以开始生成了。";
-    }
-    return "This prompt is confirmed and ready for generation.";
-  }
-
-  private prefersChineseCopy(value: string): boolean {
-    return /[\u3400-\u9fff]/.test(String(value || ""));
+    return "Updated. Ready to generate.";
   }
 
   private resolveSessionPrompt(
@@ -1257,8 +936,9 @@ export class CreationSessionService {
     const normalizedMetadata =
       metadata || this.normalizeMetadata(session?.metadata);
     return (
-      this.asOptionalString(normalizedMetadata.expandedPrompt) ||
+      this.asOptionalString(normalizedMetadata.userPrompt) ||
       this.asOptionalString(session?.initialPrompt) ||
+      this.asOptionalString(normalizedMetadata.expandedPrompt) ||
       null
     );
   }
@@ -1295,75 +975,4 @@ export class CreationSessionService {
     return undefined;
   }
 
-  private buildInitSessionResolution(params: {
-    initialPrompt: string;
-    dto: CreateCreationSessionDto;
-    expandedPrompt: string;
-    expandFallbackUsed?: boolean;
-    expandFallbackReason?: string | null;
-  }): {
-    nextStatus: "collecting";
-    slotState: Record<string, unknown>;
-    missingRequired: string[];
-    currentQuestion: CreationSessionQuestion | null;
-    conversation: CreationSessionConversationMessage[];
-    metadata: Record<string, unknown>;
-    assistantReply: string;
-  } {
-    const intentBuild = this.buildSessionIntentBuild({
-      initialPrompt: params.expandedPrompt,
-      title: params.dto.title,
-      planDraft: null,
-      slotState: {},
-      entryMode: params.dto.entryMode || "create",
-      generationTier: params.dto.generationTier || "standard",
-      missingRequired: [],
-    });
-    const assistantReply = params.expandedPrompt;
-    return {
-      nextStatus: "collecting",
-      slotState: {},
-      missingRequired: [],
-      currentQuestion: this.buildPromptConfirmationQuestion(
-        params.expandedPrompt,
-      ),
-      conversation: [
-        this.userMessage(params.initialPrompt, "prompt"),
-        this.assistantMessage(assistantReply, "summary"),
-      ],
-      metadata: {
-        orientation: params.dto.orientation || null,
-        generationTier: params.dto.generationTier || "standard",
-        regionHint: params.dto.regionHint || null,
-        expandedPrompt: params.expandedPrompt,
-        // Surface ai-engine's fallback signal so the UI can show a hint like
-        // "AI expansion fell back to a default brief, please edit" instead of
-        // pretending a low-quality brief came straight from the model.
-        expandFallbackUsed: Boolean(params.expandFallbackUsed),
-        expandFallbackReason: params.expandFallbackReason ?? null,
-        readyToGenerate: false,
-        slotFillPct: 1,
-        planDraft: null,
-        intentBuild,
-      },
-      assistantReply,
-    };
-  }
-
-  private async publishRealtimeSessionSnapshot(
-    userId: string,
-    sessionId: string,
-  ): Promise<void> {
-    try {
-      const updatedSession = await this.getRepo().findUnique({
-        where: { id: sessionId },
-      });
-      if (!updatedSession) {
-        return;
-      }
-      const snapshot = this.toSnapshot(updatedSession);
-      this.wsGateway.emitSessionUpdate(userId, sessionId, snapshot);
-      this.realtimeService.publishSnapshot(userId, sessionId, snapshot);
-    } catch (wsError: any) {}
-  }
 }

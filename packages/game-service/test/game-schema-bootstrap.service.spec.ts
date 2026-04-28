@@ -72,9 +72,9 @@ describe("GameSchemaBootstrapService", () => {
       ([sql, _id, key, value]: [string, string, string, string]) =>
         typeof sql === "string" &&
         sql.includes("system_configs") &&
-        key === "prompt.expand_prompt_system" &&
+        key === "prompt.intent_parse_system" &&
         typeof value === "string" &&
-        value.includes("game design expander"),
+        value.includes("one-shot game intent parser"),
     );
 
     expect(promptInsertCall).toBeTruthy();

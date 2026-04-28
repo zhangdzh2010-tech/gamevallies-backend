@@ -47,7 +47,6 @@
 flowchart TD
     A["用户输入 prompt"] --> B["POST /creation-sessions"]
     B --> C["status=initializing"]
-    C --> D["后端调用 /api/v1/ai/expand-prompt"]
     D --> E["status=collecting<br/>expandedPrompt 已生成"]
     E --> F["用户编辑或确认 prompt"]
     F --> G["POST /messages 或 /skip"]
@@ -60,7 +59,6 @@ flowchart TD
 
 对应的后端行为：
 
-1. 创建 session 时立即落库为 `initializing`，并异步开始 prompt expansion。
 2. expansion 成功后，session 进入 `collecting`，并返回：
    - `expandedPrompt`
    - `currentQuestion`，但其语义只是“请确认或修改提示词”

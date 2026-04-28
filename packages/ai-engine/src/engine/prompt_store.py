@@ -42,7 +42,6 @@ PROMPT_KEYS = [
     "prompt.mechanic_change",
     "prompt.code_review_system",
     "prompt.code_review_template",
-    "prompt.expand_prompt_system",
     "prompt.slot_output_contract",
     "prompt.slot_json_repair_user_template",
     "prompt.intent_detail_template",

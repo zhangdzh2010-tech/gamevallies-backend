@@ -115,7 +115,6 @@
 | `iterate.param_adjust` | Stage 07 | 迭代参数调整 |
 | `iterate.element_change` | Stage 07 | 迭代元素修改 |
 | `iterate.mechanic_change` | Stage 07 | 迭代机制改写 |
-| `expand_prompt` | Auxiliary | Prompt 扩写 |
 
 说明：
 

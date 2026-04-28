@@ -83,27 +83,13 @@ export class TimeoutConfigService {
     );
   }
 
-  async getExpandPromptRequestTimeoutMs(): Promise<number> {
-    await this.ensureLoaded();
-    return this.resolveCatalogValue('timeout.game_service.expand_prompt_request_ms', { min: 1_000 });
-  }
-
   async getSourceSpecParseTimeoutMs(): Promise<number> {
-    const expandPromptTimeoutMs = await this.getExpandPromptRequestTimeoutMs();
-    return Math.max(expandPromptTimeoutMs, 90_000);
-  }
-
-  async getCreationSessionInitTimeoutMs(): Promise<number> {
     await this.ensureLoaded();
-    const analyzeTurnTimeoutMs = this.resolveCatalogValue(
-      'timeout.game_service.expand_prompt_request_ms',
+    const sourceSpecParseRequestMs = this.resolveCatalogValue(
+      'timeout.game_service.source_spec_parse_request_ms',
       { min: 1_000 },
     );
-    const configuredInitTimeoutMs = this.resolveCatalogValue(
-      'timeout.game_service.creation_session_init_ms',
-      { min: 1_000 },
-    );
-    return Math.max(configuredInitTimeoutMs, analyzeTurnTimeoutMs + 5_000);
+    return Math.max(sourceSpecParseRequestMs, 90_000);
   }
 
   getUpstreamRequestTimeoutMs(): number {

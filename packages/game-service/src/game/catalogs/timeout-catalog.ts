@@ -39,7 +39,7 @@ const TIMEOUT_CONFIG_SECTIONS: Record<string, TimeoutConfigSectionMeta> = {
     order: 10,
     tag: 'Step 1',
     title: 'Intent Freeze',
-    description: 'Prompt expansion and create-entry watchdogs.',
+    description: 'Create-entry and intent-freeze watchdogs.',
   },
   step2_spec_contract: {
     id: 'step2_spec_contract',
@@ -90,7 +90,7 @@ const TIMEOUT_CONFIG_SECTIONS: Record<string, TimeoutConfigSectionMeta> = {
     order: 70,
     tag: 'Extra',
     title: 'Auxiliary Tools',
-    description: 'Prompt expansion and other sidecar tools.',
+    description: 'Auxiliary sidecar tools.',
   },
   infra_pipeline: {
     id: 'infra_pipeline',

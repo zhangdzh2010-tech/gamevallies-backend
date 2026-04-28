@@ -14,6 +14,7 @@ from src.api.models import (
     GameRuntimeContract,
     GameSpec,
     GenerateCodeResult,
+    GenerationTier,
     IterationType,
     IterateV2Request,
     QACheckError,
@@ -97,6 +98,44 @@ def test_runtime_contract_accepts_completion_state_constant_alias():
 
     errors = runner._validate_runtime_contract(code, GameRuntimeContract(runtime_profile="casual_action"))
     assert not any("terminal or completion state" in error.message.lower() for error in errors)
+
+
+def test_reference_skeleton_is_safe_tier_only():
+    skeleton = "<html><body><canvas id='gameCanvas'></canvas></body></html>"
+    standard_spec = GameSpec(
+        game_type="casual",
+        generation_tier=GenerationTier.standard,
+        source_description="Make a cat jumping game",
+    )
+    showcase_spec = GameSpec(
+        game_type="casual",
+        generation_tier=GenerationTier.showcase,
+        source_description="Make a cat jumping game",
+    )
+    safe_spec = GameSpec(
+        game_type="casual",
+        generation_tier=GenerationTier.safe,
+        source_description="Make a cat jumping game",
+    )
+
+    assert not CodeGenerator._should_include_reference_skeleton(
+        standard_spec,
+        request_text="cat jump",
+        skeleton=skeleton,
+        design_program_block="",
+    )
+    assert not CodeGenerator._should_include_reference_skeleton(
+        showcase_spec,
+        request_text="cat jump",
+        skeleton=skeleton,
+        design_program_block="",
+    )
+    assert CodeGenerator._should_include_reference_skeleton(
+        safe_spec,
+        request_text="cat jump",
+        skeleton=skeleton,
+        design_program_block="",
+    )
 
 
 def test_runtime_contract_accepts_numeric_enum_constant_for_playing_state():

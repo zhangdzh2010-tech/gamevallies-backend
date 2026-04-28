@@ -54,29 +54,6 @@ export class GameController {
     private reputationService: CreatorReputationService,
   ) {}
 
-  @Post('/expand-prompt')
-  @UseGuards(JwtAuthGuard)
-  @HttpCode(HttpStatus.OK)
-  async expandPrompt(@Body() body: any) {
-    const description = body.description || body.prompt || '';
-    if (!description) {
-      throw new BadRequestException('description is required');
-    }
-
-    const detail = await this.creationSessionService.expandPromptForUserDetailed(
-      description,
-      body.regionHint,
-    );
-    return ok({
-      expandedPrompt: detail.expandedPrompt,
-      expanded_prompt: detail.expandedPrompt,
-      fallbackUsed: detail.fallbackUsed,
-      fallback_used: detail.fallbackUsed,
-      fallbackReason: detail.fallbackReason,
-      fallback_reason: detail.fallbackReason,
-    });
-  }
-
   @Post('/generate')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)

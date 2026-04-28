@@ -101,7 +101,6 @@ Representative concerns:
 - Admin token validation at `packages/ai-engine/src/api/endpoints/generate.py:94`
 - Progress and artifact relaying to `game-service` at `packages/ai-engine/src/api/endpoints/generate.py:102`
 - Legacy-to-v2 request upgrades at `packages/ai-engine/src/api/endpoints/generate.py:399`
-- Prompt expansion at `packages/ai-engine/src/api/endpoints/generate.py:1496`
 - Prompt cache refresh at `packages/ai-engine/src/api/endpoints/generate.py:1529`
 - V2 pipeline endpoints at `packages/ai-engine/src/api/endpoints/generate.py:1870`
 - Legacy generation endpoint at `packages/ai-engine/src/api/endpoints/generate.py:2028`
@@ -187,7 +186,6 @@ Suggested split:
 - `GamePreviewService` for preview tokens and URLs
 - `GameAccessService` for entitlement and quota checks
 - `GameUpstreamTaskService` for async task submission, polling, cancellation, and failover
-- `GameSourceSpecService` for prompt expansion and source spec compilation
 
 Rule:
 

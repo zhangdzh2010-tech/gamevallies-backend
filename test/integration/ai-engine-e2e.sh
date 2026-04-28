@@ -30,19 +30,15 @@ section() { echo -e "\n${CYAN}▶ $1${NC}"; }
 py() { python3 -c "$1" 2>/dev/null || echo "?"; }
 
 # ────────────────────────────────────────────────────────────
-section "?? 1: ????? - expand-prompt (Create Entry)"
+section "?? 1: ????? - parse-intent (Create Entry)"
 # ============================================================
 
 USER_ID="test-user-001"
 PROMPT_TEXT="???????????????????????????"
 
 echo "  [1/1] ???????..."
-EXPAND=$(curl -sf -X POST "$BASE/api/v1/ai/expand-prompt" -H "Content-Type: application/json" -d "{\"description\":\"$PROMPT_TEXT\"}")
-
-check "expand-prompt ??" "$EXPAND" "expanded_prompt"
-EXPANDED_PROMPT=$(py "import json; d=json.loads('''$EXPAND'''); print(d['expanded_prompt'])")
-EXPANDED_PREVIEW=$(py "import json; d=json.loads('''$EXPAND'''); text=d['expanded_prompt']; print(text[:120]+'...' if len(text)>120 else text)")
-echo "  ? ????: $EXPANDED_PREVIEW"
+EXPANDED_PROMPT="$PROMPT_TEXT"
+echo "  ? ????: $EXPANDED_PROMPT"
 
 # ============================================================
 section "?? 2: ???? - parse-intent (Stage 02)"
