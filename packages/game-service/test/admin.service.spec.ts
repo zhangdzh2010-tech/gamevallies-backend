@@ -177,7 +177,7 @@ describe("AdminService", () => {
       where: { category: "timeout" },
       orderBy: [{ category: "asc" }, { configKey: "asc" }],
     });
-    expect(result).toHaveLength(7);
+    expect(result).toHaveLength(6);
     expect(result).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -323,8 +323,8 @@ describe("AdminService", () => {
     prisma.systemConfig.findMany.mockResolvedValue([
       {
         id: "cfg-prompt-1",
-        configKey: "prompt.expand_prompt_system",
-        configValue: "custom expand prompt",
+        configKey: "prompt.code_review_system",
+        configValue: "custom code review prompt",
         description: "custom prompt",
         category: "prompt",
         createdAt: new Date("2026-04-07T00:00:00.000Z"),
@@ -337,8 +337,8 @@ describe("AdminService", () => {
     expect(result).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          configKey: "prompt.expand_prompt_system",
-          configValue: "custom expand prompt",
+          configKey: "prompt.code_review_system",
+          configValue: "custom code review prompt",
           source: "db",
           isDefault: false,
         }),
@@ -354,8 +354,8 @@ describe("AdminService", () => {
   it("upserts prompt configs and refreshes prompt caches", async () => {
     prisma.systemConfig.upsert.mockResolvedValue({
       id: "cfg-prompt-2",
-      configKey: "prompt.expand_prompt_system",
-      configValue: "new expand prompt",
+      configKey: "prompt.code_review_system",
+      configValue: "new code review prompt",
       description: "Prompt description",
       category: "prompt",
     });
@@ -367,19 +367,19 @@ describe("AdminService", () => {
         partialFailure: false,
       } as any);
 
-    const result = await service.upsertConfig("prompt.expand_prompt_system", {
-      value: "new expand prompt",
+    const result = await service.upsertConfig("prompt.code_review_system", {
+      value: "new code review prompt",
     });
 
     expect(prisma.systemConfig.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { configKey: "prompt.expand_prompt_system" },
+        where: { configKey: "prompt.code_review_system" },
         update: expect.objectContaining({
-          configValue: "new expand prompt",
+          configValue: "new code review prompt",
           category: "prompt",
         }),
         create: expect.objectContaining({
-          configKey: "prompt.expand_prompt_system",
+          configKey: "prompt.code_review_system",
           category: "prompt",
         }),
       }),
@@ -387,7 +387,7 @@ describe("AdminService", () => {
     expect(refreshSpy).toHaveBeenCalledTimes(1);
     expect(result).toEqual(
       expect.objectContaining({
-        configKey: "prompt.expand_prompt_system",
+        configKey: "prompt.code_review_system",
         refreshResult: expect.objectContaining({
           refreshed: 2,
           failed: 0,
@@ -402,7 +402,7 @@ describe("AdminService", () => {
   it("synchronizes prompt configs from the checked-in catalog and refreshes prompt caches", async () => {
     const defaults = Array.isArray(promptCatalog) ? promptCatalog : [];
     const targetPrompt = defaults.find(
-      (entry) => entry.key === "prompt.expand_prompt_system",
+      (entry) => entry.key === "prompt.code_review_system",
     );
 
     expect(targetPrompt).toBeDefined();
@@ -417,7 +417,7 @@ describe("AdminService", () => {
           return {
             id: "cfg-prompt-stale",
             configKey: where.configKey,
-            configValue: "stale prompt copy",
+            configValue: "stale code review prompt copy",
             description: "old prompt description",
             category: "legacy",
           };
@@ -634,8 +634,8 @@ describe("AdminService", () => {
     prisma.systemConfig.findMany.mockResolvedValue([
       {
         id: "cfg-prompt-1",
-        configKey: "prompt.expand_prompt_system",
-        configValue: "custom expand prompt",
+        configKey: "prompt.code_review_system",
+        configValue: "custom code review prompt",
         description: "custom prompt",
         category: "prompt",
         createdAt: new Date("2026-04-07T00:00:00.000Z"),
@@ -698,9 +698,6 @@ describe("AdminService", () => {
     expect(result.steps[0]).toEqual(expect.objectContaining({ stepNumber: 1 }));
     expect(result.steps[0].prompts).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({
-          configKey: "prompt.expand_prompt_system",
-        }),
         expect.objectContaining({
           configKey: "prompt.intent_parse_system",
         }),
@@ -1498,9 +1495,9 @@ describe("AdminService", () => {
       },
       {
         id: "step-3",
-        stepKey: "expand_prompt",
+        stepKey: "qa_fix.syntax_structural",
         stepOrder: 210,
-        displayName: "Expand Prompt",
+        displayName: "Syntax Structural Repair",
         enabled: true,
       },
     ]);
@@ -1527,7 +1524,7 @@ describe("AdminService", () => {
       },
       {
         id: "route-2",
-        stepKey: "expand_prompt",
+        stepKey: "qa_fix.syntax_structural",
         region: "cn_shanghai",
         providerId: "provider-2",
         enabled: true,
@@ -1575,7 +1572,7 @@ describe("AdminService", () => {
 
     const result = await service.listLlmRoutes("cn_shanghai");
 
-    expect(result).toHaveLength(1);
+    expect(result).toHaveLength(2);
     expect(result[0]).toEqual(
       expect.objectContaining({
         stepKey: "intent_parse",
@@ -1585,6 +1582,14 @@ describe("AdminService", () => {
         bindingRequired: true,
         routeBindingState: "configured",
         routeMatchStrategy: "exact",
+      }),
+    );
+    expect(result[1]).toEqual(
+      expect.objectContaining({
+        stepKey: "qa_fix.syntax_structural",
+        stageLabel: "Flow 05 - QA Repair Families",
+        journeySummary: "Create + iterate",
+        bindingRequired: true,
       }),
     );
   });

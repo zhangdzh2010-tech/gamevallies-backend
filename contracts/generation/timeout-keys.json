@@ -407,9 +407,9 @@
     "itemOrder": 80
   },
   {
-    "key": "timeout.game_service.expand_prompt_request_ms",
+    "key": "timeout.game_service.source_spec_parse_request_ms",
     "defaultValue": "30000",
-    "description": "Prompt expansion request timeout from game-service to ai-engine.",
+    "description": "Source-spec parse request timeout from game-service to ai-engine.",
     "service": "game-service",
     "group": "tooling",
     "unit": "ms",

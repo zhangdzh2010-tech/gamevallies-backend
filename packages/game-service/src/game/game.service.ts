@@ -421,16 +421,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     return this.timeoutConfigService.getActiveTaskSweepIntervalMs(MAX_ACTIVE_TASK_SWEEP_INTERVAL_MS);
   }
 
-  public async getExpandPromptRequestTimeoutMs(): Promise<number> {
-    return this.timeoutConfigService.getExpandPromptRequestTimeoutMs();
-  }
-
   public async getSourceSpecParseTimeoutMs(): Promise<number> {
     return this.timeoutConfigService.getSourceSpecParseTimeoutMs();
-  }
-
-  public async getCreationSessionInitTimeoutMs(): Promise<number> {
-    return this.timeoutConfigService.getCreationSessionInitTimeoutMs();
   }
 
   private getUpstreamRequestTimeoutMs(): number {
@@ -3651,8 +3643,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       const description = dto.description || dto.prompt || '';
       // H.5.1 - userIdea is the clean, user-facing tagline. For direct create,
       // dto.description IS the user's typed text. For creation-session,
-      // dto.userIdea is set explicitly to session.initialPrompt while
-      // dto.description carries the LLM-expanded prompt.
+      // dto.userIdea is set explicitly to session.initialPrompt while the
+      // generation description carries the user's latest editable brief.
       const userIdea = sanitizeUserIdea(dto.userIdea ?? description);
       const title = dto.title?.trim() || `Game ${gameId.substring(0, 8)}`;
       const requestedOrientation = this.normalizeRequestedOrientation(dto.orientation)

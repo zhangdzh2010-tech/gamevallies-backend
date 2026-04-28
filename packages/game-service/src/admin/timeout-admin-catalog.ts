@@ -86,50 +86,6 @@ const SECTION_GLOBAL: VisibleTimeoutSectionMeta = {
 
 const BUSINESS_TIMEOUT_CATALOG: VisibleTimeoutCatalogEntry[] = [
   {
-    key: "timeout.business.creation_session_s",
-    displayName: "创建会话超时",
-    description:
-      "控制 H5 创建会话初始化与 prompt expansion 外层等待，适合调用户首屏等待感。",
-    unit: "s",
-    valueType: "int",
-    minValue: 15,
-    maxValue: 180,
-    optional: true,
-    itemOrder: 10,
-    section: SECTION_CREATE_ENTRY,
-    backingKeys: [
-      "timeout.game_service.creation_session_init_ms",
-      "timeout.game_service.expand_prompt_request_ms",
-    ],
-    anchorKey: "timeout.game_service.creation_session_init_ms",
-    readCurrentValue: (reader) =>
-      Math.round(
-        reader.current("timeout.game_service.creation_session_init_ms") / 1000,
-      ),
-    readDefaultValue: (reader) =>
-      Math.round(
-        reader.default("timeout.game_service.creation_session_init_ms") / 1000,
-      ),
-    buildUpdates: (value) => {
-      const sessionSeconds = clampInt(value, 15, 180);
-      const expandPromptSeconds = clampInt(
-        sessionSeconds - 15,
-        10,
-        sessionSeconds,
-      );
-      return [
-        {
-          key: "timeout.game_service.creation_session_init_ms",
-          value: String(sessionSeconds * 1000),
-        },
-        {
-          key: "timeout.game_service.expand_prompt_request_ms",
-          value: String(expandPromptSeconds * 1000),
-        },
-      ];
-    },
-  },
-  {
     key: "timeout.business.intent_parse_s",
     displayName: "意图解析超时",
     description: "控制 create / iterate 进入结构化规格前的意图解析总预算。",

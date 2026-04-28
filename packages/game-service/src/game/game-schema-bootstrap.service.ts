@@ -598,14 +598,6 @@ const DEFAULT_LLM_STEP_CATALOG = [
     description:
       "Only remaining QA repair path: full-document syntax and structural recovery.",
   },
-  {
-    id: "1e0207d2-a7de-4d49-b4bb-fcdbf0411021",
-    stepKey: "expand_prompt",
-    stepOrder: 130,
-    stageLabel: "Flow 90 - Auxiliary",
-    displayName: "Prompt 扩写",
-    description: "将用户短描述扩写为详细设计提示词",
-  },
 ];
 
 const DEFAULT_CLOUD_PROVIDER_ACCOUNT = {

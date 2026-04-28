@@ -233,16 +233,6 @@ const LLM_STEP_FLOW_META: Record<string, LlmStepFlowMeta> = {
     journeys: ["direct_create", "session_generate", "iterate"],
     journeySummary: "Create + iterate",
   },
-  expand_prompt: {
-    flowGroup: "Flow 90 - Auxiliary",
-    flowOrder: 120,
-    flowSummary: "Auxiliary utility",
-    triggerSummary:
-      "Separate prompt-expansion tool, not create / iterate / fork mainline",
-    journeys: ["auxiliary"],
-    journeySummary: "Auxiliary only",
-    optional: true,
-  },
 };
 
 @Injectable()

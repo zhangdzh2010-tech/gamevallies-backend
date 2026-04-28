@@ -36,7 +36,7 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 | `LLM_MODE` | `mock` | `mock` (no API calls) or `real` (Claude API) |
 | `ANTHROPIC_API_KEY` | — | Required when `LLM_MODE=real` |
 | `CLAUDE_MODEL` | `claude-sonnet-4-5` | Model for full code generation |
-| `CLAUDE_FAST_MODEL` | `claude-haiku-4-5-20251001` | Model for prompt expansion, iteration classification, and other fast auxiliary tasks |
+| `CLAUDE_FAST_MODEL` | `claude-haiku-4-5-20251001` | Model for iteration classification and other fast auxiliary tasks |
 | `TEMPLATE_CONFIDENCE_THRESHOLD` | `0.8` | Confidence ≥ this → template-fill path |
 | `HYBRID_CONFIDENCE_THRESHOLD` | `0.5` | Confidence ≥ this → hybrid path |
 | `QA_MAX_RETRIES` | `3` | Max auto-fix retries after QA failure |
@@ -48,7 +48,7 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 
 **mock** (default) – Uses keyword matching + pre-built templates. No API key required. Instant response. Use for local development and CI.
 
-**real** – Uses Claude Sonnet 4.5 for full generation and Claude Haiku for fast tasks (prompt expansion and iteration classification). Set `ANTHROPIC_API_KEY` in `.env`.
+**real** – Uses Claude Sonnet 4.5 for full generation and Claude Haiku for fast tasks (iteration classification). Set `ANTHROPIC_API_KEY` in `.env`.
 
 ---
 
@@ -57,7 +57,7 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 ```
 User description
       │
-  Stage 01 ??? Prompt Expansion     Short brief ? user-confirmable design prompt
+  Stage 01 ??? Intent Parse          User brief ? structured GameSpec
   Stage 02 ??? Intent Parser        Confirmed brief ? GameSpec JSON
   Stage 03 ─── Game Designer        GameSpec → GDD (numerical parameters)
   Stage 04 ─── Template Matcher     GDD → template_id + confidence score
@@ -182,29 +182,13 @@ Response:
 3. 优先监听 WebSocket 进度，断线或冷启动时轮询 `GET /api/v1/ai/tasks/{task_id}`
 4. 任务进入 `succeeded` 后直接读取 `result`
 
-### Create Brief Expansion
+### Create Brief Parsing
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/v1/ai/expand-prompt` | Expand a short create brief into a user-confirmable design prompt |
-| `POST` | `/api/v1/ai/parse-intent` | Convert the confirmed brief into `GameSpec` |
+| `POST` | `/api/v1/ai/parse-intent` | Convert the user brief directly into `GameSpec` |
 
-**POST /api/v1/ai/expand-prompt**
-```json
-{
-  "description": "?????????????????????"
-}
-```
-
-Response:
-```json
-{
-  "expanded_prompt": "Game Type: casual\nCore Mechanic: swipe left and right to dodge meteors\nTheme: neon space..."
-}
-```
-
-Recommended usage for the current creation-session flow: call `/expand-prompt`, show the returned brief back to the user for confirmation or edits, then pass the confirmed text into `/parse-intent` or the create pipeline.
-
+Creation sessions now pass the user's original or edited brief directly into generation; there is no separate user-facing rewrite step.
 ### Legacy (backward compatible)
 
 | Method | Path | Notes |

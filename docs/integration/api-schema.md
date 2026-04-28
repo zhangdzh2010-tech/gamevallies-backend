@@ -487,32 +487,6 @@ Query: `q=string&page=1&limit=20`
 
 ## 游戏服务 (`3002`)
 
-### POST `/api/v1/games/expand-prompt`
-
-扩写用户的简短描述为更完善的游戏描述。无需认证。
-
-请求体：
-
-```json
-{
-  "description": "string (必填，或使用 prompt 别名)",
-  "regionHint": "string (可选，AI 引擎区域)"
-}
-```
-
-响应：
-
-```json
-{
-  "code": 0,
-  "data": {
-    "expandedPrompt": "string"
-  }
-}
-```
-
-说明：实际响应结构取决于 AI 引擎返回内容，透传 `response.data`。
-
 ### POST `/api/v1/games/generate`
 
 直接从 prompt 生成游戏（跳过 creation session 会话流程）。

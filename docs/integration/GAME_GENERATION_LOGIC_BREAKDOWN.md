@@ -546,7 +546,6 @@ bundle metadata 会保存关键复盘信息：
 
 | 方法 | URL | 用途 | 当前是否在默认主链路使用 | 鉴权 |
 | --- | --- | --- | --- | --- |
-| `POST` | `/api/v1/ai/expand-prompt` | 短描述扩写 | 否，独立能力 | 无 |
 | `POST` | `/api/v1/ai/pipeline/run/async` | 默认创建游戏 | 是 | 无 |
 | `GET` | `/api/v1/ai/tasks/{task_id}` | 轮询异步任务状态 | 是 | 无 |
 | `POST` | `/api/v1/ai/tasks/{task_id}/cancel` | 取消上游任务 | 是 | 无 |
@@ -764,8 +763,6 @@ bundle metadata 会保存关键复盘信息：
 
 相关接口：
 
-- `POST /games/expand-prompt`
-- `POST /api/v1/ai/expand-prompt`
 
 作用：
 

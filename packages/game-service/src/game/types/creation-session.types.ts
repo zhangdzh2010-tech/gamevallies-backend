@@ -56,14 +56,6 @@ export interface CreationSessionIntentPreview {
 export interface CreationSessionPublicMetadata {
   initError?: string | null;
   abandonedAt?: string | null;
-  /**
-   * When true the ai-engine had to fall back to a deterministic (non-LLM)
-   * expansion because the model output was rejected or the provider errored.
-   * The UI uses this to show a "AI auto-expansion fell back, please edit"
-   * hint instead of silently presenting a lower-quality brief.
-   */
-  expandFallbackUsed?: boolean;
-  expandFallbackReason?: string | null;
 }
 
 export interface CreationSessionSnapshot {

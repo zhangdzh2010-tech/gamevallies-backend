@@ -1,8 +1,10 @@
 // H.5.1 / H.7.1 - Local copies of the sanitize & anonymous-handle helpers used
-// by game-service. The social-service ShareService must stay aligned with the
-// game-service presenter so C-end share cards never leak LLM prompt scaffolding
-// or raw `wx_<openid>` style identifiers. When the shared package adds a
-// canonical home for these helpers, this file should re-export from there.
+// by game-service. Creation sessions no longer expose AI-expanded prompts,
+// but share cards still need to defend against legacy persisted scaffolding
+// and raw `wx_<openid>` style identifiers. Keep in lockstep with:
+//   - game-service `src/common/sanitize-idea.ts`
+//   - feed-service `src/common/sanitize-idea.ts`
+//   - frontend `src/utils/sanitizeIdea.js`
 
 const PREFIX_DROP_LINE_PATTERNS: RegExp[] = [
   /^\s*原始想法\s*[:：].*$/,
@@ -20,55 +22,62 @@ const META_INSTRUCTION_LINE_PATTERNS: RegExp[] = [
   /^\s*请将以下想法整理成.*$/,
   /^\s*至少(?:要)?覆盖这些要素.*$/,
   /^\s*请覆盖以下要素.*$/,
+  /^\s*任务\s*[:：]\s*接收用户简短游戏描述.*$/,
+  /^\s*要求\s*[:：]\s*$/,
+  /^\s*输出必须覆盖的要素.*$/,
   /^\s*Please\s+turn\s+this\s+brief\s+into\s+a\s+mobile-friendly.*$/i,
   /^\s*Please\s+expand\s+the\s+(?:user\s+)?(?:idea|brief)\s+into.*$/i,
   /^\s*covers?\s+at\s+least\s+these\s+elements.*$/i,
 ];
 
-const LABEL_PREFIXES = [
-  'game type',
-  'core mechanic',
-  'theme',
-  'input method',
-  'win condition',
-  'difficulty ramp',
-  'scoring / rewards',
-  'scoring/rewards',
-  'scoring',
-  'rewards',
-  'visual direction',
-  'special rules or reference inspiration',
-  'special rules',
-  'reference inspiration',
-  '游戏类型',
-  '核心玩法',
-  '核心机制',
-  '主题',
-  '操作方式',
-  '操作方法',
-  '输入方式',
-  '胜利条件',
-  '通关条件',
-  '难度节奏',
-  '难度曲线',
-  '积分',
-  '奖励',
-  '积分 / 奖励',
-  '积分/奖励',
-  '视觉方向',
-  '视觉风格',
-  '视觉',
-  '特殊规则',
-  '特殊规则或参考灵感',
-  '参考灵感',
-  '参考游戏',
-] as const;
+const PLACEHOLDER_VALUE_MARKERS: readonly string[] = [
+  '根据原始想法确定',
+  '根据原始想法',
+  '根据用户想法',
+  '根据用户输入',
+  '保留原始想法',
+  '保留用户想法',
+  '提炼玩家最常执行',
+  '提炼玩家最常',
+  '采用适合手机',
+  '采用适合的手机',
+  '明确玩家这一局',
+  '明确玩家一局',
+  '说明难度如何',
+  '说明如何',
+  '补充积分',
+  '补充奖励',
+  '给出匹配题材',
+  '给出匹配',
+  '仅在确有帮助',
+  '仅在有帮助时',
+  '仅在确有帮助时补充',
+  '后续补充',
+  '待定',
+  '待补充',
+  'to be determined',
+  'to be added',
+  'todo',
+  'tbd',
+  'determine based on',
+  'choose the most fitting',
+  'describe the main repeated',
+  'preserve the setting',
+  'use touch-friendly tap',
+  'use touch-friendly',
+  'define a clear round',
+  'explain how the challenge',
+  'add points, streaks',
+  'add points and rewards',
+  'suggest an art direction',
+  'add only when',
+];
 
-const LABEL_SET = new Set(LABEL_PREFIXES.map((label) => label.toLowerCase()));
+const PLACEHOLDER_LOWERED = PLACEHOLDER_VALUE_MARKERS.map((m) => m.toLowerCase());
 
-function lineStartsWithLabel(line: string): boolean {
+function splitLabel(line: string): { label: string; value: string } | null {
   const stripped = line.trim();
-  if (!stripped) return false;
+  if (!stripped) return null;
   let colonIndex = -1;
   for (let i = 0; i < stripped.length; i += 1) {
     const ch = stripped[i];
@@ -77,9 +86,32 @@ function lineStartsWithLabel(line: string): boolean {
       break;
     }
   }
-  if (colonIndex <= 0 || colonIndex > 40) return false;
-  const head = stripped.slice(0, colonIndex).trim().toLowerCase();
-  return head.length > 0 && LABEL_SET.has(head);
+  if (colonIndex <= 0 || colonIndex > 40) return null;
+  const label = stripped.slice(0, colonIndex).trim();
+  const value = stripped.slice(colonIndex + 1).trim();
+  if (!label) return null;
+  return { label, value };
+}
+
+function isPlaceholderValue(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return true;
+  const lowered = trimmed.toLowerCase();
+  for (const marker of PLACEHOLDER_LOWERED) {
+    if (lowered.startsWith(marker)) return true;
+  }
+  if (trimmed.length <= 30) {
+    for (const marker of PLACEHOLDER_LOWERED) {
+      if (lowered.includes(marker)) return true;
+    }
+  }
+  return false;
+}
+
+function isPlaceholderOnlyLine(line: string): boolean {
+  const stripped = line.trim();
+  if (!stripped || stripped.length > 60) return false;
+  return isPlaceholderValue(stripped);
 }
 
 function matchesAny(line: string, patterns: RegExp[]): boolean {
@@ -88,7 +120,7 @@ function matchesAny(line: string, patterns: RegExp[]): boolean {
 
 const LEGACY_TAIL_PATTERNS: RegExp[] = [
   /\s*请把这条想法整理成[\s\S]*$/,
-  /\s*(?:\n|^)?\s*(?:Game Type|Core Mechanic|Theme|Input Method|Win Condition|Difficulty Ramp|Scoring\s*\/\s*Rewards|Visual Direction|Special Rules[^:\n]*)\s*[:：][\s\S]*$/i,
+  /\s*(?:\n|^)?\s*(?:Game Type|Core Mechanic|Theme|Input Method|Win Condition|Difficulty Ramp|Scoring\s*\/\s*Rewards|Visual Direction|Special Rules[^:\n]*)\s*[:：]\s*(?:根据原始想法|提炼玩家|保留原始想法|采用适合手机|明确玩家|说明难度|补充积分|给出匹配|仅在确有帮助|determine based on|describe the main|preserve the setting|use touch-friendly|define a clear|explain how the challenge|add points|suggest an art|add only when)[\s\S]*$/i,
 ];
 
 const LEGACY_PREFIX_PATTERNS: RegExp[] = [
@@ -118,7 +150,14 @@ export function sanitizeUserIdea(raw: string | null | undefined): string {
     }
     if (matchesAny(line, PREFIX_DROP_LINE_PATTERNS)) continue;
     if (matchesAny(line, META_INSTRUCTION_LINE_PATTERNS)) continue;
-    if (lineStartsWithLabel(line)) continue;
+    const labeled = splitLabel(line);
+    if (labeled !== null) {
+      if (isPlaceholderValue(labeled.value)) {
+        continue;
+      }
+    } else if (isPlaceholderOnlyLine(line)) {
+      continue;
+    }
     cleaned.push(line);
   }
 

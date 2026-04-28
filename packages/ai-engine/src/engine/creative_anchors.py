@@ -1,9 +1,8 @@
-"""PR-07: CreativeAnchors — merged expand_prompt + intent structured output.
+"""PR-07: CreativeAnchors structured output.
 
-This module introduces a single structured schema that fuses what were
-previously two LLM roundtrips (prompt expansion + intent parsing) into one.
-The schema is *additive*: it does not replace the existing `expand_prompt`
-endpoint. It is only consumed when the feature flag
+This module introduces a single structured schema that keeps lightweight
+creative anchors close to intent parsing without exposing an expanded prompt
+as a user confirmation step. It is only consumed when the feature flag
 `settings.P1_CREATIVE_ANCHORS_ENABLED` is True or when a caller explicitly
 opts into `/v2/creative-anchors`.
 

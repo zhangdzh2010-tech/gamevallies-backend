@@ -715,6 +715,7 @@ class CodeGenerator:
             runtime_profile,
             runtime_contract=runtime_contract,
         )
+        generation_tier = self._resolve_generation_tier(spec)
         generation_tier_block = self._build_generation_tier_block(spec)
         visual_pack_block = self._build_visual_pack_block(spec)
         implementation_budget = self._build_implementation_budget_block(spec, request_text)
@@ -776,6 +777,7 @@ class CodeGenerator:
         try:
             if (
                 getattr(settings, "P1_TEMPLATE_INSPIRATION_ENABLED", False)
+                and generation_tier == "safe"
                 and _p1_decide_lane is not None
                 and _p1_select_inspiration is not None
                 and _p1_render_inspiration_block is not None
@@ -1678,6 +1680,8 @@ class CodeGenerator:
             "- Treat this brief as intentionally open-ended.",
             "- Do not fall back to the most common stock implementation for the selected genre/profile unless the request explicitly requires it.",
             "- Vary the objective loop, pacing, failure condition, and spatial structure while staying readable on mobile.",
+            "- Give this run one signature interaction that is visible in the first 10 seconds and cannot be mistaken for a generic dodge/clicker/match clone.",
+            "- Make the scoring, failure pressure, and reward feedback specific to the requested theme rather than reskinning a default loop.",
         ]
         if runtime_profile in {"casual_arcade", "casual_action", "casual_arcade_burst", "casual_arcade_orbit", "casual_arcade_rescue", "casual_action_arena", "casual_action_survival"}:
             prompt_lines.append(
@@ -1772,12 +1776,11 @@ class CodeGenerator:
         if not normalized_skeleton:
             return False
         generation_tier = cls._resolve_generation_tier(spec)
-        skeleton_char_budget = 2400 if generation_tier == "safe" else 1400
-        if len(normalized_skeleton) > skeleton_char_budget:
+        if generation_tier != "safe":
             return False
-        if design_program_block.strip() and generation_tier != "safe":
+        if len(normalized_skeleton) > 2400:
             return False
-        return len((request_text or "").strip()) <= 80 or generation_tier == "safe"
+        return True
 
     @staticmethod
     def _build_ui_copy_examples(gdd: GDD, ui_language: str) -> str:
