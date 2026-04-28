@@ -550,6 +550,7 @@ async function loadLlmGateway() {
     llmRegionTargets = regionTargets || [];
     updateCurrentRegionLabel();
     renderProviderRegionTargetOptions();
+    renderExecutionRegionOptions();
     renderProviderTable();
     renderRouteTable();
     if (currentProviderId) {
@@ -580,6 +581,37 @@ function updateCurrentRegionLabel() {
   if (label) {
     label.textContent = currentExecutionRegion || 'cn_shanghai';
   }
+}
+
+function renderExecutionRegionOptions() {
+  const select = document.getElementById('llm2-route-execution-region');
+  if (!select) return;
+  const previousValue = currentExecutionRegion || select.value || 'cn_shanghai';
+  const regionMap = new Map();
+  llmRegionTargets.forEach(target => {
+    const region = target.executionRegion || target.region;
+    if (region && !regionMap.has(region)) {
+      regionMap.set(region, target);
+    }
+  });
+  if (!regionMap.size) {
+    select.innerHTML = `<option value="${escAttr(previousValue)}">${escHtml(previousValue)}</option>`;
+    select.value = previousValue;
+    currentExecutionRegion = previousValue;
+    updateCurrentRegionLabel();
+    return;
+  }
+  select.innerHTML = Array.from(regionMap.entries()).map(([region, target]) => {
+    const suffix = target.cloudRegionCode ? ` · ${target.cloudRegionCode}` : '';
+    return `<option value="${escAttr(region)}">${escHtml(target.displayName || region)}${escHtml(suffix)}</option>`;
+  }).join('');
+  if (regionMap.has(previousValue)) {
+    select.value = previousValue;
+  } else {
+    select.value = Array.from(regionMap.keys())[0] || 'cn_shanghai';
+  }
+  currentExecutionRegion = select.value || previousValue;
+  updateCurrentRegionLabel();
 }
 
 function renderProviderRegionTargetOptions(selectId = 'llm2-provider-region-target') {
@@ -676,7 +708,7 @@ function renderProviderTable() {
       <td><div class="llm-row-title">${escHtml(provider.name)}</div><div class="llm-row-sub">${escHtml(provider.apiKeyMasked || '已设置密钥')}</div></td>
       <td><div><span class="llm-table-badge">${escHtml(provider.providerType)}</span></div><div class="llm-row-sub">${escHtml(provider.vendorPreset || 'generic')}</div></td>
       <td><div class="llm-row-title">${escHtml(provider.regionDisplayName || provider.region)}</div><div class="llm-row-sub">${escHtml(provider.cloudRegionCode || '')}</div></td>
-      <td><div class="llm-row-title">${escHtml(provider.model || '-')}</div>${provider.fastModel ? `<div class="llm-row-sub">fast · ${escHtml(provider.fastModel)}</div>` : '<div class="llm-row-sub">无快模型</div>'}<div class="llm-row-sub">context ${escHtml(contextWindowLabel)}</div><div class="llm-row-sub">max_tokens ${escHtml(maxTokensLabel)}</div></td>
+      <td><div class="llm-row-title">${escHtml(provider.model || '-')}</div>${provider.fastModel ? `<div class="llm-row-sub">fast · ${escHtml(provider.fastModel)}</div>` : '<div class="llm-row-sub">无快模型</div>'}<div class="llm-row-sub">context ${escHtml(contextWindowLabel)}</div><div class="llm-row-sub">max_tokens ${escHtml(maxTokensLabel)}</div>${renderProviderCapabilitySummary(provider)}</td>
       <td><div class="llm-row-title">${provider.requestTimeoutS}s</div><div class="llm-row-sub">connect ${provider.connectTimeoutS}s</div></td>
       <td><span class="llm-table-badge llm-table-badge-muted">P${escHtml(String(provider.priority))}</span></td>
       <td>${latestTestHtml}</td>
@@ -692,9 +724,46 @@ function renderProviderTable() {
   wrap.innerHTML = html;
 }
 
+function llmCapabilityLabel(capability) {
+  const labels = {
+    supports_full_html_rewrite: '完整 HTML 重写',
+    supports_patch_generation: '补丁生成',
+    supports_dialogue: '对话/分类',
+    verified: '已验证',
+  };
+  return labels[capability] || capability || '-';
+}
+
+function renderCapabilityList(capabilities) {
+  const values = Array.isArray(capabilities) ? capabilities.filter(Boolean) : [];
+  if (!values.length) return '无';
+  return values.map(llmCapabilityLabel).join(' / ');
+}
+
+function renderProviderCapabilitySummary(provider) {
+  const summary = provider?.capabilitySummary || {};
+  if (summary.compatibilityMode) {
+    return '<div class="llm-row-sub">能力未标注：运行时按兼容放行</div>';
+  }
+  const known = Array.isArray(summary.knownCapabilities) ? summary.knownCapabilities : [];
+  const enabled = known.filter(item => item.enabled).map(item => item.key);
+  const disabled = known.filter(item => item.enabled === false).map(item => item.key);
+  const unsafe = Array.isArray(summary.unsafeForSteps) ? summary.unsafeForSteps : [];
+  const lines = [];
+  if (enabled.length) {
+    lines.push(`能力 ${renderCapabilityList(enabled)}`);
+  }
+  if (disabled.length) {
+    lines.push(`禁用 ${renderCapabilityList(disabled)}`);
+  }
+  if (unsafe.length) {
+    lines.push(`不适用 ${renderCapabilityList(unsafe)}`);
+  }
+  return `<div class="llm-row-sub">${escHtml(lines.join('；') || '能力未声明')}</div>`;
+}
+
 function llmJourneyLabel(journey) {
   const labels = {
-    creation_session: '创建会话访谈',
     session_generate: '会话生成',
     direct_create: '直接生成',
     iterate: '迭代',
@@ -715,7 +784,7 @@ function summarizeRouteState(route) {
     return { label: '继承父级', tone: 'inherit' };
   }
   if (route.routeBindingState === 'provider_pool_fallback') {
-    return { label: 'Provider 池回退', tone: 'pool' };
+    return { label: 'Provider 池兜底', tone: 'pool' };
   }
   if (route.routeBindingState === 'invalid_provider') {
     return { label: '绑定失效', tone: 'invalid' };
@@ -765,6 +834,58 @@ function renderRouteJourneyBadges(route) {
   )).join('');
 }
 
+function renderRouteOutputMeta(route) {
+  const minTokens = route.minOutputTokens ? String(route.minOutputTokens) : '-';
+  const maxTokens = route.maxOutputTokens ? String(route.maxOutputTokens) : '-';
+  return [
+    `<div class="llm-row-sub">输出 ${escHtml(route.outputClass || 'medium_structured')} · min ${escHtml(minTokens)} · max ${escHtml(maxTokens)}</div>`,
+    `<div class="llm-row-sub">需要能力 ${escHtml(renderCapabilityList(route.requiredCapabilities))}</div>`,
+  ].join('');
+}
+
+function renderRouteReadiness(readiness) {
+  if (!readiness) {
+    return '<div class="llm-row-sub" style="color:#b91c1c">无有效 Provider，运行会失败或只能依赖环境兜底</div>';
+  }
+  const state = readiness.state || 'unknown';
+  const stateMeta = {
+    ok: {
+      label: '能力/Token OK',
+      style: 'background:#ecfdf5;color:#047857;border-color:#a7f3d0',
+    },
+    assumed: {
+      label: '兼容放行',
+      style: 'background:#fffbeb;color:#b45309;border-color:#fde68a',
+    },
+    risk: {
+      label: '能力风险',
+      style: 'background:#fef2f2;color:#b91c1c;border-color:#fecaca',
+    },
+  }[state] || {
+    label: '未知',
+    style: 'background:#f8fafc;color:#475569;border-color:#e2e8f0',
+  };
+  const detailParts = [];
+  if (Array.isArray(readiness.missingCapabilities) && readiness.missingCapabilities.length) {
+    detailParts.push(`缺失 ${renderCapabilityList(readiness.missingCapabilities)}`);
+  }
+  if (Array.isArray(readiness.unknownCapabilities) && readiness.unknownCapabilities.length) {
+    detailParts.push(`未声明 ${renderCapabilityList(readiness.unknownCapabilities)}`);
+  }
+  if (readiness.tokenState === 'insufficient') {
+    detailParts.push(`max_tokens ${readiness.providerMaxTokens || '-'} < ${readiness.requiredOutputTokens || '-'}`);
+  } else if (readiness.tokenState === 'unknown' && readiness.requiredOutputTokens) {
+    detailParts.push(`max_tokens 未声明，需要 ${readiness.requiredOutputTokens}`);
+  }
+  if (!detailParts.length && readiness.requiredOutputTokens) {
+    detailParts.push(`max_tokens ${readiness.providerMaxTokens || '-'} / 需要 ${readiness.requiredOutputTokens}`);
+  }
+  if (!detailParts.length) {
+    detailParts.push('无硬性输出 token 下限');
+  }
+  return `<div style="margin-top:8px"><span class="llm-table-badge" style="${stateMeta.style}">${escHtml(stateMeta.label)}</span></div><div class="llm-row-sub">${escHtml(detailParts.join('；'))}</div>`;
+}
+
 function readMultiSelectValues(selectId) {
   const select = document.getElementById(selectId);
   if (!select) return [];
@@ -784,8 +905,10 @@ function renderRouteTopSummary() {
   const providerPoolCount = llmRoutes.filter(route => route.routeBindingState === 'provider_pool_fallback').length;
   const invalidCount = llmRoutes.filter(route => route.routeBindingState === 'invalid_provider').length;
   const disabledCount = llmRoutes.filter(route => route.exactRouteEnabled === false).length;
+  const capabilityRiskCount = llmRoutes.filter(route => route.effectiveProviderReadiness?.state === 'risk').length;
+  const capabilityAssumedCount = llmRoutes.filter(route => route.effectiveProviderReadiness?.state === 'assumed').length;
   const blockingMissingCount = requiredRoutes.filter(route => (
-    ['missing', 'invalid_provider', 'provider_pool_fallback'].includes(route.routeBindingState)
+    ['missing', 'invalid_provider'].includes(route.routeBindingState)
   )).length;
   const optionalMissingCount = llmRoutes.filter(route => !route.bindingRequired && route.routeBindingState === 'missing').length;
   wrap.innerHTML = [
@@ -794,8 +917,10 @@ function renderRouteTopSummary() {
     `<span class="llm-pill">精确绑定 ${escHtml(String(configuredCount))}</span>`,
     `<span class="llm-pill">显式回退 ${escHtml(String(fallbackActiveCount))}</span>`,
     `<span class="llm-pill">继承 ${escHtml(String(inheritedCount))}</span>`,
-    `<span class="llm-pill">Provider 池 ${escHtml(String(providerPoolCount))}</span>`,
+    `<span class="llm-pill">Provider 池兜底 ${escHtml(String(providerPoolCount))}</span>`,
     `<span class="llm-pill">失效绑定 ${escHtml(String(invalidCount))}</span>`,
+    `<span class="llm-pill">能力风险 ${escHtml(String(capabilityRiskCount))}</span>`,
+    `<span class="llm-pill">兼容放行 ${escHtml(String(capabilityAssumedCount))}</span>`,
     `<span class="llm-pill">阻塞缺口 ${escHtml(String(blockingMissingCount))}</span>`,
     `<span class="llm-pill">可选未配 ${escHtml(String(optionalMissingCount))}</span>`,
     `<span class="llm-pill">精确路由已禁用 ${escHtml(String(disabledCount))}</span>`,
@@ -832,7 +957,9 @@ function renderRouteTable() {
     const stageConfigured = group.routes.filter(route => route.routeBindingState === 'configured').length;
     const stageFallbackActive = group.routes.filter(route => route.routeBindingState === 'fallback_active').length;
     const stageInherited = group.routes.filter(route => route.routeBindingState === 'inherited').length;
-    const stageBlockingMissing = group.routes.filter(route => route.bindingRequired && ['missing', 'invalid_provider', 'provider_pool_fallback'].includes(route.routeBindingState)).length;
+    const stageProviderPool = group.routes.filter(route => route.routeBindingState === 'provider_pool_fallback').length;
+    const stageBlockingMissing = group.routes.filter(route => route.bindingRequired && ['missing', 'invalid_provider'].includes(route.routeBindingState)).length;
+    const stageCapabilityRisk = group.routes.filter(route => route.effectiveProviderReadiness?.state === 'risk').length;
     html += `<tr class="llm-stage-row"><td colspan="8">
       <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
         <div>
@@ -844,6 +971,8 @@ function renderRouteTable() {
           <span class="llm-table-badge llm-table-badge-muted">精确绑定 ${escHtml(String(stageConfigured))}</span>
           <span class="llm-table-badge llm-table-badge-muted">显式回退 ${escHtml(String(stageFallbackActive))}</span>
           <span class="llm-table-badge llm-table-badge-muted">继承 ${escHtml(String(stageInherited))}</span>
+          <span class="llm-table-badge llm-table-badge-muted">Provider 池 ${escHtml(String(stageProviderPool))}</span>
+          <span class="llm-table-badge llm-table-badge-muted">能力风险 ${escHtml(String(stageCapabilityRisk))}</span>
           <span class="llm-table-badge llm-table-badge-muted">阻塞缺口 ${escHtml(String(stageBlockingMissing))}</span>
         </div>
       </div>
@@ -852,7 +981,11 @@ function renderRouteTable() {
     for (const route of group.routes) {
       const domKey = route.stepKey.replace(/[^a-zA-Z0-9_-]/g, '-');
       const stepTitle = route.displayName ? `${route.displayName} · ${route.stepKey}` : route.stepKey;
-      const stepHint = route.triggerSummary || route.description || '';
+      const stepHintParts = [route.triggerSummary || route.description || ''];
+      if (route.stepKey === 'code_generate.full') {
+        stepHintParts.push('Showcase 创建最多 3 轮候选：showcase -> complex -> standard；预检、合约或质量门失败后会排除当前失败 Provider 再重试。');
+      }
+      const stepHint = stepHintParts.filter(Boolean).join(' ');
       const providerOptions = [];
       const fallbackOptions = [];
       const placeholderLabel = route.providerId
@@ -897,6 +1030,7 @@ function renderRouteTable() {
         <td>
           <div class="llm-row-title">${escHtml(route.flowSummary || '-')}</div>
           ${stepHint ? `<div class="llm-row-sub">${escHtml(stepHint)}</div>` : ''}
+          ${renderRouteOutputMeta(route)}
           ${route.bindingNote ? `<div class="llm-row-sub" style="margin-top:6px;color:#92400e">${escHtml(route.bindingNote)}</div>` : ''}
         </td>
         <td>
@@ -919,8 +1053,9 @@ function renderRouteTable() {
           <div class="llm-row-title">${escHtml(route.effectiveProviderDisplayName || route.providerDisplayName || '-')}</div>
           <div class="llm-row-sub">${escHtml(route.modelDefault || '-')}</div>
           ${route.modelFast ? `<div class="llm-row-sub">fast · ${escHtml(route.modelFast)}</div>` : '<div class="llm-row-sub">无 fast override</div>'}
+          ${renderRouteReadiness(route.effectiveProviderReadiness)}
         </td>
-        <td>${renderRouteStateBadge(route)}</td>
+        <td>${renderRouteStateBadge(route)}<div class="llm-row-sub" style="margin-top:6px">${escHtml(route.routeRiskSummary || '')}</div></td>
         <td><label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="llm-route-binding-enabled-${escAttr(domKey)}" ${route.enabled ? 'checked' : ''}> 启用</label></td>
         <td><button class="abtn abtn-preview" onclick="saveRouteBinding('${escAttr(route.stepKey)}')">保存</button></td>
       </tr>`;

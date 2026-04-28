@@ -78,7 +78,7 @@ from .visual_pack_catalog import apply_visual_pack_defaults
 logger = logging.getLogger(__name__)
 
 DEFAULT_STAGE_TOTAL_ATTEMPTS = 3
-DEFAULT_CREATE_FULL_GENERATION_ATTEMPTS = 2
+DEFAULT_CREATE_FULL_GENERATION_ATTEMPTS = 3
 ProgressCallback = Optional[Callable[[str, int, str, Optional[dict[str, Any]]], None]]
 
 PROFILE_CANDIDATES_BY_GAME_TYPE: dict[str, tuple[str, ...]] = {
@@ -365,7 +365,7 @@ class V2PipelineRunner:
             "simple": ("simple", "standard"),
             "standard": ("standard", "standard"),
             "complex": ("complex", "standard"),
-            "showcase": ("showcase", "complex"),
+            "showcase": ("showcase", "complex", "standard"),
         }
         return plan_by_budget.get(normalized, ("standard", "standard"))[:DEFAULT_CREATE_FULL_GENERATION_ATTEMPTS]
 
@@ -579,6 +579,40 @@ class V2PipelineRunner:
                 f"Reduce the structured code review penalty: review_bonus {review_bonus:.1f} is below the allowed {min_review_bonus:.1f}."
             )
         return errors
+
+    @classmethod
+    def _can_accept_showcase_near_miss(
+        cls,
+        spec: GameSpec,
+        review: LLMReviewResult,
+        quality: Any,
+        errors: list[str],
+    ) -> bool:
+        if CodeGenerator._resolve_generation_tier(spec) != "showcase":
+            return False
+        if not getattr(review, "ran", False):
+            return False
+        if not getattr(review, "is_complete_game", False):
+            return False
+        if not getattr(review, "has_real_gameplay", False):
+            return False
+
+        final_score = float(getattr(quality, "final_score", 0.0) or 0.0)
+        review_bonus = float(getattr(quality, "review_bonus", 0.0) or 0.0)
+        if final_score < 8.0 or review_bonus < -2.0:
+            return False
+        if float(getattr(review, "fun_score", 0.0) or 0.0) < 7.5:
+            return False
+        if float(getattr(review, "visual_polish_score", 0.0) or 0.0) < 7.5:
+            return False
+
+        hard_error_markers = (
+            "complete, polished game",
+            "real playable loop",
+            "structured code review did not return",
+        )
+        normalized_errors = " ".join(str(error or "").lower() for error in errors)
+        return not any(marker in normalized_errors for marker in hard_error_markers)
 
     @classmethod
     def _build_review_quality_guidance(
@@ -1014,6 +1048,12 @@ class V2PipelineRunner:
                         retry_count=max(0, quality_attempt - 1),
                         failure_family="code_generation",
                     )
+                    next_provider_exclusions = self._advance_generation_provider_exclusions(
+                        last_route_snapshot,
+                        provider_exclusions,
+                    )
+                    if next_provider_exclusions is not None:
+                        provider_exclusions = next_provider_exclusions
                     if quality_attempt >= len(attempt_plan):
                         if not extra_preflight_retry_granted and len(attempt_plan) < DEFAULT_STAGE_TOTAL_ATTEMPTS:
                             attempt_plan.append(attempt_budget)
@@ -1057,6 +1097,12 @@ class V2PipelineRunner:
                         retry_count=qa_result.retries,
                         failure_family="contract_qa",
                     )
+                    next_provider_exclusions = self._advance_generation_provider_exclusions(
+                        last_route_snapshot,
+                        provider_exclusions,
+                    )
+                    if next_provider_exclusions is not None:
+                        provider_exclusions = next_provider_exclusions
                     if quality_attempt >= len(attempt_plan):
                         raise last_quality_exc
                     generation_guidance = self._build_quality_regeneration_guidance(
@@ -1113,6 +1159,32 @@ class V2PipelineRunner:
                         retry_count=max(0, quality_attempt - 1),
                         failure_family="quality_gate",
                     )
+                    if (
+                        quality_attempt >= len(attempt_plan)
+                        and self._can_accept_showcase_near_miss(
+                            spec,
+                            review,
+                            quality,
+                            quality_gate_errors,
+                        )
+                    ):
+                        qa_warnings.append({
+                            "type": "quality_gate_near_miss",
+                            "message": "Accepted showcase near-miss after QA/runtime passed and scores stayed within the shippable band.",
+                            "details": {
+                                "final_score": float(getattr(quality, "final_score", 0.0) or 0.0),
+                                "fun_score": float(getattr(review, "fun_score", 0.0) or 0.0),
+                                "visual_polish_score": float(getattr(review, "visual_polish_score", 0.0) or 0.0),
+                                "errors": quality_gate_errors[:4],
+                            },
+                        })
+                        break
+                    next_provider_exclusions = self._advance_generation_provider_exclusions(
+                        last_route_snapshot,
+                        provider_exclusions,
+                    )
+                    if next_provider_exclusions is not None:
+                        provider_exclusions = next_provider_exclusions
                     if quality_attempt >= len(attempt_plan):
                         raise last_quality_exc
                     generation_guidance = self._build_review_quality_guidance(

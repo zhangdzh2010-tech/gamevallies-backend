@@ -142,6 +142,13 @@ interface LlmStepFlowMeta {
   optional?: boolean;
 }
 
+interface LlmStepOutputMeta {
+  outputClass: string;
+  minOutputTokens: number | null;
+  maxOutputTokens: number | null;
+  outputSummary: string;
+}
+
 const DEFAULT_PROMPT_CATALOG: PromptCatalogEntry[] = Array.isArray(
   promptCatalog,
 )
@@ -187,7 +194,8 @@ const LLM_STEP_FLOW_META: Record<string, LlmStepFlowMeta> = {
     flowGroup: "Flow 03 - Create Generation",
     flowOrder: 50,
     flowSummary: "Create review pass",
-    triggerSummary: "Runs after successful create candidates",
+    triggerSummary:
+      "Runs after successful create candidates; failures degrade the quality score instead of blocking delivery by themselves",
     journeys: ["direct_create", "session_generate"],
     journeySummary: "Create only",
     optional: true,
@@ -233,6 +241,67 @@ const LLM_STEP_FLOW_META: Record<string, LlmStepFlowMeta> = {
     journeys: ["direct_create", "session_generate", "iterate"],
     journeySummary: "Create + iterate",
   },
+};
+
+const LLM_STEP_OUTPUT_META: Record<string, LlmStepOutputMeta> = {
+  intent_parse: {
+    outputClass: "small_json",
+    minOutputTokens: null,
+    maxOutputTokens: 1024,
+    outputSummary: "Small JSON spec extraction",
+  },
+  "code_generate.full": {
+    outputClass: "full_document",
+    minOutputTokens: 16384,
+    maxOutputTokens: 16384,
+    outputSummary: "Full single-file HTML generation",
+  },
+  code_review: {
+    outputClass: "small_text",
+    minOutputTokens: null,
+    maxOutputTokens: 1024,
+    outputSummary: "Small structured quality review",
+  },
+  "iterate.classify": {
+    outputClass: "small_text",
+    minOutputTokens: null,
+    maxOutputTokens: 1024,
+    outputSummary: "Small iteration intent classification",
+  },
+  "iterate.param_adjust": {
+    outputClass: "large_patch",
+    minOutputTokens: 4096,
+    maxOutputTokens: 16384,
+    outputSummary: "Large patch or rewrite",
+  },
+  "iterate.element_change": {
+    outputClass: "large_patch",
+    minOutputTokens: 4096,
+    maxOutputTokens: 16384,
+    outputSummary: "Large patch or rewrite",
+  },
+  "iterate.mechanic_change": {
+    outputClass: "large_patch",
+    minOutputTokens: 4096,
+    maxOutputTokens: 16384,
+    outputSummary: "Large patch or rewrite",
+  },
+  "qa_fix.syntax_structural": {
+    outputClass: "full_document",
+    minOutputTokens: 16384,
+    maxOutputTokens: 16384,
+    outputSummary: "Full-document syntax and structural repair",
+  },
+};
+
+const LLM_STEP_REQUIRED_CAPABILITIES: Record<string, string[]> = {
+  "code_generate.full": ["supports_full_html_rewrite"],
+  "iterate.mechanic_change": ["supports_patch_generation"],
+  "iterate.element_change": ["supports_patch_generation"],
+  "iterate.param_adjust": ["supports_patch_generation"],
+  "qa_fix.syntax_structural": ["supports_full_html_rewrite"],
+  intent_parse: ["supports_dialogue"],
+  "iterate.classify": ["supports_dialogue"],
 };
 
 @Injectable()
@@ -1255,6 +1324,134 @@ export class AdminService {
     return rounded > 0 ? rounded : null;
   }
 
+  private normalizeLlmCapabilityFlags(extraConfig: any): Record<string, any> {
+    const normalized =
+      extraConfig &&
+      typeof extraConfig === "object" &&
+      !Array.isArray(extraConfig)
+        ? extraConfig
+        : {};
+    const raw =
+      normalized.capabilityFlags ??
+      normalized.capability_flags ??
+      normalized.capabilities ??
+      {};
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      return {};
+    }
+    return { ...raw };
+  }
+
+  private getLlmRequiredCapabilities(stepKey: string): string[] {
+    let current = String(stepKey || "").trim();
+    while (current) {
+      const capabilities = LLM_STEP_REQUIRED_CAPABILITIES[current];
+      if (capabilities) {
+        return [...capabilities];
+      }
+      if (!current.includes(".")) {
+        break;
+      }
+      current = current.slice(0, current.lastIndexOf("."));
+    }
+    return [];
+  }
+
+  private getLlmStepOutputMeta(step: any): LlmStepOutputMeta {
+    const fallback = LLM_STEP_OUTPUT_META[step?.stepKey] || {
+      outputClass: "medium_structured",
+      minOutputTokens: null,
+      maxOutputTokens: 2048,
+      outputSummary: "Medium structured output",
+    };
+    const outputClass =
+      typeof step?.outputClass === "string" && step.outputClass.trim()
+        ? step.outputClass.trim()
+        : typeof step?.output_class === "string" && step.output_class.trim()
+          ? step.output_class.trim()
+          : fallback.outputClass;
+    return {
+      outputClass,
+      minOutputTokens:
+        this.coerceOptionalPositiveInteger(
+          step?.minOutputTokens ?? step?.min_output_tokens,
+        ) ?? fallback.minOutputTokens,
+      maxOutputTokens:
+        this.coerceOptionalPositiveInteger(
+          step?.maxOutputTokens ?? step?.max_output_tokens,
+        ) ?? fallback.maxOutputTokens,
+      outputSummary: fallback.outputSummary,
+    };
+  }
+
+  private buildLlmCapabilitySummary(flags: Record<string, any>) {
+    const unsafeForSteps = Array.isArray(flags.unsafe_for_steps)
+      ? flags.unsafe_for_steps.map((item) => String(item)).filter(Boolean)
+      : [];
+    const knownCapabilities = Object.entries(flags)
+      .filter(([key, value]) => key !== "unsafe_for_steps" && typeof value === "boolean")
+      .map(([key, value]) => ({ key, enabled: Boolean(value) }));
+    return {
+      knownCapabilities,
+      unsafeForSteps,
+      compatibilityMode: knownCapabilities.length === 0 && unsafeForSteps.length === 0,
+    };
+  }
+
+  private buildLlmProviderReadiness(
+    provider: any,
+    stepKey: string,
+    outputMeta: LlmStepOutputMeta,
+  ) {
+    const extraConfig = this.normalizeLlmProviderExtraConfig(
+      provider?.extraConfig,
+    );
+    const flags = this.normalizeLlmCapabilityFlags(extraConfig);
+    const capabilitySummary = this.buildLlmCapabilitySummary(flags);
+    const requiredCapabilities = this.getLlmRequiredCapabilities(stepKey);
+    const unsafeForSteps = capabilitySummary.unsafeForSteps;
+    const missingCapabilities = requiredCapabilities.filter(
+      (capability) =>
+        unsafeForSteps.includes(capability) || flags[capability] === false,
+    );
+    const unknownCapabilities = capabilitySummary.compatibilityMode
+      ? requiredCapabilities
+      : requiredCapabilities.filter(
+          (capability) =>
+            flags[capability] === undefined &&
+            !unsafeForSteps.includes(capability),
+        );
+    const maxTokens = extraConfig.maxTokens;
+    let tokenState: "not_required" | "ok" | "unknown" | "insufficient" =
+      "not_required";
+    if (outputMeta.minOutputTokens) {
+      if (!maxTokens) {
+        tokenState = "unknown";
+      } else if (maxTokens >= outputMeta.minOutputTokens) {
+        tokenState = "ok";
+      } else {
+        tokenState = "insufficient";
+      }
+    }
+    const state =
+      missingCapabilities.length > 0 || tokenState === "insufficient"
+        ? "risk"
+        : unknownCapabilities.length > 0 || tokenState === "unknown"
+          ? "assumed"
+          : "ok";
+    return {
+      state,
+      requiredCapabilities,
+      missingCapabilities,
+      unknownCapabilities,
+      capabilityCompatibilityMode: capabilitySummary.compatibilityMode,
+      tokenState,
+      requiredOutputTokens: outputMeta.minOutputTokens,
+      providerMaxTokens: maxTokens,
+      providerContextWindow: extraConfig.contextWindow,
+    };
+  }
+
   private buildLlmProviderExtraConfig(
     body: any,
     existing?: any,
@@ -1324,6 +1521,7 @@ export class AdminService {
     const catalogApiKeyMasked = this.maskSecret(
       extraConfig.modelCatalog.apiKey,
     );
+    const capabilityFlags = this.normalizeLlmCapabilityFlags(extraConfig);
     return {
       ...provider,
       extraConfig: undefined,
@@ -1341,6 +1539,8 @@ export class AdminService {
       catalogApiKeyMasked,
       contextWindow: extraConfig.contextWindow,
       maxTokens: extraConfig.maxTokens,
+      capabilityFlags,
+      capabilitySummary: this.buildLlmCapabilitySummary(capabilityFlags),
       latestTest: latestTest
         ? {
             success: latestTest.success,
@@ -4391,8 +4591,8 @@ export class AdminService {
           routeBindingState: "invalid_provider",
           bindingNote:
             candidate.routeMatchStrategy === "exact"
-              ? "启用路由绑定到了已禁用或不存在的 Provider，运行时会直接失败。"
-              : `父级步骤 ${candidate.stepKey} 的启用路由绑定到了已禁用或不存在的 Provider，运行时会直接失败。`,
+              ? "启用路由绑定到了已禁用或不存在的 Provider；运行时会离开显式路由并尝试环境兜底，若环境兜底不可用则失败。"
+              : `父级步骤 ${candidate.stepKey} 的启用路由绑定到了已禁用或不存在的 Provider；运行时会离开显式路由并尝试环境兜底，若环境兜底不可用则失败。`,
         };
       }
       const usingExplicitFallback =
@@ -4444,8 +4644,8 @@ export class AdminService {
         routeBindingState: "provider_pool_fallback",
         bindingNote:
           exactRoute && exactRoute.enabled === false
-            ? "当前步骤路由已禁用，且没有可继承的父级路由；运行时会退回到启用中的 Provider 池。"
-            : "当前步骤没有精确或父级路由；运行时会退回到启用中的 Provider 池。",
+            ? "当前步骤路由已禁用，且没有可继承的父级路由；运行时会退回到启用中的 Provider 池，可运行但不可精确控模。"
+            : "当前步骤没有精确或父级路由；运行时会退回到启用中的 Provider 池，可运行但不可精确控模。",
       };
     }
 
@@ -4481,6 +4681,32 @@ export class AdminService {
     const exactRoute = binding.exactRoute;
     const exactProvider = exactRoute?.provider || null;
     const effectiveProvider = binding.effectiveProvider || null;
+    const outputMeta = this.getLlmStepOutputMeta(step);
+    const requiredCapabilities = this.getLlmRequiredCapabilities(step.stepKey);
+    const exactProviderReadiness = exactProvider
+      ? this.buildLlmProviderReadiness(exactProvider, step.stepKey, outputMeta)
+      : null;
+    const effectiveProviderReadiness = effectiveProvider
+      ? this.buildLlmProviderReadiness(
+          effectiveProvider,
+          step.stepKey,
+          outputMeta,
+        )
+      : null;
+    const routeRiskState = effectiveProviderReadiness
+      ? effectiveProviderReadiness.state
+      : binding.routeBindingState === "missing" ||
+          binding.routeBindingState === "invalid_provider"
+        ? "risk"
+        : "unknown";
+    const routeRiskSummary =
+      routeRiskState === "risk"
+        ? "能力或输出 token 配置存在风险"
+        : routeRiskState === "assumed"
+          ? "可运行，但能力或 token 上限未显式声明"
+          : routeRiskState === "ok"
+            ? "Provider 已声明所需能力和 token 预算"
+            : "暂无有效 Provider 就绪度数据";
     const runtimeProviderMap = new Map(
       runtimeProviders.map((provider) => [provider.id, provider]),
     );
@@ -4509,6 +4735,15 @@ export class AdminService {
       triggerSummary: meta.triggerSummary,
       journeys: meta.journeys,
       journeySummary: meta.journeySummary,
+      outputClass: outputMeta.outputClass,
+      outputSummary: outputMeta.outputSummary,
+      minOutputTokens: outputMeta.minOutputTokens,
+      maxOutputTokens: outputMeta.maxOutputTokens,
+      requiredCapabilities,
+      exactProviderReadiness,
+      effectiveProviderReadiness,
+      routeRiskState,
+      routeRiskSummary,
       optional: Boolean(meta.optional),
       bindingRequired,
       displayName: step.displayName || step.stepKey,
@@ -4683,6 +4918,7 @@ export class AdminService {
               providerType: true,
               model: true,
               fastModel: true,
+              extraConfig: true,
               enabled: true,
               priority: true,
               updatedAt: true,
@@ -4700,6 +4936,7 @@ export class AdminService {
           providerType: true,
           model: true,
           fastModel: true,
+          extraConfig: true,
           enabled: true,
           priority: true,
           updatedAt: true,
@@ -4736,6 +4973,7 @@ export class AdminService {
             providerType: true,
             model: true,
             fastModel: true,
+            extraConfig: true,
             enabled: true,
             priority: true,
             updatedAt: true,
@@ -4764,6 +5002,7 @@ export class AdminService {
               providerType: true,
               model: true,
               fastModel: true,
+              extraConfig: true,
               enabled: true,
               priority: true,
               updatedAt: true,
@@ -4781,6 +5020,7 @@ export class AdminService {
           providerType: true,
           model: true,
           fastModel: true,
+          extraConfig: true,
           enabled: true,
           priority: true,
           updatedAt: true,

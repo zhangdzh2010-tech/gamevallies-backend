@@ -392,7 +392,47 @@ def test_create_generation_attempt_plan_uses_latency_safe_retry_budgets():
     assert V2PipelineRunner._build_create_generation_attempt_plan("standard") == ("standard", "standard")
     assert V2PipelineRunner._build_create_generation_attempt_plan("simple") == ("simple", "standard")
     assert V2PipelineRunner._build_create_generation_attempt_plan("complex") == ("complex", "standard")
-    assert V2PipelineRunner._build_create_generation_attempt_plan("showcase") == ("showcase", "complex")
+    assert V2PipelineRunner._build_create_generation_attempt_plan("showcase") == ("showcase", "complex", "standard")
+
+
+def test_showcase_near_miss_can_be_accepted_when_shippable():
+    spec = GameSpec(game_type="casual", generation_tier=GenerationTier.showcase)
+    review = LLMReviewResult(
+        ran=True,
+        is_complete_game=True,
+        has_real_gameplay=True,
+        fun_score=7.8,
+        visual_polish_score=7.7,
+        character_quality_score=7.5,
+    )
+    quality = SimpleNamespace(final_score=8.1, review_bonus=-1.8)
+
+    assert V2PipelineRunner._can_accept_showcase_near_miss(
+        spec,
+        review,
+        quality,
+        ["Raise the overall quality score from 8.1 to at least 8.5."],
+    )
+
+
+def test_showcase_near_miss_rejects_missing_gameplay():
+    spec = GameSpec(game_type="casual", generation_tier=GenerationTier.showcase)
+    review = LLMReviewResult(
+        ran=True,
+        is_complete_game=True,
+        has_real_gameplay=False,
+        fun_score=8.0,
+        visual_polish_score=8.0,
+        character_quality_score=7.5,
+    )
+    quality = SimpleNamespace(final_score=8.3, review_bonus=-1.0)
+
+    assert not V2PipelineRunner._can_accept_showcase_near_miss(
+        spec,
+        review,
+        quality,
+        ["Strengthen the moment-to-moment gameplay so the result has a real playable loop."],
+    )
 
 
 def test_create_generation_uses_full_document_output_class():
@@ -2003,7 +2043,7 @@ def test_run_create_impl_retries_preflight_once_with_consolidated_guidance():
     second_call = mock_generate.await_args_list[1].kwargs
     assert first_call["budget_override"] == "simple"
     assert second_call["budget_override"] == "standard"
-    assert second_call["excluded_provider_ids"] == []
+    assert second_call["excluded_provider_ids"] == ["provider-a"]
     assert "PRE-FLIGHT CORRECTIONS" in second_call["generation_guidance"]
 
 

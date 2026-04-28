@@ -313,6 +313,9 @@ const GAME_SCHEMA_STATEMENTS = [
     stage_label VARCHAR(64) NULL,
     display_name VARCHAR(128) NOT NULL,
     description VARCHAR(255) NULL,
+    output_class VARCHAR(32) DEFAULT 'medium_structured',
+    min_output_tokens INT DEFAULT NULL,
+    max_output_tokens INT DEFAULT NULL,
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
@@ -532,6 +535,9 @@ const DEFAULT_LLM_STEP_CATALOG = [
     stageLabel: "Flow 02 - Structured Intent",
     displayName: "意图解析",
     description: "将自然语言描述解析成 GameSpec",
+    outputClass: "small_json",
+    minOutputTokens: null,
+    maxOutputTokens: 1024,
   },
   {
     id: "1e0207d2-a7de-4d49-b4bb-fcdbf0411005",
@@ -540,14 +546,9 @@ const DEFAULT_LLM_STEP_CATALOG = [
     stageLabel: "Flow 03 - Create Generation",
     displayName: "代码生成（Full LLM）",
     description: "完全依赖 LLM 生成首版代码",
-  },
-  {
-    id: "1e0207d2-a7de-4d49-b4bb-fcdbf0411006",
-    stepKey: "qa_fix",
-    stepOrder: 110,
-    stageLabel: "Flow 05 - QA Repair Families",
-    displayName: "QA 自动修复",
-    description: "在静态或运行时 QA 失败后进行自动修复",
+    outputClass: "full_document",
+    minOutputTokens: 16384,
+    maxOutputTokens: 16384,
   },
   {
     id: "1e0207d2-a7de-4d49-b4bb-fcdbf0411007",
@@ -556,6 +557,9 @@ const DEFAULT_LLM_STEP_CATALOG = [
     stageLabel: "Flow 03 - Create Generation",
     displayName: "代码审查",
     description: "LLM 对生成结果进行完整性与可玩性审查",
+    outputClass: "small_text",
+    minOutputTokens: null,
+    maxOutputTokens: 1024,
   },
   {
     id: "1e0207d2-a7de-4d49-b4bb-fcdbf0411008",
@@ -564,6 +568,9 @@ const DEFAULT_LLM_STEP_CATALOG = [
     stageLabel: "Flow 04 - Iterate Generation",
     displayName: "迭代反馈分类",
     description: "判断用户反馈属于哪类迭代修改",
+    outputClass: "small_text",
+    minOutputTokens: null,
+    maxOutputTokens: 1024,
   },
   {
     id: "1e0207d2-a7de-4d49-b4bb-fcdbf0411009",
@@ -572,6 +579,9 @@ const DEFAULT_LLM_STEP_CATALOG = [
     stageLabel: "Flow 04 - Iterate Generation",
     displayName: "迭代参数调整",
     description: "通过 LLM 调整游戏数值和参数",
+    outputClass: "large_patch",
+    minOutputTokens: 4096,
+    maxOutputTokens: 16384,
   },
   {
     id: "1e0207d2-a7de-4d49-b4bb-fcdbf0411010",
@@ -580,6 +590,9 @@ const DEFAULT_LLM_STEP_CATALOG = [
     stageLabel: "Flow 04 - Iterate Generation",
     displayName: "迭代元素修改",
     description: "通过 LLM 修改视觉元素和对象结构",
+    outputClass: "large_patch",
+    minOutputTokens: 4096,
+    maxOutputTokens: 16384,
   },
   {
     id: "1e0207d2-a7de-4d49-b4bb-fcdbf0411011",
@@ -588,6 +601,9 @@ const DEFAULT_LLM_STEP_CATALOG = [
     stageLabel: "Flow 04 - Iterate Generation",
     displayName: "迭代机制改写",
     description: "通过 LLM 改写游戏核心机制",
+    outputClass: "large_patch",
+    minOutputTokens: 4096,
+    maxOutputTokens: 16384,
   },
   {
     id: "1e0207d2-a7de-4d49-b4bb-fcdbf0411020",
@@ -597,6 +613,9 @@ const DEFAULT_LLM_STEP_CATALOG = [
     displayName: "QA Fix / Syntax Structural",
     description:
       "Only remaining QA repair path: full-document syntax and structural recovery.",
+    outputClass: "full_document",
+    minOutputTokens: 16384,
+    maxOutputTokens: 16384,
   },
 ];
 
@@ -1062,13 +1081,17 @@ export class GameSchemaBootstrapService implements OnModuleInit {
       for (const step of DEFAULT_LLM_STEP_CATALOG) {
         await this.prisma.$executeRawUnsafe(
           `INSERT INTO llm_step_catalog (
-             id, step_key, step_order, stage_label, display_name, description, enabled
-           ) VALUES (?, ?, ?, ?, ?, ?, TRUE)
+             id, step_key, step_order, stage_label, display_name, description,
+             output_class, min_output_tokens, max_output_tokens, enabled
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)
            ON DUPLICATE KEY UPDATE
              step_order = VALUES(step_order),
              stage_label = VALUES(stage_label),
              display_name = VALUES(display_name),
              description = VALUES(description),
+             output_class = VALUES(output_class),
+             min_output_tokens = VALUES(min_output_tokens),
+             max_output_tokens = VALUES(max_output_tokens),
              enabled = VALUES(enabled)`,
           step.id,
           step.stepKey,
@@ -1076,6 +1099,9 @@ export class GameSchemaBootstrapService implements OnModuleInit {
           step.stageLabel,
           step.displayName,
           step.description,
+          step.outputClass,
+          step.minOutputTokens,
+          step.maxOutputTokens,
         );
       }
 

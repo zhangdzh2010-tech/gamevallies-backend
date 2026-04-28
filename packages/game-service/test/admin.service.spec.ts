@@ -3269,6 +3269,7 @@ describe("AdminService", () => {
             providerType: true,
             model: true,
             fastModel: true,
+            extraConfig: true,
             enabled: true,
             priority: true,
             updatedAt: true,
@@ -3291,9 +3292,9 @@ describe("AdminService", () => {
   it("rejects route bindings when executionRegion does not match the selected provider region", async () => {
     prisma.llmStepCatalog.findUnique.mockResolvedValue({
       id: "step-1",
-      stepKey: "qa_fix",
+      stepKey: "qa_fix.syntax_structural",
       stepOrder: 60,
-      displayName: "Code Generate (Hybrid)",
+      displayName: "QA Fix / Syntax Structural",
       enabled: true,
     });
     prisma.llmGatewayProvider.findUnique.mockResolvedValue({
@@ -3307,7 +3308,7 @@ describe("AdminService", () => {
 
     await expect(
       service.upsertLlmRoute(undefined, {
-        stepKey: "qa_fix",
+        stepKey: "qa_fix.syntax_structural",
         providerId: "provider-1",
         executionRegion: "legacy_region",
       }),
