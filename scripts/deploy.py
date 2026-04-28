@@ -1293,6 +1293,31 @@ def _build_update_function_request(
     return update_req
 
 
+def _mirror_ai_engine_contracts() -> None:
+    """Copy monorepo ``contracts/`` into ``packages/ai-engine/contracts/``.
+
+    Docker build context is restricted to ``packages/ai-engine/``, so the
+    monorepo-level ``contracts/`` folder (where generation/timeout-keys.json
+    and friends live) cannot be referenced via relative paths in the
+    Dockerfile. We mirror the directory right before building so the
+    Dockerfile can ``COPY contracts/ ./contracts/``. The mirrored copy is
+    treated as a transient build artifact and is recreated from the source
+    of truth on every deploy.
+    """
+
+    import shutil
+
+    src_root = os.path.join(ROOT_DIR, "contracts")
+    dst_root = os.path.join(ROOT_DIR, "packages", "ai-engine", "contracts")
+    if not os.path.isdir(src_root):
+        print(f"  ⚠️  未发现 monorepo 根 contracts/，跳过 ai-engine 合约同步")
+        return
+    if os.path.isdir(dst_root):
+        shutil.rmtree(dst_root)
+    shutil.copytree(src_root, dst_root)
+    print(f"  📂 已同步 contracts/ -> {os.path.relpath(dst_root, ROOT_DIR)}")
+
+
 def deploy_service(api: volcenginesdkvefaas.VEFAASApi, svc: dict) -> bool:
     name   = svc["name"]
     image  = image_uri(svc)
@@ -1303,6 +1328,11 @@ def deploy_service(api: volcenginesdkvefaas.VEFAASApi, svc: dict) -> bool:
     print(f"  🔨 构建镜像: {image}")
     if is_ai:
         # AI 引擎使用自己的 Dockerfile，构建上下文是 packages/ai-engine/
+        # timeout_store.py 在容器内从 /app/contracts/generation/ 读取合约 JSON，
+        # 而这些文件位于 monorepo 根 contracts/ 下，超出 docker build context，
+        # 因此在 build 前把它们同步进 ai-engine 包下的 contracts/，Dockerfile
+        # 再 COPY 进镜像。
+        _mirror_ai_engine_contracts()
         build_cmd = [
             "docker", "build",
             "--platform", "linux/amd64",

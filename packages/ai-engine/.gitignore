@@ -1,0 +1,3 @@
+# Transient build artifact mirrored from monorepo-root contracts/ by
+# scripts/deploy.py right before `docker build`. Do not commit.
+/contracts/

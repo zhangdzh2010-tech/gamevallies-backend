@@ -21,15 +21,31 @@ _LOADED_AT: float = 0.0
 _LOAD_ERROR_BACKOFF_S = 5.0
 
 def _contract_path(name: str) -> Path:
-    candidates = (
-        Path(__file__).resolve().parents[4] / "contracts" / "generation" / name,
-        Path(__file__).resolve().parents[2] / "contracts" / "generation" / name,
-    )
-    for candidate in candidates:
+    # Resolve the generation contract JSON from a variety of repo layouts:
+    #   - Local checkout (file lives 4 dirs under monorepo root):
+    #       .../packages/ai-engine/src/config/timeout_store.py -> parents[4]/contracts/generation/
+    #   - Container layout where the build context is packages/ai-engine/ and
+    #     the Dockerfile bundles contracts next to ``src/``:
+    #       /app/src/config/timeout_store.py -> parents[2]/contracts/generation/
+    #       /app/src/config/timeout_store.py -> parents[1]/contracts/generation/ (legacy)
+    # We evaluate each candidate lazily and tolerate IndexError so short
+    # parent chains (e.g. /app/src/config) don't crash before we can fall
+    # back to a valid location.
+    base = Path(__file__).resolve()
+    offsets = (4, 2, 1)
+    checked: list[str] = []
+    for offset in offsets:
+        try:
+            root = base.parents[offset]
+        except IndexError:
+            continue
+        candidate = root / "contracts" / "generation" / name
+        checked.append(str(candidate))
         if candidate.exists():
             return candidate
-    checked = ", ".join(str(candidate) for candidate in candidates)
-    raise FileNotFoundError(f"Unable to locate generation contract {name!r}. Checked: {checked}")
+    raise FileNotFoundError(
+        f"Unable to locate generation contract {name!r}. Checked: {', '.join(checked) or '<no candidates>'}"
+    )
 
 
 _TIMEOUT_CONTRACT = json.loads(_contract_path("timeout-keys.json").read_text(encoding="utf-8"))
