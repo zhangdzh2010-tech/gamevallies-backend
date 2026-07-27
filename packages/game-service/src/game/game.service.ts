@@ -131,7 +131,7 @@ interface CoverLinkOptions extends PreviewLinkOptions {
   version?: number | string;
 }
 
-type PipelineVersion = 'v1' | 'v2';
+type PipelineVersion = 'v2';
 type PipelineEntrypoint = 'create' | 'iterate';
 
 interface PromptBundleSnapshotPayload {
@@ -187,7 +187,6 @@ interface CreateGameCommand extends CreateGameDto {
 }
 
 interface CreateExecutionOptions {
-  pipelineVersion?: PipelineVersion;
   title?: string;
   orientation?: CreateGameOrientation;
   generationTier?: GenerationTier;
@@ -201,7 +200,6 @@ interface CreateExecutionOptions {
 }
 
 interface IterateExecutionOptions {
-  pipelineVersion?: PipelineVersion;
   promptBundleSnapshot?: PromptBundleSnapshotPayload | null;
   runtimeContract?: RuntimeContractPayload | null;
   orientation?: CreateGameOrientation;
@@ -226,6 +224,8 @@ interface UpstreamAsyncTaskHandle {
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
   poll_url?: string;
   cancel_url?: string;
+  /** True when the AI engine matched our idempotency key and reused an existing task. */
+  deduplicated?: boolean;
 }
 
 interface ResolvedUpstreamAsyncTaskHandle extends UpstreamAsyncTaskHandle {
@@ -293,8 +293,9 @@ async function withRetry<T>(
       return await fn();
     } catch (err: any) {
       lastError = err;
-      // Do NOT retry on timeout (ECONNABORTED) — AI engine already started processing,
-      // a retry would launch a duplicate pipeline job
+      // Timeouts (ECONNABORTED) are retryable: async submissions carry an
+      // X-Idempotency-Key, so the AI engine dedupes repeated submits instead
+      // of launching a duplicate pipeline job.
       const isHttpRetryable =
         retryOnHttpResponse &&
         Boolean(err?.response) &&
@@ -303,9 +304,7 @@ async function withRetry<T>(
         retryOnNetworkError &&
         !err?.response &&
         Boolean(err?.code);
-      const isRetryable =
-        err?.code !== 'ECONNABORTED' &&
-        (isHttpRetryable || isNetworkRetryable);
+      const isRetryable = isHttpRetryable || isNetworkRetryable;
       if (!isRetryable || attempt === maxAttempts) break;
       if (options.onRetry) {
         await options.onRetry({
@@ -528,67 +527,9 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  private parseConfigList(key: string): Set<string> {
-    const raw = String(this.configService.get<string>(key, '') || '').trim();
-    if (!raw) {
-      return new Set();
-    }
-
-    return new Set(
-      raw
-        .split(',')
-        .map((value) => value.trim())
-        .filter(Boolean),
-    );
-  }
-
-  private matchesPipelineRoute(
-    params: {
-      entrypoint: PipelineEntrypoint;
-      userId: string;
-      executionRegion?: string;
-    },
-    version: PipelineVersion,
-  ): boolean {
-    const scopePrefix = version === 'v1' ? 'PIPELINE_V1' : 'PIPELINE_V2';
-    const allowedEntrypoints = this.parseConfigList(`${scopePrefix}_ENTRYPOINTS`);
-    const allowedUsers = this.parseConfigList(`${scopePrefix}_USER_IDS`);
-    const allowedRegions = this.parseConfigList(`${scopePrefix}_REGIONS`);
-
-    if (allowedEntrypoints.size === 0 && allowedUsers.size === 0 && allowedRegions.size === 0) {
-      return false;
-    }
-
-    if (allowedEntrypoints.size > 0 && !allowedEntrypoints.has(params.entrypoint)) {
-      return false;
-    }
-
-    if (allowedUsers.size > 0 && !allowedUsers.has(params.userId)) {
-      return false;
-    }
-
-    const executionRegion = this.resolveExecutionRegion(params.executionRegion);
-    if (allowedRegions.size > 0 && !allowedRegions.has(executionRegion)) {
-      return false;
-    }
-
-    return true;
-  }
-
-  private resolvePipelineVersion(params: {
-    entrypoint: PipelineEntrypoint;
-    userId: string;
-    executionRegion?: string;
-  }): PipelineVersion {
-    const configured = String(this.configService.get<string>('PIPELINE_VERSION', 'v2') || 'v2')
-      .trim()
-      .toLowerCase();
-
-    if (configured === 'v1') {
-      return this.matchesPipelineRoute(params, 'v2') ? 'v2' : 'v1';
-    }
-
-    return this.matchesPipelineRoute(params, 'v1') ? 'v1' : 'v2';
+  private resolvePipelineVersion(): PipelineVersion {
+    // The V1 generation pipeline has been removed; every generation task runs V2.
+    return 'v2';
   }
 
   private async resolveActivePromptBundleIdentity(): Promise<{ id: string; version: number }> {
@@ -2178,12 +2119,10 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
 
   private resolveTaskTimeoutForPipelineVersion(
     rawValue: unknown,
-    pipelineVersion: PipelineVersion,
+    _pipelineVersion: PipelineVersion,
   ): number {
+    // V2 is the only pipeline; always apply the V2 minimum/default floor.
     const resolved = this.resolvePipelineTimeout(rawValue);
-    if (pipelineVersion !== 'v2') {
-      return resolved;
-    }
 
     const configuredDefault = this.timeoutConfigService.resolveCatalogValue('timeout.pipeline.default_s', {
       min: 30,
@@ -2469,8 +2408,6 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   private async requestUpstreamAsyncTask(params: {
     aiEngineBaseUrls: string[];
     endpoint:
-      | '/api/v1/ai/pipeline/run/async'
-      | '/api/v1/ai/pipeline/iterate/async'
       | '/api/v1/ai/pipeline/v2/run/async'
       | '/api/v1/ai/pipeline/v2/iterate/async';
     payload: Record<string, unknown>;
@@ -2495,12 +2432,18 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           axios.post(
             `${aiEngineBaseUrl}${params.endpoint}`,
             params.payload,
-            { timeout: this.getUpstreamRequestTimeoutMs() },
+            {
+              timeout: this.getUpstreamRequestTimeoutMs(),
+              // The AI engine dedupes async submissions by this key (24h TTL),
+              // which makes timeout/5xx retries safe against double-launching.
+              ...(params.taskId
+                ? { headers: { 'X-Idempotency-Key': params.taskId } }
+                : {}),
+            },
           ),
           {
             maxAttempts: 3,
             delayMs: this.getUpstreamRequestRetryDelayMs(),
-            retryOnHttpResponse: false,
             onRetry: async ({ retry, maxRetries, attempt, maxAttempts, error }) => {
               this.emitProgress(
                 params.userId,
@@ -2543,6 +2486,12 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         const handle = response.data as UpstreamAsyncTaskHandle;
         if (!handle?.task_id) {
           throw new Error('AI engine did not return an async task handle');
+        }
+
+        if (handle.deduplicated) {
+          this.logger.log(
+            `Upstream async submission deduplicated by idempotency key (taskId=${params.taskId}, upstreamTaskId=${handle.task_id}, endpoint=${params.endpoint})`,
+          );
         }
 
         if (params.taskId) {
@@ -3637,6 +3586,64 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     return freeRemaining + subscriptionRemaining;
   }
 
+  private async resolveCreateForkSource(
+    userId: string,
+    dto: CreateGameCommand,
+  ): Promise<{ sourceSpec: Record<string, unknown> | null; forkedFrom: string | null; forkDepth: number }> {
+    const fallback = {
+      sourceSpec: null as Record<string, unknown> | null,
+      forkedFrom: null as string | null,
+      forkDepth: 0,
+    };
+    if ((dto.entryMode || '') !== 'fork' || !dto.sourceGameId) {
+      return fallback;
+    }
+
+    try {
+      const sourceGame = await this.prisma.game.findUnique({
+        where: { id: dto.sourceGameId },
+        select: {
+          id: true,
+          authorId: true,
+          status: true,
+          visibility: true,
+          allowFork: true,
+          forkDepth: true,
+        },
+      });
+      if (!sourceGame) {
+        this.logger.warn(`Fork source game ${dto.sourceGameId} not found; creating without source spec`);
+        return fallback;
+      }
+
+      // Mirror fork.service.ts eligibility: the source must be a published,
+      // publicly visible game whose author allows forking, and self-forks are
+      // not treated as forks. Ineligible sources degrade to a plain create.
+      const isForkVisible = sourceGame.status === 'published'
+        && (sourceGame.visibility || 'public') === 'public';
+      if (!isForkVisible || sourceGame.allowFork === false || sourceGame.authorId === userId) {
+        this.logger.warn(`Fork source game ${dto.sourceGameId} is not fork-eligible; creating without source spec`);
+        return fallback;
+      }
+
+      const latestBundle = await Promise.resolve(this.bundleService.getLatestBundle(sourceGame.id))
+        .catch(() => null);
+      const sourceSpec = this.extractBundleGameSpec(latestBundle ? [latestBundle] : []);
+      if (!sourceSpec) {
+        this.logger.warn(`Fork source game ${sourceGame.id} has no usable bundle spec; creating without source spec`);
+      }
+
+      return {
+        sourceSpec,
+        forkedFrom: sourceGame.id,
+        forkDepth: Number(sourceGame.forkDepth ?? 0) + 1,
+      };
+    } catch (error) {
+      this.logger.warn(`Failed to resolve fork source ${dto.sourceGameId}: ${this.extractErrorMessage(error)}`);
+      return fallback;
+    }
+  }
+
   async create(userId: string, dto: CreateGameCommand): Promise<any> {
     try {
       const gameId = randomUUID();
@@ -3650,32 +3657,30 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       const requestedOrientation = this.normalizeRequestedOrientation(dto.orientation)
         ?? this.inferRequestedOrientationFromText(description, title);
       const requestedGenerationTier = this.normalizeRequestedGenerationTier(dto.generationTier) || 'standard';
+      const forkSource = await this.resolveCreateForkSource(userId, dto);
+      const sourceSpec = dto.sourceSpec && Object.keys(dto.sourceSpec).length > 0
+        ? dto.sourceSpec
+        : forkSource.sourceSpec;
       const initialIntentBuild = this.buildCreateIntentBuild({
         title,
         description,
         entryMode: dto.entryMode,
         generationTier: requestedGenerationTier,
-        sourceSpec: dto.sourceSpec ?? null,
+        sourceSpec: sourceSpec ?? null,
       });
       const executionRegion = this.resolveExecutionRegion(dto.regionHint);
-      const pipelineVersion = this.resolvePipelineVersion({
-        entrypoint: 'create',
-        userId,
-        executionRegion,
-      });
+      const pipelineVersion = this.resolvePipelineVersion();
       const timeoutS = this.resolveTaskTimeoutForPipelineVersion(dto.timeoutS, pipelineVersion);
         const runtimeProfileHint = this.inferRuntimeProfileHint(
-          this.resolveRuntimeHintGameType(dto.sourceSpec, null),
+          this.resolveRuntimeHintGameType(sourceSpec, null),
           description,
           dto.title,
         );
       // PR-02: parallelize independent bundle-snapshot and runtime-contract builds
-      const [promptBundleSnapshot, runtimeContract] = pipelineVersion === 'v2'
-        ? await Promise.all([
-            this.buildPromptBundleSnapshot('create', runtimeProfileHint, requestedGenerationTier),
-            this.buildDefaultRuntimeContract('create', runtimeProfileHint, requestedOrientation, requestedGenerationTier),
-          ])
-        : [null, null];
+      const [promptBundleSnapshot, runtimeContract] = await Promise.all([
+        this.buildPromptBundleSnapshot('create', runtimeProfileHint, requestedGenerationTier),
+        this.buildDefaultRuntimeContract('create', runtimeProfileHint, requestedOrientation, requestedGenerationTier),
+      ]);
       const { access, task } = await this.prisma.$transaction(async (tx) => {
         await this.markExpiredSubscriptions(tx, userId);
         const quota = await this.ensureUserQuota(tx, userId);
@@ -3729,7 +3734,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
             lastErrorAt: null,
             title,
             commentCount: 0,
-            forkDepth: 0,
+            forkedFrom: forkSource.forkedFrom,
+            forkDepth: forkSource.forkDepth,
             visibility: 'private',
             canPlay,
             requireSubscription,
@@ -3760,7 +3766,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
               creationSessionId: dto.creationSessionId ?? null,
               entryMode: dto.entryMode ?? null,
               sourceGameId: dto.sourceGameId ?? null,
-              sourceSpec: dto.sourceSpec ?? null,
+              sourceSpec: sourceSpec ?? null,
               intentBuild: initialIntentBuild,
               promptBundleSnapshot: promptBundleSnapshot ?? null,
               runtimeContract: runtimeContract ?? null,
@@ -3836,12 +3842,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           task.id,
           executionRegion,
           {
-            pipelineVersion,
             title,
             orientation: requestedOrientation,
             generationTier: requestedGenerationTier,
             access,
-            sourceSpec: dto.sourceSpec ?? null,
+            sourceSpec: sourceSpec ?? null,
             creationSessionId: dto.creationSessionId ?? null,
             entryMode: dto.entryMode ?? null,
             sourceGameId: dto.sourceGameId ?? null,
@@ -4009,7 +4014,6 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         task.id,
         task.region || undefined,
         {
-          pipelineVersion: metadata.pipelineVersion === 'v1' ? 'v1' : 'v2',
           title: String(metadata.title || task.game?.title || '').trim() || undefined,
           orientation: this.normalizeRequestedOrientation(metadata.orientation),
           generationTier: this.normalizeRequestedGenerationTier(metadata.generationTier) || 'standard',
@@ -4069,7 +4073,6 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         task.id,
         task.region || undefined,
         {
-          pipelineVersion: metadata.pipelineVersion === 'v1' ? 'v1' : 'v2',
           promptBundleSnapshot: this.extractTaskMetadataObject<PromptBundleSnapshotPayload>(metadata, 'promptBundleSnapshot'),
           runtimeContract: this.extractTaskMetadataObject<RuntimeContractPayload>(metadata, 'runtimeContract'),
           orientation: this.normalizeRequestedOrientation(metadata.orientation),
@@ -4919,76 +4922,59 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     const resolvedTimeoutS = this.resolvePipelineTimeout(timeoutS);
     const aiEngineBaseUrls = await this.resolveAiEngineEndpointCandidates(executionRegion);
     const resolvedRegion = this.resolveExecutionRegion(executionRegion);
-    const pipelineVersion = options.pipelineVersion === 'v1' ? 'v1' : 'v2';
     const normalizedTitle = this.normalizeOptionalString(options.title);
 
     if (taskId) {
       await this.generationTaskService.markRunning(taskId);
     }
 
-    const resolvedSourceSpec = pipelineVersion === 'v2'
-      ? await this.ensureCreateSourceSpec({
-        gameId,
-        userId,
-        description,
-        taskId,
-        executionRegion: resolvedRegion,
-        title: normalizedTitle,
-        generationTier,
-        entryMode: options.entryMode,
-        sourceSpec: options.sourceSpec,
-      })
-      : (options.sourceSpec ?? null);
+    const resolvedSourceSpec = await this.ensureCreateSourceSpec({
+      gameId,
+      userId,
+      description,
+      taskId,
+      executionRegion: resolvedRegion,
+      title: normalizedTitle,
+      generationTier,
+      entryMode: options.entryMode,
+      sourceSpec: options.sourceSpec,
+    });
     const runtimeProfileHint = this.inferRuntimeProfileHint(
       this.resolveRuntimeHintGameType(resolvedSourceSpec, null),
       description,
       normalizedTitle,
     );
     // PR-02: parallelize bundle-snapshot and runtime-contract builds for create-path launch
-    const [promptBundleSnapshot, runtimeContract] = pipelineVersion === 'v2'
-      ? await Promise.all([
-          options.promptBundleSnapshot
-            ? Promise.resolve(options.promptBundleSnapshot)
-            : this.buildPromptBundleSnapshot('create', runtimeProfileHint, generationTier),
-          options.runtimeContract
-            ? Promise.resolve(options.runtimeContract)
-            : this.buildDefaultRuntimeContract('create', runtimeProfileHint, options.orientation, generationTier),
-        ])
-      : [null, null];
+    const [promptBundleSnapshot, runtimeContract] = await Promise.all([
+      options.promptBundleSnapshot
+        ? Promise.resolve(options.promptBundleSnapshot)
+        : this.buildPromptBundleSnapshot('create', runtimeProfileHint, generationTier),
+      options.runtimeContract
+        ? Promise.resolve(options.runtimeContract)
+        : this.buildDefaultRuntimeContract('create', runtimeProfileHint, options.orientation, generationTier),
+    ]);
 
     const handle = await this.requestUpstreamAsyncTask({
       aiEngineBaseUrls,
-      endpoint: pipelineVersion === 'v2'
-        ? '/api/v1/ai/pipeline/v2/run/async'
-        : '/api/v1/ai/pipeline/run/async',
-      payload: pipelineVersion === 'v2'
-        ? this.buildCreateV2Payload({
-          gameId,
-          userId,
-          title: options.title,
-          description,
-          executionRegion: resolvedRegion,
-          timeoutS: resolvedTimeoutS,
-          taskId,
-          orientation: options.orientation,
-          generationTier,
-          access: options.access,
-          sourceSpec: resolvedSourceSpec,
-          creationSessionId: options.creationSessionId,
-          entryMode: options.entryMode,
-          sourceGameId: options.sourceGameId,
-          promptBundleSnapshot: promptBundleSnapshot!,
-          runtimeContract: runtimeContract!,
-        })
-        : {
-          game_id: gameId,
-          description,
-          user_id: userId,
-          platform: 'wechat_webview',
-          region: resolvedRegion,
-          timeout_s: resolvedTimeoutS,
-          task_id: taskId,
-        },
+      endpoint: '/api/v1/ai/pipeline/v2/run/async',
+      payload: this.buildCreateV2Payload({
+        gameId,
+        userId,
+        title: options.title,
+        description,
+        executionRegion: resolvedRegion,
+        timeoutS: resolvedTimeoutS,
+        taskId,
+        orientation: options.orientation,
+        generationTier,
+        access: options.access,
+        sourceSpec: resolvedSourceSpec,
+        creationSessionId: options.creationSessionId,
+        entryMode: options.entryMode,
+        sourceGameId: options.sourceGameId,
+        promptBundleSnapshot: promptBundleSnapshot!,
+        runtimeContract: runtimeContract!,
+      }),
       taskId,
       userId,
       gameId,
@@ -5024,22 +5010,19 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     const resolvedTimeoutS = this.resolvePipelineTimeout(timeoutS);
     const aiEngineBaseUrls = await this.resolveAiEngineEndpointCandidates(executionRegion);
     const resolvedRegion = this.resolveExecutionRegion(executionRegion);
-    const pipelineVersion = options.pipelineVersion === 'v1' ? 'v1' : 'v2';
     const runtimeProfileHint = this.inferRuntimeProfileHint(
       this.resolveRuntimeHintGameType(options.sourceSpec, options.game),
       feedback,
     );
     // PR-02: parallelize bundle-snapshot and runtime-contract builds for iterate-path launch
-    const [promptBundleSnapshot, runtimeContract] = pipelineVersion === 'v2'
-      ? await Promise.all([
-          options.promptBundleSnapshot
-            ? Promise.resolve(options.promptBundleSnapshot)
-            : this.buildPromptBundleSnapshot('iterate', runtimeProfileHint, generationTier),
-          options.runtimeContract
-            ? Promise.resolve(options.runtimeContract)
-            : this.buildDefaultRuntimeContract('iterate', runtimeProfileHint, options.orientation, generationTier),
-        ])
-      : [null, null];
+    const [promptBundleSnapshot, runtimeContract] = await Promise.all([
+      options.promptBundleSnapshot
+        ? Promise.resolve(options.promptBundleSnapshot)
+        : this.buildPromptBundleSnapshot('iterate', runtimeProfileHint, generationTier),
+      options.runtimeContract
+        ? Promise.resolve(options.runtimeContract)
+        : this.buildDefaultRuntimeContract('iterate', runtimeProfileHint, options.orientation, generationTier),
+    ]);
 
     if (taskId) {
       await this.generationTaskService.markRunning(taskId);
@@ -5047,37 +5030,24 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
 
     const handle = await this.requestUpstreamAsyncTask({
       aiEngineBaseUrls,
-      endpoint: pipelineVersion === 'v2'
-        ? '/api/v1/ai/pipeline/v2/iterate/async'
-        : '/api/v1/ai/pipeline/iterate/async',
-      payload: pipelineVersion === 'v2'
-        ? this.buildIterateV2Payload({
-          gameId,
-          userId,
-          feedback,
-          conversationHistory,
-          currentCode,
-          executionRegion: resolvedRegion,
-          timeoutS: resolvedTimeoutS,
-          taskId,
-          game: options.game,
-          orientation: options.orientation,
-          generationTier,
-          sourceSpec: options.sourceSpec,
-          sourceBundleContext: options.sourceBundleContext,
-          promptBundleSnapshot: promptBundleSnapshot!,
-          runtimeContract: runtimeContract!,
-        })
-        : {
-          game_id: gameId,
-          feedback,
-          user_id: userId,
-          conversation: conversationHistory,
-          current_code: currentCode,
-          region: resolvedRegion,
-          timeout_s: resolvedTimeoutS,
-          task_id: taskId,
-        },
+      endpoint: '/api/v1/ai/pipeline/v2/iterate/async',
+      payload: this.buildIterateV2Payload({
+        gameId,
+        userId,
+        feedback,
+        conversationHistory,
+        currentCode,
+        executionRegion: resolvedRegion,
+        timeoutS: resolvedTimeoutS,
+        taskId,
+        game: options.game,
+        orientation: options.orientation,
+        generationTier,
+        sourceSpec: options.sourceSpec,
+        sourceBundleContext: options.sourceBundleContext,
+        promptBundleSnapshot: promptBundleSnapshot!,
+        runtimeContract: runtimeContract!,
+      }),
       taskId,
       userId,
       gameId,
@@ -6192,30 +6162,24 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       const latestTask = await Promise.resolve(this.generationTaskService.getLatestTaskForGame(id, userId))
         .catch(() => null);
       const executionRegion = this.resolveExecutionRegion(dto.regionHint || latestTask?.region);
-      const pipelineVersion = this.resolvePipelineVersion({
-        entrypoint: 'iterate',
-        userId,
-        executionRegion,
-      });
+      const pipelineVersion = this.resolvePipelineVersion();
       const timeoutS = this.resolveTaskTimeoutForPipelineVersion(dto.timeoutS, pipelineVersion);
       const runtimeHintGameType = this.resolveRuntimeHintGameType(sourceSpec, game);
       // PR-02: parallelize bundle-snapshot and runtime-contract builds for iterate entrypoint
       const iterateRuntimeProfileHint = this.inferRuntimeProfileHint(runtimeHintGameType, dto.feedback);
-      const [promptBundleSnapshot, runtimeContract] = pipelineVersion === 'v2'
-        ? await Promise.all([
-            this.buildPromptBundleSnapshot(
-              'iterate',
-              iterateRuntimeProfileHint,
-              requestedGenerationTier,
-            ),
-            this.buildDefaultRuntimeContract(
-              'iterate',
-              iterateRuntimeProfileHint,
-              requestedOrientation,
-              requestedGenerationTier,
-            ),
-          ])
-        : [null, null];
+      const [promptBundleSnapshot, runtimeContract] = await Promise.all([
+        this.buildPromptBundleSnapshot(
+          'iterate',
+          iterateRuntimeProfileHint,
+          requestedGenerationTier,
+        ),
+        this.buildDefaultRuntimeContract(
+          'iterate',
+          iterateRuntimeProfileHint,
+          requestedOrientation,
+          requestedGenerationTier,
+        ),
+      ]);
       const baseStatus = this.getIterationBaseStatus(null, game);
       const inFlightStatus = this.getInFlightIterationStatus(baseStatus);
 
@@ -6310,7 +6274,6 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           task.id,
           executionRegion,
           {
-            pipelineVersion,
             promptBundleSnapshot,
             runtimeContract,
             orientation: requestedOrientation,

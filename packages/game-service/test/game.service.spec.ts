@@ -355,7 +355,7 @@ describe('GameService', () => {
     jest.useRealTimers();
   });
 
-  it('does not retry async task creation on upstream 504 and persists structured failure context', async () => {
+  it('retries async task creation on upstream 504 until attempts are exhausted and persists structured failure context', async () => {
     prisma.game.findUnique.mockResolvedValue({
       id: 'game-504',
       authorId: 'user-504',
@@ -381,7 +381,7 @@ describe('GameService', () => {
 
     await (service as any).executePipelineTask('game-504', 'user-504', 'make a runner');
 
-    expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+    expect(mockedAxios.post).toHaveBeenCalledTimes(3);
     expect(prisma.userSubscription.updateMany).toHaveBeenCalledWith({
       where: {
         id: 'sub-504',
@@ -533,6 +533,118 @@ describe('GameService', () => {
         }),
       },
     });
+  });
+
+  it('sends the generation task id as the X-Idempotency-Key header on async submissions', async () => {
+    mockedAxios.post.mockResolvedValueOnce({
+      data: {
+        task_id: 'upstream-idem',
+        status: 'queued',
+      },
+    } as any);
+
+    await (service as any).requestUpstreamAsyncTask({
+      aiEngineBaseUrls: ['http://ai-engine.test'],
+      endpoint: '/api/v1/ai/pipeline/v2/run/async',
+      payload: { game_id: 'game-idem' },
+      taskId: 'task-idem',
+      userId: 'user-idem',
+      gameId: 'game-idem',
+    });
+
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      'http://ai-engine.test/api/v1/ai/pipeline/v2/run/async',
+      { game_id: 'game-idem' },
+      expect.objectContaining({
+        headers: { 'X-Idempotency-Key': 'task-idem' },
+      }),
+    );
+  });
+
+  it('retries async submissions after an upstream timeout (ECONNABORTED) and succeeds', async () => {
+    mockedAxios.post
+      .mockRejectedValueOnce({
+        code: 'ECONNABORTED',
+        message: 'timeout of 30000ms exceeded',
+      })
+      .mockResolvedValueOnce({
+        data: {
+          task_id: 'upstream-timeout-retry',
+          status: 'queued',
+          deduplicated: true,
+        },
+      } as any);
+
+    const handle = await (service as any).requestUpstreamAsyncTask({
+      aiEngineBaseUrls: ['http://ai-engine.test'],
+      endpoint: '/api/v1/ai/pipeline/v2/run/async',
+      payload: { game_id: 'game-timeout-retry' },
+      taskId: 'task-timeout-retry',
+      userId: 'user-timeout-retry',
+      gameId: 'game-timeout-retry',
+    });
+
+    expect(handle).toEqual(expect.objectContaining({
+      task_id: 'upstream-timeout-retry',
+      aiEngineBaseUrl: 'http://ai-engine.test',
+    }));
+    expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+    expect(mockedAxios.post).toHaveBeenNthCalledWith(
+      2,
+      'http://ai-engine.test/api/v1/ai/pipeline/v2/run/async',
+      { game_id: 'game-timeout-retry' },
+      expect.objectContaining({
+        headers: { 'X-Idempotency-Key': 'task-timeout-retry' },
+      }),
+    );
+  });
+
+  it('retries async submissions on HTTP 5xx responses', async () => {
+    mockedAxios.post
+      .mockRejectedValueOnce({
+        message: 'Request failed with status code 503',
+        response: { status: 503 },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          task_id: 'upstream-5xx-retry',
+          status: 'queued',
+        },
+      } as any);
+
+    const handle = await (service as any).requestUpstreamAsyncTask({
+      aiEngineBaseUrls: ['http://ai-engine.test'],
+      endpoint: '/api/v1/ai/pipeline/v2/run/async',
+      payload: { game_id: 'game-5xx-retry' },
+      taskId: 'task-5xx-retry',
+      userId: 'user-5xx-retry',
+      gameId: 'game-5xx-retry',
+    });
+
+    expect(handle).toEqual(expect.objectContaining({
+      task_id: 'upstream-5xx-retry',
+    }));
+    expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry async submissions on HTTP 400 responses', async () => {
+    mockedAxios.post.mockRejectedValue({
+      message: 'Request failed with status code 400',
+      response: { status: 400 },
+    });
+
+    await expect((service as any).requestUpstreamAsyncTask({
+      aiEngineBaseUrls: ['http://ai-engine.test'],
+      endpoint: '/api/v1/ai/pipeline/v2/run/async',
+      payload: { game_id: 'game-400' },
+      taskId: 'task-400',
+      userId: 'user-400',
+      gameId: 'game-400',
+    })).rejects.toEqual(expect.objectContaining({
+      response: { status: 400 },
+    }));
+
+    expect(mockedAxios.post).toHaveBeenCalledTimes(1);
   });
 
   it('biases classroom and quiz prompts toward the grid puzzle runtime profile', () => {
@@ -1059,6 +1171,163 @@ describe('GameService', () => {
     }));
   });
 
+  describe('fork creates', () => {
+    const setupCreateQuota = (userId: string, gameId: string) => {
+      generationQueueService.enqueueJob.mockResolvedValue(true);
+      prisma.userSubscription.updateMany.mockResolvedValue({ count: 0 });
+      prisma.userQuota.upsert.mockResolvedValue({
+        userId,
+        totalFreeQuota: 5,
+        usedFreeQuota: 0,
+      });
+      prisma.userSubscription.findFirst.mockResolvedValue(null);
+      prisma.userQuota.update.mockResolvedValue({
+        userId,
+        totalFreeQuota: 5,
+        usedFreeQuota: 1,
+      });
+      prisma.game.create.mockResolvedValue({ id: gameId });
+    };
+
+    it('fills sourceSpec from the source game bundle and records forkedFrom', async () => {
+      setupCreateQuota('user-fork', 'game-fork');
+      prisma.game.findUnique.mockResolvedValue({
+        id: 'source-game-1',
+        authorId: 'author-src',
+        status: 'published',
+        visibility: 'public',
+        allowFork: true,
+        forkDepth: 0,
+      });
+      bundleService.getLatestBundle.mockResolvedValue({
+        gameId: 'source-game-1',
+        version: 3,
+        htmlCode: '<html>source</html>',
+        metadata: {
+          gameSpec: {
+            game_type: 'runner',
+            intent_summary: 'Original runner gameplay',
+          },
+        },
+      });
+
+      await service.create('user-fork', {
+        description: 'remix this runner with lava',
+        entryMode: 'fork',
+        sourceGameId: 'source-game-1',
+      } as any);
+
+      expect(prisma.game.findUnique).toHaveBeenCalledWith(expect.objectContaining({
+        where: { id: 'source-game-1' },
+      }));
+      expect(bundleService.getLatestBundle).toHaveBeenCalledWith('source-game-1');
+      expect(prisma.game.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          forkedFrom: 'source-game-1',
+          forkDepth: 1,
+        }),
+      });
+      expect(generationTaskService.createTask).toHaveBeenCalledWith(expect.objectContaining({
+        metadata: expect.objectContaining({
+          entryMode: 'fork',
+          sourceGameId: 'source-game-1',
+          sourceSpec: expect.objectContaining({
+            game_type: 'runner',
+            intent_summary: 'Original runner gameplay',
+          }),
+          intentBuild: expect.objectContaining({
+            frozenSpec: expect.objectContaining({
+              game_type: 'runner',
+            }),
+          }),
+        }),
+      }));
+    });
+
+    it('degrades to a description-only create when the source game has no bundle spec', async () => {
+      setupCreateQuota('user-fork-nobundle', 'game-fork-nobundle');
+      prisma.game.findUnique.mockResolvedValue({
+        id: 'source-game-2',
+        authorId: 'author-src',
+        status: 'published',
+        visibility: 'public',
+        allowFork: true,
+        forkDepth: 2,
+      });
+      bundleService.getLatestBundle.mockResolvedValue(null);
+
+      await service.create('user-fork-nobundle', {
+        description: 'remix a game without bundle',
+        entryMode: 'fork',
+        sourceGameId: 'source-game-2',
+      } as any);
+
+      expect(prisma.game.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          forkedFrom: 'source-game-2',
+          forkDepth: 3,
+        }),
+      });
+      expect(generationTaskService.createTask).toHaveBeenCalledWith(expect.objectContaining({
+        metadata: expect.objectContaining({
+          entryMode: 'fork',
+          sourceGameId: 'source-game-2',
+          sourceSpec: null,
+        }),
+      }));
+    });
+
+    it('skips fork lineage when the source game does not exist', async () => {
+      setupCreateQuota('user-fork-missing', 'game-fork-missing');
+      prisma.game.findUnique.mockResolvedValue(null);
+
+      await service.create('user-fork-missing', {
+        description: 'remix a deleted game',
+        entryMode: 'fork',
+        sourceGameId: 'source-game-missing',
+      } as any);
+
+      expect(bundleService.getLatestBundle).not.toHaveBeenCalled();
+      expect(prisma.game.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          forkedFrom: null,
+          forkDepth: 0,
+        }),
+      });
+      expect(generationTaskService.createTask).toHaveBeenCalledWith(expect.objectContaining({
+        metadata: expect.objectContaining({
+          sourceSpec: null,
+        }),
+      }));
+    });
+
+    it('skips fork lineage when the source game forbids forking', async () => {
+      setupCreateQuota('user-fork-blocked', 'game-fork-blocked');
+      prisma.game.findUnique.mockResolvedValue({
+        id: 'source-game-3',
+        authorId: 'author-src',
+        status: 'published',
+        visibility: 'public',
+        allowFork: false,
+        forkDepth: 0,
+      });
+
+      await service.create('user-fork-blocked', {
+        description: 'remix a fork-locked game',
+        entryMode: 'fork',
+        sourceGameId: 'source-game-3',
+      } as any);
+
+      expect(bundleService.getLatestBundle).not.toHaveBeenCalled();
+      expect(prisma.game.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          forkedFrom: null,
+          forkDepth: 0,
+        }),
+      });
+    });
+  });
+
   it('passes the requested landscape orientation into v2 creation tasks', async () => {
     (configService.get as jest.Mock).mockImplementation((key: string, defaultValue?: string) => {
       const values: Record<string, string> = {
@@ -1430,92 +1699,6 @@ describe('GameService', () => {
       expect.any(String),
       expect.any(Object),
     );
-    executePipelineTaskSpy.mockRestore();
-  });
-
-  it('allows scoped v2 rollout when the global pipeline version is v1', async () => {
-    (configService.get as jest.Mock).mockImplementation((key: string, defaultValue?: string) => {
-      const values: Record<string, string> = {
-        AI_ENGINE_URL: 'http://ai-engine.test',
-        PUBLIC_API_BASE_URL: 'https://gamevallies.com',
-        APP_URL: 'https://gamevallies.com',
-        ADMIN_TOKEN: 'test-admin-token',
-        PIPELINE_VERSION: 'v1',
-        PIPELINE_V2_ENTRYPOINTS: 'create',
-        PIPELINE_V2_USER_IDS: 'user-canary',
-      };
-      return values[key] ?? defaultValue;
-    });
-    const executePipelineTaskSpy = jest
-      .spyOn(service as any, 'executePipelineTask')
-      .mockResolvedValue(undefined);
-
-    prisma.userSubscription.updateMany.mockResolvedValue({ count: 0 });
-    prisma.userQuota.upsert.mockResolvedValue({
-      userId: 'user-canary',
-      totalFreeQuota: 5,
-      usedFreeQuota: 0,
-    });
-    prisma.userSubscription.findFirst.mockResolvedValue(null);
-    prisma.userQuota.update.mockResolvedValue({
-      userId: 'user-canary',
-      totalFreeQuota: 5,
-      usedFreeQuota: 1,
-    });
-    prisma.game.create.mockResolvedValue({ id: 'game-canary' });
-
-    await service.create('user-canary', {
-      description: 'make a canary game',
-    } as any);
-
-    expect(generationTaskService.createTask).toHaveBeenCalledWith(expect.objectContaining({
-      pipelineVersion: 'v2',
-    }));
-
-    await new Promise((resolve) => setImmediate(resolve));
-    executePipelineTaskSpy.mockRestore();
-  });
-
-  it('allows scoped v1 rollback when the global pipeline version is v2', async () => {
-    (configService.get as jest.Mock).mockImplementation((key: string, defaultValue?: string) => {
-      const values: Record<string, string> = {
-        AI_ENGINE_URL: 'http://ai-engine.test',
-        PUBLIC_API_BASE_URL: 'https://gamevallies.com',
-        APP_URL: 'https://gamevallies.com',
-        ADMIN_TOKEN: 'test-admin-token',
-        PIPELINE_VERSION: 'v2',
-        PIPELINE_V1_ENTRYPOINTS: 'create',
-        PIPELINE_V1_USER_IDS: 'user-rollback',
-      };
-      return values[key] ?? defaultValue;
-    });
-    const executePipelineTaskSpy = jest
-      .spyOn(service as any, 'executePipelineTask')
-      .mockResolvedValue(undefined);
-
-    prisma.userSubscription.updateMany.mockResolvedValue({ count: 0 });
-    prisma.userQuota.upsert.mockResolvedValue({
-      userId: 'user-rollback',
-      totalFreeQuota: 5,
-      usedFreeQuota: 0,
-    });
-    prisma.userSubscription.findFirst.mockResolvedValue(null);
-    prisma.userQuota.update.mockResolvedValue({
-      userId: 'user-rollback',
-      totalFreeQuota: 5,
-      usedFreeQuota: 1,
-    });
-    prisma.game.create.mockResolvedValue({ id: 'game-rollback' });
-
-    await service.create('user-rollback', {
-      description: 'make a rollback game',
-    } as any);
-
-    expect(generationTaskService.createTask).toHaveBeenCalledWith(expect.objectContaining({
-      pipelineVersion: 'v1',
-    }));
-
-    await new Promise((resolve) => setImmediate(resolve));
     executePipelineTaskSpy.mockRestore();
   });
 
