@@ -886,13 +886,9 @@ function renderRouteReadiness(readiness) {
   return `<div style="margin-top:8px"><span class="llm-table-badge" style="${stateMeta.style}">${escHtml(stateMeta.label)}</span></div><div class="llm-row-sub">${escHtml(detailParts.join('；'))}</div>`;
 }
 
-function readMultiSelectValues(selectId) {
+function readSelectValue(selectId) {
   const select = document.getElementById(selectId);
-  if (!select) return [];
-  return Array.from(select.selectedOptions || [])
-    .map(option => option.value || '')
-    .map(value => value.trim())
-    .filter(Boolean);
+  return (select?.value || '').trim();
 }
 
 function renderRouteTopSummary() {
@@ -1005,20 +1001,25 @@ function renderRouteTable() {
         `<option value="${escAttr(provider.id)}" ${provider.id === route.providerId ? 'selected' : ''}>${escHtml(provider.name)} · ${escHtml(provider.model)}${provider.fastModel ? ' / fast ' + escHtml(provider.fastModel) : ''}</option>`
       )));
       const fallbackProviderIds = Array.isArray(route.fallbackProviderIds) ? route.fallbackProviderIds : [];
-      if (fallbackProviderIds.length) {
-        fallbackProviderIds.forEach(fallbackId => {
-          if (!regionProviders.some(provider => provider.id === fallbackId)) {
-            const fallbackLabel = Array.isArray(route.fallbackProviders)
-              ? route.fallbackProviders.find(provider => provider.id === fallbackId)?.name
-              : null;
-            fallbackOptions.push(
-              `<option value="${escAttr(fallbackId)}" selected>[当前 fallback 但不可用] ${escHtml(fallbackLabel || fallbackId)}</option>`,
-            );
-          }
-        });
+      const selectedFallbackProviderId = fallbackProviderIds.find(providerId => providerId && providerId !== route.providerId) || '';
+      const selectedFallbackProvider = Array.isArray(route.fallbackProviders)
+        ? route.fallbackProviders.find(provider => provider.id === selectedFallbackProviderId)
+        : null;
+      const selectedFallbackSummary = selectedFallbackProviderId
+        ? (selectedFallbackProvider?.name || selectedFallbackProviderId)
+        : '无';
+      const hiddenFallbackCount = Math.max(0, fallbackProviderIds.length - (selectedFallbackProviderId ? 1 : 0));
+      fallbackOptions.push(`<option value="" ${selectedFallbackProviderId ? '' : 'selected'}>不设置 fallback LLM</option>`);
+      if (selectedFallbackProviderId && !regionProviders.some(provider => provider.id === selectedFallbackProviderId)) {
+        const fallbackLabel = Array.isArray(route.fallbackProviders)
+          ? route.fallbackProviders.find(provider => provider.id === selectedFallbackProviderId)?.name
+          : null;
+        fallbackOptions.push(
+          `<option value="${escAttr(selectedFallbackProviderId)}" selected>[当前 fallback 但不可用] ${escHtml(fallbackLabel || selectedFallbackProviderId)}</option>`,
+        );
       }
-      fallbackOptions.push(...regionProviders.map(provider => (
-        `<option value="${escAttr(provider.id)}" ${fallbackProviderIds.includes(provider.id) ? 'selected' : ''}>${escHtml(provider.name)} · ${escHtml(provider.model)}${provider.fastModel ? ' / fast ' + escHtml(provider.fastModel) : ''}</option>`
+      fallbackOptions.push(...regionProviders.filter(provider => provider.id !== route.providerId).map(provider => (
+        `<option value="${escAttr(provider.id)}" ${provider.id === selectedFallbackProviderId ? 'selected' : ''}>${escHtml(provider.name)} · ${escHtml(provider.model)}${provider.fastModel ? ' / fast ' + escHtml(provider.fastModel) : ''}</option>`
       )));
       html += `<tr>
         <td>
@@ -1041,12 +1042,13 @@ function renderRouteTable() {
           <select id="llm-route-binding-provider-${escAttr(domKey)}">
             ${providerOptions.join('') || '<option value="">暂无可用 Provider</option>'}
           </select>
-          <div class="llm-row-sub" style="margin-top:6px">显式 Fallback（按顺序生效，可多选）</div>
-          <select id="llm-route-binding-fallback-${escAttr(domKey)}" multiple size="${Math.max(2, Math.min(4, regionProviders.length || 2))}" style="margin-top:6px">
+          <div class="llm-row-sub" style="margin-top:6px">Fallback LLM（可选，最多 1 个）</div>
+          <select id="llm-route-binding-fallback-${escAttr(domKey)}" style="margin-top:6px">
             ${fallbackOptions.join('') || '<option value="">暂无可用 Fallback Provider</option>'}
           </select>
           <div class="llm-row-sub" style="margin-top:6px">Region: ${escHtml(route.executionRegion || currentExecutionRegion || '-')}</div>
-          <div class="llm-row-sub">当前 fallback: ${escHtml(route.fallbackProviderSummary || '无')}</div>
+          <div class="llm-row-sub">当前 fallback: ${escHtml(selectedFallbackSummary)}</div>
+          ${hiddenFallbackCount ? `<div class="llm-row-sub" style="color:#92400e">已隐藏 ${escHtml(String(hiddenFallbackCount))} 个历史 fallback；保存后只保留当前选择</div>` : ''}
           <div class="llm-row-sub">解析来源: ${escHtml(route.routeMatchStrategy || 'none')}${route.matchedStepKey ? ` · ${escHtml(route.matchedStepKey)}` : ''}</div>
         </td>
         <td>
@@ -1073,8 +1075,10 @@ async function saveRouteBinding(stepKey) {
   }
   const domKey = stepKey.replace(/[^a-zA-Z0-9_-]/g, '-');
   const providerId = document.getElementById(`llm-route-binding-provider-${domKey}`)?.value || '';
-  const fallbackProviderIds = readMultiSelectValues(`llm-route-binding-fallback-${domKey}`)
-    .filter(value => value && value !== providerId);
+  const fallbackProviderId = readSelectValue(`llm-route-binding-fallback-${domKey}`);
+  const fallbackProviderIds = fallbackProviderId && fallbackProviderId !== providerId
+    ? [fallbackProviderId]
+    : [];
   const enabled = document.getElementById(`llm-route-binding-enabled-${domKey}`)?.checked !== false;
   if (!providerId) {
     toast('请先选择 Provider', 'error');
