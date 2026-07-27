@@ -12,3 +12,6 @@ anthropic==0.40.0
 pymysql==1.1.1
 playwright==1.43.0
 esprima==4.0.1
+
+# Test-only dependencies (no separate dev requirements file exists)
+fakeredis==2.23.2
