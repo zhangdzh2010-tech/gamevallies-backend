@@ -171,9 +171,9 @@ All 5 games are **complete, playable, and production-ready**:
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/api/v1/ai/parse-intent` | POST | Parse natural language → GameSpec |
-| `/api/v1/ai/generate-code` | POST | Generate game code |
-| `/api/v1/ai/iterate` | POST | Iterate with feedback |
-| `/api/v1/ai/qa-check` | POST | Validate code |
+| `/api/v1/ai/pipeline/v2/run/async` | POST | Create async generation task (v2 pipeline) |
+| `/api/v1/ai/pipeline/v2/iterate/async` | POST | Create async iteration task |
+| `/api/v1/ai/tasks/{task_id}` | GET | Query async task status/result |
 
 ### Status & Health
 | Endpoint | Method | Purpose |

@@ -24,7 +24,7 @@ from src.api.models import (
     VisualStyle,
 )
 from src.api.endpoints import generate as generate_api
-from src.engine.pipeline_orchestrator import PipelineExecutionError
+from src.engine.pipeline_errors import PipelineExecutionError
 from src.main import app
 from src.services.async_task_manager import AsyncTaskManager, task_manager
 from src.services.task_memory import task_memory
@@ -100,18 +100,6 @@ def _resolve_test_prompt_bundle(snapshot, runtime_profile=None):
 @contextmanager
 def patch_v2_prompt_defaults():
     with ExitStack() as stack:
-        stack.enter_context(
-            patch(
-                "src.api.endpoints.generate._default_v2_prompt_bundle_snapshot",
-                return_value=TEST_V2_PROMPT_BUNDLE_SNAPSHOT,
-            )
-        )
-        stack.enter_context(
-            patch(
-                "src.api.endpoints.generate._default_v2_runtime_contract",
-                return_value=TEST_V2_RUNTIME_CONTRACT,
-            )
-        )
         stack.enter_context(
             patch(
                 "src.api.endpoints.generate.resolve_prompt_bundle_snapshot",
@@ -258,7 +246,7 @@ class TestAsyncTaskApi(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_run_pipeline_async_returns_task_handle_and_result(self):
+    def test_run_pipeline_v2_async_returns_task_handle_and_result(self):
         fake_result = RunPipelineResponse(
             game_id="game-async",
             html_code="<!DOCTYPE html><html></html>",
@@ -280,10 +268,10 @@ class TestAsyncTaskApi(unittest.TestCase):
         ) as mock_run:
             with TestClient(app) as client:
                 response = client.post(
-                    "/api/v1/ai/pipeline/run/async",
+                    "/api/v1/ai/pipeline/v2/run/async",
                     json={
                         "game_id": "game-async",
-                        "description": "make a runner game",
+                        "raw_user_input": "make a runner game",
                         "user_id": "user-async",
                         "timeout_s": 120,
                     },
@@ -309,7 +297,7 @@ class TestAsyncTaskApi(unittest.TestCase):
         self.assertEqual(mock_run.await_args.args[0].raw_user_input, "make a runner game")
         self.assertEqual(mock_run.await_args.args[0].request_context.entrypoint, "create")
 
-    def test_sync_pipeline_run_accepts_timeout_override(self):
+    def test_sync_pipeline_v2_run_accepts_timeout_override(self):
         fake_result = RunPipelineResponse(
             game_id="game-sync",
             html_code="<!DOCTYPE html><html></html>",
@@ -331,10 +319,10 @@ class TestAsyncTaskApi(unittest.TestCase):
         ) as mock_run:
             with TestClient(app) as client:
                 response = client.post(
-                    "/api/v1/ai/pipeline/run",
+                    "/api/v1/ai/pipeline/v2/run",
                     json={
                         "game_id": "game-sync",
-                        "description": "make a runner game",
+                        "raw_user_input": "make a runner game",
                         "user_id": "user-sync",
                         "timeout_s": 150,
                     },
@@ -347,117 +335,6 @@ class TestAsyncTaskApi(unittest.TestCase):
         self.assertEqual(mock_run.await_args.args[0].timeout_s, 150)
         self.assertEqual(mock_run.await_args.args[0].raw_user_input, "make a runner game")
         self.assertEqual(mock_run.await_args.args[0].request_context.entrypoint, "create")
-
-    def test_pipeline_iterate_upgrades_legacy_request_to_v2(self):
-        fake_result = IterateResponse(
-            html_code="<!DOCTYPE html><html></html>",
-            changes=["Applied: make it faster"],
-            iteration_type="element_change",
-            generation_time_ms=432,
-            qa_retries=0,
-            iteration_retries=0,
-            pipeline_version="v2",
-            primary_artifact_id="artifact-iter-1",
-        )
-
-        with patch_v2_prompt_defaults(), patch(
-            "src.api.endpoints.generate._run_iteration_v2_internal",
-            new=AsyncMock(return_value=fake_result),
-        ) as mock_run:
-            with TestClient(app) as client:
-                response = client.post(
-                    "/api/v1/ai/pipeline/iterate",
-                    json={
-                        "game_id": "game-iter",
-                        "feedback": "make it faster",
-                        "user_id": "user-iter",
-                        "conversation": [{"role": "user", "content": "make it faster"}],
-                        "current_code": "<html>old</html>",
-                        "timeout_s": 180,
-                    },
-                )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["pipeline_version"], "v2")
-        self.assertEqual(response.json()["primary_artifact_id"], "artifact-iter-1")
-        self.assertEqual(mock_run.await_args.args[0].iteration_intent.feedback, "make it faster")
-        self.assertEqual(mock_run.await_args.args[0].current_code, "<html>old</html>")
-        self.assertEqual(mock_run.await_args.args[0].request_context.entrypoint, "iterate")
-
-    def test_generate_code_legacy_routes_through_v2_internal(self):
-        fake_result = RunPipelineResponse(
-            game_id="game-legacy",
-            html_code="<!DOCTYPE html><html></html>",
-            game_spec=GameSpec(game_type="casual"),
-            strategy="llm",
-            qa_passed=True,
-            qa_retries=0,
-            generation_time_ms=567,
-            code_size_bytes=84,
-            quality_score=9.2,
-            quality_breakdown={"qa_penalty": 0},
-            pipeline_version="v2",
-            primary_artifact_id="artifact-legacy-1",
-        )
-
-        with patch_v2_prompt_defaults(), patch(
-            "src.api.endpoints.generate._run_pipeline_v2_internal",
-            new=AsyncMock(return_value=fake_result),
-        ) as mock_run:
-            with TestClient(app) as client:
-                response = client.post(
-                    "/api/v1/ai/generate-code",
-                    json={
-                        "game_id": "game-legacy",
-                        "description": "make a runner game",
-                        "platform": "wechat_webview",
-                        "timeout_s": 200,
-                    },
-                )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["strategy"], "llm")
-        self.assertEqual(mock_run.await_args.args[0].raw_user_input, "make a runner game")
-        self.assertEqual(mock_run.await_args.args[0].request_context.source, "generate_code_legacy")
-
-    def test_run_pipeline_can_bypass_v2_upgrade_when_disabled(self):
-        fake_result = RunPipelineResponse(
-            game_id="game-v1",
-            html_code="<!DOCTYPE html><html></html>",
-            game_spec=GameSpec(game_type="casual"),
-            strategy="llm",
-            qa_passed=True,
-            qa_retries=0,
-            generation_time_ms=321,
-            code_size_bytes=42,
-            quality_score=8.0,
-            quality_breakdown={"qa_penalty": 0},
-        )
-
-        with patch("src.api.endpoints.generate.settings.PIPELINE_UPGRADE_LEGACY_ENDPOINTS_TO_V2", False):
-            with patch(
-                "src.api.endpoints.generate._run_pipeline_internal",
-                new=AsyncMock(return_value=fake_result),
-            ) as mock_v1:
-                with patch(
-                    "src.api.endpoints.generate._run_pipeline_v2_internal",
-                    new=AsyncMock(),
-                ) as mock_v2:
-                    with TestClient(app) as client:
-                        response = client.post(
-                            "/api/v1/ai/pipeline/run",
-                            json={
-                                "game_id": "game-v1",
-                                "description": "make a runner game",
-                                "user_id": "user-v1",
-                                "timeout_s": 90,
-                            },
-                        )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["game_id"], "game-v1")
-        self.assertIsNotNone(mock_v1.await_args)
-        self.assertIsNone(mock_v2.await_args)
 
     def test_async_pipeline_failure_preserves_failure_family_and_primary_artifact(self):
         failure = HTTPException(
@@ -477,10 +354,10 @@ class TestAsyncTaskApi(unittest.TestCase):
         ):
             with TestClient(app) as client:
                 response = client.post(
-                    "/api/v1/ai/pipeline/run/async",
+                    "/api/v1/ai/pipeline/v2/run/async",
                     json={
                         "game_id": "game-fail",
-                        "description": "make a broken game",
+                        "raw_user_input": "make a broken game",
                         "user_id": "user-fail",
                         "timeout_s": 120,
                     },
@@ -511,10 +388,10 @@ class TestAsyncTaskApi(unittest.TestCase):
         ) as relay_stage_summary:
             with TestClient(app) as client:
                 response = client.post(
-                    "/api/v1/ai/pipeline/run/async",
+                    "/api/v1/ai/pipeline/v2/run/async",
                     json={
                         "game_id": "game-cancel-failed",
-                        "description": "make a runner game",
+                        "raw_user_input": "make a runner game",
                         "user_id": "user-cancel-failed",
                         "timeout_s": 120,
                     },
@@ -679,7 +556,7 @@ class TestAsyncTaskApi(unittest.TestCase):
         self.assertIn("KeyError", payload["diagnostics"]["exceptionRepr"])
         self.assertIn("KeyError", payload["diagnostics"]["tracebackExcerpt"])
 
-    def test_v2_internal_uses_runner_instead_of_legacy_internal(self):
+    def test_v2_internal_uses_v2_runner(self):
         request = RunPipelineV2Request(
             game_id="game-v2-internal",
             user_id="user-v2-internal",
@@ -704,18 +581,13 @@ class TestAsyncTaskApi(unittest.TestCase):
             "src.api.endpoints.generate._v2_runner.run",
             new=AsyncMock(return_value=fake_result),
         ) as mock_runner:
-            with patch(
-                "src.api.endpoints.generate._run_pipeline_internal",
-                new=AsyncMock(side_effect=AssertionError("legacy v1 runner should not be used")),
-            ) as mock_legacy:
-                response = asyncio.run(
-                    generate_api._run_pipeline_v2_internal(request, task_id="task-v2-internal")
-                )
+            response = asyncio.run(
+                generate_api._run_pipeline_v2_internal(request, task_id="task-v2-internal")
+            )
 
         self.assertEqual(response.pipeline_version, "v2")
         self.assertEqual(response.runtime_profile, "casual_lane")
         self.assertIsNotNone(mock_runner.await_args)
-        self.assertIsNone(mock_legacy.await_args)
 
     def test_v2_internal_initializes_and_clears_task_memory(self):
         request = RunPipelineV2Request(
@@ -924,7 +796,7 @@ class TestAsyncTaskApi(unittest.TestCase):
         self.assertEqual(capture_cover.await_args.kwargs["visual_pack"], "comic_bounce")
         self.assertEqual(capture_cover.await_args.kwargs["render_style_intensity"], "high")
 
-    def test_v2_iteration_internal_uses_runner_instead_of_legacy_internal(self):
+    def test_v2_iteration_internal_uses_v2_runner(self):
         request = IterateV2Request(
             game_id="game-v2-iter-internal",
             user_id="user-v2-iter-internal",
@@ -949,18 +821,13 @@ class TestAsyncTaskApi(unittest.TestCase):
             "src.api.endpoints.generate._v2_runner.iterate",
             new=AsyncMock(return_value=fake_result),
         ) as mock_runner:
-            with patch(
-                "src.api.endpoints.generate._run_iteration_internal",
-                new=AsyncMock(side_effect=AssertionError("legacy v1 runner should not be used")),
-            ) as mock_legacy:
-                response = asyncio.run(
-                    generate_api._run_iteration_v2_internal(request, task_id="task-v2-iter-internal")
-                )
+            response = asyncio.run(
+                generate_api._run_iteration_v2_internal(request, task_id="task-v2-iter-internal")
+            )
 
         self.assertEqual(response.pipeline_version, "v2")
         self.assertEqual(response.runtime_profile, "casual_lane")
         self.assertIsNotNone(mock_runner.await_args)
-        self.assertIsNone(mock_legacy.await_args)
 
     def test_v2_iteration_internal_passes_updated_cover_context(self):
         request = IterateV2Request(

@@ -4,7 +4,7 @@ from .dialogue_engine import DialogueEngine
 from .game_designer import GameDesigner
 from .code_generator import CodeGenerator
 from .qa_pipeline import QAPipeline
-from .pipeline_orchestrator import PipelineOrchestrator
+from .pipeline_errors import PipelineExecutionError
 
 # P1 additive modules (PR-07 .. PR-12). Import lazily-safe; failure to
 # import any of these should not break the 8-stage pipeline.
@@ -23,5 +23,5 @@ __all__ = [
     "GameDesigner",
     "CodeGenerator",
     "QAPipeline",
-    "PipelineOrchestrator",
+    "PipelineExecutionError",
 ]

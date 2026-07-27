@@ -129,7 +129,7 @@
 #### `src/api/endpoints/__init__.py` (2 lines)
 - Package initialization
 
-#### `src/api/endpoints/generate.py` (280 lines)
+#### `src/api/endpoints/generate.py` (~1700 lines)
 **Game Generation and Iteration Endpoints:**
 
 **4 Main Endpoints:**

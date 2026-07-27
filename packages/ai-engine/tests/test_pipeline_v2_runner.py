@@ -25,7 +25,7 @@ from src.api.models import (
 from src.config.settings import settings
 from src.engine.code_generator import CodeGenerator
 from src.engine.pipeline_v2_runner import V2PipelineRunner
-from src.engine.pipeline_orchestrator import PipelineExecutionError
+from src.engine.pipeline_errors import PipelineExecutionError
 from src.engine.quality_scorer import LLMReviewResult
 
 
