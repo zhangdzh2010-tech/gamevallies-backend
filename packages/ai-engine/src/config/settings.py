@@ -13,8 +13,11 @@ class Settings(BaseSettings):
     # Database (MySQL，game_bundles/game_templates 已迁入 MySQL)
     DATABASE_URL: str = "mysql://gamevallies_user:change_me@localhost:3306/gamevallies"
 
-    # Cache
-    REDIS_URL: str = "redis://localhost:6379"
+    # Cache / async task persistence. Empty (default) keeps the async task
+    # manager purely in-memory; when set, task snapshots and the idempotency
+    # index are persisted to Redis (best effort) so polling survives instance
+    # recycling on VeFaaS.
+    REDIS_URL: str = ""
 
     # LLM Configuration (MiniMax)
     LLM_MODE: Literal["real"] = "real"
@@ -30,8 +33,6 @@ class Settings(BaseSettings):
 
     # Pipeline Configuration
     QA_MAX_RETRIES: int = 3
-    REVIEW_REPAIR_MAX_RETRIES: int = 0
-    REVIEW_REPAIR_MAX_TOKENS: int = 3072
     PIPELINE_TIMEOUT_S: int = 1800
     LLM_LONG_GENERATION_TIMEOUT_S: int = 300
     LLM_LONG_GENERATION_MAX_TOKENS: int = 16384
@@ -46,8 +47,15 @@ class Settings(BaseSettings):
     RUNTIME_QA_TIMEOUT_S: float = 8.0
     RUNTIME_QA_REQUIRED: bool = False
     MAX_ITERATIONS: int = 20
-    PIPELINE_UPGRADE_LEGACY_ENDPOINTS_TO_V2: bool = True
     LLM_CODE_REVIEW_MIN_TIER: Literal["safe", "standard", "showcase"] = "standard"
+    # Quality-gate targeted patch repair (create pipeline): when a candidate
+    # narrowly misses the quality gate, attempt one section-patch fix before
+    # falling back to a full regeneration round. Disable for fast rollback.
+    QUALITY_GATE_PATCH_REPAIR_ENABLED: bool = True
+    # Create-pipeline progress heartbeat during the long logic_generate LLM
+    # call: emits pseudo-progress (60% -> 74%) every ~15s so clients don't
+    # see the bar frozen at 60% for minutes. Disable for fast rollback.
+    GENERATION_PROGRESS_HEARTBEAT_ENABLED: bool = True
 
     # Provider capability governance
     LLM_PROVIDER_VERIFICATION_ENABLED: bool = False

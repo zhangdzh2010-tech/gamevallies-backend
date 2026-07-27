@@ -122,26 +122,26 @@ POST /api/v1/ai/parse-intent
 Input: Natural language description
 Output: Game specification with 85% confidence
 
-**2. Generate Game Code**
+**2. Create Async Generation Task (v2 Pipeline)**
 ```
-POST /api/v1/ai/generate-code
+POST /api/v1/ai/pipeline/v2/run/async
 ```
-Input: GameSpec + optional template ID
-Output: HTML5 game code + metadata
+Input: game_id + user_id + raw_user_input
+Output: Async task handle (task_id, poll_url, ws_channel)
 
-**3. Iterate with Feedback**
+**3. Create Async Iteration Task**
 ```
-POST /api/v1/ai/iterate
+POST /api/v1/ai/pipeline/v2/iterate/async
 ```
-Input: Current code + user feedback
-Output: Modified game code
+Input: game_id + user_id + current_code + iteration_intent
+Output: Async task handle
 
-**4. QA Validation**
+**4. Query / Cancel Async Task**
 ```
-POST /api/v1/ai/qa-check
+GET /api/v1/ai/tasks/{task_id}
+POST /api/v1/ai/tasks/{task_id}/cancel
 ```
-Input: HTML code
-Output: Validation results (errors, warnings, summary)
+Output: Task status, progress events, and final result
 
 ### Health & Status (2 endpoints)
 

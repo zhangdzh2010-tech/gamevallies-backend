@@ -1,5 +1,7 @@
 # PlayForge AI Engine - Setup & Verification Guide
 
+> 注意：本文档部分章节（如 Performance Benchmarks、Customization、游戏模板目录）记录的是早期模板时代的实现，仅供参考；当前架构以 README.md 和 v2 生成流水线为准。
+
 ## Installation
 
 ### Prerequisites
