@@ -645,6 +645,11 @@ class IterateResponse(BaseModel):
     generation_time_ms: int
     qa_retries: int = 0
     iteration_retries: int = 0
+    # Non-blocking post-iteration quality assessment. Same shape as the
+    # create-path RunPipelineResponse fields; None when the assessment is
+    # disabled, times out, or fails (the iteration still succeeds).
+    quality_score: Optional[float] = None
+    quality_breakdown: Optional[Dict[str, Any]] = None
     pipeline_version: Optional[str] = None
     prompt_bundle_id: Optional[str] = None
     prompt_bundle_version: Optional[int] = None

@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     # narrowly misses the quality gate, attempt one section-patch fix before
     # falling back to a full regeneration round. Disable for fast rollback.
     QUALITY_GATE_PATCH_REPAIR_ENABLED: bool = True
+    # Iterate-path non-blocking quality assessment: after all iterate
+    # validations pass, run a fast LLM code review + quality scoring and
+    # attach quality_score/quality_breakdown to the iterate response. Any
+    # failure or timeout only logs a warning and never blocks the iteration.
+    ITERATE_QUALITY_REVIEW_ENABLED: bool = True
     # Create-pipeline progress heartbeat during the long logic_generate LLM
     # call: emits pseudo-progress (60% -> 74%) every ~15s so clients don't
     # see the bar frozen at 60% for minutes. Disable for fast rollback.

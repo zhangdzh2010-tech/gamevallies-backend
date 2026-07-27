@@ -3,6 +3,7 @@
 import asyncio
 import os
 import sys
+from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 import pytest
@@ -26,7 +27,7 @@ from src.config.settings import settings
 from src.engine.code_generator import CodeGenerator
 from src.engine.pipeline_v2_runner import V2PipelineRunner
 from src.engine.pipeline_errors import PipelineExecutionError
-from src.engine.quality_scorer import LLMReviewResult
+from src.engine.quality_scorer import LLMReviewResult, QualityScoreBreakdown
 
 
 def test_function_keyword_is_not_flagged_as_function_constructor():
@@ -2885,3 +2886,197 @@ def test_retryable_generation_error_detects_wrapped_readtimeout():
     exc = RuntimeError("LLM iterate failed: ReadTimeout")
 
     assert V2PipelineRunner._is_retryable_generation_error(exc) is True
+
+
+def _build_iterate_quality_fixtures():
+    request = IterateV2Request(
+        game_id="game-iterate-quality",
+        user_id="user-iterate-quality",
+        current_code="<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas></body></html>",
+        iteration_intent={"feedback": "add more particles", "conversation": []},
+        source_spec=GameSpec(game_type="casual", generation_tier="standard"),
+        source_bundle_context=SourceBundleContext(title="Particle Dash"),
+        runtime_contract=GameRuntimeContract(runtime_profile="casual_arcade"),
+    )
+    spec = GameSpec(
+        game_type="casual",
+        generation_tier="standard",
+        entities=[],
+        special_rules=[],
+    )
+    runtime_contract = GameRuntimeContract(runtime_profile="casual_arcade")
+    qa_success = SimpleNamespace(
+        success=True,
+        code="<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas><script>console.log('ok')</script></body></html>",
+        retries=0,
+        issue_list=None,
+    )
+    runtime_qa = SimpleNamespace(unavailable_reason=None, js_errors=[])
+    return request, spec, runtime_contract, qa_success, runtime_qa
+
+
+def _enter_common_iterate_patches(stack, runner, spec, runtime_contract, qa_success, runtime_qa):
+    stack.enter_context(patch.object(runner, "_build_iteration_spec", new=AsyncMock(return_value=spec)))
+    stack.enter_context(patch.object(runner, "_select_runtime_profile", return_value="casual_arcade"))
+    stack.enter_context(patch.object(runner, "_compose_runtime_contract", return_value=runtime_contract))
+    stack.enter_context(patch.object(runner, "_remember_spec", new=AsyncMock()))
+    stack.enter_context(patch.object(runner, "_remember_runtime_contract", new=AsyncMock()))
+    stack.enter_context(patch.object(runner, "_remember_code", new=AsyncMock()))
+    stack.enter_context(patch(
+        "src.engine.pipeline_v2_runner.task_memory.append_decision",
+        new=AsyncMock(),
+    ))
+    stack.enter_context(patch.object(
+        runner,
+        "_generate_iteration_code",
+        new=AsyncMock(return_value=(
+            "<!DOCTYPE html><html><body>updated</body></html>",
+            IterationType.element_change,
+        )),
+    ))
+    stack.enter_context(patch.object(
+        runner,
+        "_run_contract_and_runtime_flow",
+        new=AsyncMock(return_value=(qa_success, runtime_qa, 0, [])),
+    ))
+
+
+def test_run_iterate_impl_attaches_quality_fields_when_assessment_succeeds():
+    runner = V2PipelineRunner()
+    request, spec, runtime_contract, qa_success, runtime_qa = _build_iterate_quality_fixtures()
+    review = LLMReviewResult(
+        ran=True,
+        is_complete_game=True,
+        has_real_gameplay=True,
+        difficulty_balanced=True,
+        fun_score=8.0,
+        visual_polish_score=7.5,
+        character_quality_score=7.0,
+    )
+    quality = QualityScoreBreakdown(
+        base_score=5.0,
+        qa_penalty=0.0,
+        strategy_bonus=0.0,
+        size_bonus=0.5,
+        retry_penalty=0.0,
+        runtime_bonus=0.6,
+        review_bonus=1.2,
+        gameplay_depth_bonus=0.3,
+        final_score=7.6,
+        details={"review_ran": True, "review_fun_score": 8.0},
+    )
+
+    with ExitStack() as stack:
+        _enter_common_iterate_patches(stack, runner, spec, runtime_contract, qa_success, runtime_qa)
+        mock_review = stack.enter_context(patch.object(
+            runner.code_reviewer,
+            "review",
+            new=AsyncMock(return_value=review),
+        ))
+        mock_compute = stack.enter_context(patch.object(
+            runner.quality_scorer,
+            "compute",
+            return_value=quality,
+        ))
+        response = asyncio.run(
+            runner._run_iterate_impl(
+                request,
+                progress_cb=None,
+                stage_context={"stage": "spec_build"},
+            )
+        )
+
+    assert response.html_code == qa_success.code
+    assert response.quality_score == 7.6
+    assert response.quality_breakdown is not None
+    assert response.quality_breakdown["review_fun_score"] == 8.0
+    assert response.quality_breakdown["review_bonus"] == 1.2
+    assert response.quality_breakdown["runtime_profile"] == "casual_arcade"
+    assert response.quality_breakdown["iteration_type"] == IterationType.element_change.value
+    assert mock_review.await_count == 1
+    assert mock_compute.call_count == 1
+    assert mock_compute.call_args.kwargs["review"] is review
+
+
+def test_run_iterate_impl_succeeds_without_quality_fields_when_review_raises():
+    runner = V2PipelineRunner()
+    request, spec, runtime_contract, qa_success, runtime_qa = _build_iterate_quality_fixtures()
+
+    with ExitStack() as stack:
+        _enter_common_iterate_patches(stack, runner, spec, runtime_contract, qa_success, runtime_qa)
+        stack.enter_context(patch.object(
+            runner.code_reviewer,
+            "review",
+            new=AsyncMock(side_effect=RuntimeError("LLM exploded")),
+        ))
+        mock_compute = stack.enter_context(patch.object(runner.quality_scorer, "compute"))
+        response = asyncio.run(
+            runner._run_iterate_impl(
+                request,
+                progress_cb=None,
+                stage_context={"stage": "spec_build"},
+            )
+        )
+
+    assert response.html_code == qa_success.code
+    assert response.quality_score is None
+    assert response.quality_breakdown is None
+    assert mock_compute.call_count == 0
+
+
+def test_run_iterate_impl_abandons_quality_assessment_on_timeout():
+    runner = V2PipelineRunner()
+    request, spec, runtime_contract, qa_success, runtime_qa = _build_iterate_quality_fixtures()
+
+    async def slow_review(code):
+        await asyncio.sleep(1.0)
+        return LLMReviewResult(ran=True)
+
+    with ExitStack() as stack:
+        _enter_common_iterate_patches(stack, runner, spec, runtime_contract, qa_success, runtime_qa)
+        stack.enter_context(patch.object(runner.code_reviewer, "review", new=slow_review))
+        stack.enter_context(patch(
+            "src.engine.pipeline_v2_runner.get_timeout_float",
+            return_value=0.05,
+        ))
+        mock_compute = stack.enter_context(patch.object(runner.quality_scorer, "compute"))
+        response = asyncio.run(
+            runner._run_iterate_impl(
+                request,
+                progress_cb=None,
+                stage_context={"stage": "spec_build"},
+            )
+        )
+
+    assert response.html_code == qa_success.code
+    assert response.quality_score is None
+    assert response.quality_breakdown is None
+    assert mock_compute.call_count == 0
+
+
+def test_run_iterate_impl_skips_quality_assessment_when_flag_disabled():
+    runner = V2PipelineRunner()
+    request, spec, runtime_contract, qa_success, runtime_qa = _build_iterate_quality_fixtures()
+
+    with ExitStack() as stack:
+        _enter_common_iterate_patches(stack, runner, spec, runtime_contract, qa_success, runtime_qa)
+        stack.enter_context(patch.object(settings, "ITERATE_QUALITY_REVIEW_ENABLED", False))
+        mock_review = stack.enter_context(patch.object(
+            runner.code_reviewer,
+            "review",
+            new=AsyncMock(),
+        ))
+        mock_compute = stack.enter_context(patch.object(runner.quality_scorer, "compute"))
+        response = asyncio.run(
+            runner._run_iterate_impl(
+                request,
+                progress_cb=None,
+                stage_context={"stage": "spec_build"},
+            )
+        )
+
+    assert response.html_code == qa_success.code
+    assert response.quality_score is None
+    assert response.quality_breakdown is None
+    assert mock_review.await_count == 0
+    assert mock_compute.call_count == 0

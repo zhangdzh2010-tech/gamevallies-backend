@@ -111,6 +111,13 @@ GENERATION_PROGRESS_HEARTBEAT_BASE_PCT = 60
 GENERATION_PROGRESS_HEARTBEAT_MAX_PCT = 74
 GENERATION_PROGRESS_HEARTBEAT_EXPECTED_DURATION_S = 150.0
 
+# Iterate-path non-blocking quality assessment: a fast LLM review + quality
+# scoring pass that runs after all iterate validations succeed. It has its
+# own budget (independent of the pipeline timeout) so a slow review can never
+# delay the iterate result for long; on timeout the assessment is abandoned.
+ITERATE_QUALITY_REVIEW_TIMEOUT_KEY = "timeout.pipeline.iterate_quality_review_s"
+ITERATE_QUALITY_REVIEW_DEFAULT_TIMEOUT_S = 45.0
+
 ProgressCallback = Optional[Callable[[str, int, str, Optional[dict[str, Any]]], None]]
 
 
@@ -1888,8 +1895,26 @@ class V2PipelineRunner:
                 failure_family="runtime_qa",
             )
 
-        elapsed = int(time.time() * 1000) - start_ms
         await self._remember_code(qa_result.code, label="final_code")
+
+        # Non-blocking quality assessment: never raises, never gates the
+        # iterate result. Returns (None, None) when disabled, timed out, or
+        # failed, in which case the response simply carries no quality fields.
+        quality_score: Optional[float] = None
+        quality_breakdown: Optional[dict[str, Any]] = None
+        if getattr(settings, "ITERATE_QUALITY_REVIEW_ENABLED", True):
+            quality_score, quality_breakdown = await self._assess_iterate_quality(
+                qa_result=qa_result,
+                runtime_qa=runtime_qa,
+                runtime_retries=runtime_retries,
+                iteration_type=iteration_type,
+                runtime_profile=runtime_profile,
+                contract_version=runtime_contract.version,
+                spec=spec,
+                game_id=request.game_id,
+            )
+
+        elapsed = int(time.time() * 1000) - start_ms
         stage_context["stage"] = "completed"
         self._notify(progress_cb, "completed", 100, "V2 iteration completed", {
             "gameId": request.game_id,
@@ -1916,7 +1941,110 @@ class V2PipelineRunner:
             contract_version=runtime_contract.version,
             qa_warnings=qa_warnings,
             runtime_qa_report=self._serialize_runtime_qa(runtime_qa, []),
+            quality_score=quality_score,
+            quality_breakdown=quality_breakdown,
         )
+
+    async def _assess_iterate_quality(
+        self,
+        *,
+        qa_result: Any,
+        runtime_qa: Any,
+        runtime_retries: int,
+        iteration_type: IterationType,
+        runtime_profile: str,
+        contract_version: str,
+        spec: GameSpec,
+        game_id: str,
+    ) -> tuple[Optional[float], Optional[dict[str, Any]]]:
+        """Post-iteration quality assessment. Never raises and never blocks
+        the iterate result: any LLM failure or timeout logs a warning and
+        returns (None, None) so the caller returns the response unchanged."""
+        started = time.monotonic()
+        timeout_s = get_timeout_float(
+            ITERATE_QUALITY_REVIEW_TIMEOUT_KEY,
+            ITERATE_QUALITY_REVIEW_DEFAULT_TIMEOUT_S,
+            min_value=5.0,
+            max_value=300.0,
+        )
+        timed_out = False
+        try:
+            code = qa_result.code
+            try:
+                # code_reviewer.review already prefers the fast model
+                # (prefer_fast=True) and returns LLMReviewResult(ran=False)
+                # on its own internal failures.
+                review = await asyncio.wait_for(
+                    self.code_reviewer.review(code),
+                    timeout=timeout_s,
+                )
+            except asyncio.TimeoutError:
+                timed_out = True
+                raise
+            issue_list = getattr(qa_result, "issue_list", None)
+            quality = self.quality_scorer.compute(
+                static=QAStaticResult(
+                    passed=bool(getattr(qa_result, "success", False)),
+                    error_count=int(getattr(issue_list, "blocking_count", 0) or 0),
+                    warning_count=int(getattr(issue_list, "warning_count", 0) or 0),
+                    retries=int(getattr(qa_result, "retries", 0) or 0) + int(runtime_retries or 0),
+                    strategy="llm",
+                    code_size_bytes=len(code.encode("utf-8")),
+                ),
+                runtime=runtime_qa,
+                review=review,
+                code=code,
+            )
+            breakdown = quality.details | {
+                "qa_penalty": quality.qa_penalty,
+                "strategy_bonus": quality.strategy_bonus,
+                "size_bonus": quality.size_bonus,
+                "retry_penalty": quality.retry_penalty,
+                "runtime_bonus": quality.runtime_bonus,
+                "review_bonus": quality.review_bonus,
+                "gameplay_depth_bonus": quality.gameplay_depth_bonus,
+                "runtime_profile": runtime_profile,
+                "contract_version": contract_version,
+                "iteration_type": iteration_type.value,
+            }
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            _p2_emit(
+                "iterate_quality_assessed",
+                tier=getattr(getattr(spec, "generation_tier", None), "value", None),
+                game_type=getattr(spec, "game_type", None),
+                final_score=quality.final_score,
+                fun_score=float(review.fun_score) if getattr(review, "ran", False) else None,
+                review_ran=bool(getattr(review, "ran", False)),
+                elapsed_ms=elapsed_ms,
+                timed_out=False,
+            )
+            return quality.final_score, breakdown
+        except Exception as exc:  # noqa: BLE001 - assessment must never fail the iterate
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            if timed_out:
+                logger.warning(
+                    "Iterate quality assessment for game %s abandoned after %.0fs timeout",
+                    game_id,
+                    timeout_s,
+                )
+            else:
+                logger.warning(
+                    "Iterate quality assessment for game %s failed (non-blocking): %s",
+                    game_id,
+                    exc,
+                )
+            try:
+                _p2_emit(
+                    "iterate_quality_assessed",
+                    tier=getattr(getattr(spec, "generation_tier", None), "value", None),
+                    game_type=getattr(spec, "game_type", None),
+                    elapsed_ms=elapsed_ms,
+                    timed_out=timed_out,
+                    error=type(exc).__name__,
+                )
+            except Exception:  # pragma: no cover - telemetry must never crash runner
+                pass
+            return None, None
 
     async def _build_create_spec(self, request: RunPipelineV2Request) -> GameSpec:
         if request.source_spec:
