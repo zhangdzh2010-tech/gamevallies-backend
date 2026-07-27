@@ -637,7 +637,7 @@ export class GenerationStatsService {
       }),
       qualityScore: {
         source:
-          'generation_tasks.result_summary.qualityScore — persisted only for succeeded create (pipeline_run) tasks; iterate tasks do not record a quality score.',
+          'generation_tasks.result_summary.qualityScore — persisted for succeeded create (pipeline_run) tasks; iterate tasks record qualityScore when the non-blocking quality review succeeds.',
         ...buildScoreDistribution(qualityScores),
       },
       funScore: {
