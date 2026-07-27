@@ -377,6 +377,9 @@ class AsyncTaskHandleResponse(BaseModel):
     ws_channel: str
     poll_url: str
     cancel_url: str
+    # True when the submission was deduplicated onto an existing task via an
+    # idempotency key (X-Idempotency-Key header or idempotency_key body field).
+    deduplicated: bool = False
 
 
 class AsyncTaskResponse(BaseModel):
@@ -398,15 +401,6 @@ class AsyncTaskResponse(BaseModel):
 class ListAsyncTasksResponse(BaseModel):
     items: List[AsyncTaskResponse] = Field(default_factory=list)
     total: int = 0
-
-
-class RunPipelineRequest(BaseModel):
-    game_id: str
-    description: str
-    user_id: str
-    platform: str = "wechat_webview"
-    timeout_s: int = Field(default=600, ge=30, le=3600)
-    task_id: Optional[str] = None
 
 
 class RunPipelineResponse(BaseModel):
@@ -591,6 +585,7 @@ class RunPipelineV2Request(BaseModel):
     platform: str = "wechat_webview"
     timeout_s: int = Field(default=600, ge=30, le=3600)
     task_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
     request_context: RequestContextSnapshot = Field(default_factory=RequestContextSnapshot)
     entitlement: EntitlementSnapshot = Field(default_factory=EntitlementSnapshot)
     visibility_model: VisibilityModel = Field(default_factory=VisibilityModel)
@@ -612,6 +607,7 @@ class IterateV2Request(BaseModel):
     platform: str = "wechat_webview"
     timeout_s: int = Field(default=600, ge=30, le=3600)
     task_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
     request_context: RequestContextSnapshot = Field(default_factory=lambda: RequestContextSnapshot(entrypoint="iterate"))
     entitlement: EntitlementSnapshot = Field(default_factory=EntitlementSnapshot)
     visibility_model: VisibilityModel = Field(default_factory=VisibilityModel)
@@ -641,33 +637,6 @@ class ParseIntentResponse(BaseModel):
     slot_fill_pct: float = Field(1.0, ge=0.0, le=1.0)
 
 
-class GenerateCodeRequest(BaseModel):
-    game_id: str
-    spec: Optional[GameSpec] = None
-    description: Optional[str] = None
-    template_id: Optional[str] = None
-    platform: str = "wechat_webview"
-    timeout_s: int = Field(default=600, ge=30, le=3600)
-
-
-class GenerateCodeResponse(BaseModel):
-    html_code: str
-    strategy: str
-    template_id: Optional[str] = None
-    generation_time_ms: int
-    code_size_bytes: int
-
-
-class IterateRequest(BaseModel):
-    game_id: str
-    feedback: str
-    user_id: str = "system"
-    conversation: List[Dict[str, str]] = Field(default_factory=list)
-    current_code: str
-    timeout_s: int = Field(default=600, ge=30, le=3600)
-    task_id: Optional[str] = None
-
-
 class IterateResponse(BaseModel):
     html_code: str
     changes: List[str]
@@ -684,10 +653,6 @@ class IterateResponse(BaseModel):
     primary_artifact_id: Optional[str] = None
     qa_warnings: List[Dict[str, Any]] = Field(default_factory=list)
     runtime_qa_report: Optional[Dict[str, Any]] = None
-
-
-class QACheckRequest(BaseModel):
-    html_code: str
 
 
 class ProviderCatalogPreviewRequest(BaseModel):

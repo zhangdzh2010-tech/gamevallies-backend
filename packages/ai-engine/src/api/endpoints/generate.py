@@ -1,20 +1,19 @@
-"""API endpoints for the 8-stage game generation pipeline.
+"""API endpoints for the V2 game generation pipeline.
 
 Current endpoints:
-  POST /api/v1/ai/pipeline/run              – full stages 02-06 (description → HTML)
-  POST /api/v1/ai/pipeline/run/async        – async task wrapper for long-running generation
-  POST /api/v1/ai/pipeline/iterate          – stage 07 (feedback → updated HTML)
-  POST /api/v1/ai/pipeline/iterate/async    – async task wrapper for iteration
-  GET  /api/v1/ai/tasks/{task_id}           – async task status/result
-  GET  /api/v1/ai/tasks                     – list async tasks
-  POST /api/v1/ai/tasks/{task_id}/cancel    – cancel async task
-
-Legacy endpoints (kept for backward compatibility):
-  POST /api/v1/ai/generate-code      – old format, now wraps pipeline
-  POST /api/v1/ai/iterate-code       – old format, now wraps iteration
-  POST /api/v1/ai/parse-intent
-  POST /api/v1/ai/qa-check
+  POST /api/v1/ai/pipeline/v2/run             – V2 full pipeline (description → HTML)
+  POST /api/v1/ai/pipeline/v2/run/async       – async task wrapper for long-running generation
+  POST /api/v1/ai/pipeline/v2/iterate         – V2 iteration (feedback → updated HTML)
+  POST /api/v1/ai/pipeline/v2/iterate/async   – async task wrapper for iteration
+  GET  /api/v1/ai/tasks/{task_id}             – async task status/result
+  GET  /api/v1/ai/tasks                       – list async tasks
+  POST /api/v1/ai/tasks/{task_id}/cancel      – cancel async task
+  POST /api/v1/ai/parse-intent                – single-shot intent → spec compile (used by game-service)
   GET  /api/v1/ai/health
+
+The legacy V1 pipeline endpoints (/pipeline/run, /pipeline/iterate and their
+/async variants) and the pre-pipeline endpoints (/generate-code, /iterate-code,
+/qa-check) were removed together with the V1 PipelineOrchestrator.
 """
 
 from __future__ import annotations
@@ -36,9 +35,6 @@ from ..models import (
     AsyncTaskType,
     CoverCaptureRequest,
     CoverCaptureResponse,
-    GenerateCodeRequest,
-    GenerateCodeResponse,
-    IterateRequest,
     IterateResponse,
     IterateV2Request,
     ListAsyncTasksResponse,
@@ -48,24 +44,17 @@ from ..models import (
     ProviderCatalogPreviewResponse,
     ProviderTestChatRequest,
     ProviderTestChatResponse,
-    QACheckRequest,
-    QACheckResponse,
-    RunPipelineRequest,
     RunPipelineResponse,
     RunPipelineV2Request,
 )
 from ...engine.dialogue_engine import DialogueEngine
-from ...engine.pipeline_orchestrator import PipelineExecutionError, PipelineOrchestrator
+from ...engine.pipeline_errors import PipelineExecutionError
 from ...engine.pipeline_v2_runner import V2PipelineRunner
 from ...engine.prompt_bundle_resolver import resolve_prompt_bundle_snapshot
 from ...engine.prompt_store import (
     cached_prompt_count,
-    get_active_prompt_bundle,
-    get_default_runtime_profile,
-    require_prompt,
     refresh as refresh_prompt_cache,
 )
-from ...engine.qa_pipeline import QAPipeline
 from ...engine.runtime_qa import capture_cover_artifact
 from ...config.settings import settings
 from ...config.timeout_store import (
@@ -84,10 +73,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/ai", tags=["ai"])
 
 # Singleton instances
-_orchestrator = PipelineOrchestrator()
 _v2_runner = V2PipelineRunner()
 _dialogue_engine = DialogueEngine()
-_qa_pipeline = QAPipeline()
 
 
 def _require_admin_token(token: Optional[str]) -> None:
@@ -346,152 +333,6 @@ def _normalize_v2_prompt_layers(layers: Optional[dict[str, Any]]) -> dict[str, A
     return {
         **(layers or {}),
     }
-
-
-def _resolve_v2_region() -> str:
-    region = (settings.SERVICE_REGION or "").strip()
-    return region or "cn_shanghai"
-
-
-def _should_upgrade_legacy_pipeline_endpoints_to_v2() -> bool:
-    return bool(settings.PIPELINE_UPGRADE_LEGACY_ENDPOINTS_TO_V2)
-
-
-def _default_v2_prompt_bundle_snapshot(*, entrypoint: str, source: str) -> dict[str, Any]:
-    bundle = get_active_prompt_bundle()
-    if not bundle:
-        raise HTTPException(status_code=503, detail="No active prompt bundle configured")
-    return {
-        "bundle_id": bundle["id"],
-        "bundle_version": int(bundle["version"]),
-        "resolved_at": None,
-        "layers": _normalize_v2_prompt_layers({
-            "entrypoint": entrypoint,
-            "source": source,
-        }),
-    }
-
-
-def _default_v2_runtime_contract(*, entrypoint: str, source: str) -> dict[str, Any]:
-    profile = get_default_runtime_profile()
-    if not profile:
-        raise HTTPException(status_code=503, detail="No enabled runtime profile configured")
-
-    contract_schema = profile.get("contract_schema") if isinstance(profile, dict) else {}
-    if not isinstance(contract_schema, dict):
-        contract_schema = {}
-
-    return {
-        "version": "1.0",
-        "runtime_profile": str(profile["id"]),
-        **contract_schema,
-        "metadata": {
-            "adapter": "compat_v1",
-            "entrypoint": entrypoint,
-            "source": source,
-            "profile_id": str(profile["id"]),
-            "profile_display_name": profile.get("display_name"),
-        },
-    }
-
-
-def _upgrade_run_request_to_v2(
-    request: RunPipelineRequest,
-    *,
-    source: str,
-) -> RunPipelineV2Request:
-    description = request.description.strip()
-    if not description:
-        raise HTTPException(status_code=400, detail="description is required")
-
-    return RunPipelineV2Request(
-        game_id=request.game_id,
-        user_id=request.user_id,
-        raw_user_input=description,
-        platform=request.platform,
-        timeout_s=_resolve_timeout_s(request.timeout_s),
-        task_id=request.task_id,
-        request_context={
-            "source": source,
-            "entrypoint": "create",
-            "region": _resolve_v2_region(),
-            "pipeline_version": "v2",
-            "metadata": {
-                "compat_source": source,
-                "upgraded_from": "RunPipelineRequest",
-            },
-        },
-        prompt_bundle_snapshot=_default_v2_prompt_bundle_snapshot(
-            entrypoint="create",
-            source=source,
-        ),
-        runtime_contract=_default_v2_runtime_contract(
-            entrypoint="create",
-            source=source,
-        ),
-        normalized_request={
-            "description": description,
-            "entrypoint": "create",
-            "compat_source": source,
-        },
-        metadata={
-            "adapter": "compat_v1",
-            "compat_source": source,
-            "upgraded_from": "RunPipelineRequest",
-        },
-    )
-
-
-def _upgrade_iterate_request_to_v2(
-    request: IterateRequest,
-    *,
-    source: str,
-) -> IterateV2Request:
-    feedback = request.feedback.strip()
-    if not feedback:
-        raise HTTPException(status_code=400, detail="feedback is required")
-
-    return IterateV2Request(
-        game_id=request.game_id,
-        user_id=request.user_id,
-        current_code=request.current_code,
-        iteration_intent={
-            "feedback": feedback,
-            "conversation": request.conversation,
-        },
-        platform="wechat_webview",
-        timeout_s=_resolve_timeout_s(request.timeout_s),
-        task_id=request.task_id,
-        request_context={
-            "source": source,
-            "entrypoint": "iterate",
-            "region": _resolve_v2_region(),
-            "pipeline_version": "v2",
-            "metadata": {
-                "compat_source": source,
-                "upgraded_from": "IterateRequest",
-            },
-        },
-        prompt_bundle_snapshot=_default_v2_prompt_bundle_snapshot(
-            entrypoint="iterate",
-            source=source,
-        ),
-        runtime_contract=_default_v2_runtime_contract(
-            entrypoint="iterate",
-            source=source,
-        ),
-        normalized_request={
-            "feedback": feedback,
-            "entrypoint": "iterate",
-            "compat_source": source,
-            "conversation_length": len(request.conversation),
-        },
-        metadata={
-            "adapter": "compat_v1",
-            "compat_source": source,
-            "upgraded_from": "IterateRequest",
-        },
-    )
 
 
 async def _persist_v2_request_artifacts(
@@ -928,95 +769,6 @@ async def _initialize_task_memory_for_iteration(
         source_spec=request.source_spec,
         current_code=request.current_code,
         feedback=request.iteration_intent.feedback,
-    )
-
-
-async def _run_pipeline_internal(
-    request: RunPipelineRequest,
-    *,
-    task_id: Optional[str] = None,
-) -> RunPipelineResponse:
-    effective_task_id = task_id or request.task_id
-    progress_cb = _make_progress_cb(
-        game_id=request.game_id,
-        user_id=request.user_id,
-        task_id=effective_task_id,
-    )
-    await task_memory.begin_task(
-        effective_task_id,
-        task_meta={
-            "entrypoint": "legacy_create",
-            "game_id": request.game_id,
-            "user_id": request.user_id,
-            "platform": request.platform,
-        },
-        source_context_summary=f"- raw_user_input: {str(request.description or '').strip()[:280]}",
-    )
-    try:
-        with llm_request_context(
-            game_id=request.game_id,
-            user_id=request.user_id,
-            task_id=effective_task_id,
-        ):
-            return await _orchestrator.run(
-                request,
-                progress_cb=progress_cb,
-                timeout_s=_resolve_timeout_s(request.timeout_s),
-            )
-    finally:
-        await task_memory.clear_task(effective_task_id)
-
-
-async def _run_iteration_internal(
-    request: IterateRequest,
-    *,
-    task_id: Optional[str] = None,
-) -> IterateResponse:
-    start = time.time()
-    effective_task_id = task_id or request.task_id
-    progress_cb = _make_progress_cb(
-        game_id=request.game_id,
-        user_id=request.user_id,
-        task_id=effective_task_id,
-    )
-    await task_memory.begin_task(
-        effective_task_id,
-        task_meta={
-            "entrypoint": "legacy_iterate",
-            "game_id": request.game_id,
-            "user_id": request.user_id,
-        },
-    )
-    await task_memory.remember_source_context(
-        effective_task_id,
-        current_code=request.current_code,
-        feedback=request.feedback,
-    )
-    try:
-        with llm_request_context(
-            game_id=request.game_id,
-            user_id=request.user_id,
-            task_id=effective_task_id,
-        ):
-            result = await _orchestrator.iterate(
-                game_id=request.game_id,
-                current_code=request.current_code,
-                feedback=request.feedback,
-                conversation=request.conversation,
-                user_id=request.user_id,
-                progress_cb=progress_cb,
-                timeout_s=_resolve_timeout_s(request.timeout_s),
-            )
-    finally:
-        await task_memory.clear_task(effective_task_id)
-    elapsed = int((time.time() - start) * 1000)
-    return IterateResponse(
-        html_code=result["html_code"],
-        changes=[f"Applied: {request.feedback}", f"Type: {result['iteration_type']}"],
-        iteration_type=result["iteration_type"],
-        generation_time_ms=elapsed,
-        qa_retries=result.get("qa_retries", 0),
-        iteration_retries=result.get("iteration_retries", 0),
     )
 
 
@@ -1700,175 +1452,6 @@ async def capture_cover(
     )
 
 
-# ===========================================================================
-# Stages 02-06 – Full pipeline run
-# ===========================================================================
-
-@router.post("/pipeline/run", response_model=RunPipelineResponse)
-async def run_pipeline(request: RunPipelineRequest) -> RunPipelineResponse:
-    """Run stages 02-06: description → GameSpec → GDD → code → QA → HTML."""
-    try:
-        if _should_upgrade_legacy_pipeline_endpoints_to_v2():
-            return await _run_pipeline_v2_internal(
-                _upgrade_run_request_to_v2(request, source="pipeline_run")
-            )
-        return await _run_pipeline_internal(request)
-    except HTTPException:
-        raise
-    except PipelineExecutionError as e:
-        await manager.send_error(request.game_id, str(e))
-        raise HTTPException(
-            status_code=504,
-            detail={
-                "message": str(e),
-                "failed_stage": e.stage,
-                "retry_count": e.retry_count,
-                "fallback": e.fallback,
-                "failure_family": getattr(e, "failure_family", None),
-                "primary_artifact_id": getattr(e, "primary_artifact_id", None),
-            },
-        )
-    except RuntimeError as e:
-        await manager.send_error(request.game_id, str(e))
-        raise HTTPException(status_code=504, detail=str(e))
-    except Exception as e:
-        logger.exception("Pipeline run error")
-        await manager.send_error(request.game_id, str(e))
-        raise HTTPException(status_code=500, detail=f"Pipeline error: {str(e)}")
-
-
-@router.post(
-    "/pipeline/run/async",
-    response_model=AsyncTaskHandleResponse,
-    status_code=http_status.HTTP_202_ACCEPTED,
-)
-async def run_pipeline_async(request: RunPipelineRequest) -> AsyncTaskHandleResponse:
-    """Create an async generation task for stages 02-06."""
-    upgrade_to_v2 = _should_upgrade_legacy_pipeline_endpoints_to_v2()
-    upgraded_request = (
-        _upgrade_run_request_to_v2(request, source="pipeline_run_async")
-        if upgrade_to_v2
-        else None
-    )
-    timeout_s = _resolve_timeout_s(upgraded_request.timeout_s if upgraded_request else request.timeout_s)
-
-    async def runner(task_id: str) -> RunPipelineResponse:
-        try:
-            if upgrade_to_v2 and upgraded_request is not None:
-                return await _run_pipeline_v2_internal(
-                    upgraded_request,
-                    task_id=upgraded_request.task_id or task_id,
-                )
-            return await _run_pipeline_internal(request, task_id=request.task_id or task_id)
-        except asyncio.CancelledError:
-            failure_exc = await _handle_async_runner_cancellation(
-                task_id=task_id,
-                game_id=request.game_id,
-                fallback_stage="pipeline_run",
-                default_message="Async create pipeline was canceled before completion",
-            )
-            if failure_exc is None:
-                raise
-            await manager.send_error(request.game_id, str(failure_exc))
-            raise failure_exc
-        except Exception as exc:
-            await manager.send_error(request.game_id, str(exc))
-            raise
-
-    return await task_manager.create_task(
-        task_type=AsyncTaskType.pipeline_run,
-        game_id=request.game_id,
-        user_id=request.user_id,
-        timeout_s=timeout_s,
-        runner=runner,
-    )
-
-
-# ===========================================================================
-# Stage 07 – Iteration
-# ===========================================================================
-
-@router.post("/pipeline/iterate", response_model=IterateResponse)
-async def pipeline_iterate(request: IterateRequest) -> IterateResponse:
-    """Stage 07: incremental code modification from user feedback."""
-    try:
-        if _should_upgrade_legacy_pipeline_endpoints_to_v2():
-            return await _run_iteration_v2_internal(
-                _upgrade_iterate_request_to_v2(request, source="pipeline_iterate")
-            )
-        return await _run_iteration_internal(request)
-    except HTTPException:
-        raise
-    except PipelineExecutionError as e:
-        await manager.send_error(request.game_id, str(e))
-        raise HTTPException(
-            status_code=504 if "timed out" in str(e).lower() else 500,
-            detail={
-                "message": str(e),
-                "failed_stage": e.stage,
-                "retry_count": e.retry_count,
-                "fallback": e.fallback,
-                "failure_family": getattr(e, "failure_family", None),
-                "primary_artifact_id": getattr(e, "primary_artifact_id", None),
-            },
-        )
-    except Exception as e:
-        logger.exception("Pipeline iterate error")
-        await manager.send_error(request.game_id, str(e))
-        raise HTTPException(status_code=500, detail=f"Iteration error: {str(e)}")
-
-
-@router.post(
-    "/pipeline/iterate/async",
-    response_model=AsyncTaskHandleResponse,
-    status_code=http_status.HTTP_202_ACCEPTED,
-)
-async def pipeline_iterate_async(request: IterateRequest) -> AsyncTaskHandleResponse:
-    """Create an async iteration task for stage 07."""
-    upgrade_to_v2 = _should_upgrade_legacy_pipeline_endpoints_to_v2()
-    upgraded_request = (
-        _upgrade_iterate_request_to_v2(request, source="pipeline_iterate_async")
-        if upgrade_to_v2
-        else None
-    )
-    timeout_s = _resolve_timeout_s(upgraded_request.timeout_s if upgraded_request else request.timeout_s)
-
-    async def runner(task_id: str) -> IterateResponse:
-        try:
-            if upgrade_to_v2 and upgraded_request is not None:
-                return await _run_iteration_v2_internal(
-                    upgraded_request,
-                    task_id=upgraded_request.task_id or task_id,
-                )
-            return await _run_iteration_internal(request, task_id=request.task_id or task_id)
-        except asyncio.CancelledError:
-            failure_exc = await _handle_async_runner_cancellation(
-                task_id=task_id,
-                game_id=request.game_id,
-                fallback_stage="iteration",
-                default_message="Async iteration pipeline was canceled before completion",
-            )
-            if failure_exc is None:
-                raise
-            await manager.send_error(request.game_id, str(failure_exc))
-            raise failure_exc
-        except Exception as exc:
-            await manager.send_error(request.game_id, str(exc))
-            raise
-
-    return await task_manager.create_task(
-        task_type=AsyncTaskType.pipeline_iterate,
-        game_id=request.game_id,
-        user_id=request.user_id,
-        timeout_s=timeout_s,
-        runner=runner,
-    )
-
-
-# ===========================================================================
-# Pipeline V2 compatibility entrypoints
-# ===========================================================================
-
 @router.post("/pipeline/v2/run", response_model=RunPipelineResponse)
 async def run_pipeline_v2(request: RunPipelineV2Request) -> RunPipelineResponse:
     try:
@@ -1902,7 +1485,10 @@ async def run_pipeline_v2(request: RunPipelineV2Request) -> RunPipelineResponse:
     response_model=AsyncTaskHandleResponse,
     status_code=http_status.HTTP_202_ACCEPTED,
 )
-async def run_pipeline_v2_async(request: RunPipelineV2Request) -> AsyncTaskHandleResponse:
+async def run_pipeline_v2_async(
+    request: RunPipelineV2Request,
+    x_idempotency_key: Optional[str] = Header(default=None, alias="X-Idempotency-Key"),
+) -> AsyncTaskHandleResponse:
     timeout_s = _resolve_timeout_s(request.timeout_s)
 
     async def runner(task_id: str) -> RunPipelineResponse:
@@ -1929,6 +1515,7 @@ async def run_pipeline_v2_async(request: RunPipelineV2Request) -> AsyncTaskHandl
         user_id=request.user_id,
         timeout_s=timeout_s,
         runner=runner,
+        idempotency_key=x_idempotency_key or request.idempotency_key,
     )
 
 
@@ -1962,7 +1549,10 @@ async def pipeline_iterate_v2(request: IterateV2Request) -> IterateResponse:
     response_model=AsyncTaskHandleResponse,
     status_code=http_status.HTTP_202_ACCEPTED,
 )
-async def pipeline_iterate_v2_async(request: IterateV2Request) -> AsyncTaskHandleResponse:
+async def pipeline_iterate_v2_async(
+    request: IterateV2Request,
+    x_idempotency_key: Optional[str] = Header(default=None, alias="X-Idempotency-Key"),
+) -> AsyncTaskHandleResponse:
     timeout_s = _resolve_timeout_s(request.timeout_s)
 
     async def runner(task_id: str) -> IterateResponse:
@@ -1989,6 +1579,7 @@ async def pipeline_iterate_v2_async(request: IterateV2Request) -> AsyncTaskHandl
         user_id=request.user_id,
         timeout_s=timeout_s,
         runner=runner,
+        idempotency_key=x_idempotency_key or request.idempotency_key,
     )
 
 
@@ -2023,100 +1614,9 @@ async def cancel_async_task(task_id: str) -> AsyncTaskResponse:
     return task
 
 
-# ===========================================================================
-# Legacy endpoints (backward compatibility)
-# ===========================================================================
-
-@router.post("/generate-code", response_model=GenerateCodeResponse)
-async def generate_code_legacy(request: GenerateCodeRequest) -> GenerateCodeResponse:
-    """Legacy generate-code endpoint – wraps the pipeline internally.
-
-    Accepts either:
-      - New format: {game_id, spec, platform}
-      - Old game-service format: {game_id, description}
-    """
-    start = time.time()
-    description = request.description or ""
-    if not description and request.spec:
-        description = (
-            f"{request.spec.game_type} game, theme: {request.spec.visual_style.theme}, "
-            f"win: {request.spec.rules.win_condition}"
-        )
-    if not description:
-        raise HTTPException(status_code=400, detail="Either 'description' or 'spec' must be provided")
-
-    try:
-        if _should_upgrade_legacy_pipeline_endpoints_to_v2():
-            pipeline_req = RunPipelineV2Request(
-                game_id=request.game_id,
-                user_id="system",
-                raw_user_input=description,
-                platform=request.platform,
-                timeout_s=_resolve_timeout_s(request.timeout_s),
-                request_context={
-                    "source": "generate_code_legacy",
-                    "entrypoint": "create",
-                    "region": _resolve_v2_region(),
-                    "pipeline_version": "v2",
-                    "metadata": {
-                        "compat_source": "generate_code_legacy",
-                        "upgraded_from": "GenerateCodeRequest",
-                    },
-                },
-                prompt_bundle_snapshot=_default_v2_prompt_bundle_snapshot(
-                    entrypoint="create",
-                    source="generate_code_legacy",
-                ),
-                runtime_contract=_default_v2_runtime_contract(
-                    entrypoint="create",
-                    source="generate_code_legacy",
-                ),
-                normalized_request={
-                    "description": description,
-                    "entrypoint": "create",
-                    "compat_source": "generate_code_legacy",
-                    "legacy_spec": request.spec.model_dump() if request.spec else None,
-                },
-                metadata={
-                    "adapter": "compat_v1",
-                    "compat_source": "generate_code_legacy",
-                    "upgraded_from": "GenerateCodeRequest",
-                },
-            )
-            result = await _run_pipeline_v2_internal(pipeline_req)
-        else:
-            pipeline_req = RunPipelineRequest(
-                game_id=request.game_id,
-                description=description,
-                user_id="system",
-                platform=request.platform,
-                timeout_s=_resolve_timeout_s(request.timeout_s),
-            )
-            result = await _run_pipeline_internal(pipeline_req)
-        elapsed = int((time.time() - start) * 1000)
-        return GenerateCodeResponse(
-            html_code=result.html_code,
-            strategy=result.strategy,
-            template_id=None,
-            generation_time_ms=elapsed,
-            code_size_bytes=result.code_size_bytes,
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("Legacy generate-code error")
-        raise HTTPException(status_code=500, detail=f"Generation error: {str(e)}")
-
-
-@router.post("/iterate-code", response_model=IterateResponse)
-async def iterate_code_legacy(request: IterateRequest) -> IterateResponse:
-    """Legacy iterate-code – wraps /pipeline/iterate."""
-    return await pipeline_iterate(request)
-
-
 @router.post("/parse-intent", response_model=ParseIntentResponse)
 async def parse_intent(request: ParseIntentRequest) -> ParseIntentResponse:
-    """Parse description into GameSpec (legacy)."""
+    """Compile a description into a GameSpec (used by game-service source-spec compile)."""
     try:
         spec = await _dialogue_engine.parse_description_to_spec(
             request.description,
@@ -2136,15 +1636,6 @@ async def parse_intent(request: ParseIntentRequest) -> ParseIntentResponse:
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to parse intent: {str(e)}")
-
-
-@router.post("/qa-check", response_model=QACheckResponse)
-async def qa_check(request: QACheckRequest) -> QACheckResponse:
-    """Run QA checks on HTML code."""
-    try:
-        return _qa_pipeline.check(request.html_code)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"QA check error: {str(e)}")
 
 
 @router.get("/health")
