@@ -7,6 +7,7 @@ import hashlib
 import logging
 import re
 import time
+from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from ..api.models import (
@@ -38,7 +39,7 @@ from .dialogue_engine import (
 )
 from .game_designer import GameDesigner
 from .mobile_layout import has_short_edge_scaling
-from .pipeline_orchestrator import PipelineExecutionError
+from .pipeline_errors import PipelineExecutionError
 from .pre_generation_validator import PreGenerationValidator
 from .prompt_store import get_default_runtime_profile, require_prompt
 from .qa_pipeline import QAPipeline, SYNTAX_REPAIR_FAMILY
@@ -71,6 +72,17 @@ try:  # pragma: no cover
 except Exception:  # pragma: no cover
     def _p2_guard_commit(key, fun_score):  # type: ignore
         return {}
+from .section_patch import (
+    PATCH_SECTION_BODY,
+    PATCH_SECTION_SCRIPT,
+    PATCH_SECTION_STYLE,
+    apply_section_patches,
+    build_patch_protocol,
+    build_section_context,
+    ensure_structured_section_markers,
+    parse_patch_response,
+    validate_patch_candidate,
+)
 from .scoring_loop import has_visible_scoring_loop
 from .terminal_state import has_required_state_presence, has_terminal_state_transition
 from .visual_pack_catalog import apply_visual_pack_defaults
@@ -79,7 +91,40 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_STAGE_TOTAL_ATTEMPTS = 3
 DEFAULT_CREATE_FULL_GENERATION_ATTEMPTS = 3
+
+# Quality-gate targeted patch repair (create pipeline): when a candidate
+# narrowly misses the quality gate, try a section patch before spending a
+# full regeneration round (240-300s LLM + full QA).
+QUALITY_GATE_PATCH_STEP_KEY = "quality_gate.patch_fix"
+QUALITY_GATE_PATCH_ATTEMPTS_PER_FAILURE = 1
+QUALITY_GATE_PATCH_MAX_FINAL_SCORE_GAP = 1.5
+QUALITY_GATE_PATCH_MAX_DIMENSION_GAP = 2.0
+
+# Pseudo-progress heartbeat for the long logic_generate LLM call (create
+# pipeline). The main generation call is non-streaming (hedged multi-route
+# with truncation retry), so without this the progress bar sits at 60% for
+# 240-300s. The heartbeat advances 60% -> 74% based on elapsed time vs. an
+# expected p50-ish duration, monotonic within one generation attempt and
+# capped so it never crosses into the contract_qa band (76%).
+GENERATION_PROGRESS_HEARTBEAT_INTERVAL_S = 15.0
+GENERATION_PROGRESS_HEARTBEAT_BASE_PCT = 60
+GENERATION_PROGRESS_HEARTBEAT_MAX_PCT = 74
+GENERATION_PROGRESS_HEARTBEAT_EXPECTED_DURATION_S = 150.0
+
 ProgressCallback = Optional[Callable[[str, int, str, Optional[dict[str, Any]]], None]]
+
+
+@dataclass
+class _QualityGatePatchOutcome:
+    """Result of a successful quality-gate patch repair attempt."""
+
+    code: str
+    review: Any
+    quality: Any
+    runtime_qa: Any
+    runtime_qa_reran: bool
+    runtime_retries: int
+    qa_warnings: list[dict[str, Any]] = field(default_factory=list)
 
 PROFILE_CANDIDATES_BY_GAME_TYPE: dict[str, tuple[str, ...]] = {
     "casual": (
@@ -659,6 +704,332 @@ class V2PipelineRunner:
                 lines.append(f"- Reviewer issue to address: {normalized_issue}")
         return "\n".join(lines)
 
+    @classmethod
+    def _quality_patch_character_threshold(cls, spec: GameSpec) -> float:
+        thresholds = cls._quality_gate_thresholds(spec)
+        return (
+            thresholds["character_quality_score"]
+            if cls._is_character_driven_spec(spec)
+            else thresholds["abstract_character_floor"]
+        )
+
+    @classmethod
+    def _should_attempt_quality_patch_repair(
+        cls,
+        spec: GameSpec,
+        review: LLMReviewResult,
+        quality: Any,
+    ) -> bool:
+        """Conservative near-miss detector for quality-gate patch repair.
+
+        Only candidates without structural defects (complete game with real
+        gameplay) whose scores sit close to the tier thresholds qualify;
+        anything else keeps the existing full-regeneration behavior.
+        """
+        if not getattr(review, "ran", False):
+            return False
+        if not getattr(review, "is_complete_game", False):
+            return False
+        if not getattr(review, "has_real_gameplay", False):
+            return False
+
+        thresholds = cls._quality_gate_thresholds(spec)
+        final_score = float(getattr(quality, "final_score", 0.0) or 0.0)
+        if thresholds["final_score"] - final_score > QUALITY_GATE_PATCH_MAX_FINAL_SCORE_GAP:
+            return False
+
+        dimension_gaps = (
+            thresholds["fun_score"] - float(getattr(review, "fun_score", 0.0) or 0.0),
+            thresholds["visual_polish_score"] - float(getattr(review, "visual_polish_score", 0.0) or 0.0),
+            cls._quality_patch_character_threshold(spec)
+            - float(getattr(review, "character_quality_score", 0.0) or 0.0),
+        )
+        return all(gap <= QUALITY_GATE_PATCH_MAX_DIMENSION_GAP for gap in dimension_gaps)
+
+    @classmethod
+    def _quality_patch_allowed_sections(
+        cls,
+        spec: GameSpec,
+        review: LLMReviewResult,
+    ) -> tuple[str, ...]:
+        """Map failing quality dimensions onto patchable sections.
+
+        fun/gameplay misses stay SCRIPT-only (conservative: no BODY);
+        visual polish or character quality misses also unlock STYLE. When
+        only the aggregate final_score missed, allow STYLE + SCRIPT so the
+        patch can lift presentation and gameplay payoff together.
+        """
+        thresholds = cls._quality_gate_thresholds(spec)
+        fun_failed = float(getattr(review, "fun_score", 0.0) or 0.0) < thresholds["fun_score"]
+        visual_failed = (
+            float(getattr(review, "visual_polish_score", 0.0) or 0.0) < thresholds["visual_polish_score"]
+        )
+        character_failed = (
+            float(getattr(review, "character_quality_score", 0.0) or 0.0)
+            < cls._quality_patch_character_threshold(spec)
+        )
+        aggregate_only = not (fun_failed or visual_failed or character_failed)
+        if visual_failed or character_failed or aggregate_only:
+            return (PATCH_SECTION_STYLE, PATCH_SECTION_SCRIPT)
+        return (PATCH_SECTION_SCRIPT,)
+
+    async def _request_quality_gate_patch_text(
+        self,
+        *,
+        prompt: str,
+        spec: GameSpec,
+        prompt_bundle_snapshot: Optional[dict[str, Any]],
+    ) -> str:
+        generator = self.code_generator
+        step_key = QUALITY_GATE_PATCH_STEP_KEY
+        request_timeout_s = CodeGenerator._resolve_step_request_timeout_s(
+            step_key,
+            spec=spec,
+            default_timeout_s=CodeGenerator._generation_request_timeout_budget_s(spec),
+        )
+        overall_timeout_s = CodeGenerator._resolve_step_overall_timeout_s(
+            step_key,
+            spec=spec,
+            request_timeout_s=request_timeout_s,
+            default_timeout_s=CodeGenerator._generation_overall_timeout_budget_s(spec),
+        )
+        token_budget = CodeGenerator._select_token_budget(spec)
+        # prefer_fast intentionally left off: quality repair needs the
+        # primary model, not the fast lane.
+        return await generator._client.complete_with_truncation_retry(
+            max_tokens=token_budget,
+            system=generator._build_system_prompt(prompt_bundle_snapshot, spec=spec),
+            messages=[{"role": "user", "content": prompt}],
+            step_key=step_key,
+            stage="code_review",
+            request_timeout_s=request_timeout_s,
+            overall_timeout_s=overall_timeout_s,
+            allow_provider_fallback=True,
+            response_size_hint=CodeGenerator._response_size_hint_from_budget(token_budget),
+            context_scope="request",
+            compression_policy="iteration_rewrite",
+            truncation_retry_attempts=1,
+            truncation_retry_increment=2048,
+            truncation_retry_max_tokens=CodeGenerator._select_truncation_retry_cap(spec),
+            timeout_retry_attempts=0,
+            provider_retry_attempts=1,
+            provider_retry_on_timeout_errors=False,
+            provider_retry_base_delay_s=1,
+            provider_retry_max_delay_s=2,
+            hedge_provider_fallback_after_s=CodeGenerator._generation_provider_hedge_delay_s(spec),
+        )
+
+    async def _attempt_quality_gate_patch_repair(
+        self,
+        *,
+        request: RunPipelineV2Request,
+        spec: GameSpec,
+        runtime_contract: GameRuntimeContract,
+        code: str,
+        generation_strategy: str,
+        base_retries: int,
+        review: LLMReviewResult,
+        quality: Any,
+        quality_gate_errors: list[str],
+        previous_runtime_qa: Any,
+        progress_cb: ProgressCallback,
+        allow_runtime_qa_unavailable: bool,
+    ) -> Optional[_QualityGatePatchOutcome]:
+        for patch_attempt in range(1, QUALITY_GATE_PATCH_ATTEMPTS_PER_FAILURE + 1):
+            outcome = await self._attempt_quality_gate_patch_once(
+                request=request,
+                spec=spec,
+                runtime_contract=runtime_contract,
+                code=code,
+                generation_strategy=generation_strategy,
+                base_retries=base_retries,
+                review=review,
+                quality=quality,
+                quality_gate_errors=quality_gate_errors,
+                previous_runtime_qa=previous_runtime_qa,
+                progress_cb=progress_cb,
+                allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
+                patch_attempt=patch_attempt,
+            )
+            if outcome is not None:
+                return outcome
+        return None
+
+    async def _attempt_quality_gate_patch_once(
+        self,
+        *,
+        request: RunPipelineV2Request,
+        spec: GameSpec,
+        runtime_contract: GameRuntimeContract,
+        code: str,
+        generation_strategy: str,
+        base_retries: int,
+        review: LLMReviewResult,
+        quality: Any,
+        quality_gate_errors: list[str],
+        previous_runtime_qa: Any,
+        progress_cb: ProgressCallback,
+        allow_runtime_qa_unavailable: bool,
+        patch_attempt: int,
+    ) -> Optional[_QualityGatePatchOutcome]:
+        allowed_sections = self._quality_patch_allowed_sections(spec, review)
+        self._notify(
+            progress_cb,
+            "code_review",
+            95,
+            "Applying targeted quality fixes",
+            {
+                "gameId": request.game_id,
+                "userId": request.user_id,
+                "runtimeProfile": runtime_contract.runtime_profile,
+                "allowedSections": list(allowed_sections),
+                "patchAttempt": patch_attempt,
+                "maxPatchAttempts": QUALITY_GATE_PATCH_ATTEMPTS_PER_FAILURE,
+            },
+        )
+        _p2_emit(
+            "quality_gate_patch_attempt",
+            tier=getattr(getattr(spec, "generation_tier", None), "value", None),
+            game_type=getattr(spec, "game_type", None),
+            sections=",".join(allowed_sections),
+            final_score=float(getattr(quality, "final_score", 0.0) or 0.0),
+        )
+        try:
+            normalized_code = ensure_structured_section_markers(code)
+            prompt = "\n\n".join(
+                part
+                for part in [
+                    build_patch_protocol(allowed_sections, task_label="quality gate repair"),
+                    self._build_review_quality_guidance(spec, review, quality, quality_gate_errors),
+                    build_section_context(normalized_code, allowed_sections),
+                ]
+                if part
+            )
+            text = await self._request_quality_gate_patch_text(
+                prompt=prompt,
+                spec=spec,
+                prompt_bundle_snapshot=request.prompt_bundle_snapshot.model_dump(),
+            )
+            patches, full_html = parse_patch_response(text, allowed_sections=allowed_sections)
+            if patches:
+                candidate = apply_section_patches(normalized_code, patches)
+                touched_sections = {patch.section for patch in patches}
+            elif full_html:
+                candidate = ensure_structured_section_markers(full_html)
+                touched_sections = set(allowed_sections)
+            else:
+                raise RuntimeError("patch_parse_empty")
+
+            validation_errors = validate_patch_candidate(
+                normalized_code,
+                candidate,
+                allowed_sections=allowed_sections,
+            )
+            if validation_errors:
+                raise RuntimeError("patch_validation_failed:" + ",".join(validation_errors))
+
+            static_check = self.qa_pipeline.check(candidate)
+            if not static_check.passed:
+                raise RuntimeError(
+                    "patch_static_qa_failed:"
+                    + "; ".join(error.message for error in static_check.errors[:3])
+                )
+
+            runtime_qa_reran = False
+            runtime_retries = 0
+            qa_warnings: list[dict[str, Any]] = []
+            runtime_qa = previous_runtime_qa
+            if touched_sections & {PATCH_SECTION_SCRIPT, PATCH_SECTION_BODY}:
+                # SCRIPT/BODY changes can alter behavior; STYLE-only patches
+                # keep the previous runtime QA verdict.
+                candidate, runtime_qa, runtime_retries, qa_warnings = await self._run_runtime_qa_loop(
+                    code=candidate,
+                    runtime_contract=runtime_contract,
+                    progress_cb=progress_cb,
+                    game_id=request.game_id,
+                    user_id=request.user_id,
+                    allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
+                    tier=getattr(getattr(spec, "generation_tier", None), "value", None)
+                        or str(getattr(spec, "generation_tier", "") or ""),
+                    operation="create",
+                )
+                runtime_qa_reran = True
+
+            patched_review = await self.code_reviewer.review(candidate)
+            patched_quality = self.quality_scorer.compute(
+                static=QAStaticResult(
+                    passed=static_check.passed,
+                    error_count=len(static_check.errors),
+                    warning_count=len(static_check.warnings),
+                    retries=base_retries + runtime_retries,
+                    strategy=generation_strategy,
+                    code_size_bytes=len(candidate.encode("utf-8")),
+                ),
+                runtime=runtime_qa,
+                review=patched_review,
+                code=candidate,
+            )
+            remaining_errors = self._quality_gate_errors(
+                spec,
+                patched_review,
+                patched_quality,
+                review_required=self._is_structured_review_required(spec),
+            )
+            if remaining_errors:
+                raise RuntimeError(
+                    "patch_quality_gate_still_failing:" + "; ".join(remaining_errors[:3])
+                )
+        except Exception as exc:  # noqa: BLE001 - any failure falls back to regeneration
+            reason = str(exc)[:300]
+            logger.warning(
+                "Quality-gate patch repair attempt %s/%s for game %s failed; falling back to full regeneration: %s",
+                patch_attempt,
+                QUALITY_GATE_PATCH_ATTEMPTS_PER_FAILURE,
+                request.game_id,
+                reason,
+            )
+            _p2_emit(
+                "quality_gate_patch_failed",
+                tier=getattr(getattr(spec, "generation_tier", None), "value", None),
+                game_type=getattr(spec, "game_type", None),
+                reason=reason,
+            )
+            return None
+
+        logger.info(
+            "Quality-gate patch repair for game %s passed the quality gate (sections=%s)",
+            request.game_id,
+            ",".join(sorted(touched_sections)),
+        )
+        _p2_emit(
+            "quality_gate_patch_success",
+            tier=getattr(getattr(spec, "generation_tier", None), "value", None),
+            game_type=getattr(spec, "game_type", None),
+            sections=",".join(sorted(touched_sections)),
+            final_score=float(getattr(patched_quality, "final_score", 0.0) or 0.0),
+        )
+        self._notify(
+            progress_cb,
+            "code_review",
+            96,
+            "Targeted quality fixes passed the quality gate",
+            {
+                "gameId": request.game_id,
+                "userId": request.user_id,
+                "runtimeProfile": runtime_contract.runtime_profile,
+                "patchedSections": sorted(touched_sections),
+            },
+        )
+        return _QualityGatePatchOutcome(
+            code=candidate,
+            review=patched_review,
+            quality=patched_quality,
+            runtime_qa=runtime_qa,
+            runtime_qa_reran=runtime_qa_reran,
+            runtime_retries=runtime_retries,
+            qa_warnings=qa_warnings,
+        )
+
     @staticmethod
     def _normalize_provider_exclusions(excluded_provider_ids: Optional[list[str]]) -> list[str]:
         normalized: list[str] = []
@@ -1028,15 +1399,26 @@ class V2PipelineRunner:
             attempt_budget = attempt_plan[quality_attempt - 1]
             generated = None
             try:
-                generated, preflight_issues = await self._generate_create_code(
-                    request,
-                    spec,
-                    gdd,
-                    runtime_contract,
-                    budget_override=attempt_budget,
-                    excluded_provider_ids=provider_exclusions,
-                    generation_guidance=generation_guidance,
+                heartbeat_task = self._start_generation_progress_heartbeat(
+                    progress_cb,
+                    game_id=request.game_id,
+                    user_id=request.user_id,
+                    runtime_profile=runtime_profile,
+                    attempt=quality_attempt,
+                    max_attempts=len(attempt_plan),
                 )
+                try:
+                    generated, preflight_issues = await self._generate_create_code(
+                        request,
+                        spec,
+                        gdd,
+                        runtime_contract,
+                        budget_override=attempt_budget,
+                        excluded_provider_ids=provider_exclusions,
+                        generation_guidance=generation_guidance,
+                    )
+                finally:
+                    await self._stop_generation_progress_heartbeat(heartbeat_task)
                 last_route_snapshot = generated.route_snapshot if generated is not None else None
                 await self._remember_code(generated.html_code, label=f"generated_candidate_{quality_attempt}")
                 if preflight_issues:
@@ -1077,18 +1459,33 @@ class V2PipelineRunner:
                     await asyncio.sleep(min(quality_attempt, 2))
                     continue
 
-                qa_result, runtime_qa, runtime_retries, qa_warnings = await self._run_contract_and_runtime_flow(
-                    code=generated.html_code,
-                    spec=spec,
-                    runtime_contract=runtime_contract,
-                    prompt_bundle_snapshot=request.prompt_bundle_snapshot.model_dump(),
-                    progress_cb=progress_cb,
-                    game_id=request.game_id,
-                    user_id=request.user_id,
-                    stage_context=stage_context,
-                    allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
-                    operation="create",  # P1.3 PR-11
-                )
+                review_requested = self._should_run_code_review(spec)
+                # Run the LLM code review concurrently with runtime simulation
+                # QA: both consume the same post-contract-QA HTML. The review
+                # task is stashed in concurrent_review; if runtime QA fails,
+                # the review is cancelled and its result discarded so error
+                # priority stays identical to the serial flow.
+                concurrent_review: dict[str, Any] = {}
+                try:
+                    qa_result, runtime_qa, runtime_retries, qa_warnings = await self._run_contract_and_runtime_flow(
+                        code=generated.html_code,
+                        spec=spec,
+                        runtime_contract=runtime_contract,
+                        prompt_bundle_snapshot=request.prompt_bundle_snapshot.model_dump(),
+                        progress_cb=progress_cb,
+                        game_id=request.game_id,
+                        user_id=request.user_id,
+                        stage_context=stage_context,
+                        allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
+                        operation="create",  # P1.3 PR-11
+                        concurrent_review_factory=(
+                            self.code_reviewer.review if review_requested else None
+                        ),
+                        concurrent_review_state=concurrent_review,
+                    )
+                except BaseException:
+                    await self._discard_concurrent_review(concurrent_review)
+                    raise
                 if qa_result.needs_regeneration:
                     error_messages = "; ".join(error.message for error in qa_result.last_errors[:5])
                     last_quality_exc = PipelineExecutionError(
@@ -1130,9 +1527,11 @@ class V2PipelineRunner:
                 final_check = self.qa_pipeline.check(qa_result.code)
                 code_bytes = len(qa_result.code.encode("utf-8"))
                 review = LLMReviewResult(ran=False)
-                review_requested = self._should_run_code_review(spec)
                 if review_requested:
-                    review = await self.code_reviewer.review(qa_result.code)
+                    review = await self._resolve_concurrent_review(
+                        concurrent_review,
+                        qa_result.code,
+                    )
                 quality = self.quality_scorer.compute(
                     static=QAStaticResult(
                         passed=final_check.passed,
@@ -1159,6 +1558,38 @@ class V2PipelineRunner:
                         retry_count=max(0, quality_attempt - 1),
                         failure_family="quality_gate",
                     )
+                    if (
+                        getattr(settings, "QUALITY_GATE_PATCH_REPAIR_ENABLED", True)
+                        and self._should_attempt_quality_patch_repair(spec, review, quality)
+                    ):
+                        patch_outcome = await self._attempt_quality_gate_patch_repair(
+                            request=request,
+                            spec=spec,
+                            runtime_contract=runtime_contract,
+                            code=qa_result.code,
+                            generation_strategy=generated.strategy,
+                            base_retries=qa_result.retries + runtime_retries,
+                            review=review,
+                            quality=quality,
+                            quality_gate_errors=quality_gate_errors,
+                            previous_runtime_qa=runtime_qa,
+                            progress_cb=progress_cb,
+                            allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
+                        )
+                        if patch_outcome is not None:
+                            # Patch repair passed the full gate; adopt the
+                            # patched candidate without spending another
+                            # full-generation attempt.
+                            qa_result.code = patch_outcome.code
+                            review = patch_outcome.review
+                            quality = patch_outcome.quality
+                            code_bytes = len(patch_outcome.code.encode("utf-8"))
+                            if patch_outcome.runtime_qa_reran:
+                                runtime_qa = patch_outcome.runtime_qa
+                                runtime_retries += patch_outcome.runtime_retries
+                            qa_warnings.extend(patch_outcome.qa_warnings)
+                            last_quality_exc = None
+                            break
                     if (
                         quality_attempt >= len(attempt_plan)
                         and self._can_accept_showcase_near_miss(
@@ -2262,6 +2693,12 @@ class V2PipelineRunner:
         # P1.3 PR-11: operation="create" | "iterate" — enables the runtime-QA
         # scheduler to consult should_defer() with an accurate tier/op pair.
         operation: str = "create",
+        # Optional concurrent LLM code review (create main path only): when a
+        # factory + state dict are supplied, the review task is launched right
+        # before runtime simulation QA so both run in parallel. The caller is
+        # responsible for awaiting/cancelling the stashed task.
+        concurrent_review_factory: Optional[Callable[[str], Any]] = None,
+        concurrent_review_state: Optional[dict[str, Any]] = None,
     ) -> tuple[QAResult, Any, int, list[dict[str, Any]]]:
         stage_context["stage"] = "contract_qa"
         self._notify(progress_cb, "contract_qa", 76, "Running contract QA", {
@@ -2289,6 +2726,11 @@ class V2PipelineRunner:
                 "userId": user_id,
                 "runtimeProfile": runtime_contract.runtime_profile,
             })
+            self._launch_concurrent_review(
+                concurrent_review_factory,
+                concurrent_review_state,
+                qa_result.code,
+            )
             final_code, runtime_qa, runtime_retries, qa_warnings = await self._run_runtime_qa_loop(
                 code=qa_result.code,
                 runtime_contract=runtime_contract,
@@ -2352,6 +2794,11 @@ class V2PipelineRunner:
             "userId": user_id,
             "runtimeProfile": runtime_contract.runtime_profile,
         })
+        self._launch_concurrent_review(
+            concurrent_review_factory,
+            concurrent_review_state,
+            qa_result.code,
+        )
         final_code, runtime_qa, runtime_retries, qa_warnings = await self._run_runtime_qa_loop(
             code=qa_result.code,
             runtime_contract=runtime_contract,
@@ -3155,6 +3602,141 @@ class V2PipelineRunner:
             "network",
         )
         return any(marker in message for marker in retryable_markers)
+
+    def _start_generation_progress_heartbeat(
+        self,
+        progress_cb: ProgressCallback,
+        *,
+        game_id: str,
+        user_id: str,
+        runtime_profile: str,
+        attempt: int,
+        max_attempts: int,
+    ) -> Optional["asyncio.Task[None]"]:
+        if progress_cb is None:
+            return None
+        if not getattr(settings, "GENERATION_PROGRESS_HEARTBEAT_ENABLED", True):
+            return None
+        return asyncio.create_task(
+            self._generation_progress_heartbeat_loop(
+                progress_cb,
+                game_id=game_id,
+                user_id=user_id,
+                runtime_profile=runtime_profile,
+                attempt=attempt,
+                max_attempts=max_attempts,
+            )
+        )
+
+    async def _generation_progress_heartbeat_loop(
+        self,
+        progress_cb: ProgressCallback,
+        *,
+        game_id: str,
+        user_id: str,
+        runtime_profile: str,
+        attempt: int,
+        max_attempts: int,
+    ) -> None:
+        started = time.monotonic()
+        span = GENERATION_PROGRESS_HEARTBEAT_MAX_PCT - GENERATION_PROGRESS_HEARTBEAT_BASE_PCT
+        last_pct = GENERATION_PROGRESS_HEARTBEAT_BASE_PCT
+        while True:
+            await asyncio.sleep(GENERATION_PROGRESS_HEARTBEAT_INTERVAL_S)
+            elapsed_s = time.monotonic() - started
+            pct = GENERATION_PROGRESS_HEARTBEAT_BASE_PCT + min(
+                span,
+                int(span * elapsed_s / GENERATION_PROGRESS_HEARTBEAT_EXPECTED_DURATION_S),
+            )
+            # Monotonic within one attempt, capped at MAX_PCT so heartbeats
+            # never overrun the contract_qa progress band.
+            pct = max(pct, last_pct)
+            last_pct = pct
+            try:
+                # Intentionally bypass _notify: heartbeats must not reset the
+                # PR-06 logic_generate stage-start timestamp on every tick.
+                progress_cb(
+                    "logic_generate",
+                    pct,
+                    f"Generating game code ({int(elapsed_s)}s elapsed)",
+                    {
+                        "gameId": game_id,
+                        "userId": user_id,
+                        "runtimeProfile": runtime_profile,
+                        "heartbeat": True,
+                        "attempt": attempt,
+                        "maxAttempts": max_attempts,
+                    },
+                )
+            except Exception:  # noqa: BLE001 - heartbeat must never crash the pipeline
+                logger.debug(
+                    "Generation progress heartbeat callback failed; stopping heartbeat",
+                    exc_info=True,
+                )
+                return
+
+    @staticmethod
+    async def _stop_generation_progress_heartbeat(
+        task: Optional["asyncio.Task[None]"],
+    ) -> None:
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001 - heartbeat teardown must never raise
+            pass
+
+    @staticmethod
+    def _launch_concurrent_review(
+        review_factory: Optional[Callable[[str], Any]],
+        review_state: Optional[dict[str, Any]],
+        code: str,
+    ) -> None:
+        """Start the LLM code review concurrently with runtime simulation QA.
+
+        Runtime QA never mutates the candidate code, so both consume the same
+        post-contract-QA HTML. The launched task is stashed in review_state so
+        the create path can await (or discard) it after runtime QA settles.
+        """
+        if review_factory is None or review_state is None:
+            return
+        if review_state.get("task") is not None:
+            return
+        try:
+            review_state["task"] = asyncio.create_task(review_factory(code))
+            review_state["code"] = code
+        except Exception:  # noqa: BLE001 - fall back to serial review
+            review_state.pop("task", None)
+            logger.debug(
+                "Failed to launch concurrent code review; serial review will run instead",
+                exc_info=True,
+            )
+
+    @staticmethod
+    async def _discard_concurrent_review(review_state: Optional[dict[str, Any]]) -> None:
+        task = review_state.pop("task", None) if review_state else None
+        if task is None:
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    async def _resolve_concurrent_review(
+        self,
+        review_state: Optional[dict[str, Any]],
+        code: str,
+    ) -> LLMReviewResult:
+        task = review_state.pop("task", None) if review_state else None
+        if task is not None:
+            if review_state.get("code") == code:
+                return await task
+            # The candidate changed after the review was launched; discard the
+            # stale review and re-run against the final code.
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        return await self.code_reviewer.review(code)
 
     def _notify(
         self,
