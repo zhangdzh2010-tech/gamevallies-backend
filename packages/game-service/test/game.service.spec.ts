@@ -4483,6 +4483,88 @@ describe('GameService', () => {
     persistGeneratedGameResultSpy.mockRestore();
   });
 
+  it('persists iteration quality score and breakdown when the ai-engine response includes them', async () => {
+    const persistGeneratedGameResultSpy = jest
+      .spyOn(service as any, 'persistGeneratedGameResult')
+      .mockResolvedValue(undefined);
+    const assertTaskCanPersistResultSpy = jest
+      .spyOn(service as any, 'assertTaskCanPersistResult')
+      .mockResolvedValue(undefined);
+
+    await (service as any).completeIterationTask({
+      gameId: 'game-iter-quality',
+      userId: 'user-iter-quality',
+      feedback: 'make enemies smarter',
+      conversationHistory: [],
+      nextVersion: 2,
+      taskId: 'task-iter-quality',
+      currentCode: '<!DOCTYPE html><html><body>old</body></html>',
+      responseData: {
+        html_code: '<!DOCTYPE html><html><body>new</body></html>',
+        iteration_type: 'mechanic_change',
+        quality_score: 82.5,
+        quality_breakdown: {
+          review_ran: true,
+          review_fun_score: 7,
+          iteration_type: 'mechanic_change',
+        },
+      },
+    });
+
+    expect(persistGeneratedGameResultSpy).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({
+        qualityScore: 82.5,
+        qualityBreakdown: expect.objectContaining({
+          review_ran: true,
+          review_fun_score: 7,
+          iteration_type: 'mechanic_change',
+        }),
+      }),
+    }));
+    expect(generationTaskService.markSucceeded).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'task-iter-quality',
+      resultSummary: expect.objectContaining({
+        qualityScore: 82.5,
+      }),
+    }));
+    assertTaskCanPersistResultSpy.mockRestore();
+    persistGeneratedGameResultSpy.mockRestore();
+  });
+
+  it('omits iteration quality keys when the ai-engine response has no quality fields', async () => {
+    const persistGeneratedGameResultSpy = jest
+      .spyOn(service as any, 'persistGeneratedGameResult')
+      .mockResolvedValue(undefined);
+    const assertTaskCanPersistResultSpy = jest
+      .spyOn(service as any, 'assertTaskCanPersistResult')
+      .mockResolvedValue(undefined);
+
+    await (service as any).completeIterationTask({
+      gameId: 'game-iter-no-quality',
+      userId: 'user-iter-no-quality',
+      feedback: 'tweak colors',
+      conversationHistory: [],
+      nextVersion: 2,
+      taskId: 'task-iter-no-quality',
+      currentCode: '<!DOCTYPE html><html><body>old</body></html>',
+      responseData: {
+        html_code: '<!DOCTYPE html><html><body>new</body></html>',
+        iteration_type: 'element_change',
+        quality_score: null,
+      },
+    });
+
+    const persistCall = persistGeneratedGameResultSpy.mock.calls[0]?.[0] as any;
+    expect(persistCall.metadata).not.toHaveProperty('qualityScore');
+    expect(persistCall.metadata).not.toHaveProperty('qualityBreakdown');
+    const markSucceededCall = generationTaskService.markSucceeded.mock.calls.find(
+      (call: any[]) => call[0]?.taskId === 'task-iter-no-quality',
+    )?.[0] as any;
+    expect(markSucceededCall.resultSummary).not.toHaveProperty('qualityScore');
+    assertTaskCanPersistResultSpy.mockRestore();
+    persistGeneratedGameResultSpy.mockRestore();
+  });
+
   it('persists generation tier in prompt bundles and runtime contracts', async () => {
     const promptBundle = await (service as any).buildPromptBundleSnapshot(
       'create',

@@ -173,7 +173,11 @@ function presentAuthor(author?: {
 
 export function presentGame(game: any) {
   const previewUrl = normalizePreviewUrl(game.id, game.previewUrl);
-  const gameUrl = buildIndexUrl(game.id, previewUrl);
+  // Play URL prefers the CDN direct link attached by BundleCdnService for
+  // published + public games; everything else keeps the self-hosted route.
+  const gameUrl = (typeof game.cdnUrl === 'string' && game.cdnUrl.trim())
+    ? game.cdnUrl.trim()
+    : buildIndexUrl(game.id, previewUrl);
   const coverUrl = buildCoverUrl(game.id, game.thumbnailUrl, previewUrl);
 
   // H.5.1 - Prefer the explicit user-facing tagline; fall back to a sanitized

@@ -24,6 +24,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { BundleService } from '../bundle/bundle.service';
+import { BundleCdnService } from '../bundle-cdn/bundle-cdn.service';
 import { StatsService } from '../stats/stats.service';
 import { GameWebSocketGateway } from '../websocket/websocket.gateway';
 import {
@@ -342,6 +343,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     private timeoutConfigService: TimeoutConfigService,
     private runtimeProfileService: RuntimeProfileService,
     private systemConfigRepository: SystemConfigRepository,
+    private bundleCdnService?: BundleCdnService,
   ) {
     this.aiEngineUrl = this.configService.get<string>(
       'AI_ENGINE_URL',
@@ -2065,6 +2067,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   private async attachPreviewUrl<T extends { id: string }>(game: T): Promise<T & { previewUrl: string }> {
     return {
       ...game,
+      ...((await this.bundleCdnService?.buildCdnUrlPatch(game)) ?? {}),
       previewUrl: this.buildPreviewUrl(game.id),
     };
   }
@@ -4707,6 +4710,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       generation_time_ms: genTimeMs = 0,
       qa_retries: qaRetries = 0,
       iteration_retries: iterationRetries = 0,
+      quality_score: qualityScore = null,
+      quality_breakdown: qualityBreakdown = null,
       primary_artifact_id: primaryArtifactId = undefined,
       qa_warnings: rawQaWarnings = [],
       runtime_qa_report: rawRuntimeQaReport = undefined,
@@ -4754,6 +4759,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         genTimeMs,
         qaRetries,
         iterationRetries,
+        ...(qualityScore !== null && qualityScore !== undefined ? { qualityScore } : {}),
+        ...(qualityBreakdown !== null && qualityBreakdown !== undefined ? { qualityBreakdown } : {}),
         ...(qaWarnings.length > 0 ? { qaWarnings } : {}),
         ...(runtimeQaReport ? { runtimeQaReport } : {}),
         aiConversation: [
@@ -4792,6 +4799,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           generationTimeMs: genTimeMs,
           qaRetries,
           iterationRetries,
+          ...(qualityScore !== null && qualityScore !== undefined ? { qualityScore } : {}),
           generationTier: this.normalizeRequestedGenerationTier(generationTier) || 'standard',
           version: nextVersion,
           ...(normalizedGameType ? { gameType: normalizedGameType } : {}),
@@ -5629,6 +5637,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           gameId,
           this.buildAuthorPreviewUrls(gameId, userId).previewUrl,
         );
+        this.bundleCdnService?.scheduleBundleSync(gameId, version);
         return;
       } catch (error) {
         lastError = error;
@@ -6045,6 +6054,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       });
 
       await this.invalidateFeedCache();
+      this.bundleCdnService?.scheduleBundleSync(id);
       return this.attachPreviewUrl(publishedGame);
     } catch (error) {
       this.logger.error(`Failed to publish game: ${error.message}`);

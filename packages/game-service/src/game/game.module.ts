@@ -13,6 +13,7 @@ import { CreationSessionService } from './creation-session.service';
 import { CreationSessionRealtimeService } from './creation-session-realtime.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { BundleModule } from '../bundle/bundle.module';
+import { BundleCdnModule } from '../bundle-cdn/bundle-cdn.module';
 import { StatsModule } from '../stats/stats.module';
 import { PlatformConfigModule } from '../platform/config/config.module';
 import { TaskingModule } from '../platform/tasking/tasking.module';
@@ -22,6 +23,7 @@ import { WebSocketModule } from '../websocket/websocket.module';
   imports: [
     PrismaModule,
     BundleModule,
+    BundleCdnModule,
     StatsModule,
     PlatformConfigModule,
     TaskingModule,
