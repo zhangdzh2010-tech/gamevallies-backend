@@ -10,6 +10,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { BundleStorageModule } from './bundle-storage/bundle-storage.module';
 import { AdminModule } from './admin/admin.module';
 import { GrowthModule } from './growth/growth.module';
+import { GenerationStatsModule } from './generation-stats/generation-stats.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { GrowthModule } from './growth/growth.module';
     WebSocketModule,
     AdminModule,
     GrowthModule,
+    GenerationStatsModule,
   ],
   controllers: [HealthController],
 })
