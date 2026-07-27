@@ -348,8 +348,8 @@ Error responses include:
 
 ## Performance Considerations
 
-- Game generation and iteration are asynchronous (via `setImmediate`); clients track progress via WebSocket
-- Pipeline calls go to `AI_ENGINE_URL/api/v1/ai/pipeline/run` (generate) and `/pipeline/iterate` (iterate)
+- Game generation and iteration are asynchronous (BullMQ queue with an in-process `setImmediate` fallback); clients track progress via WebSocket
+- Pipeline calls go to `AI_ENGINE_URL/api/v1/ai/pipeline/v2/run/async` (generate) and `/pipeline/v2/iterate/async` (iterate); task status is polled and progress is pushed back via internal callbacks
 - Bundle retrieval uses MySQL indexes on `gameId` and a unique key on `(gameId, version)`
 - Pagination limits enforced (max 100 items per page)
 - WebSocket connections validated on connection using JWT Base64 decode
