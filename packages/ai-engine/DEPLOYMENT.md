@@ -1,6 +1,6 @@
 # AI Engine 运行说明
 
-生产部署统一使用[阿里云部署与维护](../../docs/deployment/ALIYUN_DEPLOYMENT.md)。部署工作流从仓库根目录构建 AI 镜像，包含共享 contracts 和 Playwright Chromium。
+生产部署采用阿里云函数计算 FC 自定义容器，统一使用[阿里云部署与维护](../../docs/deployment/ALIYUN_DEPLOYMENT.md)。部署工作流从仓库根目录构建 AI 镜像，包含共享 contracts 和 Playwright Chromium。
 
 本地开发：在 `packages/ai-engine` 安装 `requirements.txt`，填写本地环境配置，运行：
 

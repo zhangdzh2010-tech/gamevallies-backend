@@ -22,6 +22,7 @@ jobs:
           node-version: '20'
           cache: npm
       - run: npm ci --no-audit --no-fund
+      - run: node --test deploy/fc/internal-auth.test.cjs
       - run: npx prisma generate
       - run: npm run build --workspaces
       - name: Verify generation and session regressions
@@ -65,27 +66,25 @@ jobs:
           tests/test_runtime_qa.py
           tests/test_creative_design.py
           tests/test_runtime_isolation.py
+          tests/test_fc_runtime.py
 
   deployment:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
-      - run: bash -n scripts/aliyun/deploy.sh
-      - run: python3 scripts/aliyun/test_deploy.py
-      - name: Validate production Compose
-        env:
-          IMAGE_PREFIX: registry.example.com/gamevallies
-          IMAGE_TAG: test
-          RUNTIME_ENV_FILE: /tmp/runtime.env
-        run: |
-          touch /tmp/runtime.env
-          docker compose -f deploy/aliyun/compose.yml config --quiet
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r scripts/fc/requirements.txt
+      - run: python scripts/fc/test_deploy.py
       - name: Build service images without publishing
         run: |
           for service in user-service game-service social-service feed-service; do
             docker build --build-arg SERVICE="$service" --tag "gamevallies-$service:ci" .
           done
           docker build -f packages/ai-engine/Dockerfile --tag gamevallies-ai:ci .
-          docker build -f deploy/aliyun/Dockerfile.gateway --tag gamevallies-gateway:ci .
-          docker run --rm --add-host user-service:127.0.0.1 --add-host game-service:127.0.0.1 --add-host ai-engine:127.0.0.1 --add-host frontend:127.0.0.1 gamevallies-gateway:ci nginx -t
+          docker build -f deploy/fc/Dockerfile.gateway --tag gamevallies-gateway:ci .
+          for mode in app content; do
+            docker run --rm -e GATEWAY_MODE="$mode" -e FC_INTERNAL_TOKEN="$(python -c 'print("a"*64)')" -e GAME_UPSTREAM=https://game.example.com -e USER_UPSTREAM=https://user.example.com -e AI_UPSTREAM=https://ai.example.com -e FRONTEND_UPSTREAM=https://front.example.com gamevallies-gateway:ci nginx -t
+          done

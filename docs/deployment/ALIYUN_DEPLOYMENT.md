@@ -1,80 +1,86 @@
-# 阿里云部署与维护
+# 阿里云函数计算 FC 部署与维护
 
-本仓库采用 ACR + 单台 Linux x86_64 ECS + Docker Compose，数据库使用已有 MySQL/RDS，异步任务使用已有 Redis/Tair。发布入口为 `.github/workflows/deploy.yml`。前端使用另一个仓库的独立发布流程，两者共用 ECS 上的 `gamevallies` 网络。
+## 运行方案
 
-提交工作流不等于上线：必须先完成下列资源、Runner、Secrets 和运行配置，再设置 `ALIYUN_DEPLOY_ENABLED=true`。未配置时部署任务跳过；CI 照常执行。首次启用后在 main 手动运行一次，之后 main 的提交自动部署。
+使用 FC 3.0 自定义容器与 ACR，不使用 ECS、服务器 Runner、Docker Compose 或 ALB。GitHub 托管 Runner 构建镜像并使用官方 Python SDK 4.8.2 发布。地域、函数前缀与资源参数在部署前明确配置。
 
-## 1. 准备资源
-
-- ACR 命名空间内建立 `user-service`、`game-service`、`social-service`、`feed-service`、`ai-engine`、`gateway`、`frontend` 七个镜像仓库。GitHub 托管构建机需要访问 ACR 推送地址，ECS 需要访问同一地址拉取。
-- ECS 安装 Docker Engine、Compose v2（支持 `up --wait --wait-timeout`）、Git、Bash、Python 3、flock。为 AI 浏览器检查预留共享内存；具体内存和 CPU 以生成并发压测确定。
-- 在 ECS 为两个私有仓库各注册一个专用 GitHub Actions Runner，分别添加 `aliyun-ecs-backend`、`aliyun-ecs-front` 标签，系统标签应为 Linux / X64。使用 GitHub 仓库 Settings → Actions → Runners 提供的安装命令，以服务方式运行。仅用于受信任 main 发布，禁止将 PR 工作分配到这些 Runner。
-- Runner 用户需要使用 Docker，且分别拥有 `/opt/gamevallies/backend`、`/opt/gamevallies/front`。Docker 权限等同于主机管理权限，Runner 应是专用服务账号。
-- RDS、Redis、ECS 放在可互通的 VPC 中，配置相应私网访问许可。不要暴露数据库和 Redis 公网端口。
-- 用 ALB 终止 HTTPS：应用域名指向 ECS 8080，独立游戏内容域名指向 ECS 8082。两组健康检查路径都是 `/health`。8082 仅提供游戏内容，不能用作应用 API。ECS 这两个端口只允许来自 ALB 的流量；ALB 的空闲超时需覆盖 SSE/WebSocket 心跳间隔。
-
-## 2. GitHub 配置
-
-两个仓库均设置下列 **repository Variables/Secrets**（镜像构建 job 不使用 production Environment，因此不能只把构建凭据放在 Environment Secrets 中）：
-
-| 类型 | 名称 | 内容 |
+| 函数 | 运行方式 | 入口 |
 | --- | --- | --- |
-| Variable | `ALIYUN_DEPLOY_ENABLED` | 准备完毕后设为 `true` |
-| Variable | `ACR_REGISTRY` | ACR 登录域名，不带 `https://` 或路径 |
-| Variable | `ACR_NAMESPACE` | 上述镜像所在命名空间 |
-| Secret | `ACR_USERNAME` / `ACR_PASSWORD` | 仅授予所需仓库推送权限的登录凭据 |
-| Secret | `ACR_PULL_USERNAME` / `ACR_PULL_PASSWORD` | ECS 专用、仅授予所需仓库拉取权限的凭据 |
-| Variable（后端） | `GATEWAY_BIND` | ECS 私网 IP；未设时只监听 `127.0.0.1` |
+| frontend（前端仓库） | 按需实例 | 静态 Web 页面 |
+| user-service / social-service / feed-service | 按需实例 | 内部服务调用 |
+| game-service | 1 个预留实例，持续 CPU，禁止按需实例 | 业务 API、BullMQ 消费者、进度 |
+| ai-engine | 1 个预留实例，持续 CPU，禁止按需实例 | 内部 AI 请求和后台生成 |
+| gateway | 按需实例 | 应用域名，Web + API + Socket.IO |
+| content | 按需实例 | 独立作品内容域名，仅 /games/ |
 
-创建名为 `production` 的 Environment，将部署分支限制为 main。工作流本身也拒绝非 main 的手动部署。不需要把 ECS SSH 私钥交给工作流。
+后台执行仍使用现有 BullMQ 和 AI 异步任务管理器，本轮没有改写为 FC 原生异步任务。持续 CPU 预留模式用于避免闲置冻结，两个服务有持续资源成本。`functions.json` 是初始资源配置，不代表已完成并发压测。禁止在未改造后台任务和跨实例取消前将这两个服务缩到零或增加按需副本。FC 平台重启仍可能中断在途计算；Redis 快照/数据库任务记录、现有超时对账与重试负责暴露和处理失败，不承诺计算无损续跑。
 
-前端另需设置 `PUBLIC_ORIGIN`（应用 HTTPS origin）和 `GAME_CONTENT_ORIGIN`（游戏内容 HTTPS origin）；可选 `GAME_SHELL_ORIGIN` 默认应用 origin。均不带末尾 `/`。微信公众号登录的公开构建变量见前端部署文档。
+逻辑执行区域目前沿用业务代码的 `cn_shanghai`；真实 FC 地域由 `FC_REGION` 决定，二者不要混淆。部署前检查后台 Provider 的 AI 地址和区域记录是否指向新 FC AI 引擎，数据库中已保存的旧目标不会被部署器自动批量改写。
 
-## 3. ECS 运行配置
+## 配置清单
 
-将 `deploy/aliyun/runtime.env.example` 复制为 `/opt/gamevallies/backend/runtime.env`，填写真实值并设为 `chmod 600`。文件由 Runner 账号读取；不得提交到 Git。数据库 URL 内的特殊字符需要 URL 编码。
+两个仓库的 Repository Variables：
 
-必填项包括数据库、Redis、JWT 两个独立密钥、管理员令牌、生产域名、模型访问配置。短信、支付、微信等账户参数按已有业务接入填写；工作流不会从已删除的部署脚本推导这些值。若支付使用文件型私钥，需要另行挂载只读密钥文件并配置路径。
+| 名称 | 值 |
+| --- | --- |
+| ALIYUN_FC_DEPLOY_ENABLED | 准备完成后设 true，旧 ALIYUN_DEPLOY_ENABLED 无效 |
+| FC_ACCOUNT_ID / FC_REGION | 阿里云主账号 ID / FC 地域 |
+| FC_PREFIX | 专用于本项目环境的函数前缀，例如 gamevallies-prod |
+| FC_EXECUTION_ROLE | 函数执行 RAM 角色 ARN，允许必要的 ACR 拉取、VPC、NAS、SLS 操作 |
+| ACR_REGISTRY / ACR_NAMESPACE | 同账号同地域 ACR 地址与命名空间 |
+| ACR_INSTANCE_ID | 企业版 ACR 按实际情况填写 |
+| FC_FRONTEND_URL | 后端仓库必填，前端发布输出的 HTTPS 函数 origin |
 
-容器内部服务地址、端口和 `cn_shanghai` 执行区域由 Compose 指定。AI 模型 Provider 的业务配置仍由后台管理；发布前检查数据库内启用的 Provider/区域目标是否指向本次配置的 AI 引擎。可在 runtime.env 设置 `ACR_REGISTRY`、`ACR_NAMESPACE`、`ALIYUN_VPC_ID`、`ALIYUN_VSWITCH_ID`、`ALIYUN_SECURITY_GROUP_ID`，供后台展示部署元数据。
+Repository Secrets：`ACR_USERNAME`、`ACR_PASSWORD`（镜像推送）；`ALIBABA_CLOUD_ACCESS_KEY_ID`、`ALIBABA_CLOUD_ACCESS_KEY_SECRET`（最小权限部署身份）；使用临时凭据时增加 `ALIBABA_CLOUD_SECURITY_TOKEN`。本实现直接支持 AK/STS 环境变量，不宣称已经接入 GitHub OIDC 信任交换。禁止配置阿里云主账号密钥。
 
-此发布流程不会执行数据库初始化或结构迁移。首次部署空数据库时，先在备份/测试环境验证仓库 Prisma schema 的初始化方案；生产迁移单独审阅执行。现有应用启动时仍会进行其原有的表结构与配置补齐，并将默认云账号/区域元数据更新为阿里云，历史数据库列名保留兼容。不要将已有数据库当作空库执行 `db push`。
+`FC_RUNTIME_JSON` 保存按 `deploy/fc/runtime.example.json` 填写的完整运行 JSON，不能只复制示例占位值。`common` 是服务共享环境变量，`services` 按服务覆盖；模型密钥仅放在 `services.ai-engine`。配置文件不得提交到 Git，也不写入前端构建变量。域名、支付/短信/登录密钥按实际启用功能补齐。创建 GitHub `production` Environment，部署分支限制为 main。
 
-## 4. 发布与回滚
+后台需要已有 MySQL/RDS、Redis、VPC/vSwitch/安全组以及 NAS。当前 APK 上传功能仍使用本地路径，为保持既有功能，必须将 `APP_RELEASE_UPLOAD_DIR` 放在配置的 NAS 挂载目录下；旧文件单独复制并校验。Web 产品暂不运营移动服务不等于可以丢弃已有文件。作品主体与生成产物沿用数据库/现有对象存储策略，临时浏览器工作目录不作为持久存储。OSS/CDN 可后续迁移，不能直接删除历史对象或凭据。
 
-1. CI 构建和回归通过后，按完整 Git commit SHA 标记镜像并推送 ACR。
-2. ECS Runner 拉取该次发布的全部镜像；拉取失败时不重启现有服务。
-3. 运行 `docker compose up -d --wait --wait-timeout 240`，各容器通过 HTTP 健康检查后才切换 `current` 发布指针。
-4. 健康检查失败时使用上个发布目录的镜像清单恢复。首次安装没有旧版本，会保留失败容器供诊断并将 job 标为失败。回滚失败也会明确报错。
+部署身份需要对本项目前缀函数执行 Get/Create/UpdateFunction、Get/CreateTrigger、PublishFunctionVersion、Put/GetProvisionConfig、PutConcurrencyConfig，以及传递执行角色所需权限。按官方 RAM 文档限定资源与 PassRole；函数角色不授予发布权限。SDK 发布过程不回显完整请求/环境变量。运行凭据存储在受权限控制的函数配置中，本次不自动创建 KMS、RDS、NAS 或付费资源。
 
-运行健康检查仅证明进程及 HTTP 路由可用，不代表短信、支付、模型或数据库业务已全部通过。首次发布后验证登录、支付回调、生成任务、SSE、WebSocket、作品播放、APK 下载，然后再切换生产 DNS。
+## 内部调用与域名
 
-单 ECS 原地更新会有短暂中断；生成中的任务可能受进程重启影响，选择低流量窗口并观察队列。需要无中断发布时，再引入多实例和 ALB 流量切换。
+函数 HTTP 触发器提供真实 HTTPS URL；内部 API 使用 `FC_INTERNAL_TOKEN` 校验传输层共享凭据，业务 JWT/管理员鉴权仍保留。令牌为 32 随机字节的 64 位十六进制字符串。Node 服务通过 FC 专用 preload、AI 通过 ASGI 边界验证请求；不携带凭据的直连请求返回 403。公开健康路径不含敏感配置。服务间发送凭据只允许部署器注入的精确 origin，并禁止内部凭据随重定向流出。FC 运行凭据禁止通过请求头注入。
 
-手动回滚：登录 ECS，先以只读 ACR 账号执行 `docker login`，选择已验证发布目录，并用其完整清单执行（`RELEASE` 必须替换成实际目录）：
+公共 gateway 不开放 /__fc/、/api/v1/internal/、/api/v1/ai/；用户创作走现有创建会话 API。内部 AI WebSocket 不对公网开放。进度使用现有会话 SSE / 游戏 Socket.IO 与持久化轮询。FC、域名入口的流式响应、连接时长和断线恢复必须在目标地域验收；构建/健康检查通过不证明这些功能全部通过。
+
+在 FC 自定义域名控制台绑定：应用域名所有路径 → gateway 的 LATEST；独立作品内容域名所有路径 → content 的 LATEST。配置 HTTPS 证书和 DNS。发布器不擅自修改生产域名、证书或 DNS。保持不可信作品 origin 与账户 origin 分离。
+
+## 首次发布
+
+1. 每个环境使用独立数据库/Redis 库；切换前停止旧环境针对同一队列的消费者并排空在途任务，避免旧实例与 FC 同时处理。准备数据库并单独验证 Prisma 初始化/迁移；已有数据库禁止当空库执行 db push。配置 ACR 的 frontend、user-service、game-service、social-service、feed-service、ai-engine、gateway 镜像仓库。
+2. 先部署前端函数（其 API 构建变量使用最终应用域名），从 `fc-release-<SHA>` 工件获取 frontend URL，填入后端 `FC_FRONTEND_URL`。
+3. 启用新开关并手动运行后端发布工作流。发布器先创建禁止按需实例的函数、获取触发器地址，再注入真实依赖地址并启动资源。已有函数的运行配置不会在地址发现阶段被临时占位覆盖。
+4. 发布器等待 FC 的 Active / Successful 状态，校验后台预留资源与 HTTP 健康，再记录版本和 URL。任务管理器启用 FC 时要求 Redis 配置且启动 ping 成功。
+5. 检查并切换后台 Provider 的实际执行目标，验证登录、创作、暂停/恢复、预览、发布、流式连接与已启用支付/短信功能，然后绑定/切换正式域名。首次云端业务验证尚需用户账号与真实资源。
+
+本地只验证配置（无云端变更）：
 
 ```bash
-RELEASE=/opt/gamevallies/backend/releases/REPLACE_WITH_EXISTING_RELEASE
-# 避免 shell 环境覆盖旧发布清单。
-unset IMAGE_PREFIX IMAGE_TAG RUNTIME_ENV_FILE GATEWAY_BIND
-docker compose -p gamevallies-backend --env-file "$RELEASE/images.env" -f "$RELEASE/compose.yml" up -d --wait --wait-timeout 240
-ln -sfn "$RELEASE" /opt/gamevallies/backend/current.next
-mv -Tf /opt/gamevallies/backend/current.next /opt/gamevallies/backend/current
+python -m pip install -r scripts/fc/requirements.txt
+python scripts/fc/deploy.py validate --runtime .fc-runtime.json
 ```
 
-仅在上述 `up` 返回成功后更新指针；若失败，停止并排查，不要继续执行后续命令。回滚只恢复镜像和 Compose，**不回退运行密钥、数据库内容或模型配置**。
+执行时需要上表的环境变量，包括完整 40 位 `IMAGE_TAG`。`validate` 使用 SDK 模型校验但不能代替 FC 侧地域/配额/权限与网络检查。
 
-## 5. 日常维护与资源迁移边界
+## 更新与回滚
 
-- 当前清单：`/opt/gamevallies/backend/current/{compose.yml,images.env}`。在同一 compose 命令前缀下执行 `ps` 或 `logs --tail 200 SERVICE` 排查；避免将包含令牌的应用日志公开发布。
-- APK 的本地存储挂载为持久化命名卷 `gamevallies-backend_app-releases`。已有本地文件需要单独复制/恢复；工作流不删除卷、不执行 `down -v`、不自动清理旧镜像。
-- 游戏包、APK 的现有对象存储适配仍保留，以免迁移部署导致历史下载失效。本次没有复制历史对象、替换 CDN 地址或修改数据库中的存储键。若要求所有存储也迁入 OSS，应先盘点对象与引用，再做复制、校验和切换；不要直接删除原存储凭据。新模板默认关闭游戏 CDN，作品走应用内容路由。
-- 业务运维脚本默认使用仓库本地 `.env.production`；需要运行时仅准备所需配置，并通过已有 `--env-file` 参数指定路径（若脚本支持）。服务器运行配置统一在 `runtime.env`；不应把生产密钥同步回仓库。
-- 已移除原云平台的函数部署、镜像登录/同步脚本、Lambda 打包入口、部署技能和相应旧运维/设计文档。LLM 接口、对象存储适配及兼容数据库列属于业务代码，不作为部署脚本删除。
+后端发布先通过受内部凭据保护的 /__fc/drain 设置 Redis 维护标记，阻止新任务入队，等待队列中的生成/迭代任务完成（最多约 40 分钟，连续三次空队列）。等待失败不更新函数；完成或失败后尝试解除维护。维护标记 TTL 为两小时，工作流被强制终止时需核验任务和发布状态再主动恢复，不立即再次部署。
 
-## 官方参考
+每个已有函数更新前发布检查点版本，记录在无密钥的 `fc-release.json`。更新是 LATEST 原地更新，可能短暂中断连接，并非零停机蓝绿部署。失败时尝试恢复已更新函数的原版本配置。新建函数没有旧版本：停止预留容量、禁止按需实例，保留资源诊断，不自动删除。自动恢复失败会明确报错。
 
-- [ACR 推送与拉取镜像](https://www.alibabacloud.com/help/en/acr/getting-started/use-a-container-registry-enterprise-edition-instance-to-push-and-pull-images)
-- [ACR 访问凭据](https://www.alibabacloud.com/help/en/acr/user-guide/configure-access-credentials)
-- [ECS 安装和使用 Docker](https://help.aliyun.com/en/ecs/user-guide/install-and-use-docker)
-- [Compose up 健康等待参数](https://docs.docker.com/reference/cli/docker/compose/up/)
+下载对应发布工件后手动回滚：
+
+```bash
+python scripts/fc/deploy.py rollback --runtime .fc-runtime.json --release fc-release.json
+```
+
+回滚会检查账号、地域、前缀与在途任务，恢复记录中的上一函数版本。函数版本包含当时环境变量，因此密钥轮换后必须先审查回滚目标；回滚不回退数据库、NAS 文件或外部 Provider 配置。不自动清理旧版本、镜像或持久数据。
+
+## 验证依据
+
+- [FC 自定义容器](https://www.alibabacloud.com/help/en/functioncompute/create-a-custom-container-function-in-a-container-runtime)
+- [FC 预留实例 API](https://help.aliyun.com/en/functioncompute/fc/developer-reference/api-fc-2023-03-30-putprovisionconfig)
+- [函数状态与更新完成条件](https://help.aliyun.com/zh/functioncompute/states-of-custom-container-functions)
+- [FC 3.0 函数字段](https://help.aliyun.com/zh/functioncompute/api-fc-2023-03-30-struct-function)

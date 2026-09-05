@@ -1,0 +1,2 @@
+alibabacloud-fc20230330==4.8.2
+alibabacloud-tea-openapi==0.4.6

@@ -1,6 +1,6 @@
 # User Service 运行说明
 
-生产部署统一使用[阿里云部署与维护](../../docs/deployment/ALIYUN_DEPLOYMENT.md)。服务依赖 MySQL 和 Redis，并作为统一业务 API 入口。
+生产部署采用阿里云函数计算 FC 自定义容器，统一使用[阿里云部署与维护](../../docs/deployment/ALIYUN_DEPLOYMENT.md)。服务依赖 MySQL 和 Redis，并作为统一业务 API 入口。
 
 从 backend 仓库根目录安装依赖并构建：
 
@@ -18,4 +18,4 @@ npm run build --workspace=packages/user-service
 docker build --build-arg SERVICE=user-service -t gamevallies-user-service:local .
 ```
 
-生产运行参数、数据库初始化边界、ALB、发布和回滚以统一部署文档为准。
+生产运行参数、数据库初始化边界、FC 域名、发布和回滚以统一部署文档为准。
