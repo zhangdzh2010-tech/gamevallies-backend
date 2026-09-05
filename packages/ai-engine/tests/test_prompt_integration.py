@@ -1178,7 +1178,7 @@ class TestPromptIntegration(unittest.TestCase):
     def test_iterate_passes_current_code_using_code_parameter(self):
         generator = CodeGenerator(llm_mode="real")
 
-        with patch.object(
+        with patch.object(generator._client, "is_enabled", return_value=True), patch.object(
             generator,
             "_classify_iteration",
             new=AsyncMock(return_value=IterationType.element_change),
@@ -1633,3 +1633,4 @@ class TestPromptIntegration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

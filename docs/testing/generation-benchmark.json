@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "protocol": "Compare identical providers, tiers and total budgets; run each case with seeds a,b,c. Record ALL task outcomes, including failures. Human checks are separate from runtime QA.",
+  "cases": [
+    {"id":"open-cat","prompt":"做一个猫咪收集鱼的小游戏，有一点新意。","checks":["收集鱼可完成","三次设计的玩家决策有区别"]},
+    {"id":"explicit-cat","prompt":"猫咪自动走，玩家只能拖动箱子搭路，让猫咪拿到鱼。不要跳跃按钮。","checks":["只能间接控制","箱子改变路径","鱼可到达"]},
+    {"id":"untimed-puzzle","prompt":"做一个无限时间的电路解谜游戏，把电池和灯泡连起来，不扣生命。","checks":["电路连通点亮灯泡","无计时失败","无生命惩罚"]},
+    {"id":"strategy","prompt":"做一个回合制种花游戏，每回合只能浇水或种花，十回合后比较收获。","checks":["回合推进","资源决策","十回合结算"]},
+    {"id":"action","prompt":"做一个单手操作的飞船躲避游戏，拖动控制，碰到障碍扣一条命，一共两条命。","checks":["拖动有效","碰撞扣命","两次命损后结束"]},
+    {"id":"education","prompt":"给六岁儿童做一个通过分组学习加法的游戏，不用快速反应，没有倒计时。","checks":["分组支持理解加法","无倒计时","错误可重试"]},
+    {"id":"precise","prompt":"经典井字棋，两人轮流在九宫格落子，三子一线获胜，不加其他玩法。","checks":["轮流落子","横竖斜判胜","平局","无额外机制"]},
+    {"id":"rhythm","prompt":"一个不用外部音乐文件的节奏点击游戏，用合成音和节拍提示。","checks":["节拍可感知","点击有判定","无需外部资源"]},
+    {"id":"creative-time","prompt":"做一个可以回退最近一步的迷宫解谜游戏，回退不消耗步数。","checks":["移动改变位置","撤销正确恢复状态","步数恢复"]},
+    {"id":"relaxed","prompt":"想要一个轻松的整理书架小游戏，可以慢慢玩，没有失败惩罚。","checks":["整理操作有效","目标清楚","没有强制失败"]},
+    {"id":"same-mechanic-theme-a","prompt":"点击三种颜色的星星，按红蓝绿顺序收集十组获胜。","checks":["顺序校验","十组胜利"]},
+    {"id":"same-mechanic-theme-b","prompt":"点击三种颜色的水果，按红蓝绿顺序收集十组获胜。","checks":["顺序校验","十组胜利","与星星版标记为同玩法换题材"]}
+  ]
+}

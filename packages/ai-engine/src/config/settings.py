@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     QA_FAST_REPAIR_TIMEOUT_S: int = 120
     RUNTIME_QA_TIMEOUT_S: float = 8.0
     RUNTIME_QA_REQUIRED: bool = False
+    CREATIVE_DESIGN_ENABLED: bool = True
     MAX_ITERATIONS: int = 20
     LLM_CODE_REVIEW_MIN_TIER: Literal["safe", "standard", "showcase"] = "standard"
     # Quality-gate targeted patch repair (create pipeline): when a candidate
