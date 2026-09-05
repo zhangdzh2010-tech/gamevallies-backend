@@ -43,7 +43,8 @@ export class GenerationQueueWorkerService implements OnModuleInit {
     );
 
     if (!started) {
-      this.logger.warn('BullMQ worker unavailable; game-service will use local in-process execution fallback');
+      this.logger.warn('BullMQ worker unavailable; production generation requires queue recovery');
     }
   }
 }
+

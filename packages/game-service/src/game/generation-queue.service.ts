@@ -179,7 +179,7 @@ export class GenerationQueueService implements OnModuleDestroy {
       return true;
     } catch (error) {
       this.queueEnabled = false;
-      this.logger.warn(`BullMQ disabled, falling back to in-process execution: ${this.extractErrorMessage(error)}`);
+      this.logger.warn(`BullMQ unavailable: ${this.extractErrorMessage(error)}`);
       await this.closeQueue();
       return false;
     }
@@ -286,3 +286,4 @@ export class GenerationQueueService implements OnModuleDestroy {
     }
   }
 }
+

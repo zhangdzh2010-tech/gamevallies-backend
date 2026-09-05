@@ -76,6 +76,9 @@ describe('Game locking behavior', () => {
       wsGateway,
       generationTaskService,
       generationQueueService,
+      {} as any,
+      {} as any,
+      {} as any,
     );
   });
 
@@ -95,3 +98,4 @@ describe('Game locking behavior', () => {
     expect(statsService.incrementPlayCount).not.toHaveBeenCalled();
   });
 });
+

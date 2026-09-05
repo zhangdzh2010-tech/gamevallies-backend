@@ -262,7 +262,7 @@ class TestDialogueEngine(unittest.TestCase):
         self.assertEqual(spec.platform_constraints.input_mode, "drag")
         kwargs = mock_complete.await_args.kwargs
         self.assertTrue(kwargs["allow_provider_fallback"])
-        self.assertEqual(kwargs["max_tokens"], 640)
+        self.assertEqual(kwargs["max_tokens"], 1800)
 
     def test_parse_description_to_spec_retries_timeout_with_dedicated_intent_parse_budget(self):
         engine = DialogueEngine()

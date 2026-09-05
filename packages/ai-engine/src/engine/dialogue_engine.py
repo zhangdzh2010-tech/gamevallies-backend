@@ -861,6 +861,11 @@ def _normalize_slot_payload(slot_data: Dict[str, Any]) -> Dict[str, Any]:
     for key, value in slot_data.items():
         if key not in SlotState.model_fields or value is None:
             continue
+        if key == "lives":
+            # Optional malformed extension must not break otherwise valid slots.
+            if type(value) is int and 1 <= value <= 99:
+                normalized[key] = value
+            continue
         if key == "special_rules":
             if isinstance(value, str):
                 rule = value.strip()
@@ -1855,11 +1860,14 @@ class DialogueEngine:
         parse_input = _build_intent_parse_input(description, title=title)
         intent_parse_request_timeout_s = _intent_parse_request_timeout_s()
         intent_parse_overall_timeout_s = _intent_parse_overall_timeout_s()
+        from .creative_design import creative_design_contract, normalize_creative_design
+        creative_enabled = settings.CREATIVE_DESIGN_ENABLED
+        parse_system = _with_slot_json_contract(require_prompt("prompt.intent_parse_system"))
+        if creative_enabled:
+            parse_system += "\n\n" + creative_design_contract(variation_seed)
         text = await self._complete_slot_request(
-            max_tokens=640,
-            system=_with_slot_json_contract(
-                require_prompt("prompt.intent_parse_system")
-            ),
+            max_tokens=1800 if creative_enabled else 640,
+            system=parse_system,
             messages=[{"role": "user", "content": parse_input}],
             step_key="intent_parse",
             stage="intent_parsing",
@@ -1880,11 +1888,15 @@ class DialogueEngine:
             variation_seed=variation_seed,
         )
         slots = SlotState(**slot_data)
-        return _build_game_spec(
+        spec = _build_game_spec(
             slots,
             source_description=description,
             variation_seed=variation_seed,
         )
+        if creative_enabled:
+            payload = _safe_parse_json(text) or {}
+            spec.creative_design = normalize_creative_design(payload.get("creative_design"))
+        return spec
 
     async def _extract_slot_payload_with_repair(
         self,
@@ -2058,9 +2070,9 @@ def _build_game_spec(
 
     rules = GameRules(
         win_condition=slots.win_condition or defaults.get("win_condition", "Reach the target objective."),
-        lose_condition="lives_zero",
-        scoring="collect_plus_time",
-        lives=3,
+        lose_condition=slots.lose_condition or ("none" if game_type in {"puzzle", "educational"} else "lives_zero"),
+        scoring=slots.scoring or ("objective_progress" if game_type in {"puzzle", "educational"} else "collect_plus_time"),
+        lives=slots.lives if slots.lives is not None else 3,
     )
 
     visual = VisualStyle(
