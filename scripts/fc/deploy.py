@@ -153,7 +153,9 @@ class Deployment:
 
     def restore(self, name, version):
         previous = self.c.get_function(name, self.m.GetFunctionRequest(qualifier=version)).body.to_map()
-        # from_map accepts writable fields only; response metadata is not sent.
+        container = previous.get('customContainerConfig', {})
+        previous['customContainerConfig'] = {k: v for k, v in container.items() if k in ('image', 'port', 'command', 'entrypoint', 'healthCheckConfig', 'acrInstanceId', 'registryConfig', 'accelerationType')}
+        # SDK filters function response metadata; explicitly filter nested image output fields.
         body = self.m.UpdateFunctionInput().from_map(previous)
         self.c.update_function(name, self.m.UpdateFunctionRequest(body=body))
         self.wait_function(name)
