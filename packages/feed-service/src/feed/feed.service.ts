@@ -93,8 +93,14 @@ export class FeedService {
   }
 
   async getTrendingFeed(page: number = 1, limit: number = 20, query?: string) {
+    page = Number.isFinite(page) ? Math.max(1, Math.floor(page)) : 1;
+    limit = Number.isFinite(limit) ? Math.min(100, Math.max(1, Math.floor(limit))) : 20;
+    const configuredLimit = Number(process.env.TRENDING_CANDIDATE_LIMIT || 1000);
+    const candidateLimit = Number.isFinite(configuredLimit)
+      ? Math.min(10000, Math.max(100, Math.floor(configuredLimit)))
+      : 1000;
     const normalizedQuery = (query || '').trim().toLowerCase();
-    const cacheKey = `feed:trending:${page}:${limit}:${normalizedQuery || '*'}`;
+    const cacheKey = `feed:trending:v2:${candidateLimit}:${page}:${limit}:${normalizedQuery || '*'}`;
     const cached = await this.cacheGet(cacheKey);
 
     if (cached) {
@@ -103,6 +109,10 @@ export class FeedService {
 
     const games = await this.prisma.game.findMany({
       where: this.buildPublishedWhere(query),
+      // Rank a bounded recent candidate pool. Pagination describes this pool,
+      // while latest/search retain their separate catalogue semantics.
+      take: candidateLimit,
+      orderBy: [{ publishedAt: 'desc' }, { id: 'asc' }],
       include: {
         author: {
           select: {
@@ -115,12 +125,13 @@ export class FeedService {
       },
     });
 
+    const now = Date.now();
     const scored = games.map((game) => {
       const likes = Number(game.likeCount);
       const plays = Number(game.playCount);
       const score = this.calculateWilsonScore(likes, plays + likes);
-      const publishedTime = game.publishedAt ? new Date(game.publishedAt).getTime() : Date.now();
-      const ageHours = (Date.now() - publishedTime) / (1000 * 60 * 60);
+      const publishedTime = game.publishedAt ? new Date(game.publishedAt).getTime() : now;
+      const ageHours = Math.max(0, now - publishedTime) / (1000 * 60 * 60);
       const decayFactor = Math.exp(-0.01 * ageHours);
       const finalScore = score * decayFactor;
 
@@ -128,7 +139,7 @@ export class FeedService {
     });
 
     const sorted = scored
-      .sort((a, b) => b.score - a.score)
+      .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
       .slice((page - 1) * limit, page * limit)
       .map((game) => this.withPreviewUrl(game));
 

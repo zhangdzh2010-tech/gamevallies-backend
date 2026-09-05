@@ -41,7 +41,11 @@
     "docker:build:feed": "bash scripts/build-docker.sh feed-service",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
-    "docker:logs": "docker compose logs -f"
+    "docker:logs": "docker compose logs -f",
+    "format:check": "prettier --check \"packages/*/src/**/*.ts\"",
+    "type-check": "npm run build --workspaces",
+    "test:unit": "npm run test --workspaces --if-present --",
+    "test:integration": "jest --config jest.integration.config.js --runInBand"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

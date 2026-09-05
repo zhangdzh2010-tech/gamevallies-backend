@@ -1,3 +1,37 @@
+import * as gameAccessPolicy from './game-access.policy';
+import * as gameFailurePolicy from './game-failure.policy';
+import * as gameGenerationPayload from './game-generation-payload';
+import * as gameQualityPolicy from './game-quality.policy';
+import * as gameRuntimePolicy from './game-runtime.policy';
+import type {
+  RuntimeOrientation,
+  GenerationTier,
+  FailureContext,
+  CreateQualityGate,
+  AccessGrantDecision,
+  GenerationTaskSummary,
+  PreviewLinkOptions,
+  CoverLinkOptions,
+  PipelineVersion,
+  PipelineEntrypoint,
+  PromptBundleSnapshotPayload,
+  RuntimeContractPayload,
+  SourceBundleContextPayload,
+  DirectIntentParseResponsePayload,
+  CreateGameCommand,
+  CreateExecutionOptions,
+  IterateExecutionOptions,
+  UpstreamAsyncTaskHandle,
+  ResolvedUpstreamAsyncTaskHandle,
+  UpstreamAsyncTaskSnapshot,
+  EffectiveTaskStatus,
+  EffectiveTaskResolution,
+} from './game-service.types';
+import {
+  TaskAbortedError,
+  TaskSupersededError,
+  withRetry,
+} from './generation-retry';
 import {
   Injectable,
   Logger,
@@ -9,9 +43,15 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { JwtService } from '@nestjs/jwt';
-import { createHash, randomUUID } from 'crypto';
+import {
+  ConfigService,
+} from '@nestjs/config';
+import {
+  JwtService,
+} from '@nestjs/jwt';
+import {
+  randomUUID,
+} from 'crypto';
 import axios from 'axios';
 import {
   GameAccessGrantSource,
@@ -22,38 +62,59 @@ import {
   Prisma,
   UserSubscriptionStatus,
 } from '@prisma/client';
-import { PrismaService } from '../prisma/prisma.service';
-import { BundleService } from '../bundle/bundle.service';
-import { BundleCdnService } from '../bundle-cdn/bundle-cdn.service';
-import { StatsService } from '../stats/stats.service';
-import { GameWebSocketGateway } from '../websocket/websocket.gateway';
 import {
-  CreateGameDto,
-  CreateGameGenerationTier,
+  PrismaService,
+} from '../prisma/prisma.service';
+import {
+  BundleService,
+} from '../bundle/bundle.service';
+import {
+  BundleCdnService,
+} from '../bundle-cdn/bundle-cdn.service';
+import {
+  StatsService,
+} from '../stats/stats.service';
+import {
+  GameWebSocketGateway,
+} from '../websocket/websocket.gateway';
+import {
   CreateGameOrientation,
   PublishGameDto,
   IterateGameDto,
 } from './dto';
-import { GenerationTaskService } from './generation-task.service';
-import { GenerationQueueService } from './generation-queue.service';
+import {
+  GenerationTaskService,
+} from './generation-task.service';
+import {
+  GenerationQueueService,
+} from './generation-queue.service';
 import {
   GENERATION_QUEUE_JOB_PIPELINE_ITERATE,
   GENERATION_QUEUE_JOB_PIPELINE_RUN,
 } from './generation-queue.types';
-import { normalizeGameType } from './game-type-catalog';
 import {
-  buildIntentBuildSnapshot,
-  normalizeIntentBuildSnapshot,
-} from './intent-build.util';
+  normalizeGameType,
+} from './game-type-catalog';
+
 import {
   buildPublicGenerationStageDetails,
   resolvePublicGenerationStage,
 } from './generation-stage-contract';
-import { RuntimeProfileService } from '../platform/config/runtime-profile.service';
-import { SystemConfigRepository } from '../platform/config/system-config.repository';
-import { TimeoutConfigService } from '../platform/config/timeout-config.service';
-import { sanitizeUserIdea } from '../common/sanitize-idea';
-import { pickPublicAuthorName as pickPublicShareAuthorName } from '../common/game-presenter';
+import {
+  RuntimeProfileService,
+} from '../platform/config/runtime-profile.service';
+import {
+  SystemConfigRepository,
+} from '../platform/config/system-config.repository';
+import {
+  TimeoutConfigService,
+} from '../platform/config/timeout-config.service';
+import {
+  sanitizeUserIdea,
+} from '../common/sanitize-idea';
+import {
+  pickPublicAuthorName as pickPublicShareAuthorName,
+} from '../common/game-presenter';
 
 const STAGE_PCT: Record<string, number> = {
   intent_parsing: 15,
@@ -67,260 +128,6 @@ const STAGE_PCT: Record<string, number> = {
 };
 
 const MAX_ACTIVE_TASK_SWEEP_INTERVAL_MS = 5_000;
-
-type RuntimeOrientation = 'portrait_first' | 'landscape_first';
-type GenerationTier = CreateGameGenerationTier;
-
-interface RetryContext {
-  retry: number;
-  maxRetries: number;
-  attempt: number;
-  maxAttempts: number;
-  error: unknown;
-}
-
-interface RetryOptions {
-  maxAttempts?: number;
-  delayMs?: number;
-  retryOnHttpResponse?: boolean;
-  retryOnNetworkError?: boolean;
-  onRetry?: (context: RetryContext) => void | Promise<void>;
-}
-
-interface FailureContext {
-  message: string;
-  failedStage?: string;
-  retryCount: number;
-  fallback?: string;
-  failureFamily?: string;
-  primaryArtifactId?: string;
-}
-
-interface CreateQualityGate {
-  generationTier: GenerationTier;
-  minQualityScore: number;
-  requireStructuredReview: boolean;
-  minReviewBonus?: number;
-}
-
-interface AccessGrantDecision {
-  canPlay: boolean;
-  requireSubscription: boolean;
-  quotaRemaining: number;
-  accessGrantSource: GameAccessGrantSource;
-  accessGrantSubscriptionId: string | null;
-}
-
-interface GenerationTaskSummary {
-  taskId: string;
-  taskType: 'pipeline_run' | 'pipeline_iterate';
-  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'timed_out';
-  timeoutS: number;
-  wsChannel: string;
-  pollUrl: string;
-  artifactsUrl?: string;
-  eventsUrl?: string;
-  cancelUrl?: string;
-}
-
-interface PreviewLinkOptions {
-  previewToken?: string;
-}
-
-interface CoverLinkOptions extends PreviewLinkOptions {
-  taskId?: string;
-  version?: number | string;
-}
-
-type PipelineVersion = 'v2';
-type PipelineEntrypoint = 'create' | 'iterate';
-
-interface PromptBundleSnapshotPayload {
-  bundle_id: string;
-  bundle_version: number;
-  resolved_at: string;
-  layers: Record<string, unknown>;
-}
-
-interface RuntimeContractPayload {
-  version: string;
-  runtime_profile: string;
-  metadata: Record<string, unknown>;
-  [key: string]: unknown;
-}
-
-interface SourceBundleRevisionPayload {
-  version?: number | null;
-  generated_at?: string | null;
-  feedback?: string | null;
-  iteration_type?: string | null;
-  summary?: string | null;
-}
-
-interface SourceBundleContextPayload {
-  title?: string | null;
-  latest_bundle_version?: number | null;
-  latest_game_type?: string | null;
-  latest_generation_tier?: GenerationTier | null;
-  latest_orientation?: CreateGameOrientation | null;
-  latest_feedback?: string | null;
-  latest_iteration_type?: string | null;
-  summary?: string | null;
-  recent_revisions?: SourceBundleRevisionPayload[];
-}
-
-interface DirectIntentParseResponsePayload {
-  spec?: Record<string, unknown> | null;
-  confidence?: number;
-  missing_required?: string[];
-  slot_fill_pct?: number;
-}
-
-interface CreateGameCommand extends CreateGameDto {
-  sourceSpec?: Record<string, unknown> | null;
-  creationSessionId?: string | null;
-  entryMode?: string | null;
-  sourceGameId?: string | null;
-  // H.5.1 - Clean, user-facing idea (the user's original 1-line typed text or
-  // creation-session initialPrompt). Stored separately from `description`,
-  // which historically holds the LLM-expanded prompt and must not leak to UI.
-  userIdea?: string | null;
-}
-
-interface CreateExecutionOptions {
-  title?: string;
-  orientation?: CreateGameOrientation;
-  generationTier?: GenerationTier;
-  access?: AccessGrantDecision;
-  sourceSpec?: Record<string, unknown> | null;
-  creationSessionId?: string | null;
-  entryMode?: string | null;
-  sourceGameId?: string | null;
-  promptBundleSnapshot?: PromptBundleSnapshotPayload | null;
-  runtimeContract?: RuntimeContractPayload | null;
-}
-
-interface IterateExecutionOptions {
-  promptBundleSnapshot?: PromptBundleSnapshotPayload | null;
-  runtimeContract?: RuntimeContractPayload | null;
-  orientation?: CreateGameOrientation;
-  generationTier?: GenerationTier;
-  sourceSpec?: Record<string, unknown> | null;
-  sourceBundleContext?: SourceBundleContextPayload | null;
-  game?: {
-    gameType?: string | null;
-    status?: string | null;
-    visibility?: string | null;
-    version?: number | null;
-    canPlay?: boolean | null;
-    requireSubscription?: boolean | null;
-    accessGrantSource?: GameAccessGrantSource | string | null;
-    accessGrantSubscriptionId?: string | null;
-    forkedFrom?: string | null;
-  };
-}
-
-interface UpstreamAsyncTaskHandle {
-  task_id: string;
-  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
-  poll_url?: string;
-  cancel_url?: string;
-  /** True when the AI engine matched our idempotency key and reused an existing task. */
-  deduplicated?: boolean;
-}
-
-interface ResolvedUpstreamAsyncTaskHandle extends UpstreamAsyncTaskHandle {
-  aiEngineBaseUrl: string;
-}
-
-interface UpstreamAsyncTaskFailure {
-  message?: string;
-  failed_stage?: string;
-  retry_count?: number;
-  fallback?: string;
-  failure_family?: string;
-  primary_artifact_id?: string;
-}
-
-interface UpstreamAsyncTaskSnapshot {
-  task_id: string;
-  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
-  result?: Record<string, any> | null;
-  error?: UpstreamAsyncTaskFailure | null;
-}
-
-type EffectiveTaskStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'timed_out';
-
-type EffectiveTaskResolution =
-  | {
-      status: 'succeeded';
-      stage: string;
-      message: string;
-      retryCount?: number;
-    }
-  | {
-      status: 'failed' | 'canceled' | 'timed_out';
-      stage: string;
-      message: string;
-      retryCount?: number;
-    };
-
-class TaskAbortedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'TaskAbortedError';
-  }
-}
-
-class TaskSupersededError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'TaskSupersededError';
-  }
-}
-
-/** Retry an async operation on transient network/5xx errors. */
-async function withRetry<T>(
-  fn: () => Promise<T>,
-  options: RetryOptions = {},
-): Promise<T> {
-  const maxAttempts = options.maxAttempts ?? 2;
-  const delayMs = options.delayMs ?? 3000;
-  const retryOnHttpResponse = options.retryOnHttpResponse ?? true;
-  const retryOnNetworkError = options.retryOnNetworkError ?? true;
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      return await fn();
-    } catch (err: any) {
-      lastError = err;
-      // Timeouts (ECONNABORTED) are retryable: async submissions carry an
-      // X-Idempotency-Key, so the AI engine dedupes repeated submits instead
-      // of launching a duplicate pipeline job.
-      const isHttpRetryable =
-        retryOnHttpResponse &&
-        Boolean(err?.response) &&
-        (err.response.status >= 500 || err.response.status === 429);
-      const isNetworkRetryable =
-        retryOnNetworkError &&
-        !err?.response &&
-        Boolean(err?.code);
-      const isRetryable = isHttpRetryable || isNetworkRetryable;
-      if (!isRetryable || attempt === maxAttempts) break;
-      if (options.onRetry) {
-        await options.onRetry({
-          retry: attempt,
-          maxRetries: maxAttempts - 1,
-          attempt: attempt + 1,
-          maxAttempts,
-          error: err,
-        });
-      }
-      await new Promise((r) => setTimeout(r, delayMs));
-    }
-  }
-  throw lastError;
-}
 
 @Injectable()
 export class GameService implements OnModuleInit, OnModuleDestroy {
@@ -476,7 +283,18 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       });
 
       for (const task of activeTasks) {
-        await this.reconcileGenerationTask(task).catch((error) => {
+        await this.reconcileGenerationTask(task.id).then(async (current) => {
+          // The database task also serves as the pending-delivery record.
+          // Retry publication after a Redis outage, using the same BullMQ jobId.
+          if (current?.status === 'queued' && !current.upstreamTaskId && !current.cancelRequested) {
+            const jobName = current.taskType === GenerationTaskType.pipeline_run
+              ? GENERATION_QUEUE_JOB_PIPELINE_RUN
+              : current.taskType === GenerationTaskType.pipeline_iterate
+                ? GENERATION_QUEUE_JOB_PIPELINE_ITERATE
+                : null;
+            if (jobName) await this.generationQueueService.enqueueJob(jobName, current.id);
+          }
+        }).catch((error) => {
           this.logger.warn(`Failed to sweep task ${task.id}: ${error.message}`);
         });
       }
@@ -492,10 +310,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   }
 
   private normalizeOptionalString(value: unknown): string | undefined {
-    const normalized = String(value || '').trim();
-    return normalized || undefined;
+    return gameRuntimePolicy.normalizeOptionalString(value);
   }
-
   private buildCreateIntentVariationSeed(params: {
     userId: string;
     description: string;
@@ -503,16 +319,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     generationTier: GenerationTier;
     entryMode?: string | null;
   }): string {
-    const fingerprint = JSON.stringify({
-      userId: params.userId,
-      description: params.description.trim(),
-      title: this.normalizeOptionalString(params.title) || null,
-      generationTier: params.generationTier,
-      entryMode: this.normalizeOptionalString(params.entryMode) || 'create',
-    });
-    return createHash('sha256').update(fingerprint).digest('hex').slice(0, 24);
+    return gameGenerationPayload.buildCreateIntentVariationSeed(params);
   }
-
   private buildCreateIntentBuild(params: {
     title?: string | null;
     description: string;
@@ -520,57 +328,18 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     generationTier: GenerationTier;
     sourceSpec?: Record<string, unknown> | null;
   }) {
-    return buildIntentBuildSnapshot({
-      title: this.normalizeOptionalString(params.title),
-      initialPrompt: params.description,
-      entryMode: this.normalizeOptionalString(params.entryMode) || 'create',
-      generationTier: params.generationTier,
-      sourceSpec: params.sourceSpec || null,
-    });
+    return gameGenerationPayload.buildCreateIntentBuild(params);
   }
-
   private resolvePipelineVersion(): PipelineVersion {
-    // The V1 generation pipeline has been removed; every generation task runs V2.
-    return 'v2';
+    return gameRuntimePolicy.resolvePipelineVersion();
   }
-
   private async resolveActivePromptBundleIdentity(): Promise<{ id: string; version: number }> {
     return this.runtimeProfileService.resolveActivePromptBundleIdentity();
   }
 
   private inferRuntimeProfileHint(...inputs: Array<string | null | undefined>): string | undefined {
-    const text = inputs
-      .map((value) => String(value || '').trim().toLowerCase())
-      .filter(Boolean)
-      .join(' ');
-
-    if (!text) {
-      return undefined;
-    }
-
-    if (/(quiz show|game show|trivia show|who wants to be a millionaire|主持人|答题秀|答题节目|节目答题|综艺答题|综艺节目|舞台秀|舞台答题|连击|连胜|节奏感|演出效果|buzzer|streak|combo|host)/.test(text)) {
-      return /(连击|连胜|streak|combo)/.test(text)
-        ? 'tap_challenge_combo'
-        : 'tap_challenge_timing';
-    }
-    if (/(classroom|teacher|lesson|quiz|worksheet|practice question|practice quiz|learning game|teaching|knowledge point|课堂|教学|老师|练习题|知识点|问答|测验|小测|学习游戏|教学游戏)/.test(text)) {
-      return 'puzzle_grid';
-    }
-    if (/(runner|race|racing|lane|endless runner|跑酷|赛道|lane runner)/.test(text)) {
-      return 'casual_lane';
-    }
-    if (/(puzzle|grid|tile|match|merge|circuit|wire|battery|bulb|switch|connect|drag|assemble|拼图|消除|方块|电路|导线|电池|灯泡|开关|连接|拖拽|组装)/.test(text)) {
-      return 'puzzle_grid';
-    }
-    if (/(shooter|shoot|top-down|top down|action|射击|飞船|弹幕|俯视|动作)/.test(text)) {
-      return 'casual_action';
-    }
-    if (/(rhythm|timing|beat|music|节奏|音游|点按)/.test(text)) {
-      return 'tap_challenge';
-    }
-    return undefined;
+    return gameRuntimePolicy.inferRuntimeProfileHint(...inputs);
   }
-
   private async resolveRuntimeProfile(profileHint?: string): Promise<{
     id: string;
     contractSchema?: Prisma.JsonValue | null;
@@ -583,54 +352,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     profileId: string,
     rawSchema: Prisma.JsonValue | null | undefined,
   ): RuntimeContractPayload {
-    const schema = typeof rawSchema === 'object' && rawSchema !== null
-      ? rawSchema as Record<string, unknown>
-      : {};
-    const renderContract = typeof schema.renderContract === 'object' && schema.renderContract !== null
-      ? schema.renderContract as Record<string, unknown>
-      : {};
-
-    return {
-      version: '1.0',
-      runtime_profile: profileId,
-      metadata: {},
-      canvas: {
-        requires_canvas_2d: renderContract.requiresCanvas2D ?? false,
-        allow_webgl: renderContract.allowWebgl ?? !(renderContract.requiresCanvas2D === true),
-        must_render_within_ms: renderContract.mustRenderWithinMs ?? 1500,
-        orientation: (schema.mobileLayoutContract as Record<string, unknown> | undefined)?.orientation ?? 'portrait_first',
-        ui_scale_mode: (schema.mobileLayoutContract as Record<string, unknown> | undefined)?.uiScaleMode ?? 'short_edge',
-        target_fps: renderContract.targetFps ?? 60,
-      },
-      input: this.toSnakeCaseRecord(schema.inputContract),
-      state: this.toSnakeCaseRecord(schema.stateContract),
-      mobile_layout: this.toSnakeCaseRecord(schema.mobileLayoutContract),
-      safety: this.toSnakeCaseRecord(schema.safetyContract),
-      gameplay: this.toSnakeCaseRecord(schema.gameplayContract),
-    };
+    return gameRuntimePolicy.normalizeRuntimeContractSchema(profileId, rawSchema);
   }
-
   private toSnakeCaseRecord(value: unknown): Record<string, unknown> {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return {};
-    }
-
-    return Object.entries(value as Record<string, unknown>).reduce<Record<string, unknown>>((acc, [key, entry]) => {
-      const snakeKey = key
-        .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
-        .replace(/-/g, '_')
-        .toLowerCase();
-      if (Array.isArray(entry)) {
-        acc[snakeKey] = entry;
-      } else if (entry && typeof entry === 'object') {
-        acc[snakeKey] = this.toSnakeCaseRecord(entry);
-      } else {
-        acc[snakeKey] = entry;
-      }
-      return acc;
-    }, {});
+    return gameRuntimePolicy.toSnakeCaseRecord(value);
   }
-
   private async buildPromptBundleSnapshot(
     entrypoint: PipelineEntrypoint,
     runtimeProfile?: string,
@@ -673,216 +399,62 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   private resolveRuntimeOrientation(
     orientation?: CreateGameOrientation | null,
   ): RuntimeOrientation | undefined {
-    if (orientation === 'landscape') {
-      return 'landscape_first';
-    }
-    if (orientation === 'portrait') {
-      return 'portrait_first';
-    }
-    return undefined;
+    return gameRuntimePolicy.resolveRuntimeOrientation(orientation);
   }
-
   private normalizeRequestedOrientation(
     orientation?: unknown,
   ): CreateGameOrientation | undefined {
-    if (orientation === 'landscape') {
-      return 'landscape';
-    }
-    if (orientation === 'portrait') {
-      return 'portrait';
-    }
-    return undefined;
+    return gameRuntimePolicy.normalizeRequestedOrientation(orientation);
   }
-
   private normalizeRequestedGenerationTier(
     generationTier?: unknown,
   ): GenerationTier | undefined {
-    if (generationTier === 'safe') {
-      return 'safe';
-    }
-    if (generationTier === 'showcase') {
-      return 'showcase';
-    }
-    if (generationTier === 'standard') {
-      return 'standard';
-    }
-    return undefined;
+    return gameRuntimePolicy.normalizeRequestedGenerationTier(generationTier);
   }
-
   private inferRequestedOrientationFromText(
     description?: string | null,
     title?: string | null,
   ): CreateGameOrientation | undefined {
-    const text = `${title ?? ''} ${description ?? ''}`.trim().toLowerCase();
-    if (!text) {
-      return undefined;
-    }
-
-    const hasLandscapeHint = [
-      'landscape',
-      'horizontal',
-      'wide',
-      '16:9',
-      '横屏',
-      '横版',
-      '宽屏',
-    ].some((token) => text.includes(token));
-    const hasPortraitHint = [
-      'portrait',
-      'vertical',
-      '9:16',
-      '竖屏',
-      '纵向',
-    ].some((token) => text.includes(token));
-
-    if (hasLandscapeHint && !hasPortraitHint) {
-      return 'landscape';
-    }
-    if (hasPortraitHint && !hasLandscapeHint) {
-      return 'portrait';
-    }
-    return undefined;
+    return gameRuntimePolicy.inferRequestedOrientationFromText(description, title);
   }
-
   private resolveRequestedOrientationFromRuntime(
     orientation?: unknown,
   ): CreateGameOrientation | undefined {
-    if (orientation === 'landscape_first') {
-      return 'landscape';
-    }
-    if (orientation === 'portrait_first') {
-      return 'portrait';
-    }
-    return undefined;
+    return gameRuntimePolicy.resolveRequestedOrientationFromRuntime(orientation);
   }
-
   private resolveRuntimeOrientationFromContract(
     runtimeContract?: RuntimeContractPayload | null,
   ): RuntimeOrientation | undefined {
-    if (!runtimeContract || typeof runtimeContract !== 'object') {
-      return undefined;
-    }
-
-    const mobileLayout = runtimeContract.mobile_layout && typeof runtimeContract.mobile_layout === 'object'
-      ? runtimeContract.mobile_layout as Record<string, unknown>
-      : null;
-    const canvas = runtimeContract.canvas && typeof runtimeContract.canvas === 'object'
-      ? runtimeContract.canvas as Record<string, unknown>
-      : null;
-    const metadata = runtimeContract.metadata && typeof runtimeContract.metadata === 'object'
-      ? runtimeContract.metadata as Record<string, unknown>
-      : null;
-
-    const runtimeOrientation = [
-      mobileLayout?.orientation,
-      canvas?.orientation,
-      metadata?.orientation,
-      metadata?.runtimeOrientation,
-      metadata?.runtime_orientation,
-    ].find((value) => value === 'portrait_first' || value === 'landscape_first');
-
-    return runtimeOrientation as RuntimeOrientation | undefined;
+    return gameRuntimePolicy.resolveRuntimeOrientationFromContract(runtimeContract);
   }
-
   private buildPersistedOrientationMetadata(params: {
     orientation?: CreateGameOrientation | null;
     runtimeContract?: RuntimeContractPayload | null;
   }): Record<string, unknown> {
-    const requestedOrientation = this.normalizeRequestedOrientation(params.orientation)
-      ?? this.resolveRequestedOrientationFromRuntime(
-        this.resolveRuntimeOrientationFromContract(params.runtimeContract),
-      );
-    const runtimeOrientation = this.resolveRuntimeOrientationFromContract(params.runtimeContract)
-      ?? this.resolveRuntimeOrientation(requestedOrientation);
-
-    return {
-      ...(requestedOrientation ? { requestedOrientation } : {}),
-      ...(runtimeOrientation ? { runtimeOrientation } : {}),
-    };
+    return gameRuntimePolicy.buildPersistedOrientationMetadata(params);
   }
-
   private buildPersistedGenerationTierMetadata(
     generationTier?: GenerationTier | null,
   ): Record<string, unknown> {
-    const normalizedGenerationTier = this.normalizeRequestedGenerationTier(generationTier) || 'standard';
-    return {
-      generationTier: normalizedGenerationTier,
-    };
+    return gameRuntimePolicy.buildPersistedGenerationTierMetadata(generationTier);
   }
-
   private resolveCreateQualityGate(
     generationTier?: GenerationTier | null,
   ): CreateQualityGate {
-    const normalizedGenerationTier = this.normalizeRequestedGenerationTier(generationTier) || 'standard';
-    if (normalizedGenerationTier === 'showcase') {
-      return {
-        generationTier: normalizedGenerationTier,
-        minQualityScore: 8.5,
-        requireStructuredReview: true,
-        minReviewBonus: -1.5,
-      };
-    }
-    if (normalizedGenerationTier === 'safe') {
-      return {
-        generationTier: normalizedGenerationTier,
-        minQualityScore: 5.8,
-        requireStructuredReview: false,
-      };
-    }
-    return {
-      generationTier: normalizedGenerationTier,
-      minQualityScore: 6.6,
-      requireStructuredReview: false,
-    };
+    return gameQualityPolicy.resolveCreateQualityGate(generationTier);
   }
-
   private normalizeQualityScore(value: unknown): number | null {
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      return value;
-    }
-    if (typeof value === 'string') {
-      const parsed = Number.parseFloat(value);
-      return Number.isFinite(parsed) ? parsed : null;
-    }
-    return null;
+    return gameQualityPolicy.normalizeQualityScore(value);
   }
-
   private extractQualityBreakdownMetric(
     qualityBreakdown: unknown,
     ...keys: string[]
   ): number | null {
-    if (!qualityBreakdown || typeof qualityBreakdown !== 'object' || Array.isArray(qualityBreakdown)) {
-      return null;
-    }
-
-    for (const key of keys) {
-      const value = this.normalizeQualityScore((qualityBreakdown as Record<string, unknown>)[key]);
-      if (value !== null) {
-        return value;
-      }
-    }
-
-    return null;
+    return gameQualityPolicy.extractQualityBreakdownMetric(qualityBreakdown, ...keys);
   }
-
   private didStructuredReviewRun(qualityBreakdown: unknown): boolean {
-    if (!qualityBreakdown || typeof qualityBreakdown !== 'object' || Array.isArray(qualityBreakdown)) {
-      return false;
-    }
-
-    const rawReviewRan = (qualityBreakdown as Record<string, unknown>).reviewRan
-      ?? (qualityBreakdown as Record<string, unknown>).review_ran;
-    if (typeof rawReviewRan === 'boolean') {
-      return rawReviewRan;
-    }
-    if (typeof rawReviewRan === 'string') {
-      const normalized = rawReviewRan.trim().toLowerCase();
-      return normalized === 'true' || normalized === '1' || normalized === 'yes';
-    }
-
-    return false;
+    return gameQualityPolicy.didStructuredReviewRun(qualityBreakdown);
   }
-
   private buildCreateQualityGateError(params: {
     generationTier: GenerationTier;
     message: string;
@@ -891,117 +463,28 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     failureFamily: string;
     retryCount: number;
   } {
-    const error = new Error(params.message) as Error & {
-      failedStage: string;
-      failureFamily: string;
-      retryCount: number;
-    };
-    error.name = 'CreateQualityGateError';
-    error.failedStage = 'code_review';
-    error.failureFamily = 'quality_gate';
-    error.retryCount = 0;
-    return error;
+    return gameFailurePolicy.buildCreateQualityGateError(params);
   }
-
   private assertCreateResultMeetsQualityGate(params: {
     generationTier?: GenerationTier | null;
     qualityScore: unknown;
     qualityBreakdown: unknown;
   }): void {
-    const gate = this.resolveCreateQualityGate(params.generationTier);
-    const qualityScore = this.normalizeQualityScore(params.qualityScore);
-    const reviewRan = this.didStructuredReviewRun(params.qualityBreakdown);
-    const reviewBonus = this.extractQualityBreakdownMetric(
-      params.qualityBreakdown,
-      'review_bonus',
-      'reviewBonus',
-    );
-    const tierLabel = gate.generationTier.charAt(0).toUpperCase() + gate.generationTier.slice(1);
-
-    if (gate.requireStructuredReview && !reviewRan) {
-      throw this.buildCreateQualityGateError({
-        generationTier: gate.generationTier,
-        message: `${tierLabel} quality gate failed: structured code review did not produce a usable result.`,
-      });
-    }
-
-    if (qualityScore === null) {
-      throw this.buildCreateQualityGateError({
-        generationTier: gate.generationTier,
-        message: `${tierLabel} quality gate failed: qualityScore was not produced.`,
-      });
-    }
-
-    if (qualityScore + Number.EPSILON < gate.minQualityScore) {
-      throw this.buildCreateQualityGateError({
-        generationTier: gate.generationTier,
-        message: `${tierLabel} quality gate failed: qualityScore ${qualityScore.toFixed(1)} is below required ${gate.minQualityScore.toFixed(1)}.`,
-      });
-    }
-
-    if (
-      gate.minReviewBonus !== undefined
-      && reviewBonus !== null
-      && reviewBonus + Number.EPSILON < gate.minReviewBonus
-    ) {
-      throw this.buildCreateQualityGateError({
-        generationTier: gate.generationTier,
-        message: `${tierLabel} quality gate failed: structured code review penalty ${reviewBonus.toFixed(1)} is below allowed ${gate.minReviewBonus.toFixed(1)}.`,
-      });
-    }
+    return gameQualityPolicy.assertCreateResultMeetsQualityGate(params);
   }
-
   private resolveNextIterationVersion(params: {
     gameVersion?: number | null;
     latestBundle?: { version?: number | null } | null;
     bundleHistory?: Array<{ version?: number | null } | null> | null;
   }): number {
-    const versions = [
-      Number(params.gameVersion || 0),
-      Number(params.latestBundle?.version || 0),
-      ...((params.bundleHistory || []).map((bundle) => Number(bundle?.version || 0))),
-    ].filter((value) => Number.isFinite(value) && value >= 0);
-
-    return Math.max(0, ...versions) + 1;
+    return gameRuntimePolicy.resolveNextIterationVersion(params);
   }
-
   private applyRequestedCreateOrientation(
     runtimeContract: RuntimeContractPayload,
     orientation?: CreateGameOrientation | null,
   ): RuntimeContractPayload {
-    const runtimeOrientation = this.resolveRuntimeOrientation(orientation);
-    if (!runtimeOrientation) {
-      return runtimeContract;
-    }
-
-    const canvas = runtimeContract.canvas && typeof runtimeContract.canvas === 'object'
-      ? runtimeContract.canvas as Record<string, unknown>
-      : {};
-    const mobileLayout = runtimeContract.mobile_layout && typeof runtimeContract.mobile_layout === 'object'
-      ? runtimeContract.mobile_layout as Record<string, unknown>
-      : {};
-    const metadata = runtimeContract.metadata && typeof runtimeContract.metadata === 'object'
-      ? runtimeContract.metadata as Record<string, unknown>
-      : {};
-
-    return {
-      ...runtimeContract,
-      canvas: {
-        ...canvas,
-        orientation: runtimeOrientation,
-      },
-      mobile_layout: {
-        ...mobileLayout,
-        orientation: runtimeOrientation,
-      },
-      metadata: {
-        ...metadata,
-        requested_orientation: orientation,
-        orientation: runtimeOrientation,
-      },
-    };
+    return gameRuntimePolicy.applyRequestedCreateOrientation(runtimeContract, orientation);
   }
-
   private buildEntitlementSnapshot(params: {
     canPlay: boolean;
     requireSubscription: boolean;
@@ -1010,198 +493,37 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     quotaRemaining?: number | null;
     refundOnFailure: boolean;
   }) {
-    return {
-      can_play: params.canPlay,
-      require_subscription: params.requireSubscription,
-      grant_source: params.accessGrantSource || GameAccessGrantSource.none,
-      grant_subscription_id: params.accessGrantSubscriptionId ?? null,
-      quota_remaining: params.quotaRemaining ?? null,
-      refund_on_failure: params.refundOnFailure,
-    };
+    return gameGenerationPayload.buildEntitlementSnapshot(params);
   }
-
   private buildVisibilityModel(params: {
     status?: string | null;
     visibility?: string | null;
     canPlay?: boolean | null;
   }) {
-    const publishedVisibility = params.visibility || 'private';
-    const isPublishedPublic = params.status === GameStatus.published && publishedVisibility === 'public';
-    const isPublishedPreviewVisible =
-      params.status === GameStatus.published
-      && (publishedVisibility === 'public' || publishedVisibility === 'unlisted');
-
-    return {
-      public_preview_allowed: isPublishedPreviewVisible,
-      // Authors must always be able to review drafts/candidates even when
-      // the public play entitlement is still locked.
-      author_play_allowed: true,
-      public_index_allowed: isPublishedPublic,
-      published_visibility: publishedVisibility,
-    };
+    return gameAccessPolicy.buildVisibilityModel(params);
   }
-
   private extractBundleGameSpec(bundleHistory: any[]): Record<string, unknown> | null {
-    for (const bundle of [...bundleHistory].reverse()) {
-      const gameSpec = bundle?.metadata?.gameSpec;
-      if (
-        gameSpec
-        && typeof gameSpec === 'object'
-        && !Array.isArray(gameSpec)
-        && typeof (gameSpec as Record<string, unknown>).game_type === 'string'
-        && String((gameSpec as Record<string, unknown>).game_type).trim()
-      ) {
-        return gameSpec as Record<string, unknown>;
-      }
-    }
-    return null;
+    return gameGenerationPayload.extractBundleGameSpec(bundleHistory);
   }
-
   private resolveRuntimeHintGameType(
     sourceSpec?: Record<string, unknown> | null,
     game?: { gameType?: string | null } | null,
   ): string | null {
-    if (
-      sourceSpec
-      && typeof sourceSpec.game_type === 'string'
-      && sourceSpec.game_type.trim()
-    ) {
-      return sourceSpec.game_type.trim();
-    }
-
-    if (typeof game?.gameType === 'string' && game.gameType.trim()) {
-      return game.gameType.trim();
-    }
-
-    return null;
+    return gameRuntimePolicy.resolveRuntimeHintGameType(sourceSpec, game);
   }
-
   private extractBundleOrientation(bundleHistory: any[]): CreateGameOrientation | undefined {
-    for (const bundle of [...bundleHistory].reverse()) {
-      const metadata = bundle?.metadata && typeof bundle.metadata === 'object'
-        ? bundle.metadata as Record<string, unknown>
-        : null;
-      if (!metadata) {
-        continue;
-      }
-
-      const requestedOrientation = this.normalizeRequestedOrientation(
-        metadata.requestedOrientation ?? metadata.orientation ?? metadata.requested_orientation,
-      );
-      if (requestedOrientation) {
-        return requestedOrientation;
-      }
-
-      const runtimeOrientation = metadata.runtimeOrientation
-        ?? metadata.runtime_orientation
-        ?? metadata.orientation;
-      const recoveredOrientation = this.resolveRequestedOrientationFromRuntime(runtimeOrientation);
-      if (recoveredOrientation) {
-        return recoveredOrientation;
-      }
-    }
-
-    return undefined;
+    return gameGenerationPayload.extractBundleOrientation(bundleHistory);
   }
-
   private extractBundleGenerationTier(bundleHistory: any[]): GenerationTier | undefined {
-    for (const bundle of [...bundleHistory].reverse()) {
-      const metadata = bundle?.metadata && typeof bundle.metadata === 'object'
-        ? bundle.metadata as Record<string, unknown>
-        : null;
-      if (!metadata) {
-        continue;
-      }
-
-      const generationTier = this.normalizeRequestedGenerationTier(
-        metadata.generationTier ?? metadata.generation_tier,
-      );
-      if (generationTier) {
-        return generationTier;
-      }
-    }
-
-    return undefined;
+    return gameGenerationPayload.extractBundleGenerationTier(bundleHistory);
   }
-
   private buildIterationSourceBundleContext(params: {
     game: any;
     latestBundle: any | null;
     bundleHistory: any[];
   }): SourceBundleContextPayload | null {
-    const { game, latestBundle, bundleHistory } = params;
-    const latestMetadata = latestBundle?.metadata || {};
-    const recentRevisions = [...bundleHistory]
-      .slice(-4)
-      .reverse()
-      .map((bundleVersion: any) => {
-        const metadata = bundleVersion?.metadata || {};
-        const feedback = typeof metadata.feedback === 'string' ? metadata.feedback.trim() : '';
-        const iterationType = typeof metadata.iterationType === 'string' ? metadata.iterationType.trim() : '';
-        const summary = [
-          feedback || '',
-          iterationType ? `type=${iterationType}` : '',
-        ].filter(Boolean).join(' | ');
-
-        return {
-          version: typeof bundleVersion?.version === 'number' ? bundleVersion.version : null,
-          generated_at: bundleVersion?.createdAt ? new Date(bundleVersion.createdAt).toISOString() : null,
-          feedback: feedback || null,
-          iteration_type: iterationType || null,
-          summary: summary || null,
-        };
-      })
-      .filter((revision) => (
-        revision.version !== null
-        || revision.feedback
-        || revision.iteration_type
-        || revision.summary
-      ));
-
-    const latestFeedback = typeof latestMetadata.feedback === 'string' ? latestMetadata.feedback.trim() : '';
-    const latestIterationType = typeof latestMetadata.iterationType === 'string'
-      ? latestMetadata.iterationType.trim()
-      : '';
-    const latestGameType = typeof latestMetadata?.gameSpec?.game_type === 'string'
-      && latestMetadata.gameSpec.game_type.trim()
-      ? latestMetadata.gameSpec.game_type.trim()
-      : (
-        typeof game?.gameType === 'string' && game.gameType.trim()
-          ? game.gameType.trim()
-          : null
-      );
-    const latestOrientation = this.extractBundleOrientation([
-      ...bundleHistory,
-      ...(latestBundle ? [latestBundle] : []),
-    ]) ?? null;
-    const latestGenerationTier = this.extractBundleGenerationTier([
-      ...bundleHistory,
-      ...(latestBundle ? [latestBundle] : []),
-    ]) ?? 'standard';
-    const summaryParts = [
-      latestGameType ? `game_type=${latestGameType}` : '',
-      latestGenerationTier ? `generation_tier=${latestGenerationTier}` : '',
-      latestOrientation ? `orientation=${latestOrientation}` : '',
-      latestFeedback ? `latest_feedback=${latestFeedback}` : '',
-      latestIterationType ? `latest_iteration=${latestIterationType}` : '',
-      latestBundle?.htmlCode ? `code_size=${Buffer.byteLength(String(latestBundle.htmlCode), 'utf8')}B` : '',
-    ].filter(Boolean);
-
-    return {
-      title: typeof game?.title === 'string' ? game.title : null,
-      latest_bundle_version: typeof latestBundle?.version === 'number'
-        ? latestBundle.version
-        : (typeof game?.version === 'number' ? game.version : null),
-      latest_game_type: latestGameType,
-      latest_generation_tier: latestGenerationTier,
-      latest_orientation: latestOrientation,
-      latest_feedback: latestFeedback || null,
-      latest_iteration_type: latestIterationType || null,
-      summary: summaryParts.length > 0 ? summaryParts.join('; ') : null,
-      recent_revisions: recentRevisions,
-    };
+    return gameGenerationPayload.buildIterationSourceBundleContext(params);
   }
-
   private buildCreateV2Payload(params: {
     gameId: string;
     userId: string;
@@ -1325,55 +647,14 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     failedStage: string,
     failureFamily: string,
   ): Error {
-    const wrapped = new Error(this.extractAiGatewayErrorMessage(error, fallback));
-    (wrapped as Error & { failedStage?: string; failureFamily?: string }).failedStage = failedStage;
-    (wrapped as Error & { failedStage?: string; failureFamily?: string }).failureFamily = failureFamily;
-    return wrapped;
+    return gameFailurePolicy.buildAiGatewayStageError(error, fallback, failedStage, failureFamily);
   }
-
   private extractAiGatewayErrorMessage(error: unknown, fallback: string): string {
-    const raw = (error as any)?.response?.data?.detail
-      ?? (error as any)?.response?.data?.message
-      ?? (error as any)?.message
-      ?? fallback;
-    return this.stringifyAiGatewayErrorDetail(raw, fallback);
+    return gameFailurePolicy.extractAiGatewayErrorMessage(error, fallback);
   }
-
   private stringifyAiGatewayErrorDetail(value: unknown, fallback: string): string {
-    if (value == null) {
-      return fallback;
-    }
-    if (typeof value === 'string') {
-      const normalized = value.trim();
-      return normalized || fallback;
-    }
-    if (Array.isArray(value)) {
-      const parts = value
-        .map((item) => this.stringifyAiGatewayErrorDetail(item, ''))
-        .map((item) => item.trim())
-        .filter(Boolean);
-      return parts.join('; ') || fallback;
-    }
-    if (typeof value === 'object') {
-      const record = value as Record<string, unknown>;
-      for (const candidate of [record.detail, record.message, record.msg, record.reason, record.error]) {
-        const rendered = this.stringifyAiGatewayErrorDetail(candidate, '');
-        if (rendered) {
-          return rendered;
-        }
-      }
-      const parts = Object.entries(record)
-        .map(([key, item]) => {
-          const rendered = this.stringifyAiGatewayErrorDetail(item, '');
-          return rendered ? `${key}=${rendered}` : '';
-        })
-        .filter(Boolean);
-      return parts.join(', ') || fallback;
-    }
-    const normalized = String(value).trim();
-    return normalized || fallback;
+    return gameFailurePolicy.stringifyAiGatewayErrorDetail(value, fallback);
   }
-
   private async ensureCreateSourceSpec(params: {
     gameId: string;
     userId: string;
@@ -1525,82 +806,15 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     promptBundleSnapshot: PromptBundleSnapshotPayload;
     runtimeContract: RuntimeContractPayload;
   }): Record<string, unknown> {
-    const game = params.game || {};
-    const orientation = this.normalizeRequestedOrientation(params.orientation)
-      ?? this.resolveRequestedOrientationFromRuntime(
-        this.resolveRuntimeOrientationFromContract(params.runtimeContract),
-      );
-    const generationTier = this.normalizeRequestedGenerationTier(params.generationTier)
-      ?? this.normalizeRequestedGenerationTier(params.sourceBundleContext?.latest_generation_tier)
-      ?? 'standard';
-
-    return {
-      game_id: params.gameId,
-      user_id: params.userId,
-      current_code: params.currentCode,
-      generation_tier: generationTier,
-      platform: 'wechat_webview',
-      timeout_s: params.timeoutS,
-      task_id: params.taskId,
-      request_context: {
-        source: 'game-service',
-        entrypoint: 'iterate',
-        region: params.executionRegion,
-        pipeline_version: 'v2',
-      },
-      iteration_intent: {
-        feedback: params.feedback,
-        conversation: params.conversationHistory,
-      },
-      source_spec: params.sourceSpec || null,
-      source_bundle_context: params.sourceBundleContext || null,
-      existing_game: {
-        status: game.status || GameStatus.draft,
-        visibility: game.visibility || 'private',
-        live_bundle_version: game.version ?? null,
-        working_bundle_version: null,
-        can_play: Boolean(game.canPlay ?? true),
-        require_subscription: Boolean(game.requireSubscription ?? false),
-        forked_from: game.forkedFrom ?? null,
-      },
-      entitlement: this.buildEntitlementSnapshot({
-        canPlay: Boolean(game.canPlay ?? true),
-        requireSubscription: Boolean(game.requireSubscription ?? false),
-        accessGrantSource: String(game.accessGrantSource || GameAccessGrantSource.none),
-        accessGrantSubscriptionId: game.accessGrantSubscriptionId ?? null,
-        quotaRemaining: null,
-        refundOnFailure: false,
-      }),
-      visibility_model: this.buildVisibilityModel({
-        status: game.status,
-        visibility: game.visibility,
-        canPlay: game.canPlay,
-      }),
-      prompt_bundle_snapshot: params.promptBundleSnapshot,
-      runtime_contract: params.runtimeContract,
-      // normalized_request retained as minimal fallback for ai-engine lookups
-      normalized_request: {
-        feedback: params.feedback,
-      },
-      // single source of truth for adapter + dimensional metadata
-      metadata: {
-        adapter: 'compat_v1',
-        pipeline_version: 'v2',
-        generation_tier: generationTier,
-        ...(orientation ? { orientation } : {}),
-        live_bundle_version: game.version ?? null,
-      },
-    };
+    return gameGenerationPayload.buildIterateV2Payload(params);
   }
-
   async getAiEngineBaseUrl(executionRegion?: string): Promise<string> {
     return this.resolveAiEngineEndpoint(executionRegion);
   }
 
   private normalizeAiEngineBaseUrl(value?: string | null): string {
-    return (value || '').trim().replace(/\/$/, '');
+    return gameRuntimePolicy.normalizeAiEngineBaseUrl(value);
   }
-
   private appendAiEngineBaseUrl(urls: string[], value?: string | null): void {
     const normalized = this.normalizeAiEngineBaseUrl(value);
     if (normalized && !urls.includes(normalized)) {
@@ -1748,17 +962,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   }
 
   private extractPersistedCoverUrl(metadata: unknown): string | null {
-    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
-      return null;
-    }
-
-    const rawCoverUrl = (metadata as Record<string, unknown>).coverUrl
-      ?? (metadata as Record<string, unknown>).cover_url;
-    return typeof rawCoverUrl === 'string' && rawCoverUrl.trim()
-      ? rawCoverUrl.trim()
-      : null;
+    return gameAccessPolicy.extractPersistedCoverUrl(metadata);
   }
-
   private extractCoverTaskIdFromUrl(gameId: string, coverUrl?: string | null): string | null {
     if (typeof coverUrl !== 'string' || !coverUrl.trim()) {
       return null;
@@ -1789,17 +994,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   }
 
   private extractPersistedCoverArtifactId(metadata: unknown): string | null {
-    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
-      return null;
-    }
-
-    const rawArtifactId = (metadata as Record<string, unknown>).coverArtifactId
-      ?? (metadata as Record<string, unknown>).cover_artifact_id;
-    return typeof rawArtifactId === 'string' && rawArtifactId.trim()
-      ? rawArtifactId.trim()
-      : null;
+    return gameAccessPolicy.extractPersistedCoverArtifactId(metadata);
   }
-
   private buildPersistedCoverMetadata(params: {
     gameId: string;
     coverUrl?: string | null;
@@ -1954,85 +1150,38 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     taskOrMetadata?: { metadata?: any } | Record<string, unknown> | null,
     game?: { status?: GameStatus | string | null; publishedAt?: Date | null } | null,
   ): GameStatus {
-    const metadata = taskOrMetadata && typeof taskOrMetadata === 'object' && 'metadata' in taskOrMetadata
-      ? (taskOrMetadata as any).metadata
-      : taskOrMetadata;
-    const rawBaseStatus = metadata && typeof metadata === 'object'
-      ? (metadata as any).baseStatus
-      : undefined;
-
-    if (
-      rawBaseStatus === GameStatus.draft
-      || rawBaseStatus === GameStatus.review
-      || rawBaseStatus === GameStatus.published
-    ) {
-      return rawBaseStatus;
-    }
-
-    if (game?.status === GameStatus.review) {
-      return GameStatus.review;
-    }
-
-    if (game?.status === GameStatus.published || game?.publishedAt) {
-      return GameStatus.published;
-    }
-
-    return GameStatus.draft;
+    return gameAccessPolicy.getIterationBaseStatus(taskOrMetadata, game);
   }
-
   private getInFlightIterationStatus(baseStatus: GameStatus): GameStatus {
-    return baseStatus === GameStatus.published ? GameStatus.published : GameStatus.generating;
+    return gameAccessPolicy.getInFlightIterationStatus(baseStatus);
   }
-
   private isBundlePlayable(bundle: { htmlCode?: string | null } | null | undefined): boolean {
-    return typeof bundle?.htmlCode === 'string' && bundle.htmlCode.trim().length > 0;
+    return gameAccessPolicy.isBundlePlayable(bundle);
   }
-
   private isPubliclyVisibleGame(game: {
     status?: string | null;
     visibility?: string | null;
   } | null | undefined): boolean {
-    return game?.status === GameStatus.published && (game.visibility || 'public') === 'public';
+    return gameAccessPolicy.isPubliclyVisibleGame(game);
   }
-
   private isPreviewVisibleGame(game: {
     status?: string | null;
     visibility?: string | null;
   } | null | undefined): boolean {
-    const visibility = game?.visibility || 'public';
-    return game?.status === GameStatus.published
-      && (visibility === 'public' || visibility === 'unlisted');
+    return gameAccessPolicy.isPreviewVisibleGame(game);
   }
-
   private assertPublicPreviewAllowed(game: {
     status?: string | null;
     visibility?: string | null;
   }): void {
-    if (this.isPreviewVisibleGame(game)) {
-      return;
-    }
-
-    throw new NotFoundException('Game not found');
+    return gameAccessPolicy.assertPublicPreviewAllowed(game);
   }
-
   private assertGamePublishable(
     game: { status?: string | null },
     bundle: { htmlCode?: string | null } | null,
   ): void {
-    if (game.status === GameStatus.banned) {
-      throw new ForbiddenException('This game is unavailable');
-    }
-    if (game.status === GameStatus.generating) {
-      throw new BadRequestException('Game is still generating');
-    }
-    if (game.status === GameStatus.failed) {
-      throw new BadRequestException('Game generation failed');
-    }
-    if (!this.isBundlePlayable(bundle)) {
-      throw new BadRequestException('Game bundle is not ready for publishing');
-    }
+    return gameAccessPolicy.assertGamePublishable(game, bundle);
   }
-
   private async loadBundleForGame(
     game: { id: string; version?: number | null },
     options: { preferLiveVersion?: boolean } = {},
@@ -2143,19 +1292,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   }
 
   private ensurePersistableGeneratedHtml(htmlCode: string): string {
-    const normalized = (htmlCode || '').trim();
-    if (!normalized) {
-      throw new Error('AI pipeline returned empty HTML output');
-    }
-
-    const lower = normalized.toLowerCase();
-    if (!lower.includes('<html') || !lower.includes('<body') || !lower.includes('</html>')) {
-      throw new Error('AI pipeline returned incomplete HTML output');
-    }
-
-    return htmlCode;
+    return gameRuntimePolicy.ensurePersistableGeneratedHtml(htmlCode);
   }
-
   private buildGenerationTaskSummary(
     gameId: string,
     taskType: 'pipeline_run' | 'pipeline_iterate',
@@ -2258,30 +1396,17 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   }
 
   private isTimeoutError(error: unknown): boolean {
-    const message = this.extractErrorMessage(error as any);
-    return /timed out|timeout|deadline exceeded|ECONNABORTED/i.test(message);
+    return gameFailurePolicy.isTimeoutError(error);
   }
-
   private isTransientUpstreamSnapshotError(error: unknown): boolean {
-    if (this.isTimeoutError(error)) {
-      return true;
-    }
-    const status = Number((error as any)?.response?.status ?? 0);
-    if (status >= 500) {
-      return true;
-    }
-    const code = String((error as any)?.code || '').toUpperCase();
-    return ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN'].includes(code);
+    return gameFailurePolicy.isTransientUpstreamSnapshotError(error);
   }
-
   private isFinalTaskStatus(status?: string | null): status is Exclude<EffectiveTaskStatus, 'queued' | 'running'> {
-    return status === 'succeeded' || status === 'failed' || status === 'canceled' || status === 'timed_out';
+    return gameFailurePolicy.isFinalTaskStatus(status);
   }
-
   private isActiveTaskStatus(status?: string | null): status is 'queued' | 'running' {
-    return status === 'queued' || status === 'running';
+    return gameFailurePolicy.isActiveTaskStatus(status);
   }
-
   private getTaskDeadlineMs(task: {
     timeoutS?: number | null;
     startedAt?: Date | string | null;
@@ -2369,13 +1494,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   }
 
   private getPersistedUpstreamBaseUrl(task: { metadata?: any } | null | undefined): string {
-    const metadata = task?.metadata;
-    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
-      return '';
-    }
-    return this.normalizeAiEngineBaseUrl((metadata as Record<string, unknown>).upstreamBaseUrl as string | undefined);
+    return gameRuntimePolicy.getPersistedUpstreamBaseUrl(task);
   }
-
   private async bindUpstreamTaskId(
     taskId: string,
     upstreamTaskId: string,
@@ -2737,22 +1857,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     snapshot: UpstreamAsyncTaskSnapshot,
     fallbackStage: string,
   ): any {
-    return {
-      response: {
-        data: {
-          detail: {
-            message: snapshot.error?.message || 'Upstream AI task failed',
-            failed_stage: snapshot.error?.failed_stage || fallbackStage,
-            retry_count: Number(snapshot.error?.retry_count ?? 0) || 0,
-            fallback: snapshot.error?.fallback || undefined,
-            failure_family: snapshot.error?.failure_family || undefined,
-            primary_artifact_id: snapshot.error?.primary_artifact_id || undefined,
-          },
-        },
-      },
-    };
+    return gameFailurePolicy.buildUpstreamTaskFailureError(snapshot, fallbackStage);
   }
-
   private async cancelUpstreamTask(task: {
     id?: string;
     region?: string | null;
@@ -3216,59 +2322,26 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     stage?: string | null,
     fallbackStage?: string | null,
   ): string {
-    const normalizedStepKey = String(stepKey || '').trim().toLowerCase();
-    const normalizedStage = String(stage || '').trim().toLowerCase();
-    if (normalizedStepKey === 'code_generate.full' || normalizedStage === 'code_generating') {
-      return 'logic_generate';
-    }
-    if (normalizedStepKey.startsWith('qa_fix.') || normalizedStage === 'qa_checking') {
-      return 'qa_checking';
-    }
-    return fallbackStage || 'pipeline_run';
+    return gameFailurePolicy.inferFailedStageFromLlmSignal(stepKey, stage, fallbackStage);
   }
-
   private inferFailureFamilyFromLlmSignal(
     failedStage: string,
     stepKey?: string | null,
     errorCode?: string | null,
     errorMessage?: string | null,
   ): string {
-    const normalizedStepKey = String(stepKey || '').trim().toLowerCase();
-    const normalizedErrorCode = String(errorCode || '').trim().toLowerCase();
-    const normalizedMessage = String(errorMessage || '').trim().toLowerCase();
-    if (normalizedStepKey === 'code_generate.full' || failedStage === 'logic_generate') {
-      return 'code_generation';
-    }
-    if (normalizedStepKey.startsWith('qa_fix.') || failedStage === 'qa_checking') {
-      return 'qa_validation';
-    }
-    if (normalizedErrorCode.includes('timeout') || normalizedMessage.includes('timed out')) {
-      return 'timeout';
-    }
-    return 'pipeline';
+    return gameFailurePolicy.inferFailureFamilyFromLlmSignal(failedStage, stepKey, errorCode, errorMessage);
   }
-
   private buildLlmFailureMessage(signal: {
     stepKey?: string | null;
     errorCode?: string | null;
     errorMessage?: string | null;
   }): string {
-    const stepKey = String(signal.stepKey || '').trim() || 'llm';
-    const rawMessage = String(signal.errorMessage || '').trim();
-    if (rawMessage) {
-      return `${stepKey} failed: ${rawMessage}`;
-    }
-    const rawCode = String(signal.errorCode || '').trim();
-    if (rawCode) {
-      return `${stepKey} failed: ${rawCode}`;
-    }
-    return `${stepKey} failed before completion`;
+    return gameFailurePolicy.buildLlmFailureMessage(signal);
   }
-
   private inferFailedStageFromTaskProgress(progressStage?: string | null): string {
-    return this.inferFailedStageFromLlmSignal(undefined, progressStage, progressStage || 'pipeline_run');
+    return gameFailurePolicy.inferFailedStageFromTaskProgress(progressStage);
   }
-
   private isMissingUpstreamTaskStale(task: { updatedAt?: Date | string | null; createdAt?: Date | string | null }): boolean {
     const anchor = task.updatedAt || task.createdAt;
     if (!anchor) {
@@ -3582,13 +2655,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     quota: { totalFreeQuota: number; usedFreeQuota: number },
     subscription?: { quotaThisPeriod: number; usedThisPeriod: number } | null,
   ) {
-    const freeRemaining = Math.max(quota.totalFreeQuota - quota.usedFreeQuota, 0);
-    const subscriptionRemaining = subscription
-      ? Math.max(subscription.quotaThisPeriod - subscription.usedThisPeriod, 0)
-      : 0;
-    return freeRemaining + subscriptionRemaining;
+    return gameAccessPolicy.computeQuotaRemaining(quota, subscription);
   }
-
   private async resolveCreateForkSource(
     userId: string,
     dto: CreateGameCommand,
@@ -3649,6 +2717,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
 
   async create(userId: string, dto: CreateGameCommand): Promise<any> {
     try {
+      await this.requireDurableGenerationQueue();
       const gameId = randomUUID();
       const description = dto.description || dto.prompt || '';
       // H.5.1 - userIdea is the clean, user-facing tagline. For direct create,
@@ -3701,7 +2770,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
 
         if (freeRemaining > 0) {
           const updatedQuota = await tx.userQuota.update({
-            where: { userId },
+            where: { userId, usedFreeQuota: quota.usedFreeQuota, totalFreeQuota: quota.totalFreeQuota },
             data: {
               usedFreeQuota: { increment: 1 },
             },
@@ -3712,7 +2781,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           accessGrantSource = GameAccessGrantSource.free_quota;
         } else if (subscription && subscriptionRemaining > 0) {
           const updatedSubscription = await tx.userSubscription.update({
-            where: { id: subscription.id },
+            where: { id: subscription.id, usedThisPeriod: subscription.usedThisPeriod, status: 'active' },
             data: {
               usedThisPeriod: { increment: 1 },
             },
@@ -3766,6 +2835,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
               pipelineVersion,
               orientation: requestedOrientation ?? null,
               generationTier: requestedGenerationTier,
+              qualityPolicyVersion: gameQualityPolicy.QUALITY_POLICY_VERSION,
               creationSessionId: dto.creationSessionId ?? null,
               entryMode: dto.entryMode ?? null,
               sourceGameId: dto.sourceGameId ?? null,
@@ -3877,7 +2947,20 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       };
     } catch (error) {
       this.logger.error(`Failed to create game: ${error.message}`);
+      if (error?.code === 'P2025') {
+        throw new ConflictException('Generation quota changed concurrently; please retry');
+      }
       throw error;
+    }
+  }
+
+  private allowsLocalGeneration(): boolean {
+    return this.configService.get<string>('NODE_ENV', process.env.NODE_ENV || 'development') !== 'production';
+  }
+
+  private async requireDurableGenerationQueue(): Promise<void> {
+    if (!this.allowsLocalGeneration() && !(await this.generationQueueService.ensureOperational().catch(() => false))) {
+      throw new ServiceUnavailableException('Generation queue is unavailable; please try again shortly');
     }
   }
 
@@ -3890,6 +2973,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     executionRegion?: string,
     options: CreateExecutionOptions = {},
   ): void {
+    if (!this.allowsLocalGeneration()) {
+      this.logger.warn(`Task ${taskId} remains queued for durable delivery after queue recovery`);
+      this.startActiveTaskSweep();
+      return;
+    }
     setImmediate(() => {
       void this.executePipelineTask(
         gameId,
@@ -3919,6 +3007,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     executionRegion?: string,
     options: IterateExecutionOptions = {},
   ): void {
+    if (!this.allowsLocalGeneration()) {
+      this.logger.warn(`Task ${taskId} remains queued for durable delivery after queue recovery`);
+      this.startActiveTaskSweep();
+      return;
+    }
     setImmediate(() => {
       void this.executeIterationTask(
         gameId,
@@ -3940,12 +3033,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   }
 
   private normalizeTaskMetadataRecord(metadata: unknown): Record<string, any> {
-    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
-      return {};
-    }
-    return metadata as Record<string, any>;
+    return gameGenerationPayload.normalizeTaskMetadataRecord(metadata);
   }
-
   private extractTaskMetadataObject<T = Record<string, unknown>>(
     metadata: Record<string, any>,
     key: string,
@@ -4440,70 +3529,26 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   }
 
   private normalizeConversationHistory(value: unknown): Array<{ role: string; content: string }> {
-    if (!Array.isArray(value)) {
-      return [];
-    }
-
-    return value
-      .filter((item) => item && typeof item === 'object')
-      .map((item: any) => ({
-        role: typeof item.role === 'string' ? item.role : '',
-        content: typeof item.content === 'string' ? item.content : '',
-      }))
-      .filter((item) => item.role && item.content);
+    return gameGenerationPayload.normalizeConversationHistory(value);
   }
-
   private normalizeQaWarnings(value: unknown): Array<Record<string, any>> {
-    if (!Array.isArray(value)) {
-      return [];
-    }
-    return value.filter((item) => item && typeof item === 'object') as Array<Record<string, any>>;
+    return gameQualityPolicy.normalizeQaWarnings(value);
   }
-
   private normalizeRuntimeQaReport(value: unknown): Record<string, any> | undefined {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return undefined;
-    }
-    return value as Record<string, any>;
+    return gameQualityPolicy.normalizeRuntimeQaReport(value);
   }
-
   private buildRuntimeQaResultSummary(
     qaWarnings: Array<Record<string, any>>,
     runtimeQaReport?: Record<string, any>,
   ): Record<string, any> {
-    const warningCount = qaWarnings.length;
-    const unavailableKind = typeof runtimeQaReport?.unavailableKind === 'string'
-      ? runtimeQaReport.unavailableKind
-      : undefined;
-    const unavailablePhase = typeof runtimeQaReport?.unavailablePhase === 'string'
-      ? runtimeQaReport.unavailablePhase
-      : undefined;
-    const unavailableReason = typeof runtimeQaReport?.unavailableReason === 'string'
-      ? runtimeQaReport.unavailableReason
-      : undefined;
-
-    return {
-      qaWarningCount: warningCount,
-      ...(warningCount > 0 ? { qaWarnings } : {}),
-      ...(runtimeQaReport ? { runtimeQaReport } : {}),
-      ...(unavailableKind || warningCount > 0 ? { runtimeQaUnavailable: Boolean(unavailableKind || warningCount > 0) } : {}),
-      ...(unavailableKind ? { runtimeQaUnavailableKind: unavailableKind } : {}),
-      ...(unavailablePhase ? { runtimeQaUnavailablePhase: unavailablePhase } : {}),
-      ...(unavailableReason ? { runtimeQaUnavailableReason: unavailableReason } : {}),
-    };
+    return gameQualityPolicy.buildRuntimeQaResultSummary(qaWarnings, runtimeQaReport);
   }
-
   private isUpstreamWaitTimeoutError(error: unknown): boolean {
-    const message = this.extractErrorMessage(error as any);
-    return /upstream ai task .*timed out while waiting for completion/i.test(message);
+    return gameFailurePolicy.isUpstreamWaitTimeoutError(error);
   }
-
   private getSuccessArtifactTypes(taskType: GenerationTaskType): string[] {
-    return taskType === GenerationTaskType.pipeline_iterate
-      ? ['iteration_response']
-      : ['pipeline_response'];
+    return gameFailurePolicy.getSuccessArtifactTypes(taskType);
   }
-
   private parseArtifactPayload<T extends Record<string, any>>(artifact: {
     payloadJson?: unknown;
     payloadText?: string | null;
@@ -5314,23 +4359,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   }
 
   private deriveTitle(gameSpec: any, description: string): string {
-    // Try to extract a meaningful name from the game type
-    const typeMap: Record<string, string> = {
-      casual: '休闲游戏',
-      puzzle: '益智游戏',
-      educational: '教育游戏',
-      funny: '搞笑游戏',
-    };
-    const gameType = gameSpec?.game_type || '';
-    if (typeMap[gameType]) return typeMap[gameType];
-    if (gameType) return gameType.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
-
-    // Fallback: extract from first ~15 chars of description
-    const desc = (description || '').replace(/^(做|创建|生成|制作|来)(一个|个)/, '').trim();
-    if (desc.length > 2) return desc.substring(0, 15).replace(/[，。,.]$/, '');
-    return '新游戏';
+    return gameGenerationPayload.deriveTitle(gameSpec, description);
   }
-
   private emitProgress(
     userId: string,
     gameId: string,
@@ -5363,51 +4393,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   }
 
   private extractErrorMessage(error: any): string {
-    const detail = error?.response?.data?.detail;
-    if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
-      return detail.message || detail.error || error?.message || 'unknown error';
-    }
-    return (
-      detail ||
-      error?.response?.data?.message ||
-      error?.message ||
-      'unknown error'
-    );
+    return gameFailurePolicy.extractErrorMessage(error);
   }
-
   private extractFailureContext(error: any): FailureContext {
-    const detail = error?.response?.data?.detail;
-    if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
-      return {
-        message:
-          detail.message ||
-          detail.error ||
-          error?.message ||
-          'unknown error',
-        failedStage: detail.failed_stage || detail.failedStage || undefined,
-        retryCount: Number(detail.retry_count ?? detail.retryCount ?? 0) || 0,
-        fallback: detail.fallback || undefined,
-        failureFamily: detail.failure_family || detail.failureFamily || undefined,
-        primaryArtifactId: detail.primary_artifact_id || detail.primaryArtifactId || undefined,
-      };
-    }
-
-    return {
-      message: this.extractErrorMessage(error),
-      failedStage: typeof error?.failed_stage === 'string'
-        ? error.failed_stage
-        : (typeof error?.failedStage === 'string' ? error.failedStage : undefined),
-      retryCount: 0,
-      fallback: undefined,
-      failureFamily: typeof error?.failure_family === 'string'
-        ? error.failure_family
-        : (typeof error?.failureFamily === 'string' ? error.failureFamily : undefined),
-      primaryArtifactId: typeof error?.primary_artifact_id === 'string'
-        ? error.primary_artifact_id
-        : (typeof error?.primaryArtifactId === 'string' ? error.primaryArtifactId : undefined),
-    };
+    return gameFailurePolicy.extractFailureContext(error);
   }
-
   private logStructuredFailure(event: string, payload: Record<string, unknown>): void {
     this.logger.error(`${event} ${JSON.stringify(payload)}`);
   }
@@ -5980,14 +4970,14 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       }
 
       const updatedSubscription = await tx.userSubscription.update({
-        where: { id: currentSubscription.id },
+        where: { id: currentSubscription.id, usedThisPeriod: currentSubscription.usedThisPeriod, status: 'active' },
         data: {
           usedThisPeriod: { increment: 1 },
         },
       });
 
       await tx.game.update({
-        where: { id },
+        where: { id, canPlay: false },
         data: {
           canPlay: true,
           requireSubscription: false,
@@ -6001,6 +4991,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         canPlay: true,
         quotaRemaining: this.computeQuotaRemaining(quota, updatedSubscription),
       };
+    }).catch((error) => {
+      if (error?.code === 'P2025') {
+        throw new ConflictException('Game access or quota changed concurrently; please retry');
+      }
+      throw error;
     });
   }
 
@@ -6108,6 +5103,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
 
   async iterate(id: string, userId: string, dto: IterateGameDto): Promise<any> {
     try {
+      await this.requireDurableGenerationQueue();
       const game = await this.prisma.game.findUnique({ where: { id } });
       if (!game) throw new NotFoundException('Game not found');
       if (game.authorId !== userId) {

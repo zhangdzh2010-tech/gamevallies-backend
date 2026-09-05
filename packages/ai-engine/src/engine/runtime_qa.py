@@ -16,6 +16,8 @@ fail closed.
 
 from __future__ import annotations
 
+from .runtime_isolation import network_policy_meta, restrict_context_network
+
 import asyncio
 import base64
 import contextlib
@@ -1915,7 +1917,8 @@ async def capture_cover_artifact(
                 launch_kwargs["executable_path"] = chromium_executable
 
             browser = await p.chromium.launch(**launch_kwargs)
-            context = await browser.new_context(viewport=viewport)
+            context = await browser.new_context(viewport=viewport, service_workers="block")
+            await restrict_context_network(context)
             page = await context.new_page()
 
             page.on("pageerror", lambda exc: logger.debug("Cover capture page error: %s", exc))
@@ -1926,7 +1929,7 @@ async def capture_cover_artifact(
             ))
 
             await page.add_init_script(_INSTRUMENTATION_JS)
-            await page.set_content(_inject_probe_script(html_code), wait_until="load")
+            await page.set_content(network_policy_meta() + _inject_probe_script(html_code), wait_until="load")
             with contextlib.suppress(Exception):
                 await page.wait_for_load_state("load", timeout=500)
             await asyncio.sleep(0.35)
@@ -2181,7 +2184,9 @@ async def run_runtime_qa(html_code: str, timeout_s: float | None = None) -> Runt
                 browser = await p.chromium.launch(**launch_kwargs)
                 context = await browser.new_context(
                     viewport={"width": 420, "height": 700},
+                    service_workers="block",
                 )
+                await restrict_context_network(context)
                 return await context.new_page()
 
             page = await _run_phase(
@@ -2198,7 +2203,7 @@ async def run_runtime_qa(html_code: str, timeout_s: float | None = None) -> Runt
 
             async def _content_load_phase() -> None:
                 await page.add_init_script(_INSTRUMENTATION_JS)
-                await page.set_content(_inject_probe_script(html_code), wait_until="load")
+                await page.set_content(network_policy_meta() + _inject_probe_script(html_code), wait_until="load")
                 load_wait_timeout_ms = max(
                     get_timeout_int("timeout.ai_engine.runtime_qa.load_wait_min_ms", 250, min_value=1),
                     int(
@@ -2427,3 +2432,4 @@ async def run_runtime_qa(html_code: str, timeout_s: float | None = None) -> Runt
                 await browser.close()
         if semaphore is not None:
             semaphore.release()
+

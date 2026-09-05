@@ -1,0 +1,78 @@
+name: Generation refactor regression
+
+on:
+  pull_request:
+    paths:
+      - 'packages/game-service/src/game/**'
+      - 'packages/game-service/test/**'
+      - 'packages/ai-engine/src/engine/**'
+      - 'packages/ai-engine/src/api/models.py'
+      - 'packages/ai-engine/src/config/settings.py'
+      - 'packages/ai-engine/tests/**'
+      - 'packages/feed-service/src/feed/**'
+      - 'packages/feed-service/test/**'
+      - 'contracts/generation/quality-policy.json'
+      - 'scripts/*generation*'
+      - 'scripts/sync-quality-policy.py'
+      - 'package*.json'
+      - '.github/workflows/generation-refactor-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  game-service:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: mysql://test:test@localhost:3306/refactor_test
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npx prisma generate
+      - run: npm run build --workspace=game-service
+      - run: npm run build --workspace=@gamevallies/feed-service
+      - name: Verify generation and session regressions
+        run: >-
+          npm test --workspace=game-service -- --runInBand
+          test/game.service.spec.ts
+          test/game-locking.spec.ts
+          test/creation-session.service.spec.ts
+      - name: Verify production feed query
+        run: npm test --workspace=@gamevallies/feed-service -- --runInBand test/trending-production.spec.ts
+
+  ai-engine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: packages/ai-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: packages/ai-engine/requirements.txt
+      - run: pip install -r requirements.txt pytest pytest-asyncio
+      - run: python -m playwright install --with-deps chromium
+      - run: python ../../scripts/sync-quality-policy.py --check
+      - name: Verify pipeline, prompts and quality repairs
+        run: >-
+          python -m pytest -q
+          tests/test_pipeline_v2_runner.py
+          tests/test_prompt_integration.py
+          tests/test_generation_v1_localization.py
+          tests/test_quality_gate_patch_repair.py
+          tests/test_create_progress_and_parallel_qa.py
+          tests/test_dialogue_engine.py
+          tests/test_dialogue_engine_json_repair.py
+          tests/test_code_generator.py
+          tests/test_runtime_qa.py
+          tests/test_creative_design.py
+          tests/test_runtime_isolation.py
