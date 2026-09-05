@@ -30,6 +30,8 @@ jobs:
           test/game.service.spec.ts
           test/game-locking.spec.ts
           test/creation-session.service.spec.ts
+          test/game-schema-bootstrap.service.spec.ts
+          test/admin.service.spec.ts
       - name: Verify production feed query
         run: npm test --workspace=@gamevallies/feed-service -- --runInBand test/trending-production.spec.ts
 
