@@ -1,6 +1,8 @@
 """FastAPI application for PlayForge AI Engine"""
 
 import asyncio
+import os
+from .services.fc_runtime import FCTransportBoundary
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -15,6 +17,15 @@ from .services.llm_client import _build_openai_compatible_chat_url
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
+    if os.getenv("FC_DEPLOYMENT") == "true":
+        from redis.asyncio import Redis
+        if not settings.REDIS_URL:
+            raise RuntimeError("FC requires Redis task persistence")
+        client = Redis.from_url(settings.REDIS_URL)
+        try:
+            await client.ping()
+        finally:
+            await client.aclose()
     # Startup
     print(f"Starting PlayForge AI Engine in {settings.ENVIRONMENT} mode")
     print(f"LLM Mode: {settings.LLM_MODE}")
@@ -43,6 +54,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.add_middleware(FCTransportBoundary)
 
 # Include routers
 app.include_router(generate_router)
@@ -115,3 +128,4 @@ if __name__ == "__main__":
         port=8000,
         reload=settings.ENVIRONMENT == "development"
     )
+

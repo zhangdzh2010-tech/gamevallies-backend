@@ -1,0 +1,56 @@
+map $http_upgrade $connection_upgrade { default upgrade; '' close; }
+resolver ${FC_DNS_RESOLVER} valid=30s ipv6=off;
+server {
+    listen 8080;
+    server_name _;
+    set $games ${GAME_UPSTREAM};
+    set $api ${USER_UPSTREAM};
+    set $ai ${AI_UPSTREAM};
+    set $web ${FRONTEND_UPSTREAM};
+    client_max_body_size 6m;
+    proxy_http_version 1.1;
+    proxy_ssl_server_name on;
+    proxy_ssl_verify on;
+    proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+    proxy_set_header Host $proxy_host;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Fc-Internal-Token ${FC_INTERNAL_TOKEN};
+    proxy_buffering off;
+    proxy_read_timeout 900s;
+    proxy_send_timeout 900s;
+    location = /health { default_type application/json; return 200 '{"status":"ok"}'; }
+    location ^~ /__fc/ { return 404; }
+    location ^~ /api/v1/internal/ { return 404; }
+    # AI RPC is server-to-server only. Client creation uses creation-session APIs.
+    location ^~ /api/v1/ai/ { return 404; }
+    location /api/v1/growth { proxy_pass $games$request_uri; }
+    location = /33zqDBay4T.txt { proxy_pass $api$request_uri; }
+    location = /9002299597e76e062cb56930926ed40c.txt { proxy_pass $api$request_uri; }
+    location /api/ { proxy_pass $api$request_uri; }
+    location /users/ { proxy_pass $api$request_uri; }
+    location /admin { proxy_pass $games$request_uri; }
+    location /games/ { proxy_pass $games$request_uri; }
+    location /game-shell/ { proxy_pass $games$request_uri; }
+    location /socket.io/ {
+        proxy_pass $games$request_uri;
+        proxy_set_header Host $proxy_host;
+        proxy_set_header X-Fc-Internal-Token ${FC_INTERNAL_TOKEN};
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+    }
+    location /ws/socket.io/ {
+        rewrite ^/ws/(.*)$ /$1 break;
+        proxy_pass $games$uri$is_args$args;
+        proxy_set_header Host $proxy_host;
+        proxy_set_header X-Fc-Internal-Token ${FC_INTERNAL_TOKEN};
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+    }
+    location /ws { return 404; }
+    location / {
+        proxy_pass $web$request_uri;
+        proxy_set_header Host $proxy_host;
+        proxy_set_header X-Fc-Internal-Token "";
+    }
+}

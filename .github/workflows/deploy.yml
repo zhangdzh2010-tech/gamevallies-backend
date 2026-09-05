@@ -1,4 +1,4 @@
-name: Deploy to Alibaba Cloud
+name: Deploy to Alibaba FC
 on:
   push:
     branches: [main]
@@ -6,11 +6,11 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: aliyun-production-backend
+  group: aliyun-fc-production-backend
   cancel-in-progress: false
 jobs:
   verify:
-    if: github.ref == 'refs/heads/main' && vars.ALIYUN_DEPLOY_ENABLED == 'true'
+    if: github.ref == 'refs/heads/main' && vars.ALIYUN_FC_DEPLOY_ENABLED == 'true'
     uses: ./.github/workflows/ci.yml
   images:
     needs: verify
@@ -44,31 +44,47 @@ jobs:
             docker buildx build --platform linux/amd64 --build-arg SERVICE="$service" --tag "$ACR_REGISTRY/$ACR_NAMESPACE/$service:$GITHUB_SHA" --push .
           done
           docker buildx build --platform linux/amd64 -f packages/ai-engine/Dockerfile --tag "$ACR_REGISTRY/$ACR_NAMESPACE/ai-engine:$GITHUB_SHA" --push .
-          docker buildx build --platform linux/amd64 -f deploy/aliyun/Dockerfile.gateway --tag "$ACR_REGISTRY/$ACR_NAMESPACE/gateway:$GITHUB_SHA" --push .
+          docker buildx build --platform linux/amd64 -f deploy/fc/Dockerfile.gateway --tag "$ACR_REGISTRY/$ACR_NAMESPACE/gateway:$GITHUB_SHA" --push .
   deploy:
     needs: images
-    # Only a dedicated production ECS runner may use this label.
-    runs-on: [self-hosted, Linux, X64, aliyun-ecs-backend]
+    runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 20
+    timeout-minutes: 90
     env:
-      DEPLOY_ROOT: /opt/gamevallies/backend
-      IMAGE_PREFIX: ${{ vars.ACR_REGISTRY }}/${{ vars.ACR_NAMESPACE }}
-      IMAGE_TAG: ${{ github.sha }}
+      FC_ACCOUNT_ID: ${{ vars.FC_ACCOUNT_ID }}
+      FC_REGION: ${{ vars.FC_REGION }}
+      FC_PREFIX: ${{ vars.FC_PREFIX }}
+      FC_EXECUTION_ROLE: ${{ vars.FC_EXECUTION_ROLE }}
+      FC_FRONTEND_URL: ${{ vars.FC_FRONTEND_URL }}
       ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
-      ACR_USERNAME: ${{ secrets.ACR_PULL_USERNAME }}
-      ACR_PASSWORD: ${{ secrets.ACR_PULL_PASSWORD }}
-      GATEWAY_BIND: ${{ vars.GATEWAY_BIND }}
+      ACR_NAMESPACE: ${{ vars.ACR_NAMESPACE }}
+      ACR_INSTANCE_ID: ${{ vars.ACR_INSTANCE_ID }}
+      IMAGE_TAG: ${{ github.sha }}
+      ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_ID }}
+      ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_SECRET }}
+      ALIBABA_CLOUD_SECURITY_TOKEN: ${{ secrets.ALIBABA_CLOUD_SECURITY_TOKEN }}
+      FC_RUNTIME_JSON: ${{ secrets.FC_RUNTIME_JSON }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Pull and deploy on ECS
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r scripts/fc/requirements.txt
+      - name: Validate and deploy FC functions
         shell: bash
         run: |
           set -euo pipefail
-          : "${ACR_USERNAME:?Missing ACR_PULL_USERNAME}" "${ACR_PASSWORD:?Missing ACR_PULL_PASSWORD}"
-          export DOCKER_CONFIG=$(mktemp -d)
-          trap 'rm -rf "$DOCKER_CONFIG"' EXIT
-          printf '%s' "$ACR_PASSWORD" | docker login "$ACR_REGISTRY" --username "$ACR_USERNAME" --password-stdin
-          bash scripts/aliyun/deploy.sh
+          umask 077
+          config=$(mktemp)
+          trap 'rm -f "$config"' EXIT
+          printf '%s' "$FC_RUNTIME_JSON" > "$config"
+          python scripts/fc/deploy.py validate --runtime "$config"
+          python scripts/fc/deploy.py apply --runtime "$config" --release fc-release.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fc-release-${{ github.sha }}
+          path: fc-release.json
+          if-no-files-found: error
+          retention-days: 90

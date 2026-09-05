@@ -1,0 +1,15 @@
+resolver ${FC_DNS_RESOLVER} valid=30s ipv6=off;
+server {
+    listen 8080;
+    server_name _;
+    set $games ${GAME_UPSTREAM};
+    proxy_ssl_server_name on;
+    proxy_ssl_verify on;
+    proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+    proxy_set_header Host $proxy_host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Fc-Internal-Token ${FC_INTERNAL_TOKEN};
+    location = /health { return 200 'ok'; }
+    location /games/ { proxy_pass $games$request_uri; }
+    location / { return 404; }
+}

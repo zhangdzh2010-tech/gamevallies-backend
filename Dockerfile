@@ -21,6 +21,7 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages ./packages
 COPY --from=builder /app/contracts ./contracts
 COPY --from=builder /app/prisma ./prisma
+COPY deploy/fc/internal-auth.cjs /app/fc-internal-auth.cjs
 ENV NODE_ENV=production
 ENV PORT=${PORT}
 WORKDIR /app/packages/${SERVICE}

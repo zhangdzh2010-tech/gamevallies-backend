@@ -75,7 +75,11 @@ packages/game-service/dist-verify/
 # Sensitive payment credentials (NEVER commit)
 docs/integration/微信支付/
 
-# Production configuration stays on ECS
+# Production credentials remain outside Git
 .env.production
 .env.production.*
 !.env.production.example
+
+# FC local runtime and generated release records
+.fc-runtime*.json
+fc-release*.json
