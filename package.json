@@ -44,7 +44,7 @@
     "docker:logs": "docker compose logs -f",
     "format:check": "prettier --check \"packages/*/src/**/*.ts\"",
     "type-check": "npm run build --workspaces",
-    "test:unit": "npm run test --workspaces --if-present",
+    "test:unit": "npm run test --workspaces --if-present --",
     "test:integration": "jest --config jest.integration.config.js --runInBand"
   },
   "devDependencies": {

@@ -86,6 +86,8 @@ def core_playability_contract(spec: Any) -> str:
         "The original user request wins over generated design suggestions or template defaults.",
         "Implement start -> player input -> visible state/feedback -> objective or ongoing loop -> restart first.",
         "Each advertised mechanic must execute; no placeholder controls or decorative-only gameplay.",
+        "The game runs in an opaque-origin sandbox: guard localStorage/sessionStorage with try/catch and use in-memory fallback.",
+        "Embed assets or draw them procedurally; no remote scripts, fetch, WebSocket, nested frames or worker dependencies.",
         "Keep one complete core loop and the requested signature rule. Add visual polish only after these work.",
         "During repair preserve controls, objectives and signature mechanics; fix the reported defect locally.",
         "Do not substitute survival/collection for a puzzle, strategy or untimed objective.",

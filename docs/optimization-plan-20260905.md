@@ -71,12 +71,14 @@
 | R01 | 生产提交前检查持久队列；提交后投递失败保留数据库任务，后台按原 jobId 补投；不转进程内生成 | 单测覆盖不可用时不扣费、不本地执行、只补投活动任务。跨进程故障注入仍需 MySQL/Redis 环境 |
 | B01 | 免费/订阅扣减带原值条件；解锁带 canPlay=false 条件；并发冲突返回 409 | Prisma 编译与服务回归通过。数据库真实并发、事务回滚与退款幂等尚待集成验收，完整权益流水未实现 |
 | S01 | 前后端 iframe 收敛为 allow-scripts；QA context 阻断网络，CSP 限制连接/嵌套页面/worker；禁用 service worker | 真实 Chromium 测试验证内联交互、宿主文档隔离、HTTP 与 WebSocket 拦截。浏览器级规则不能替代容器/网络隔离；旧作品对 localStorage/CDN 的依赖需回归 |
-| F01 | 创作页面和工作区改为保存/确认描述，不再声称 AI 已完成整理 | 保留已有编辑、确认与生成操作；前端测试结果见对应 PR |
+| F01 | 创作页面和工作区改为保存/确认描述，不再声称 AI 已完成整理 | 保留已有编辑、确认与生成操作；前端 3 组测试共 35 项通过 |
 | Q01 | contracts/generation/quality-policy.json 是阈值来源；脚本生成两种语言的部署文件，提供 --check 检测漂移 | safe/standard/showcase 数值不变；任务元数据与 GameSpec 记录策略版本。历史任务固定策略执行仍属于 R02 后续迁移 |
-| C01 | 补齐后端 CI 引用的脚本；扩展专项回归；前端提交 lockfile，Docker 改为源码构建 | 专项本地回归已运行；全量历史 CI 及线上部署未验收。前端本地快照缺 PNG，完整构建交由仓库 CI 验证 |
+| C01 | 补齐后端 CI 引用的脚本；扩展专项回归；前端提交 lockfile，Docker 改为源码构建 | 前端 GitHub CI 33955502073：35 项测试及完整 H5 源码构建通过。后端专项本地回归通过，GitHub 尚未出现本分支运行记录；全量历史 CI 及线上部署未验收 |
 | P01 | 热门流限制候选集、增加稳定排序及分页参数归一化 | 默认最近 1000 个公开发布作品，可用 TRENDING_CANDIDATE_LIMIT 调整到 100–10000；分页总数指候选集。不是全历史热度榜；真实服务 3 项测试及编译通过 |
 
 Python 首批基线 115 项通过；扩展并修复测试后 185 项通过，包括真实 Chromium 隔离检查。旧版 Prompt 集成测试存在 1 项缺少 enabled client mock，已补齐；没有关闭生产质量检查来使测试通过。
+
+首批实施草稿 PR：后端 https://github.com/zhangdzh2010-tech/gamevallies-backend/pull/3 ，前端 https://github.com/zhangdzh2010-tech/gamevallies-front/pull/4 。两者以各自大文件拆分分支为基础，未合并、未部署。
 
 ### 尚未完成及继续实施所需输入
 
