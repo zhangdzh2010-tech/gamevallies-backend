@@ -28,6 +28,11 @@ class SlotState(BaseModel):
     special_rules: Optional[List[str]] = None
     reference_game: Optional[str] = None
 
+    # Optional explicit rules; legacy slot payloads remain valid.
+    lose_condition: Optional[str] = None
+    scoring: Optional[str] = None
+    lives: Optional[int] = Field(default=None, ge=1, le=99)
+
     REQUIRED_SLOTS: List[str] = Field(
         default=["game_type", "core_mechanic", "theme", "input_method", "win_condition", "difficulty"],
         exclude=True,
@@ -181,6 +186,9 @@ class GameSpec(BaseModel):
     # None means "no upstream brief"; downstream may auto-synthesize via
     # build_anchors_fallback when P1_CREATIVE_ANCHORS_ENABLED is on.
     creative_anchors: Optional[Dict[str, Any]] = None
+    creative_design: Optional[Dict[str, Any]] = None
+    gameplay_fingerprint: Optional[str] = None
+    quality_policy_version: Optional[str] = None
     ui_language: str = "en-US"
     core_mechanics: List[CoreMechanic] = Field(default_factory=list)
     entities: List[GameEntity] = Field(default_factory=list)

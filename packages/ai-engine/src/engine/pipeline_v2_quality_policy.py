@@ -6,6 +6,7 @@ from typing import Any, Optional
 from ..api.models import GameRuntimeContract, GameSpec, QACheckError, RunPipelineV2Request
 from ..config.settings import settings
 from .code_generator import CodeGenerator
+from .generated_quality_policy import QUALITY_POLICY
 from .quality_scorer import LLMReviewResult, QAStaticResult
 from .runtime_profile_ids import normalize_runtime_profile_id
 try:  # pragma: no cover
@@ -88,30 +89,7 @@ class PipelineV2QualityPolicyMixin:
     @staticmethod
     def _quality_gate_thresholds(spec: GameSpec) -> dict[str, float]:
         generation_tier = CodeGenerator._resolve_generation_tier(spec)
-        if generation_tier == "showcase":
-            return {
-                "fun_score": 8.0,
-                "visual_polish_score": 8.0,
-                "character_quality_score": 7.5,
-                "abstract_character_floor": 7.0,
-                "final_score": 8.5,
-                "min_review_bonus": -1.5,
-            }
-        if generation_tier == "safe":
-            return {
-                "fun_score": 6.0,
-                "visual_polish_score": 5.8,
-                "character_quality_score": 5.2,
-                "abstract_character_floor": 4.8,
-                "final_score": 5.8,
-            }
-        return {
-            "fun_score": 6.8,
-            "visual_polish_score": 6.8,
-            "character_quality_score": 6.4,
-            "abstract_character_floor": 6.0,
-            "final_score": 6.6,
-        }
+        return dict(QUALITY_POLICY["tiers"].get(generation_tier, QUALITY_POLICY["tiers"]["standard"]))
 
 
     @staticmethod

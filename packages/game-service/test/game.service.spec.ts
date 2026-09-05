@@ -1003,7 +1003,7 @@ describe('GameService', () => {
     const result = await service.unlock('game-lock', 'user-lock');
 
     expect(prisma.game.update).toHaveBeenCalledWith({
-      where: { id: 'game-lock' },
+      where: { id: 'game-lock', canPlay: false },
       data: {
         canPlay: true,
         requireSubscription: false,
@@ -1096,7 +1096,7 @@ describe('GameService', () => {
       pipelineVersion: 'v2',
       promptBundleId: 'runtime-v2-default',
       promptBundleVersion: 1,
-      runtimeProfile: 'casual_arcade',
+      runtimeProfile: 'puzzle_grid',
       contractVersion: '1.0',
     }));
 
@@ -1490,6 +1490,8 @@ describe('GameService', () => {
         },
       },
       responseData: {
+        quality_score: 7.0,
+        quality_breakdown: { reviewRan: true },
         html_code: '<!DOCTYPE html><html><head><title>Wide Runner</title></head><body></body></html>',
         game_spec: {
           game_type: 'runner',
@@ -1628,6 +1630,8 @@ describe('GameService', () => {
       description: 'make a runner game',
       taskId: 'task-type-normalized',
       responseData: {
+        quality_score: 7.0,
+        quality_breakdown: { reviewRan: true },
         html_code: '<!DOCTYPE html><html><head><title>Runner</title></head><body></body></html>',
         game_spec: {
           game_type: 'runner',
@@ -1761,9 +1765,6 @@ describe('GameService', () => {
           entrypoint: 'create',
           pipeline_version: 'v2',
           region: 'cn_shanghai',
-          metadata: expect.objectContaining({
-            orientation: 'landscape',
-          }),
         }),
         entitlement: expect.objectContaining({
           can_play: true,
@@ -1790,7 +1791,7 @@ describe('GameService', () => {
           }),
         }),
         normalized_request: expect.objectContaining({
-          orientation: 'landscape',
+          description: 'make a runner',
         }),
         metadata: expect.objectContaining({
           orientation: 'landscape',
@@ -2704,9 +2705,6 @@ describe('GameService', () => {
         request_context: expect.objectContaining({
           entrypoint: 'iterate',
           pipeline_version: 'v2',
-          metadata: expect.objectContaining({
-            orientation: 'landscape',
-          }),
         }),
         runtime_contract: expect.objectContaining({
           mobile_layout: expect.objectContaining({
@@ -2714,7 +2712,7 @@ describe('GameService', () => {
           }),
         }),
         normalized_request: expect.objectContaining({
-          orientation: 'landscape',
+          feedback: 'make it faster',
         }),
         metadata: expect.objectContaining({
           orientation: 'landscape',
@@ -4610,8 +4608,8 @@ describe('GameService', () => {
     });
 
     expect(payload.generation_tier).toBe('showcase');
-    expect(payload.request_context.metadata.generation_tier).toBe('showcase');
-    expect(payload.normalized_request.generation_tier).toBe('showcase');
+    expect(payload.runtime_contract.metadata.generation_tier).toBe('showcase');
+    expect(payload.prompt_bundle_snapshot.layers.generation_tier).toBe('showcase');
     expect(payload.metadata.generation_tier).toBe('showcase');
   });
 
@@ -4687,7 +4685,49 @@ describe('GameService', () => {
 
     expect(sourceBundleContext.latest_generation_tier).toBe('showcase');
     expect(payload.generation_tier).toBe('showcase');
-    expect(payload.request_context.metadata.generation_tier).toBe('showcase');
-    expect(payload.normalized_request.generation_tier).toBe('showcase');
+    expect(payload.runtime_contract.metadata.generation_tier).toBe('showcase');
+    expect(payload.prompt_bundle_snapshot.layers.generation_tier).toBe('showcase');
   });
+  it('rejects production create before charging when the durable queue is unavailable', async () => {
+    const originalGet = configService.get.bind(configService);
+    jest.spyOn(configService, 'get').mockImplementation((key: string, fallback?: any) =>
+      key === 'NODE_ENV' ? 'production' : originalGet(key, fallback));
+    generationQueueService.ensureOperational.mockResolvedValue(false);
+    await expect(service.create('user-queue', { prompt: 'a puzzle' })).rejects.toThrow('Generation queue is unavailable');
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('does not launch in-process execution after production enqueue failure', async () => {
+    const originalGet = configService.get.bind(configService);
+    jest.spyOn(configService, 'get').mockImplementation((key: string, fallback?: any) =>
+      key === 'NODE_ENV' ? 'production' : originalGet(key, fallback));
+    const execute = jest.spyOn(service as any, 'executePipelineTask').mockResolvedValue(undefined);
+    (service as any).scheduleLocalPipelineExecution('game', 'user', 'brief', 60, 'task');
+    await new Promise(resolve => setImmediate(resolve));
+    expect(execute).not.toHaveBeenCalled();
+    service.onModuleDestroy();
+  });
+
+  it('redelivers only live queued tasks using their original task ids', async () => {
+    prisma.generationTask.findMany.mockResolvedValue([{ id: 'queued' }, { id: 'canceled' }]);
+    jest.spyOn(service, 'reconcileGenerationTask').mockImplementation(async (id) => ({
+      id, status: id === 'queued' ? 'queued' : 'canceled', taskType: 'pipeline_run', upstreamTaskId: null,
+    }));
+    await (service as any).reconcileActiveTasksInBackground();
+    expect(generationQueueService.enqueueJob).toHaveBeenCalledTimes(1);
+    expect(generationQueueService.enqueueJob).toHaveBeenCalledWith('pipeline_run', 'queued');
+  });
+
+  it('reports quota contention without creating a task', async () => {
+    prisma.userQuota.upsert.mockResolvedValue({ userId: 'user-cas', totalFreeQuota: 1, usedFreeQuota: 0 });
+    prisma.userSubscription.findFirst.mockResolvedValue(null);
+    prisma.userQuota.update.mockRejectedValue({ code: 'P2025', message: 'concurrent quota change' });
+    await expect(service.create('user-cas', { prompt: 'a puzzle' })).rejects.toThrow('Generation quota changed concurrently');
+    expect(prisma.userQuota.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { userId: 'user-cas', usedFreeQuota: 0, totalFreeQuota: 1 },
+    }));
+    expect(generationTaskService.createTask).not.toHaveBeenCalled();
+  });
+
 });
+

@@ -604,6 +604,7 @@ class CodeGenerator(CodeGenerationPromptsMixin):
             runtime_profile=runtime_profile,
             structured_design=structured_design,
         )
+        from .creative_design import core_playability_contract
         full_prompt = self._compose_prompt_sections(
             [
                 logic_generate_policy,
@@ -616,6 +617,7 @@ class CodeGenerator(CodeGenerationPromptsMixin):
                 mechanic_diversity_block,
                 design_program_block,
                 critical_intent_block,
+                core_playability_contract(spec),
                 "" if self._structured_design_has_ui_language(structured_design) else self._build_ui_language_block(spec.ui_language),
                 self._build_runtime_contract_block(runtime_contract, runtime_profile, prompt_bundle_snapshot),
                 self._build_contract_implementation_checklist(runtime_contract, runtime_profile),
