@@ -178,6 +178,8 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
         prompt_bundle_snapshot: Optional[dict[str, Any]],
     ) -> str:
         generator = self.code_generator
+        from .creative_design import core_playability_contract
+        prompt = prompt + "\n\n" + core_playability_contract(spec)
         step_key = QUALITY_GATE_PATCH_STEP_KEY
         request_timeout_s = CodeGenerator._resolve_step_request_timeout_s(
             step_key,
@@ -217,6 +219,11 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
         )
 
     async def _remember_spec(self, spec: Optional[GameSpec]) -> None:
+        if spec is not None:
+            from .creative_design import gameplay_fingerprint
+            from .generated_quality_policy import QUALITY_POLICY
+            spec.gameplay_fingerprint = gameplay_fingerprint(spec)
+            spec.quality_policy_version = QUALITY_POLICY["version"]
         await task_memory.remember_spec(self._current_task_id(), spec)
 
     async def _remember_runtime_contract(

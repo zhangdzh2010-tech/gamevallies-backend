@@ -39,6 +39,7 @@ import {
   NotFoundException,
   ForbiddenException,
   ConflictException,
+  ServiceUnavailableException,
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
@@ -282,7 +283,18 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       });
 
       for (const task of activeTasks) {
-        await this.reconcileGenerationTask(task).catch((error) => {
+        await this.reconcileGenerationTask(task.id).then(async (current) => {
+          // The database task also serves as the pending-delivery record.
+          // Retry publication after a Redis outage, using the same BullMQ jobId.
+          if (current?.status === 'queued' && !current.upstreamTaskId && !current.cancelRequested) {
+            const jobName = current.taskType === GenerationTaskType.pipeline_run
+              ? GENERATION_QUEUE_JOB_PIPELINE_RUN
+              : current.taskType === GenerationTaskType.pipeline_iterate
+                ? GENERATION_QUEUE_JOB_PIPELINE_ITERATE
+                : null;
+            if (jobName) await this.generationQueueService.enqueueJob(jobName, current.id);
+          }
+        }).catch((error) => {
           this.logger.warn(`Failed to sweep task ${task.id}: ${error.message}`);
         });
       }
@@ -2705,6 +2717,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
 
   async create(userId: string, dto: CreateGameCommand): Promise<any> {
     try {
+      await this.requireDurableGenerationQueue();
       const gameId = randomUUID();
       const description = dto.description || dto.prompt || '';
       // H.5.1 - userIdea is the clean, user-facing tagline. For direct create,
@@ -2757,7 +2770,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
 
         if (freeRemaining > 0) {
           const updatedQuota = await tx.userQuota.update({
-            where: { userId },
+            where: { userId, usedFreeQuota: quota.usedFreeQuota, totalFreeQuota: quota.totalFreeQuota },
             data: {
               usedFreeQuota: { increment: 1 },
             },
@@ -2768,7 +2781,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           accessGrantSource = GameAccessGrantSource.free_quota;
         } else if (subscription && subscriptionRemaining > 0) {
           const updatedSubscription = await tx.userSubscription.update({
-            where: { id: subscription.id },
+            where: { id: subscription.id, usedThisPeriod: subscription.usedThisPeriod, status: 'active' },
             data: {
               usedThisPeriod: { increment: 1 },
             },
@@ -2822,6 +2835,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
               pipelineVersion,
               orientation: requestedOrientation ?? null,
               generationTier: requestedGenerationTier,
+              qualityPolicyVersion: gameQualityPolicy.QUALITY_POLICY_VERSION,
               creationSessionId: dto.creationSessionId ?? null,
               entryMode: dto.entryMode ?? null,
               sourceGameId: dto.sourceGameId ?? null,
@@ -2933,7 +2947,20 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       };
     } catch (error) {
       this.logger.error(`Failed to create game: ${error.message}`);
+      if (error?.code === 'P2025') {
+        throw new ConflictException('Generation quota changed concurrently; please retry');
+      }
       throw error;
+    }
+  }
+
+  private allowsLocalGeneration(): boolean {
+    return this.configService.get<string>('NODE_ENV', process.env.NODE_ENV || 'development') !== 'production';
+  }
+
+  private async requireDurableGenerationQueue(): Promise<void> {
+    if (!this.allowsLocalGeneration() && !(await this.generationQueueService.ensureOperational().catch(() => false))) {
+      throw new ServiceUnavailableException('Generation queue is unavailable; please try again shortly');
     }
   }
 
@@ -2946,6 +2973,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     executionRegion?: string,
     options: CreateExecutionOptions = {},
   ): void {
+    if (!this.allowsLocalGeneration()) {
+      this.logger.warn(`Task ${taskId} remains queued for durable delivery after queue recovery`);
+      this.startActiveTaskSweep();
+      return;
+    }
     setImmediate(() => {
       void this.executePipelineTask(
         gameId,
@@ -2975,6 +3007,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     executionRegion?: string,
     options: IterateExecutionOptions = {},
   ): void {
+    if (!this.allowsLocalGeneration()) {
+      this.logger.warn(`Task ${taskId} remains queued for durable delivery after queue recovery`);
+      this.startActiveTaskSweep();
+      return;
+    }
     setImmediate(() => {
       void this.executeIterationTask(
         gameId,
@@ -4933,14 +4970,14 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       }
 
       const updatedSubscription = await tx.userSubscription.update({
-        where: { id: currentSubscription.id },
+        where: { id: currentSubscription.id, usedThisPeriod: currentSubscription.usedThisPeriod, status: 'active' },
         data: {
           usedThisPeriod: { increment: 1 },
         },
       });
 
       await tx.game.update({
-        where: { id },
+        where: { id, canPlay: false },
         data: {
           canPlay: true,
           requireSubscription: false,
@@ -4954,6 +4991,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         canPlay: true,
         quotaRemaining: this.computeQuotaRemaining(quota, updatedSubscription),
       };
+    }).catch((error) => {
+      if (error?.code === 'P2025') {
+        throw new ConflictException('Game access or quota changed concurrently; please retry');
+      }
+      throw error;
     });
   }
 
@@ -5061,6 +5103,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
 
   async iterate(id: string, userId: string, dto: IterateGameDto): Promise<any> {
     try {
+      await this.requireDurableGenerationQueue();
       const game = await this.prisma.game.findUnique({ where: { id } });
       if (!game) throw new NotFoundException('Game not found');
       if (game.authorId !== userId) {

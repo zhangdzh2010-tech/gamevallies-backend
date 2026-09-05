@@ -1,3 +1,6 @@
+import { QUALITY_POLICY } from "./generated-quality-policy";
+export const QUALITY_POLICY_VERSION = QUALITY_POLICY.version;
+
 /** quality policy extracted without changing business rules. */
 
 import type {
@@ -18,21 +21,21 @@ export function resolveCreateQualityGate(
   if (normalizedGenerationTier === 'showcase') {
     return {
       generationTier: normalizedGenerationTier,
-      minQualityScore: 8.5,
+      minQualityScore: QUALITY_POLICY.tiers.showcase.final_score,
       requireStructuredReview: true,
-      minReviewBonus: -1.5,
+      minReviewBonus: QUALITY_POLICY.tiers.showcase.min_review_bonus,
     };
   }
   if (normalizedGenerationTier === 'safe') {
     return {
       generationTier: normalizedGenerationTier,
-      minQualityScore: 5.8,
+      minQualityScore: QUALITY_POLICY.tiers.safe.final_score,
       requireStructuredReview: false,
     };
   }
   return {
     generationTier: normalizedGenerationTier,
-    minQualityScore: 6.6,
+    minQualityScore: QUALITY_POLICY.tiers.standard.final_score,
     requireStructuredReview: false,
   };
 }
