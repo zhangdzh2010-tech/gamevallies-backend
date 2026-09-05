@@ -8,7 +8,7 @@ const https = require('node:https');
 const { URL } = require('node:url');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
-const DEFAULT_ENV_PATH = path.join(REPO_ROOT, '.env.deploy');
+const DEFAULT_ENV_PATH = path.join(REPO_ROOT, '.env.production');
 const BOOTSTRAP_EVENTS = new Set(['bootstrap']);
 const DONE_EVENTS = new Set(['done']);
 
@@ -845,3 +845,4 @@ main().catch((error) => {
   console.error(error && error.stack ? error.stack : String(error));
   process.exitCode = 1;
 });
+

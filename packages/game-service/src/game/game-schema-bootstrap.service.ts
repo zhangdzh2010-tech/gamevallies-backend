@@ -621,15 +621,15 @@ const DEFAULT_LLM_STEP_CATALOG = [
 
 const DEFAULT_CLOUD_PROVIDER_ACCOUNT = {
   id: "9d5307f1-9ee8-4f45-8b18-4e29c0010001",
-  vendor: "volcengine",
-  accountKey: "volc-default",
-  displayName: "火山引擎默认账号",
+  vendor: "aliyun",
+  accountKey: "aliyun-default",
+  displayName: "阿里云默认账号",
 };
 
 const DEFAULT_CLOUD_REGION_CATALOG = [
   {
     id: "9d5307f1-9ee8-4f45-8b18-4e29c0011001",
-    vendor: "volcengine",
+    vendor: "aliyun",
     regionCode: "cn-shanghai",
     regionName: "上海",
     regionGroup: "cn_mainland",
@@ -716,7 +716,7 @@ export class GameSchemaBootstrapService implements OnModuleInit {
 
   private buildDefaultRegionTargets() {
     const namespace =
-      process.env.VOLCENGINE_REGISTRY_NAMESPACE || "gamevallies";
+      process.env.ACR_NAMESPACE || "gamevallies";
     const legacyExecutionRegion = this.resolveLegacyExecutionRegion();
     const legacyUrl = (process.env.AI_ENGINE_URL || "").trim();
     const shanghaiUrl = (process.env.AI_ENGINE_URL_CN_SHANGHAI || "").trim();
@@ -725,17 +725,16 @@ export class GameSchemaBootstrapService implements OnModuleInit {
       {
         id: "9d5307f1-9ee8-4f45-8b18-4e29c0012001",
         regionCatalogId: DEFAULT_CLOUD_REGION_CATALOG[0].id,
-        vendor: "volcengine",
+        vendor: "aliyun",
         cloudRegionCode: "cn-shanghai",
         executionRegion: "cn_shanghai",
         displayName: "AI Engine 上海主实例",
-        functionName: "gv-ai-engine-cn",
+        functionName: "ai-engine",
         registry:
-          process.env.VOLCENGINE_REGISTRY_CN_SHANGHAI ||
-          process.env.VOLCENGINE_REGISTRY ||
-          "gamevallies-repo-cn-shanghai.cr.volces.com",
+          process.env.ACR_REGISTRY ||
+          "registry.cn-shanghai.aliyuncs.com",
         registryNamespace: namespace,
-        imageRepository: "gv-ai-engine-cn",
+        imageRepository: "ai-engine",
         serviceRegionEnv: "cn_shanghai",
         aiEngineUrl:
           shanghaiUrl ||
@@ -759,7 +758,7 @@ export class GameSchemaBootstrapService implements OnModuleInit {
         data: {
           region: "cn_shanghai",
           regionTargetId: shanghaiTarget.id,
-          cloudVendor: "volcengine",
+          cloudVendor: "aliyun",
           cloudRegionCode: shanghaiTarget.cloudRegionCode,
         },
       });
@@ -767,7 +766,7 @@ export class GameSchemaBootstrapService implements OnModuleInit {
         where: { region: "cn_shanghai", regionTargetId: null },
         data: {
           regionTargetId: shanghaiTarget.id,
-          cloudVendor: "volcengine",
+          cloudVendor: "aliyun",
           cloudRegionCode: shanghaiTarget.cloudRegionCode,
         },
       });
@@ -996,12 +995,12 @@ export class GameSchemaBootstrapService implements OnModuleInit {
         DEFAULT_CLOUD_PROVIDER_ACCOUNT.vendor,
         DEFAULT_CLOUD_PROVIDER_ACCOUNT.accountKey,
         DEFAULT_CLOUD_PROVIDER_ACCOUNT.displayName,
-        process.env.VOLCENGINE_REGISTRY ||
-          "gamevallies-repo-cn-shanghai.cr.volces.com",
-        process.env.VOLCENGINE_REGISTRY_NAMESPACE || "gamevallies",
-        process.env.VOLCENGINE_VPC_ID || null,
-        process.env.VOLCENGINE_SUBNET_ID || null,
-        process.env.VOLCENGINE_SECURITY_GROUP_ID || null,
+        process.env.ACR_REGISTRY ||
+          "registry.cn-shanghai.aliyuncs.com",
+        process.env.ACR_NAMESPACE || "gamevallies",
+        process.env.ALIYUN_VPC_ID || null,
+        process.env.ALIYUN_VSWITCH_ID || null,
+        process.env.ALIYUN_SECURITY_GROUP_ID || null,
       );
 
       for (const region of DEFAULT_CLOUD_REGION_CATALOG) {
@@ -1220,3 +1219,4 @@ export class GameSchemaBootstrapService implements OnModuleInit {
     }
   }
 }
+

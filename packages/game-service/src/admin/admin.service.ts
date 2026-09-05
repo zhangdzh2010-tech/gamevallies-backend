@@ -3320,7 +3320,7 @@ export class AdminService {
     return {
       success: true,
       message:
-        "Admin token updated (runtime only, update .env.deploy for persistence)",
+        "Admin token updated (runtime only, update .env.production for persistence)",
     };
   }
 
@@ -6699,3 +6699,4 @@ export class AdminService {
     return { success: true, message: "system_configs table created" };
   }
 }
+
