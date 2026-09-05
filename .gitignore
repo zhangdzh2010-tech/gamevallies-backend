@@ -74,3 +74,8 @@ packages/game-service/dist-verify/
 
 # Sensitive payment credentials (NEVER commit)
 docs/integration/微信支付/
+
+# Production configuration stays on ECS
+.env.production
+.env.production.*
+!.env.production.example

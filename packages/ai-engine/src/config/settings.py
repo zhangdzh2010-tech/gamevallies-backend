@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     # Cache / async task persistence. Empty (default) keeps the async task
     # manager purely in-memory; when set, task snapshots and the idempotency
     # index are persisted to Redis (best effort) so polling survives instance
-    # recycling on VeFaaS.
+    # container restarts.
     REDIS_URL: str = ""
 
     # LLM Configuration (MiniMax)
