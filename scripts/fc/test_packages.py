@@ -19,7 +19,7 @@ for f in manifest['functions']:
         command=['docker','run','--rm','--read-only','--tmpfs','/tmp:exec,size=1g','-v',folder+':/code:ro']
         if f['name'] == 'ai-engine':
             command += ['-e','PYTHONHOME=/code/python','-e','LD_LIBRARY_PATH=/code/lib:/code/python/lib','-e','PLAYWRIGHT_BROWSERS_PATH=/code/browsers','-e','FONTCONFIG_FILE=/code/fonts.conf','-e','HOME=/tmp','-e','PYTHONDONTWRITEBYTECODE=1','-w','/code','debian:bookworm-slim','/code/python/bin/python3','-c',
-                "import fastapi, uvicorn, pymysql; from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.launch(headless=True,args=['--no-sandbox','--disable-dev-shm-usage']); page=b.new_page(); page.set_content('<p>FC ZIP</p>'); assert page.text_content('p')=='FC ZIP'; b.close(); p.stop()"]
+                "import fastapi, uvicorn, pymysql; from src.main import app; assert app is not None; from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.launch(headless=True,args=['--no-sandbox','--disable-dev-shm-usage']); page=b.new_page(); page.set_content('<p>FC ZIP</p>'); assert page.text_content('p')=='FC ZIP'; b.close(); p.stop()"]
         elif f['name'] in ('frontend','gateway','content'):
             command += ['-e','GATEWAY_MODE='+('content' if f['name']=='content' else 'app'),'-e','FC_INTERNAL_TOKEN='+'a'*64]
             for key in ('GAME_UPSTREAM','USER_UPSTREAM','AI_UPSTREAM','FRONTEND_UPSTREAM'): command += ['-e',key+'=https://example.com']
