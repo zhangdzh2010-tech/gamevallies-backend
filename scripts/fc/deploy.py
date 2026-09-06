@@ -207,8 +207,14 @@ class Deployment:
     def version(self, name):
         return self.c.publish_function_version(name, self.m.PublishFunctionVersionRequest(body=self.m.PublishVersionInput(description='GameVallies deployment checkpoint'))).body.version_id
 
-    def restore(self, name, version):
+    def restore(self, name, version, code=None):
         previous = self.c.get_function(name, self.m.GetFunctionRequest(qualifier=version)).body.to_map()
+        if code:
+            previous['description'] = 'GameVallies OSS ' + json.dumps(code)
+        self.restore_configuration(name, previous)
+
+    def restore_configuration(self, name, previous):
+        previous = dict(previous)
         if previous.get('runtime') == 'custom-container':
             container = previous.get('customContainerConfig', {})
             previous['customContainerConfig'] = {k: v for k, v in container.items() if k in ('image', 'port', 'command', 'entrypoint', 'healthCheckConfig', 'acrInstanceId', 'registryConfig', 'accelerationType')}
@@ -275,6 +281,7 @@ class Deployment:
 
     def apply(self, manifest, runtime, env, output):
         entries, endpoints, touched = [], {}, []
+        stopped_snapshots = {}
         prefix = env['FC_PREFIX']
         token = runtime.get('common', {}).get('FC_INTERNAL_TOKEN', '')
         old_game_url = None
@@ -304,8 +311,15 @@ class Deployment:
             for f in manifest['functions']:
                 name = prefix + '-' + f['name']
                 old = self.optional(lambda: self.c.get_function(name, self.m.GetFunctionRequest()))
-                version = self.version(name) if old else None
+                stopped = bool(old) and self.service_is_stopped(name)
+                previous_code = checkpoint_code(old.body.to_map()) if old and old.body.runtime != 'custom-container' else None
+                if stopped:
+                    # Keep credentials only in process memory, never in release artifacts.
+                    stopped_snapshots[name] = old.body.to_map()
+                stage = 'checkpoint-version'
+                version = self.version(name) if old and not stopped else None
                 entry = {'name': name, 'service': f['name'], 'previousVersion': version, 'provisioned': f.get('provisioned', 0)}
+                if previous_code: entry['previousCode'] = previous_code
                 entries.append(entry)
                 if not old:
                     body = function_body(f, runtime, env, {})
@@ -352,8 +366,12 @@ class Deployment:
             failures = []
             for entry in reversed(touched):
                 try:
-                    if entry['previousVersion']:
-                        self.restore(entry['name'], entry['previousVersion'])
+                    if entry['name'] in stopped_snapshots:
+                        self.restore_configuration(entry['name'], stopped_snapshots[entry['name']])
+                        self.c.put_provision_config(entry['name'], self.m.PutProvisionConfigRequest(
+                            qualifier='LATEST', body=self.m.PutProvisionConfigInput(default_target=0)))
+                    elif entry['previousVersion']:
+                        self.restore(entry['name'], entry['previousVersion'], entry.get('previousCode'))
                         self.provision(entry['name'], entry['provisioned'])
                     else:
                         # New installations have no rollback target. Keep resources for diagnosis.
@@ -409,7 +427,7 @@ def main():
             for entry in reversed(release['functions']):
                 if not entry.get('previousVersion'): raise ValueError('First installation has no previous version')
                 if not entry['name'].startswith(os.environ['FC_PREFIX'] + '-'): raise ValueError('Rollback function prefix mismatch')
-                deployment.restore(entry['name'], entry['previousVersion'])
+                deployment.restore(entry['name'], entry['previousVersion'], entry.get('previousCode'))
                 deployment.provision(entry['name'], entry['provisioned'])
             print('Previous FC versions restored; verify business health.')
         finally:
