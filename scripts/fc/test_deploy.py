@@ -17,6 +17,53 @@ MANIFEST = json.loads(Path('deploy/fc/functions.json').read_text())
 RUNTIME['artifacts'] = {f['name']: {'sha256': 'b'*64, 'object': 'gamevallies/prod/releases/' + 'a'*40 + '/' + 'b'*64 + '/' + f['name'] + '.zip'} for f in MANIFEST['functions']}
 
 class ConfigTests(unittest.TestCase):
+    def test_database_gate_uses_private_single_concurrency_executor(self):
+        import io
+        client = Mock()
+        deployment = d.Deployment(client, m, sleep=lambda _: None)
+        deployment.optional = Mock(return_value=None)
+        deployment.wait_function = Mock()
+        client.invoke_function_with_options.return_value = NS(status_code=200, body=io.BytesIO(b'{"ok":true,"stage":"database-ready"}'))
+        deployment.migrate_database(MANIFEST, RUNTIME, ENV)
+        body = client.create_function.call_args.args[0].body.to_map()
+        self.assertEqual(body['instanceConcurrency'], 1)
+        self.assertFalse(body['internetAccess'])
+        self.assertEqual(body['vpcConfig'], RUNTIME['vpcConfig'])
+        self.assertEqual(body['code']['ossObjectName'], RUNTIME['artifacts']['game-service']['object'])
+        self.assertEqual(body['environmentVariables']['DATABASE_URL'], RUNTIME['common']['DATABASE_URL'])
+        self.assertNotIn('JWT_SECRET', body['environmentVariables'])
+        self.assertNotIn('NODE_OPTIONS', body['environmentVariables'])
+        client.create_trigger.assert_not_called()
+        client.put_provision_config.assert_not_called()
+        self.assertTrue(client.update_function.call_args.args[1].body.disable_ondemand)
+
+    def test_database_failure_blocks_application_publication(self):
+        client = Mock()
+        deployment = d.Deployment(client, m, sleep=lambda _: None)
+        deployment.optional = Mock(return_value=None)
+        deployment.migrate_database = Mock(side_effect=RuntimeError('database rejected'))
+        deployment.wait_function = Mock()
+        deployment.trigger = Mock(return_value='https://example.com')
+        with self.assertRaises(RuntimeError):
+            deployment.apply(MANIFEST, RUNTIME, ENV, 'unused.json')
+        for call in client.create_function.call_args_list:
+            self.assertTrue(call.args[0].body.disable_ondemand)
+        client.update_function.assert_not_called()
+        client.put_provision_config.assert_not_called()
+        client.publish_function_version.assert_not_called()
+
+    def test_database_error_is_safe_and_executor_is_disabled(self):
+        import io
+        client = Mock()
+        deployment = d.Deployment(client, m, sleep=lambda _: None)
+        deployment.optional = Mock(return_value=None)
+        deployment.wait_function = Mock()
+        client.invoke_function_with_options.return_value = NS(status_code=200, body=io.BytesIO(b'{"ok":false,"code":"P3009"}'))
+        with self.assertRaises(RuntimeError) as caught:
+            deployment.migrate_database(MANIFEST, RUNTIME, ENV)
+        self.assertEqual(caught.exception.code, 'P3009')
+        self.assertTrue(client.update_function.call_args.args[1].body.disable_ondemand)
+
     def test_official_sdk_round_trip_preserves_runtime_and_port(self):
         d.validate(MANIFEST, RUNTIME, ENV)
         for f in MANIFEST['functions']:
