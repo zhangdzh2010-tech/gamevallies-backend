@@ -1,5 +1,5 @@
 FROM node:20-alpine AS builder
-ARG SERVICE=user-service
+ARG SERVICE=game-service
 WORKDIR /app
 RUN apk add --no-cache openssl
 COPY package.json package-lock.json tsconfig.base.json ./
@@ -8,12 +8,12 @@ COPY contracts ./contracts
 COPY prisma ./prisma
 RUN npm ci --no-audit --no-fund
 RUN npx prisma generate
-RUN npm run build --workspace=packages/${SERVICE}
+RUN npm run build --workspaces
 RUN npm prune --omit=dev --no-audit --no-fund
 
 FROM node:20-alpine
-ARG SERVICE=user-service
-ARG PORT=3001
+ARG SERVICE=game-service
+ARG PORT=3002
 RUN apk add --no-cache openssl
 WORKDIR /app
 COPY --from=builder /app/node_modules ./node_modules

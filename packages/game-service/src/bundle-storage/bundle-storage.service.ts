@@ -1,26 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { PrismaClient } from '@prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
 import { randomUUID } from 'crypto';
-
-// 复用 PrismaClient 单例，避免函数服务冷启动时连接数爆炸
-let prismaInstance: PrismaClient | null = null;
-
-function getPrisma(): PrismaClient {
-  if (!prismaInstance) {
-    prismaInstance = new PrismaClient({
-      datasources: { db: { url: process.env.DATABASE_URL } },
-    });
-  }
-  return prismaInstance;
-}
 
 @Injectable()
 export class BundleStorageService {
   private readonly logger = new Logger(BundleStorageService.name);
 
-  private get prisma(): PrismaClient {
-    return getPrisma();
-  }
+  constructor(private readonly prisma: PrismaService) {}
 
   private normalizeStrategy(strategy?: string): string {
     void strategy;
@@ -162,3 +148,4 @@ export class BundleStorageService {
     }
   }
 }
+

@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { AccountsModule } from '../../user-service/dist/accounts.module';
+import { CommunityModule } from '../../feed-service/dist/community.module';
 import { ConfigModule } from '@nestjs/config';
 import { HealthController } from './health.controller';
 import { GameModule } from './game/game.module';
@@ -19,6 +21,8 @@ import { GenerationStatsModule } from './generation-stats/generation-stats.modul
       envFilePath: '.env',
     }),
     PrismaModule,
+    AccountsModule,
+    CommunityModule,
     BundleStorageModule,
     GameModule,
     ForkModule,
@@ -32,3 +36,4 @@ import { GenerationStatsModule } from './generation-stats/generation-stats.modul
   controllers: [HealthController],
 })
 export class AppModule {}
+

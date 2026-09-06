@@ -1,5 +1,7 @@
+import { FeedService } from '../../../feed-service/dist/feed/feed.service';
 import {
   Injectable,
+  Optional,
   NotFoundException,
   BadRequestException,
   BadGatewayException,
@@ -310,6 +312,7 @@ export class AdminService {
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
     private readonly gameService: GameService,
+    @Optional() private readonly localFeedService?: FeedService,
   ) {}
 
   private getFallbackAiEngineAdminBaseUrl(): string {
@@ -1595,6 +1598,12 @@ export class AdminService {
   }
 
   private async invalidateFeedCache(): Promise<void> {
+    if (this.localFeedService) {
+      try { await this.localFeedService.invalidateGameFeedCache(); }
+      catch { console.warn('Local feed cache invalidation failed'); }
+      return;
+    }
+
     const adminToken = this.getOptionalAdminToken();
     if (!adminToken) {
       console.warn(

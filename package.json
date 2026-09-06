@@ -6,18 +6,18 @@
   "workspaces": [
     "packages/platform-config",
     "packages/user-service",
+    "packages/feed-service",
     "packages/game-service",
-    "packages/social-service",
-    "packages/feed-service"
+    "packages/social-service"
   ],
   "scripts": {
     "build": "npm run build --workspaces",
     "dev:user": "npm run dev --workspace=packages/user-service",
-    "dev:game": "npm run start:dev --workspace=packages/game-service",
+    "dev:game": "npm run build --workspace=packages/user-service && npm run build --workspace=packages/feed-service && npm run start:dev --workspace=packages/game-service",
     "dev:social": "npm run dev --workspace=packages/social-service",
     "dev:feed": "npm run dev --workspace=packages/feed-service",
     "dev:ai": "cd packages/ai-engine && uvicorn src.main:app --reload --host 0.0.0.0 --port 8000",
-    "dev:all": "concurrently \"npm run dev:user\" \"npm run dev:game\" \"npm run dev:social\" \"npm run dev:feed\" \"npm run dev:ai\"",
+    "dev:all": "concurrently \"npm run dev:game\" \"npm run dev:ai\"",
     "test": "npm run test --workspaces",
     "test:cov": "npm run test:cov --workspaces",
     "lint": "eslint 'packages/*/src/**/*.ts'",
