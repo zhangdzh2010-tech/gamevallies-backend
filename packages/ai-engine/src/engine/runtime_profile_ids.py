@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Iterable, Tuple
 
 def _contract_path(name: str) -> Path:
-    candidates = (
-        Path(__file__).resolve().parents[4] / "contracts" / "generation" / name,
-        Path(__file__).resolve().parents[2] / "contracts" / "generation" / name,
+    candidates = tuple(
+        parent / "contracts" / "generation" / name
+        for parent in Path(__file__).resolve().parents
     )
     for candidate in candidates:
         if candidate.exists():
