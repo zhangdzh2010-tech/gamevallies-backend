@@ -84,6 +84,8 @@ export class AuthService {
     }
   }
 
+  async onModuleDestroy(): Promise<void> { await this.redis.quit(); }
+
   private async fetchWechatMiniappSession(
     code: string,
   ): Promise<Required<Pick<WechatMiniappSession, 'openid' | 'session_key'>> & WechatMiniappSession> {
@@ -774,3 +776,4 @@ export class AuthService {
     };
   }
 }
+

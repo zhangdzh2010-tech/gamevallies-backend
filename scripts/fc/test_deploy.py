@@ -26,6 +26,13 @@ class ConfigTests(unittest.TestCase):
             update=m.UpdateFunctionInput().from_map(body).to_map()
             self.assertNotIn('functionName', update)
             if f.get('background'): self.assertTrue(update['disableOndemand'])
+    def test_consolidated_backend_needs_no_frontend_url(self):
+        env = {k: v for k, v in ENV.items() if k != 'FC_FRONTEND_URL'}
+        d.validate(MANIFEST, RUNTIME, env)
+        content = next(f for f in MANIFEST['functions'] if f['name'] == 'content')
+        body = d.function_body(content, RUNTIME, env, {'game-service': 'https://api.example.com'})
+        self.assertEqual(body['environmentVariables']['GAME_UPSTREAM'], 'https://api.example.com')
+
     def test_rejects_missing_persistence_and_frozen_workers(self):
         if not any(f.get('background') for f in MANIFEST['functions']): return
         bad=copy.deepcopy(MANIFEST)

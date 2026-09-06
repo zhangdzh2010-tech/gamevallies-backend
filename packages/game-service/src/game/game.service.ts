@@ -1,3 +1,4 @@
+import { FeedService } from '../../../feed-service/dist/feed/feed.service';
 import * as gameAccessPolicy from './game-access.policy';
 import * as gameFailurePolicy from './game-failure.policy';
 import * as gameGenerationPayload from './game-generation-payload';
@@ -34,6 +35,7 @@ import {
 } from './generation-retry';
 import {
   Injectable,
+  Optional,
   Logger,
   BadRequestException,
   NotFoundException,
@@ -151,6 +153,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     private runtimeProfileService: RuntimeProfileService,
     private systemConfigRepository: SystemConfigRepository,
     private bundleCdnService?: BundleCdnService,
+    @Optional() private readonly localFeedService?: FeedService,
   ) {
     this.aiEngineUrl = this.configService.get<string>(
       'AI_ENGINE_URL',
@@ -1930,6 +1933,12 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async invalidateFeedCache(): Promise<void> {
+    if (this.localFeedService) {
+      try { await this.localFeedService.invalidateGameFeedCache(); }
+      catch { console.warn('Local feed cache invalidation failed'); }
+      return;
+    }
+
     const adminToken = this.getInternalServiceToken();
     if (!adminToken) {
       this.logger.warn('Skipping feed cache invalidation because ADMIN_TOKEN is not configured');

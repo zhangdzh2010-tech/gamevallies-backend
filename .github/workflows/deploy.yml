@@ -44,7 +44,6 @@ jobs:
       FC_ACCOUNT_ID: ${{ vars.FC_ACCOUNT_ID }}
       FC_EXECUTION_ROLE: ${{ vars.FC_EXECUTION_ROLE }}
       ALIYUN_OSS_BUCKET: ${{ vars.ALIYUN_OSS_BUCKET }}
-      FC_FRONTEND_URL: ${{ vars.FC_FRONTEND_URL }}
       FC_VPC_ID: ${{ vars.FC_VPC_ID }}
       FC_VSWITCH_IDS: ${{ vars.FC_VSWITCH_IDS }}
       FC_SECURITY_GROUP_ID: ${{ vars.FC_SECURITY_GROUP_ID }}
@@ -52,14 +51,14 @@ jobs:
       FC_LOG_STORE: ${{ vars.FC_LOG_STORE }}
       LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
       LLM_MODEL: ${{ vars.LLM_MODEL }}
-      CONTENT_ORIGIN: ${{ vars.CONTENT_ORIGIN }}
+      CONTENT_ORIGIN: https://content.zlspace.ai
       FC_REGION: ${{ vars.FC_REGION || 'cn-shenzhen' }}
       FC_PREFIX: ${{ vars.FC_PREFIX || 'gamevallies-prod' }}
       ALIYUN_OSS_REGION: ${{ vars.ALIYUN_OSS_REGION || 'cn-shenzhen' }}
       ALIYUN_OSS_ENDPOINT: ${{ vars.ALIYUN_OSS_ENDPOINT || 'https://oss-cn-shenzhen.aliyuncs.com' }}
       ALIYUN_OSS_PREFIX: ${{ vars.ALIYUN_OSS_PREFIX || 'gamevallies/prod/' }}
       OBJECT_STORAGE_PROVIDER: ${{ vars.OBJECT_STORAGE_PROVIDER || 'aliyun-oss' }}
-      PUBLIC_ORIGIN: ${{ vars.PUBLIC_ORIGIN || 'https://zlspace.clawworks.cn' }}
+      PUBLIC_ORIGIN: https://zlspace.ai
       ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_ID }}
       ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_SECRET }}
       ALIBABA_CLOUD_SECURITY_TOKEN: ${{ secrets.ALIBABA_CLOUD_SECURITY_TOKEN }}

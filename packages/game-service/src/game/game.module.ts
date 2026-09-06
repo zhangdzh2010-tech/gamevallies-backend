@@ -1,3 +1,4 @@
+import { FeedModule } from '../../../feed-service/dist/feed/feed.module';
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -21,6 +22,7 @@ import { WebSocketModule } from '../websocket/websocket.module';
 
 @Module({
   imports: [
+    FeedModule,
     PrismaModule,
     BundleModule,
     BundleCdnModule,
@@ -48,3 +50,4 @@ import { WebSocketModule } from '../websocket/websocket.module';
   exports: [GameService, CreatorReputationService, CreationSessionService, CreationSessionRealtimeService],
 })
 export class GameModule {}
+
