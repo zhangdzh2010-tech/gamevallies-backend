@@ -7,7 +7,9 @@ import urllib.request
 def verify_nginx_http(command, port):
     # command already passes syntax validation; remove only its final -t.
     assert command[-1] == '-t'
-    detached = command[:2] + ['--detach', '-p', f'127.0.0.1::{port}'] + command[2:-1]
+    # Keep exited containers until logs have been collected; cleanup is below.
+    detached = command[:2] + ['--detach', '-p', f'127.0.0.1::{port}'] + [
+        arg for arg in command[2:-1] if arg != '--rm']
     container = subprocess.check_output(detached, text=True, timeout=30).strip()
     try:
         address = subprocess.check_output(
