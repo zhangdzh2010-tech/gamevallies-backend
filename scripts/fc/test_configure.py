@@ -27,6 +27,8 @@ class PackageConfigTests(unittest.TestCase):
 
     def test_payment_credentials_are_scoped_to_consolidated_api(self):
         env = dict(PUBLIC_ORIGIN='https://www.example.com', CONTENT_ORIGIN='https://content.example.com',
+            FC_REGION='configured', ALIYUN_OSS_REGION='configured',
+            ALIYUN_OSS_ENDPOINT='https://oss-configured.aliyuncs.com',
             WECHAT_PAY_MODE='real', ALIPAY_MODE='real')
         required = {
             'WECHAT_MINIAPP_APP_ID', 'WECHAT_MINIAPP_APP_SECRET', 'WECHAT_H5_APP_ID',
