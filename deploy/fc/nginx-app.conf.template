@@ -15,7 +15,7 @@ server {
     proxy_set_header Host $proxy_host;
     proxy_set_header X-Forwarded-Host $host;
     proxy_set_header X-Forwarded-Proto https;
-    proxy_set_header X-Fc-Internal-Token ${FC_INTERNAL_TOKEN};
+    proxy_set_header X-GameVallies-Internal-Token ${FC_INTERNAL_TOKEN};
     proxy_buffering off;
     proxy_read_timeout 900s;
     proxy_send_timeout 900s;
@@ -35,7 +35,7 @@ server {
     location /socket.io/ {
         proxy_pass $games$request_uri;
         proxy_set_header Host $proxy_host;
-        proxy_set_header X-Fc-Internal-Token ${FC_INTERNAL_TOKEN};
+        proxy_set_header X-GameVallies-Internal-Token ${FC_INTERNAL_TOKEN};
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
     }
@@ -43,7 +43,7 @@ server {
         rewrite ^/ws/(.*)$ /$1 break;
         proxy_pass $games$uri$is_args$args;
         proxy_set_header Host $proxy_host;
-        proxy_set_header X-Fc-Internal-Token ${FC_INTERNAL_TOKEN};
+        proxy_set_header X-GameVallies-Internal-Token ${FC_INTERNAL_TOKEN};
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
     }
@@ -51,6 +51,6 @@ server {
     location / {
         proxy_pass $web$request_uri;
         proxy_set_header Host $proxy_host;
-        proxy_set_header X-Fc-Internal-Token "";
+        proxy_set_header X-GameVallies-Internal-Token "";
     }
 }

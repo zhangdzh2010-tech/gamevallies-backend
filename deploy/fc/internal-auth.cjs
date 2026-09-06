@@ -25,7 +25,7 @@ if (process.env.FC_DEPLOYMENT === 'true') {
     if (event === 'request' || event === 'upgrade') {
       const path = (req.url || '').split('?')[0];
       const health = event === 'request' && req.method === 'GET' && ['/health', '/api/v1/health'].includes(path);
-      const supplied = Buffer.from(String(req.headers['x-fc-internal-token'] || ''));
+      const supplied = Buffer.from(String(req.headers['x-gamevallies-internal-token'] || ''));
       const expected = Buffer.from(token);
       if (!health && !(supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected))) {
         if (event === 'upgrade') res.destroy();
@@ -37,7 +37,7 @@ if (process.env.FC_DEPLOYMENT === 'true') {
         return true;
       }
       // Do not allow the caller's transport credential to escape via a proxy.
-      delete req.headers['x-fc-internal-token'];
+      delete req.headers['x-gamevallies-internal-token'];
     }
     return emit.call(this, event, req, res, ...rest);
   };
@@ -45,16 +45,16 @@ if (process.env.FC_DEPLOYMENT === 'true') {
   globalThis.fetch = (input, options = {}) => {
     const url = typeof input === 'string' || input instanceof URL ? String(input) : input.url;
     const headers = new Headers(options.headers || (input instanceof Request ? input.headers : undefined));
-    headers.delete('x-fc-internal-token');
-    if (trusted(url)) headers.set('x-fc-internal-token', token);
+    headers.delete('x-gamevallies-internal-token');
+    if (trusted(url)) headers.set('x-gamevallies-internal-token', token);
     return nativeFetch(input, { ...options, headers, ...(trusted(url) ? { redirect: 'error' } : {}) });
   };
   const axios = require('axios');
   axios.interceptors.request.use(config => {
     const url = config.baseURL ? new URL(config.url, config.baseURL).href : config.url;
-    config.headers.delete('x-fc-internal-token');
+    config.headers.delete('x-gamevallies-internal-token');
     if (trusted(url)) {
-      config.headers.set('x-fc-internal-token', token);
+      config.headers.set('x-gamevallies-internal-token', token);
       config.maxRedirects = 0;
     }
     return config;

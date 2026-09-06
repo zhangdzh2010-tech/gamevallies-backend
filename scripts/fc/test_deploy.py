@@ -17,6 +17,19 @@ MANIFEST = json.loads(Path('deploy/fc/functions.json').read_text())
 RUNTIME['artifacts'] = {f['name']: {'sha256': 'b'*64, 'object': 'gamevallies/prod/releases/' + 'a'*40 + '/' + 'b'*64 + '/' + f['name'] + '.zip'} for f in MANIFEST['functions']}
 
 class ConfigTests(unittest.TestCase):
+    def test_http_control_uses_header_forwarded_by_fc(self):
+        import io
+        response = Mock()
+        response.__enter__ = Mock(return_value=io.BytesIO(b'{}'))
+        response.__exit__ = Mock(return_value=False)
+        with patch.object(d.urllib.request, 'build_opener') as opener:
+            opener.return_value.open.return_value = response
+            d.http_json('https://example.com', 'test-token', '/__fc/status')
+        request = opener.return_value.open.call_args.args[0]
+        headers = {k.lower():v for k,v in request.header_items()}
+        self.assertEqual(headers['x-gamevallies-internal-token'], 'test-token')
+        self.assertFalse(any(k.startswith('x-fc-') for k in headers))
+
     def test_http_failure_reports_status_and_request_id_without_response_body(self):
         import io
         error = d.urllib.error.HTTPError('https://example.com', 502, 'secret',
