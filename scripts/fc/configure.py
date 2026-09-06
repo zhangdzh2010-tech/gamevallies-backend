@@ -33,7 +33,7 @@ def package_index(directory, manifest, env):
 
 def runtime_config(env, backend):
     runtime = {'common': {}, 'services': {}}
-    public = origin(env.get('PUBLIC_ORIGIN') or 'https://zlspace.clawworks.cn')
+    public = origin(env.get('PUBLIC_ORIGIN') or 'https://zlspace.ai')
     content = origin(need(env, 'CONTENT_ORIGIN'))
     if content == public: raise ValueError('CONTENT_ORIGIN must be separate from the application')
     if not backend: return runtime
