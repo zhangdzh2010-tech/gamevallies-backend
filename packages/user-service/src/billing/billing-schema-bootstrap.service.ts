@@ -89,6 +89,7 @@ export class BillingSchemaBootstrapService implements OnModuleInit {
   constructor(private readonly prisma: PrismaService) {}
 
   async onModuleInit(): Promise<void> {
+    if (process.env.DATABASE_SCHEMA_MANAGED === 'true') return;
     try {
       for (const statement of BILLING_SCHEMA_STATEMENTS) {
         await this.prisma.$executeRawUnsafe(statement);
