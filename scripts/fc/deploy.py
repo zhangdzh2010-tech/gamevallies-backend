@@ -127,6 +127,22 @@ def http_json(url, token, path, method='GET'):
         except json.JSONDecodeError: return {}
 
 
+def deployment_error(code, name):
+    error = RuntimeError(code)
+    error.code = code
+    return error
+
+
+def report_error(error, stage, name):
+    # Log bounded identifiers only, never SDK messages or request/environment bodies.
+    def safe(value):
+        value = str(value or '')
+        return value if re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', value) else 'unavailable'
+    data = getattr(error, 'data', None)
+    data = data if isinstance(data, dict) else {}
+    print(f"FC failure; stage={safe(stage)}; function={safe(name)}; type={safe(type(error).__name__)}; code={safe(getattr(error, 'code', None))}; status={safe(getattr(error, 'status_code', None))}; requestId={safe(data.get('RequestId') or data.get('requestId'))}", file=sys.stderr, flush=True)
+
+
 class Deployment:
     def __init__(self, client, models, sleep=time.sleep):
         self.c, self.m, self.sleep = client, models, sleep
@@ -140,7 +156,7 @@ class Deployment:
     def wait_function(self, name):
         for _ in range(90):
             f = self.c.get_function(name, self.m.GetFunctionRequest()).body
-            if f.state == 'Failed' or f.last_update_status == 'Failed': raise RuntimeError(f'Function update failed: {name}')
+            if f.state == 'Failed' or f.last_update_status == 'Failed': raise deployment_error('FUNCTION_UPDATE_FAILED', name)
             if f.state == 'Active' and f.last_update_status in (None, 'Successful'): return f
             # ZIP runtimes may omit asynchronous image-state fields entirely.
             # Require persisted code; provisioning and HTTP health checks still follow.
@@ -157,7 +173,7 @@ class Deployment:
         if not count: return
         for _ in range(90):
             p = self.c.get_provision_config(name, self.m.GetProvisionConfigRequest(qualifier='LATEST')).body
-            if p.current_error: raise RuntimeError(f'Provisioning failed: {name}')
+            if p.current_error: raise deployment_error('PROVISIONING_FAILED', name)
             if p.current == count and p.target == count and p.always_allocate_cpu: return
             self.sleep(5)
         raise TimeoutError(f'Provisioning not ready: {name}')
@@ -255,6 +271,7 @@ class Deployment:
             old = self.optional(lambda: self.c.get_function(prefix + '-' + f['name'], self.m.GetFunctionRequest()))
             if old and old.body.runtime != 'custom-container': checkpoint_code(old.body.to_map())
         drained = False
+        stage, name = 'drain', prefix + '-game-service'
         try:
             if old_game_url:
                 http_json(old_game_url, token, '/__fc/drain', 'POST'); drained = True
@@ -265,6 +282,7 @@ class Deployment:
                     if stable >= 3: break
                     self.sleep(10)
                 else: raise TimeoutError('Tasks did not drain; no functions updated')
+            stage = 'discover-endpoints'
             # Discover real FC trigger URLs without overwriting existing service configuration.
             for f in manifest['functions']:
                 name = prefix + '-' + f['name']
@@ -282,29 +300,38 @@ class Deployment:
                 entry['url'] = endpoints[f['name']]
             # New functions are disabled above. Initialize the DB and route catalog
             # before starting/updating any application workers.
+            stage, name = 'database-migration', prefix + '-db-migrate'
             self.migrate_database(manifest, runtime, env, endpoints)
             for f, entry in zip(manifest['functions'], entries):
                 name = entry['name']
+                stage = 'update-function'
+                print(f'FC stage={stage}; function={name}', flush=True)
                 touched.append(entry)
                 body = function_body(f, runtime, env, endpoints)
                 self.c.update_function(name, self.m.UpdateFunctionRequest(body=self.m.UpdateFunctionInput().from_map(body)))
                 self.wait_function(name)
                 self.c.put_concurrency_config(name, self.m.PutConcurrencyConfigRequest(body=self.m.PutConcurrencyInput(reserved_concurrency=f['concurrency'] * f.get('maxInstances', 2))))
+                stage = 'provision-instances'
+                print(f'FC stage={stage}; function={name}', flush=True)
                 self.provision(name, f.get('provisioned', 0))
                 actual = self.wait_function(name)
-                if f.get('background') and not actual.disable_ondemand: raise RuntimeError('Background on-demand isolation not applied')
+                if f.get('background') and not actual.disable_ondemand: raise deployment_error('BACKGROUND_ISOLATION_FAILED', name)
                 # HTTP cold start and custom health check are both exercised.
+                stage = 'http-health-check'
+                print(f'FC stage={stage}; function={name}', flush=True)
                 for attempt in range(18):
                     try:
                         http_json(entry['url'], token, f['health']); break
                     except Exception:
-                        if attempt == 17: raise RuntimeError(f'HTTP health check failed: {name}') from None
+                        if attempt == 17: raise deployment_error('HTTP_HEALTH_CHECK_FAILED', name) from None
                         self.sleep(5)
+                stage = 'publish-version'
                 entry['version'] = self.version(name)
                 print(f'Verified FC function: {name}', flush=True)
             Path(output).write_text(json.dumps({'commit': env['RELEASE_SHA'], 'region': env['FC_REGION'], 'accountId': env['FC_ACCOUNT_ID'], 'functions': entries}, indent=2) + '\n')
             print('FC HTTP health checks passed; complete business acceptance before switching DNS.')
-        except Exception:
+        except Exception as original:
+            report_error(original, stage, name)
             failures = []
             for entry in reversed(touched):
                 try:
@@ -315,12 +342,19 @@ class Deployment:
                         # New installations have no rollback target. Keep resources for diagnosis.
                         self.c.update_function(entry['name'], self.m.UpdateFunctionRequest(body=self.m.UpdateFunctionInput(disable_ondemand=True)))
                         self.c.put_provision_config(entry['name'], self.m.PutProvisionConfigRequest(qualifier='LATEST', body=self.m.PutProvisionConfigInput(default_target=0)))
-                except Exception: failures.append(entry['name'])
-            if failures: raise RuntimeError('Rollback incomplete: ' + ', '.join(failures)) from None
+                except Exception as rollback_error:
+                    report_error(rollback_error, 'rollback', entry['name'])
+                    failures.append(entry['name'])
+            if failures: print('FC rollback incomplete', file=sys.stderr)
             raise
         finally:
             if drained:
-                http_json(old_game_url, token, '/__fc/resume', 'POST')
+                active_error = sys.exc_info()[0] is not None
+                try:
+                    http_json(old_game_url, token, '/__fc/resume', 'POST')
+                except Exception as resume_error:
+                    report_error(resume_error, 'resume', prefix + '-game-service')
+                    if not active_error: raise
 
 
 def main():
