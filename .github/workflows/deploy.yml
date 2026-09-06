@@ -41,18 +41,18 @@ jobs:
     environment: Aliyun
     timeout-minutes: 120
     env:
-      FC_ACCOUNT_ID: ${{ vars.FC_ACCOUNT_ID }}
-      FC_EXECUTION_ROLE: ${{ vars.FC_EXECUTION_ROLE }}
-      ALIYUN_OSS_BUCKET: ${{ vars.ALIYUN_OSS_BUCKET }}
+      FC_ACCOUNT_ID: ${{ vars.FC_ACCOUNT_ID || '1318350152273303' }}
+      FC_EXECUTION_ROLE: ${{ vars.FC_EXECUTION_ROLE || 'acs:ram::1318350152273303:role/clawworks-staging-fc-vpc-role' }}
+      ALIYUN_OSS_BUCKET: ${{ vars.ALIYUN_OSS_BUCKET || 'clawworks-server-staging-1318350152273303' }}
       FC_FRONTEND_URL: ${{ vars.FC_FRONTEND_URL }}
-      FC_VPC_ID: ${{ vars.FC_VPC_ID }}
-      FC_VSWITCH_IDS: ${{ vars.FC_VSWITCH_IDS }}
-      FC_SECURITY_GROUP_ID: ${{ vars.FC_SECURITY_GROUP_ID }}
+      FC_VPC_ID: ${{ vars.FC_VPC_ID || 'vpc-wz9wxvremr3b4sachlnqw' }}
+      FC_VSWITCH_IDS: ${{ vars.FC_VSWITCH_IDS || 'vsw-wz9sburvm744z729y9krk' }}
+      FC_SECURITY_GROUP_ID: ${{ vars.FC_SECURITY_GROUP_ID || 'sg-wz96c132ei8aqdpsyiqu' }}
       FC_LOG_PROJECT: ${{ vars.FC_LOG_PROJECT }}
       FC_LOG_STORE: ${{ vars.FC_LOG_STORE }}
       LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
       LLM_MODEL: ${{ vars.LLM_MODEL }}
-      CONTENT_ORIGIN: ${{ vars.CONTENT_ORIGIN }}
+      CONTENT_ORIGIN: ${{ vars.CONTENT_ORIGIN || 'https://zlspace-content.clawworks.cn' }}
       FC_REGION: ${{ vars.FC_REGION || 'cn-shenzhen' }}
       FC_PREFIX: ${{ vars.FC_PREFIX || 'gamevallies-prod' }}
       ALIYUN_OSS_REGION: ${{ vars.ALIYUN_OSS_REGION || 'cn-shenzhen' }}
