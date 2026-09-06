@@ -75,6 +75,7 @@ def function_body(f, runtime, env, endpoints):
     if name not in ('frontend', 'gateway', 'content'):
         values.update(FC_DEPLOYMENT='true', FC_SERVICE=name, PORT=str(f['port']), NODE_ENV='production', ENVIRONMENT='production')
         values.update(DATABASE_SCHEMA_MANAGED='true', ENABLE_LEGACY_RUNTIME_SCHEMA_BOOTSTRAP='false')
+        values['GAMEVALLIES_CLOUD_REGION'] = env['FC_REGION']
         if name != 'ai-engine': values['NODE_OPTIONS'] = '--require=/code/fc-internal-auth.cjs'
         urls = {k: v for k, v in endpoints.items() if k not in ('gateway', 'content', 'frontend')}
         values['FC_INTERNAL_ORIGINS'] = ','.join(sorted(set(urls.values())))
@@ -190,7 +191,7 @@ class Deployment:
         self.c.update_function(name, self.m.UpdateFunctionRequest(body=body))
         self.wait_function(name)
 
-    def migrate_database(self, manifest, runtime, env):
+    def migrate_database(self, manifest, runtime, env, endpoints=None):
         game = next((f for f in manifest['functions'] if f['name'] == 'game-service'), None)
         if not game:
             return
@@ -203,6 +204,9 @@ class Deployment:
             'NODE_ENV': 'production', 'LD_LIBRARY_PATH': '/code/lib',
             'PATH': '/code/bin:/usr/local/bin:/usr/bin:/bin',
             'CHECKPOINT_DISABLE': '1',
+            'GAMEVALLIES_CLOUD_REGION': env['FC_REGION'],
+            'GAMEVALLIES_FC_PREFIX': env['FC_PREFIX'],
+            'AI_ENGINE_URL': (endpoints or {}).get('ai-engine', ''),
             'PRISMA_SCHEMA_ENGINE_BINARY': '/code/node_modules/@prisma/engines/schema-engine-debian-openssl-3.0.x',
             'PRISMA_QUERY_ENGINE_LIBRARY': '/code/node_modules/.prisma/client/libquery_engine-debian-openssl-3.0.x.so.node',
         }
@@ -261,8 +265,6 @@ class Deployment:
                     if stable >= 3: break
                     self.sleep(10)
                 else: raise TimeoutError('Tasks did not drain; no functions updated')
-            # The DB gate must pass before starting/updating application workers.
-            self.migrate_database(manifest, runtime, env)
             # Discover real FC trigger URLs without overwriting existing service configuration.
             for f in manifest['functions']:
                 name = prefix + '-' + f['name']
@@ -278,6 +280,9 @@ class Deployment:
                     self.wait_function(name)
                 endpoints[f['name']] = self.trigger(name)
                 entry['url'] = endpoints[f['name']]
+            # New functions are disabled above. Initialize the DB and route catalog
+            # before starting/updating any application workers.
+            self.migrate_database(manifest, runtime, env, endpoints)
             for f, entry in zip(manifest['functions'], entries):
                 name = entry['name']
                 touched.append(entry)
