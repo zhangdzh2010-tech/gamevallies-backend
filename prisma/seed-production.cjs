@@ -3,8 +3,27 @@ const path = require('node:path');
 const catalog = name => require(path.join(__dirname, '../packages/game-service/src/game/catalogs', name));
 
 // Insert missing defaults only. Never create demo identities or replace admin edits.
-async function seedProduction(db) {
+async function seedProduction(db, env = process.env) {
   await db.$transaction(async tx => {
+    const regionCode = env.GAMEVALLIES_CLOUD_REGION || 'cn-hongkong';
+    const account = await tx.cloudProviderAccount.upsert({ where: { accountKey: 'aliyun-default' }, update: {},
+      create: { vendor: 'aliyun', accountKey: 'aliyun-default', displayName: '阿里云默认账号' } });
+    const region = await tx.cloudRegionCatalog.upsert({
+      where: { cloud_region_catalog_account_id_region_code_key: { accountId: account.id, regionCode } }, update: {},
+      create: { accountId: account.id, vendor: 'aliyun', regionCode,
+        regionName: regionCode === 'cn-hongkong' ? '香港' : regionCode,
+        regionGroup: regionCode === 'cn-hongkong' ? 'hk' : 'cn_mainland' },
+    });
+    // Keep the existing logical routing key; the physical FC region is independent.
+    // FC endpoints are resolved by the deployer before any API/worker is started.
+    if (env.AI_ENGINE_URL) {
+      await tx.aiEngineRegionTarget.upsert({ where: { executionRegion: 'cn_shanghai' }, update: {},
+        create: { accountId: account.id, regionCatalogId: region.id, vendor: 'aliyun',
+          cloudRegionCode: regionCode, executionRegion: 'cn_shanghai', displayName: 'AI Engine FC',
+          functionName: `${env.GAMEVALLIES_FC_PREFIX}-ai-engine`, registry: '', registryNamespace: '',
+          imageRepository: '', serviceRegionEnv: 'cn_shanghai', aiEngineUrl: env.AI_ENGINE_URL,
+          deployEnabled: true, deployStatus: 'deployed' } });
+    }
     for (const step of require('./production-steps.json')) {
       await tx.llmStepCatalog.upsert({ where: { stepKey: step.stepKey }, update: {}, create: step });
     }
