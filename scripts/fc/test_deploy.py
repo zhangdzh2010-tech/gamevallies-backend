@@ -42,9 +42,14 @@ class ConfigTests(unittest.TestCase):
         deployment = d.Deployment(client, m, sleep=lambda _: None)
         deployment.optional = Mock(return_value=None)
         deployment.migrate_database = Mock(side_effect=RuntimeError('database rejected'))
+        deployment.wait_function = Mock()
+        deployment.trigger = Mock(return_value='https://example.com')
         with self.assertRaises(RuntimeError):
             deployment.apply(MANIFEST, RUNTIME, ENV, 'unused.json')
-        client.create_function.assert_not_called()
+        for call in client.create_function.call_args_list:
+            self.assertTrue(call.args[0].body.disable_ondemand)
+        client.update_function.assert_not_called()
+        client.put_provision_config.assert_not_called()
         client.publish_function_version.assert_not_called()
 
     def test_database_error_is_safe_and_executor_is_disabled(self):
