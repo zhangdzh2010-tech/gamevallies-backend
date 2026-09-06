@@ -59,7 +59,11 @@ def runtime_config(env, backend):
     runtime['services']['game-service'] = game
     runtime['vpcConfig'] = {'vpcId': need(env, 'FC_VPC_ID'), 'vSwitchIds': [v.strip() for v in need(env, 'FC_VSWITCH_IDS').split(',') if v.strip()], 'securityGroupId': need(env, 'FC_SECURITY_GROUP_ID')}
     if env.get('FC_LOG_PROJECT') or env.get('FC_LOG_STORE'):
-        runtime['logConfig'] = {'project': need(env, 'FC_LOG_PROJECT'), 'logstore': need(env, 'FC_LOG_STORE')}
+        runtime['logConfig'] = {
+            'project': need(env, 'FC_LOG_PROJECT'), 'logstore': need(env, 'FC_LOG_STORE'),
+            'enableInstanceMetrics': True, 'enableRequestMetrics': True,
+            'logBeginRule': 'DefaultRegex',
+        }
     return runtime
 
 
