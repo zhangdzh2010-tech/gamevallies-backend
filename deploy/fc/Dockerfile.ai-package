@@ -1,0 +1,12 @@
+FROM python:3.12-slim-bookworm AS package
+ENV PLAYWRIGHT_BROWSERS_PATH=/code/browsers
+COPY packages/ai-engine/requirements.txt /requirements.txt
+RUN pip install --no-cache-dir -r /requirements.txt && python -m playwright install --with-deps chromium
+RUN mkdir -p /code/python && cp -a /usr/local/bin /usr/local/lib /code/python/
+COPY packages/ai-engine/src /code/src
+COPY contracts /code/contracts
+COPY deploy/fc/bootstrap-ai /code/bootstrap
+COPY scripts/fc/pack.py /pack.py
+RUN chmod 755 /code/bootstrap && python /pack.py ai-engine
+FROM scratch
+COPY --from=package /out/ /

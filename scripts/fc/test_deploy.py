@@ -10,9 +10,11 @@ spec = importlib.util.spec_from_file_location('fc_deploy', Path(__file__).with_n
 d = importlib.util.module_from_spec(spec); spec.loader.exec_module(d)
 from alibabacloud_fc20230330 import models as m
 
-ENV = dict(FC_ACCOUNT_ID='123456789', FC_REGION='cn-shanghai', FC_PREFIX='gamevallies-test', ACR_REGISTRY='registry.cn-shanghai.aliyuncs.com', ACR_NAMESPACE='gamevallies', IMAGE_TAG='a'*40, FC_EXECUTION_ROLE='acs:ram::123456789:role/fc', FC_FRONTEND_URL='https://front.example.com')
-RUNTIME = {'common': dict(DATABASE_URL='mysql://u:p@db:3306/db', REDIS_URL='redis://redis:6379', JWT_SECRET='jwt', JWT_REFRESH_SECRET='refresh', ADMIN_TOKEN='admin', FC_INTERNAL_TOKEN='a'*64), 'services': {'game-service': {'APP_RELEASE_UPLOAD_DIR':'/mnt/data/releases'}}, 'vpcConfig': {'vpcId':'vpc-123','vSwitchIds':['vsw-123'],'securityGroupId':'sg-123'}, 'nasConfig': {'mountPoints':[{'mountDir':'/mnt/data','serverAddr':'nas.internal:/data'}]}}
+ENV = dict(FC_ACCOUNT_ID='123456789', FC_REGION='cn-shanghai', FC_PREFIX='gamevallies-test', ALIYUN_OSS_BUCKET='gamevallies-test', RELEASE_SHA='a'*40, FC_EXECUTION_ROLE='acs:ram::123456789:role/fc', FC_FRONTEND_URL='https://front.example.com')
+RUNTIME = {'common': dict(DATABASE_URL='mysql://u:p@db:3306/db', REDIS_URL='redis://redis:6379', JWT_SECRET='jwt', JWT_REFRESH_SECRET='refresh', ADMIN_TOKEN='admin', FC_INTERNAL_TOKEN='a'*64), 'services': {'game-service': {'OBJECT_STORAGE_PROVIDER':'aliyun-oss','ALIYUN_OSS_ACCESS_KEY_ID':'id','ALIYUN_OSS_ACCESS_KEY_SECRET':'secret','ALIYUN_OSS_BUCKET':'gamevallies-test','ALIYUN_OSS_ENDPOINT':'https://oss-cn-shanghai.aliyuncs.com','ALIYUN_OSS_PREFIX':'gamevallies/prod/'}}, 'vpcConfig': {'vpcId':'vpc-123','vSwitchIds':['vsw-123'],'securityGroupId':'sg-123'}, 'nasConfig': {'mountPoints':[{'mountDir':'/mnt/data','serverAddr':'nas.internal:/data'}]}}
 MANIFEST = json.loads(Path('deploy/fc/functions.json').read_text())
+
+RUNTIME['artifacts'] = {f['name']: {'sha256': 'b'*64, 'object': 'gamevallies/prod/releases/' + 'a'*40 + '/' + 'b'*64 + '/' + f['name'] + '.zip'} for f in MANIFEST['functions']}
 
 class ConfigTests(unittest.TestCase):
     def test_official_sdk_round_trip_preserves_runtime_and_port(self):
@@ -20,7 +22,7 @@ class ConfigTests(unittest.TestCase):
         for f in MANIFEST['functions']:
             body = d.function_body(f,RUNTIME,ENV,{'ai-engine':'https://ai.example.com','game-service':'https://game.example.com'})
             model=m.CreateFunctionInput().from_map(body); model.validate()
-            self.assertEqual(model.to_map()['customContainerConfig']['port'],f['port'])
+            self.assertEqual(model.to_map()['customRuntimeConfig']['port'],f['port'])
             update=m.UpdateFunctionInput().from_map(body).to_map()
             self.assertNotIn('functionName', update)
             if f.get('background'): self.assertTrue(update['disableOndemand'])
@@ -29,10 +31,10 @@ class ConfigTests(unittest.TestCase):
         bad=copy.deepcopy(MANIFEST)
         next(f for f in bad['functions'] if f.get('background'))['provisioned']=0
         with self.assertRaises(ValueError): d.validate(bad,RUNTIME,ENV)
-        bad=copy.deepcopy(RUNTIME); bad['nasConfig']={}
+        bad=copy.deepcopy(RUNTIME); bad['services']['game-service']['OBJECT_STORAGE_PROVIDER']='local'
         with self.assertRaises(ValueError): d.validate(MANIFEST,bad,ENV)
     def test_rejects_mutable_tags_and_credential_urls(self):
-        with self.assertRaises(ValueError): d.validate(MANIFEST,RUNTIME,{**ENV,'IMAGE_TAG':'latest'})
+        with self.assertRaises(ValueError): d.validate(MANIFEST,RUNTIME,{**ENV,'RELEASE_SHA':'latest'})
         with self.assertRaises(ValueError): d.origin('https://user:secret@example.com')
     def test_provision_checks_actual_cpu_and_count(self):
         client=Mock();client.get_provision_config.return_value.body=NS(current=1,target=1,always_allocate_cpu=True,current_error=None)
@@ -46,6 +48,17 @@ class ConfigTests(unittest.TestCase):
         deployment=d.Deployment(client,m,sleep=lambda _:None); deployment.restore('front','17')
         self.assertEqual(client.get_function.call_args_list[0].args[1].qualifier,'17')
         self.assertEqual(client.update_function.call_args.args[1].body.custom_container_config.image,'registry/project/image:old')
+    def test_restore_code_uses_checkpoint_oss_reference(self):
+        code={'ossBucketName':'bucket-old','ossObjectName':'release/old.zip'}
+        client=Mock(); client.get_function.return_value.body=m.Function(runtime='custom.debian12', description='GameVallies OSS '+json.dumps(code), state='Active', last_update_status='Successful')
+        deployment=d.Deployment(client,m,sleep=lambda _:None); deployment.restore('web','17')
+        body=client.update_function.call_args.args[1].body.to_map()
+        self.assertEqual(body['code'],code)
+        self.assertNotIn('customContainerConfig',body)
+    def test_rejects_unknown_code_checkpoint_and_mismatched_artifacts(self):
+        with self.assertRaises(ValueError): d.checkpoint_code({'description':'manual code deployment'})
+        bad=copy.deepcopy(RUNTIME); bad['artifacts'][MANIFEST['functions'][0]['name']]['object']='mutable/latest.zip'
+        with self.assertRaises(ValueError): d.validate(MANIFEST,bad,ENV)
     def test_permission_error_is_not_treated_as_missing_function(self):
         error=Exception('forbidden');error.status_code=403
         with self.assertRaises(Exception): d.Deployment(Mock(),m).optional(Mock(side_effect=error))
