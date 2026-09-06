@@ -40,7 +40,8 @@ jobs:
         run: npm test --workspace=@gamevallies/feed-service -- --runInBand test/trending-production.spec.ts
 
   ai-engine:
-    runs-on: ubuntu-latest
+    # Playwright 1.43 uses the Ubuntu 22.04 system dependency names.
+    runs-on: ubuntu-22.04
     timeout-minutes: 15
     defaults:
       run:
