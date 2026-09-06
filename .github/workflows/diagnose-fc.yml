@@ -1,0 +1,27 @@
+name: Diagnose FC (read only)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: Aliyun
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r scripts/fc/requirements.txt
+      - name: Read function and provisioned instance status
+        env:
+          FC_REGION: ${{ vars.FC_REGION || 'cn-hongkong' }}
+          FC_PREFIX: ${{ vars.FC_PREFIX || 'gamevallies-prod' }}
+          ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_ID }}
+          ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_SECRET }}
+          ALIBABA_CLOUD_SECURITY_TOKEN: ${{ secrets.ALIBABA_CLOUD_SECURITY_TOKEN }}
+        run: python scripts/fc/diagnose.py
