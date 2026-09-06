@@ -33,6 +33,7 @@ jobs:
           test/creation-session.service.spec.ts
           test/game-schema-bootstrap.service.spec.ts
           test/admin.service.spec.ts
+          test/growth.service.spec.ts
       - name: Verify production feed query
         run: npm test --workspace=@gamevallies/feed-service -- --runInBand test/trending-production.spec.ts
 
@@ -78,13 +79,11 @@ jobs:
           python-version: '3.12'
       - run: pip install -r scripts/fc/requirements.txt
       - run: python scripts/fc/test_deploy.py
-      - name: Build service images without publishing
+      - run: python scripts/fc/test_configure.py
+      - uses: docker/setup-buildx-action@v3
+      - name: Build and verify FC ZIP packages without cloud credentials
+        env:
+          CONTENT_ORIGIN: https://content.example.com
         run: |
-          for service in user-service game-service social-service feed-service; do
-            docker build --build-arg SERVICE="$service" --tag "gamevallies-$service:ci" .
-          done
-          docker build -f packages/ai-engine/Dockerfile --tag gamevallies-ai:ci .
-          docker build -f deploy/fc/Dockerfile.gateway --tag gamevallies-gateway:ci .
-          for mode in app content; do
-            docker run --rm -e GATEWAY_MODE="$mode" -e FC_INTERNAL_TOKEN="$(python -c 'print("a"*64)')" -e GAME_UPSTREAM=https://game.example.com -e USER_UPSTREAM=https://user.example.com -e AI_UPSTREAM=https://ai.example.com -e FRONTEND_UPSTREAM=https://front.example.com gamevallies-gateway:ci nginx -t
-          done
+          bash scripts/fc/build.sh
+          python scripts/fc/test_packages.py

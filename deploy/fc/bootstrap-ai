@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+export PYTHONHOME=/code/python
+export LD_LIBRARY_PATH=/code/lib:/code/python/lib
+export PLAYWRIGHT_BROWSERS_PATH=/code/browsers
+export SSL_CERT_FILE=/code/ca-certificates.crt
+export FONTCONFIG_FILE=/code/fonts.conf
+export PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+export HOME=/tmp
+cd /code
+exec /code/python/bin/python3 -m uvicorn src.main:app --host 0.0.0.0 --port 8000

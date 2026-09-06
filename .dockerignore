@@ -10,3 +10,5 @@ coverage
 
 **/.fc-runtime*.json
 **/fc-release*.json
+
+fc-packages

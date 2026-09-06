@@ -283,6 +283,43 @@ describe('GrowthService', () => {
     expect(result.downloadUrl).toBe('https://api.gamevallies.com/api/v1/growth/app-releases/release-android/download');
   });
 
+  it('persists OSS uploads and signs private downloads without writing local files', async () => {
+    const originalGet = (configService.get as jest.Mock).getMockImplementation()!;
+    (configService.get as jest.Mock).mockImplementation((key: string) => ({
+      OBJECT_STORAGE_PROVIDER: 'aliyun-oss', ALIYUN_OSS_PREFIX: 'gamevallies/prod/',
+    }[key] ?? originalGet(key)));
+    const put = jest.fn().mockResolvedValue({});
+    const signatureUrl = jest.fn().mockReturnValue('https://bucket.example.com/signed-download');
+    jest.spyOn(service as any, 'createOssClient').mockReturnValue({ put, signatureUrl });
+    prisma.appRelease.findUnique.mockResolvedValue({ id: 'release-android', platform: 'android' });
+    prisma.appRelease.update.mockImplementation(async ({ data }: any) => ({ id: 'release-android', ...data }));
+    await service.uploadReleasePackage('release-android', { originalname: 'creative.apk', buffer: Buffer.from('package') });
+    const saved = prisma.appRelease.update.mock.calls[0][0].data;
+    expect(saved.storageKey).toMatch(/^oss:gamevallies\/prod\/app-releases\/android\/release-android\//);
+    expect(put).toHaveBeenCalledTimes(1);
+    expect(fs.readdirSync(uploadDir)).toEqual([]);
+    prisma.appRelease.findUnique.mockResolvedValue({ id: 'release-android', ...saved });
+    const download = await service.resolveReleaseDownload('release-android');
+    expect(download.type).toBe('redirect');
+    expect(signatureUrl).toHaveBeenCalledWith(saved.storageKey.slice(4), expect.objectContaining({ expires: 600 }));
+  });
+
+  it('never falls back to ephemeral FC storage when OSS credentials are missing', async () => {
+    (configService.get as jest.Mock).mockImplementation((key: string) => ({
+      OBJECT_STORAGE_PROVIDER: 'aliyun-oss', ALIYUN_OSS_PREFIX: 'gamevallies/prod/', FC_DEPLOYMENT: 'true',
+    }[key]));
+    prisma.appRelease.findUnique.mockResolvedValue({ id: 'release-android', platform: 'android' });
+    await expect(service.uploadReleasePackage('release-android', { originalname: 'creative.apk', buffer: Buffer.from('package') })).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.appRelease.update).not.toHaveBeenCalled();
+    expect(fs.readdirSync(uploadDir)).toEqual([]);
+  });
+
+  it('rejects OSS download references outside the shared bucket application prefix', async () => {
+    (configService.get as jest.Mock).mockImplementation((key: string) => key === 'ALIYUN_OSS_PREFIX' ? 'gamevallies/prod/' : undefined);
+    prisma.appRelease.findUnique.mockResolvedValue({ sourceType: 'upload', storageKey: 'oss:clawworks/private/file.apk' });
+    await expect(service.resolveReleaseDownload('release')).rejects.toBeInstanceOf(BadRequestException);
+  });
+
   it('blocks publishing upload releases without an uploaded package during update', async () => {
     prisma.appRelease.findUnique.mockResolvedValue({
       id: 'release-android',
@@ -413,3 +450,4 @@ describe('GrowthService', () => {
     }));
   });
 });
+

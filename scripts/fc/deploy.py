@@ -29,14 +29,20 @@ def origin(value):
 
 
 def validate(manifest, runtime, env):
-    for key in ('FC_ACCOUNT_ID', 'FC_REGION', 'FC_PREFIX', 'ACR_REGISTRY', 'ACR_NAMESPACE', 'IMAGE_TAG', 'FC_EXECUTION_ROLE'):
+    for key in ('FC_ACCOUNT_ID', 'FC_REGION', 'FC_PREFIX', 'ALIYUN_OSS_BUCKET', 'RELEASE_SHA', 'FC_EXECUTION_ROLE'):
         need(env, key)
     if not re.fullmatch(r'[0-9]{6,32}', env['FC_ACCOUNT_ID']): raise ValueError('Invalid account ID')
     if not re.fullmatch(r'[a-z][a-z0-9-]{1,30}', env['FC_REGION']): raise ValueError('Invalid region')
+    if not re.fullmatch(r'acs:ram::' + re.escape(env['FC_ACCOUNT_ID']) + r':role/[A-Za-z0-9_.@-]+', env['FC_EXECUTION_ROLE']): raise ValueError('FC_EXECUTION_ROLE must belong to FC_ACCOUNT_ID')
     if not re.fullmatch(r'[a-z][a-z0-9-]{1,40}', env['FC_PREFIX']): raise ValueError('Invalid function prefix')
-    if not re.fullmatch(r'[a-f0-9]{40}', env['IMAGE_TAG']): raise ValueError('IMAGE_TAG must be full commit SHA')
-    if not re.fullmatch(r'[a-zA-Z0-9.-]+', env['ACR_REGISTRY']): raise ValueError('Invalid registry')
-    if not re.fullmatch(r'[a-z0-9_-]+', env['ACR_NAMESPACE']): raise ValueError('Invalid namespace')
+    if not re.fullmatch(r'[a-f0-9]{40}', env['RELEASE_SHA']): raise ValueError('RELEASE_SHA must be full commit SHA')
+    if not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,61}[a-z0-9]', env['ALIYUN_OSS_BUCKET']): raise ValueError('Invalid OSS bucket')
+    artifacts = runtime.get('artifacts', {})
+    for f in manifest['functions']:
+        artifact = artifacts.get(f['name'], {})
+        if not re.fullmatch(r'[a-f0-9]{64}', artifact.get('sha256', '')): raise ValueError('Missing verified package digest: ' + f['name'])
+        expected = f"{env.get('ALIYUN_OSS_PREFIX', 'gamevallies/prod/').strip('/')}/releases/{env['RELEASE_SHA']}/{artifact['sha256']}/{f['name']}.zip"
+        if artifact.get('object') != expected: raise ValueError('Package path/commit mismatch: ' + f['name'])
     common = runtime.get('common', {})
     for values in [common, *runtime.get('services', {}).values()]:
         if not isinstance(values, dict) or any(not isinstance(v, str) for v in values.values()):
@@ -55,12 +61,11 @@ def validate(manifest, runtime, env):
             need(common, key)
         origin(need(env, 'FC_FRONTEND_URL'))
         game_env = {**common, **runtime.get('services', {}).get('game-service', {})}
-        mounts = runtime.get('nasConfig', {}).get('mountPoints', [])
-        upload = game_env.get('APP_RELEASE_UPLOAD_DIR', '')
-        if not upload or not any(upload.startswith(m.get('mountDir', '/impossible').rstrip('/') + '/') for m in mounts):
-            raise ValueError('APP_RELEASE_UPLOAD_DIR must be under an explicitly configured NAS mount')
+        if game_env.get('OBJECT_STORAGE_PROVIDER') != 'aliyun-oss': raise ValueError('FC requires persistent OSS storage')
+        for key in ('ALIYUN_OSS_ACCESS_KEY_ID', 'ALIYUN_OSS_ACCESS_KEY_SECRET', 'ALIYUN_OSS_BUCKET', 'ALIYUN_OSS_ENDPOINT', 'ALIYUN_OSS_PREFIX'):
+            need(game_env, key)
         vpc = runtime.get('vpcConfig', {})
-        if not all(vpc.get(k) for k in ('vpcId', 'vSwitchIds', 'securityGroupId')): raise ValueError('Set private database/NAS VPC configuration')
+        if not all(vpc.get(k) for k in ('vpcId', 'vSwitchIds', 'securityGroupId')): raise ValueError('Set private database VPC configuration')
 
 
 def function_body(f, runtime, env, endpoints):
@@ -68,7 +73,7 @@ def function_body(f, runtime, env, endpoints):
     values = {**runtime.get('common', {}), **runtime.get('services', {}).get(name, {})}
     if name not in ('frontend', 'gateway', 'content'):
         values.update(FC_DEPLOYMENT='true', FC_SERVICE=name, PORT=str(f['port']), NODE_ENV='production', ENVIRONMENT='production')
-        if name != 'ai-engine': values['NODE_OPTIONS'] = '--require=/app/fc-internal-auth.cjs'
+        if name != 'ai-engine': values['NODE_OPTIONS'] = '--require=/code/fc-internal-auth.cjs'
         urls = {k: v for k, v in endpoints.items() if k not in ('gateway', 'content', 'frontend')}
         values['FC_INTERNAL_ORIGINS'] = ','.join(sorted(set(urls.values())))
         values.update(AI_ENGINE_URL=urls.get('ai-engine', 'https://unconfigured.invalid'),
@@ -82,19 +87,30 @@ def function_body(f, runtime, env, endpoints):
                   'USER_UPSTREAM': endpoints.get('user-service', 'https://unconfigured.invalid'),
                   'AI_UPSTREAM': endpoints.get('ai-engine', 'https://unconfigured.invalid'),
                   'FRONTEND_UPSTREAM': env['FC_FRONTEND_URL']}
-    image = f"{env['ACR_REGISTRY']}/{env['ACR_NAMESPACE']}/{f.get('image', name)}:{env['IMAGE_TAG']}"
-    container = {'image': image, 'port': f['port'], 'healthCheckConfig': {'httpGetUrl': f['health'], 'initialDelaySeconds': 30, 'periodSeconds': 10, 'timeoutSeconds': 3, 'failureThreshold': 6, 'successThreshold': 1}}
-    if env.get('ACR_INSTANCE_ID'): container['acrInstanceId'] = env['ACR_INSTANCE_ID']
-    body = {'functionName': f"{env['FC_PREFIX']}-{name}", 'runtime': 'custom-container', 'customContainerConfig': container,
+    artifact = runtime['artifacts'][name]
+    code = {'ossBucketName': env['ALIYUN_OSS_BUCKET'], 'ossObjectName': artifact['object']}
+    custom = {'command': ['/code/bootstrap'], 'port': f['port'],
+              'healthCheckConfig': {'httpGetUrl': f['health'], 'initialDelaySeconds': 30, 'periodSeconds': 10, 'timeoutSeconds': 3, 'failureThreshold': 6, 'successThreshold': 1}}
+    body = {'functionName': f"{env['FC_PREFIX']}-{name}", 'runtime': 'custom.debian12', 'code': code, 'customRuntimeConfig': custom,
             'cpu': f['cpu'], 'memorySize': f['memory'], 'diskSize': 10240 if name == 'ai-engine' else 512,
             'timeout': f.get('timeout', 900), 'instanceConcurrency': f['concurrency'],
             'internetAccess': True, 'role': env['FC_EXECUTION_ROLE'], 'environmentVariables': values,
             'disableOndemand': f.get('disableOndemand', False), 'disableInjectCredentials': 'Request',
-            'description': f"GameVallies FC {env['IMAGE_TAG']}"}
+            'description': 'GameVallies OSS ' + json.dumps(code, separators=(',', ':'))}
     for key in ('vpcConfig', 'logConfig'):
         if runtime.get(key): body[key] = runtime[key]
-    if name == 'game-service': body['nasConfig'] = runtime['nasConfig']
+    # New installs do not require NAS. Existing mounts are left untouched.
     return body
+
+
+def checkpoint_code(previous):
+    description = previous.get('description', '')
+    if not description.startswith('GameVallies OSS '):
+        raise ValueError('Existing code function lacks an OSS rollback checkpoint; export it before migrating')
+    code = json.loads(description[len('GameVallies OSS '):])
+    if set(code) != {'ossBucketName', 'ossObjectName'} or not all(isinstance(v, str) and v for v in code.values()):
+        raise ValueError('Invalid OSS rollback checkpoint')
+    return code
 
 
 def http_json(url, token, path, method='GET'):
@@ -153,9 +169,14 @@ class Deployment:
 
     def restore(self, name, version):
         previous = self.c.get_function(name, self.m.GetFunctionRequest(qualifier=version)).body.to_map()
-        container = previous.get('customContainerConfig', {})
-        previous['customContainerConfig'] = {k: v for k, v in container.items() if k in ('image', 'port', 'command', 'entrypoint', 'healthCheckConfig', 'acrInstanceId', 'registryConfig', 'accelerationType')}
-        # SDK filters function response metadata; explicitly filter nested image output fields.
+        if previous.get('runtime') == 'custom-container':
+            container = previous.get('customContainerConfig', {})
+            previous['customContainerConfig'] = {k: v for k, v in container.items() if k in ('image', 'port', 'command', 'entrypoint', 'healthCheckConfig', 'acrInstanceId', 'registryConfig', 'accelerationType')}
+        else:
+            # GetFunction omits code. Recover the immutable OSS reference from the
+            # selected checkpoint, never from the current release or LATEST.
+            previous['code'] = checkpoint_code(previous)
+            previous.pop('customContainerConfig', None)
         body = self.m.UpdateFunctionInput().from_map(previous)
         self.c.update_function(name, self.m.UpdateFunctionRequest(body=body))
         self.wait_function(name)
@@ -168,6 +189,9 @@ class Deployment:
         if any(f['name'] == 'game-service' for f in manifest['functions']):
             previous = self.optional(lambda: self.c.get_trigger(prefix + '-game-service', TRIGGER))
             if previous: old_game_url = origin(previous.body.http_trigger.url_internet)
+        for f in manifest['functions']:
+            old = self.optional(lambda: self.c.get_function(prefix + '-' + f['name'], self.m.GetFunctionRequest()))
+            if old and old.body.runtime != 'custom-container': checkpoint_code(old.body.to_map())
         drained = False
         try:
             if old_game_url:
@@ -213,7 +237,7 @@ class Deployment:
                         self.sleep(5)
                 entry['version'] = self.version(name)
                 print(f'Verified FC function: {name}', flush=True)
-            Path(output).write_text(json.dumps({'commit': env['IMAGE_TAG'], 'region': env['FC_REGION'], 'accountId': env['FC_ACCOUNT_ID'], 'functions': entries}, indent=2) + '\n')
+            Path(output).write_text(json.dumps({'commit': env['RELEASE_SHA'], 'region': env['FC_REGION'], 'accountId': env['FC_ACCOUNT_ID'], 'functions': entries}, indent=2) + '\n')
             print('FC HTTP health checks passed; complete business acceptance before switching DNS.')
         except Exception:
             failures = []
@@ -253,7 +277,7 @@ def main():
     from alibabacloud_fc20230330 import models as m
     from alibabacloud_tea_openapi.models import Config
     config = Config(access_key_id=need(os.environ, 'ALIBABA_CLOUD_ACCESS_KEY_ID'), access_key_secret=need(os.environ, 'ALIBABA_CLOUD_ACCESS_KEY_SECRET'), security_token=os.getenv('ALIBABA_CLOUD_SECURITY_TOKEN'))
-    config.endpoint = f"{os.environ['FC_ACCOUNT_ID']}.{os.environ['FC_REGION']}.fc.aliyuncs.com"
+    config.endpoint = f"fcv3.{os.environ['FC_REGION']}.aliyuncs.com"
     config.connect_timeout, config.read_timeout = 10000, 60000
     deployment = Deployment(Client(config), m)
     if args.command == 'apply': deployment.apply(manifest, runtime, os.environ, args.release)
