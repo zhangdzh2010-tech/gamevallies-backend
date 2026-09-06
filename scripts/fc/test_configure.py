@@ -6,6 +6,17 @@ import zipfile
 import configure as c
 
 class PackageConfigTests(unittest.TestCase):
+    def test_backend_log_configuration_keeps_metrics_enabled(self):
+        env = dict(FC_REGION='cn-hongkong', ALIYUN_OSS_REGION='cn-hongkong',
+            ALIYUN_OSS_ENDPOINT='https://oss-cn-hongkong.aliyuncs.com',
+            CONTENT_ORIGIN='https://content.example.com', FC_LOG_PROJECT='test-project',
+            FC_LOG_STORE='fc-runtime')
+        with patch.object(c, 'need', side_effect=lambda values, key: values.get(key, 'test')):
+            config = c.runtime_config(env, True)['logConfig']
+        self.assertEqual(config, {'project': 'test-project', 'logstore': 'fc-runtime',
+            'enableInstanceMetrics': True, 'enableRequestMetrics': True,
+            'logBeginRule': 'DefaultRegex'})
+
     def test_rejects_missing_settings_together_without_values(self):
         with self.assertRaisesRegex(ValueError, 'FC_ACCOUNT_ID.*FC_REGION.*FC_PREFIX'):
             c.check_settings({}, {'functions': [{'name':'frontend'}]})
