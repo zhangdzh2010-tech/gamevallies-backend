@@ -75,6 +75,21 @@ class ConfigTests(unittest.TestCase):
     def test_permission_error_is_not_treated_as_missing_function(self):
         error=Exception('forbidden');error.status_code=403
         with self.assertRaises(Exception): d.Deployment(Mock(),m).optional(Mock(side_effect=error))
+    def test_zip_without_async_state_requires_persisted_code(self):
+        pending = NS(state=None, last_update_status=None, runtime='custom.debian12', code_checksum=None, code_size=0)
+        ready = NS(state=None, last_update_status=None, runtime='custom.debian12', code_checksum='checksum', code_size=123)
+        client = Mock()
+        client.get_function.side_effect = [NS(body=pending), NS(body=ready)]
+        sleep = Mock()
+        self.assertIs(d.Deployment(client, m, sleep).wait_function('zip'), ready)
+        sleep.assert_called_once()
+
+    def test_explicit_failure_is_never_accepted(self):
+        client = Mock()
+        client.get_function.return_value.body = NS(state='Failed', last_update_status=None)
+        with self.assertRaises(RuntimeError):
+            d.Deployment(client, m, Mock()).wait_function('failed')
+
     def test_function_waits_for_completed_update(self):
         client=Mock(); client.get_function.side_effect=[NS(body=NS(state='Active',last_update_status='InProgress')),NS(body=NS(state='Active',last_update_status='Successful'))]
         sleep=Mock(); d.Deployment(client,m,sleep).wait_function('x');sleep.assert_called_once()
