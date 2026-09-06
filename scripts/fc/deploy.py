@@ -153,6 +153,19 @@ class Deployment:
             if getattr(e, 'status_code', None) == 404 or getattr(e, 'code', '') in ('FunctionNotFound', 'TriggerNotFound'): return None
             raise
 
+    def service_is_stopped(self, name):
+        """Skip HTTP drain only when FC confirms no current or future capacity."""
+        function = self.c.get_function(name, self.m.GetFunctionRequest()).body
+        if function.disable_ondemand is not True:
+            return False
+        provision = self.c.get_provision_config(
+            name, self.m.GetProvisionConfigRequest(qualifier='LATEST')).body
+        # Missing/unknown fields and API failures are not proof of inactivity.
+        return (provision.current == 0 and provision.target == 0
+                and provision.default_target in (None, 0)
+                and not provision.scheduled_actions
+                and not provision.target_tracking_policies)
+
     def wait_function(self, name):
         for _ in range(90):
             f = self.c.get_function(name, self.m.GetFunctionRequest()).body
@@ -273,6 +286,9 @@ class Deployment:
         drained = False
         stage, name = 'drain', prefix + '-game-service'
         try:
+            if old_game_url and self.service_is_stopped(prefix + '-game-service'):
+                print('FC drain skipped: game-service has on-demand disabled and zero provisioned capacity.', flush=True)
+                old_game_url = None
             if old_game_url:
                 http_json(old_game_url, token, '/__fc/drain', 'POST'); drained = True
                 stable = 0
