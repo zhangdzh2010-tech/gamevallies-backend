@@ -17,6 +17,33 @@ MANIFEST = json.loads(Path('deploy/fc/functions.json').read_text())
 RUNTIME['artifacts'] = {f['name']: {'sha256': 'b'*64, 'object': 'gamevallies/prod/releases/' + 'a'*40 + '/' + 'b'*64 + '/' + f['name'] + '.zip'} for f in MANIFEST['functions']}
 
 class ConfigTests(unittest.TestCase):
+    def test_restore_uses_explicit_code_if_version_description_changed(self):
+        client = Mock()
+        client.get_function.return_value.body = m.Function(
+            runtime='custom.debian12', description='version description')
+        deployment = d.Deployment(client, m)
+        deployment.wait_function = Mock()
+        code = {'ossBucketName': 'old-bucket', 'ossObjectName': 'old.zip'}
+        deployment.restore('game', '3', code)
+        self.assertEqual(client.update_function.call_args.args[1].body.to_map()['code'], code)
+
+    def test_stopped_existing_service_does_not_publish_checkpoint(self):
+        import io
+        client = Mock()
+        code = {'ossBucketName': 'old-bucket', 'ossObjectName': 'old.zip'}
+        old = NS(body=m.Function(runtime='custom.debian12',
+                 description='GameVallies OSS ' + json.dumps(code), disable_ondemand=True))
+        deployment = d.Deployment(client, m, lambda _: None)
+        deployment.optional = Mock(side_effect=[None, old, old])
+        deployment.service_is_stopped = Mock(return_value=True)
+        deployment.trigger = Mock(return_value='https://example.com')
+        deployment.migrate_database = Mock(side_effect=RuntimeError('stop before updates'))
+        with patch('sys.stderr', io.StringIO()):
+            with self.assertRaises(RuntimeError):
+                deployment.apply({'functions':[MANIFEST['functions'][1]]}, RUNTIME, ENV, 'unused')
+        client.publish_function_version.assert_not_called()
+        client.update_function.assert_not_called()
+
     def test_skip_drain_requires_confirmed_zero_capacity(self):
         client = Mock()
         client.get_function.return_value.body = NS(disable_ondemand=True)
