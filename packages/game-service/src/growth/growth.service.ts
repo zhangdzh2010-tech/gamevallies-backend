@@ -190,6 +190,7 @@ export class GrowthService implements OnModuleInit {
   }
 
   private async ensureGrowthSchema(options: { throwOnError?: boolean } = {}) {
+    if (process.env.DATABASE_SCHEMA_MANAGED === 'true') return;
     if (!this.schemaReadyPromise) {
       this.schemaReadyPromise = this.createGrowthTables();
     }
@@ -1192,4 +1193,3 @@ export class GrowthService implements OnModuleInit {
     };
   }
 }
-
