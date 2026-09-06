@@ -339,6 +339,29 @@ export class GrowthService implements OnModuleInit {
     });
   }
 
+  private createOssClient(): any {
+    const read = (key: string) => normalizeString(this.configService.get<string>(key));
+    const accessKeyId = read('ALIYUN_OSS_ACCESS_KEY_ID');
+    const accessKeySecret = read('ALIYUN_OSS_ACCESS_KEY_SECRET');
+    const bucket = read('ALIYUN_OSS_BUCKET');
+    const region = read('ALIYUN_OSS_REGION');
+    const endpoint = read('ALIYUN_OSS_ENDPOINT');
+    if (!accessKeyId || !accessKeySecret || !bucket || !region || endpoint !== `https://oss-${region}.aliyuncs.com`) {
+      throw new BadRequestException('OSS configuration is incomplete or invalid');
+    }
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const OSS = require('ali-oss');
+    return new OSS({ accessKeyId, accessKeySecret, bucket, region: `oss-${region}`, endpoint, secure: true });
+  }
+
+  private getOssPrefix(): string {
+    const prefix = normalizeString(this.configService.get<string>('ALIYUN_OSS_PREFIX')).replace(/^\/+|\/+$/g, '');
+    if (!prefix || !/^[a-zA-Z0-9/_-]+$/.test(prefix) || prefix.split('/').includes('..')) {
+      throw new BadRequestException('ALIYUN_OSS_PREFIX must isolate application objects');
+    }
+    return prefix;
+  }
+
   private encodeLocalStorageKey(relativeKey: string): string {
     return `local:${relativeKey}`;
   }
@@ -347,7 +370,8 @@ export class GrowthService implements OnModuleInit {
     return `tos:${objectKey}`;
   }
 
-  private decodeStorageKey(storageKey: string): { provider: 'local' | 'tos'; objectKey: string } {
+  private decodeStorageKey(storageKey: string): { provider: 'local' | 'tos' | 'oss'; objectKey: string } {
+    if (storageKey.startsWith('oss:')) return { provider: 'oss', objectKey: storageKey.slice(4) };
     if (storageKey.startsWith('tos:')) {
       return {
         provider: 'tos',
@@ -1043,7 +1067,11 @@ export class GrowthService implements OnModuleInit {
     const tosConfig = this.getAppReleaseTosConfig();
     let storageKey = '';
 
-    if (tosConfig) {
+    if (this.configService.get<string>('OBJECT_STORAGE_PROVIDER') === 'aliyun-oss') {
+      const objectKey = path.posix.join(this.getOssPrefix(), 'app-releases', String(release.platform), release.id, finalName);
+      await this.createOssClient().put(objectKey, fileBuffer, { headers: { 'Content-Type': contentType } });
+      storageKey = `oss:${objectKey}`;
+    } else if (tosConfig) {
       const objectKey = this.buildReleaseObjectKey(release.platform, release.id, finalName);
       const tosClient = this.createTosClient(tosConfig);
 
@@ -1057,6 +1085,9 @@ export class GrowthService implements OnModuleInit {
 
       storageKey = this.encodeTosStorageKey(objectKey);
     } else {
+      if (this.configService.get<string>('FC_DEPLOYMENT') === 'true') {
+        throw new BadRequestException('Persistent object storage is required on FC');
+      }
       this.logger.warn(
         `TOS config is incomplete. Falling back to local APK storage for release ${release.id}.`,
       );
@@ -1111,6 +1142,20 @@ export class GrowthService implements OnModuleInit {
 
     const storedObject = this.decodeStorageKey(release.storageKey);
 
+    if (storedObject.provider === 'oss') {
+      if (!storedObject.objectKey.startsWith(this.getOssPrefix() + '/app-releases/') || storedObject.objectKey.split('/').some((part) => part === '..' || part === '.') || /[\\\x00-\x1f]/.test(storedObject.objectKey)) {
+        throw new BadRequestException('Release object is outside the application prefix');
+      }
+      const downloadUrl = this.createOssClient().signatureUrl(storedObject.objectKey, {
+        expires: 600,
+        response: {
+          'content-disposition': `attachment; filename="${encodeURIComponent(release.fileName || 'download')}"`,
+          'content-type': 'application/octet-stream',
+        },
+      });
+      return { type: 'redirect' as const, release, downloadUrl };
+    }
+
     if (storedObject.provider === 'tos') {
       const tosConfig = this.getAppReleaseTosConfig();
       if (!tosConfig) {
@@ -1147,3 +1192,4 @@ export class GrowthService implements OnModuleInit {
     };
   }
 }
+
