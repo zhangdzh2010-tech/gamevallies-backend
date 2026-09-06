@@ -186,10 +186,11 @@ class Deployment:
         if not count: return
         for _ in range(90):
             p = self.c.get_provision_config(name, self.m.GetProvisionConfigRequest(qualifier='LATEST')).body
-            if p.current_error: raise deployment_error('PROVISIONING_FAILED', name)
-            if p.current == count and p.target == count and p.always_allocate_cpu: return
+            # Provisioning is asynchronous; currentError can outlive the old revision.
+            # Wait for a clean ready state instead of failing on the first snapshot.
+            if not p.current_error and p.current == count and p.target == count and p.always_allocate_cpu: return
             self.sleep(5)
-        raise TimeoutError(f'Provisioning not ready: {name}')
+        raise deployment_error('PROVISIONING_FAILED' if p.current_error else 'PROVISIONING_TIMEOUT', name)
 
     def trigger(self, name):
         t = self.optional(lambda: self.c.get_trigger(name, TRIGGER))

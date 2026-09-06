@@ -152,6 +152,25 @@ class ConfigTests(unittest.TestCase):
     def test_rejects_mutable_tags_and_credential_urls(self):
         with self.assertRaises(ValueError): d.validate(MANIFEST,RUNTIME,{**ENV,'RELEASE_SHA':'latest'})
         with self.assertRaises(ValueError): d.origin('https://user:secret@example.com')
+    def test_provision_waits_for_transient_error_to_clear(self):
+        client = Mock()
+        client.get_provision_config.side_effect = [
+            NS(body=NS(current=0, target=1, always_allocate_cpu=True, current_error='old startup error')),
+            NS(body=NS(current=1, target=1, always_allocate_cpu=True, current_error='old startup error')),
+            NS(body=NS(current=1, target=1, always_allocate_cpu=True, current_error=None)),
+        ]
+        sleep = Mock()
+        d.Deployment(client, m, sleep).provision('worker', 1)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_provision_timeout_with_no_error_is_distinct(self):
+        client = Mock()
+        client.get_provision_config.return_value.body = NS(current=0, target=1, always_allocate_cpu=True, current_error=None)
+        with self.assertRaises(RuntimeError) as caught:
+            d.Deployment(client, m, lambda _: None).provision('worker', 1)
+        self.assertEqual(caught.exception.code, 'PROVISIONING_TIMEOUT')
+        self.assertEqual(client.get_provision_config.call_count, 90)
+
     def test_provision_checks_actual_cpu_and_count(self):
         client=Mock();client.get_provision_config.return_value.body=NS(current=1,target=1,always_allocate_cpu=True,current_error=None)
         deployment=d.Deployment(client,m,sleep=lambda _:None); deployment.provision('worker',1)
