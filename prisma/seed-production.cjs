@@ -17,7 +17,9 @@ async function seedProduction(db, env = process.env) {
     // Keep the existing logical routing key; the physical FC region is independent.
     // FC endpoints are resolved by the deployer before any API/worker is started.
     if (env.AI_ENGINE_URL) {
-      await tx.aiEngineRegionTarget.upsert({ where: { executionRegion: 'cn_shanghai' }, update: {},
+      await tx.aiEngineRegionTarget.upsert({ where: {
+        ai_engine_region_targets_execution_region_key: { executionRegion: 'cn_shanghai' },
+      }, update: {},
         create: { accountId: account.id, regionCatalogId: region.id, vendor: 'aliyun',
           cloudRegionCode: regionCode, executionRegion: 'cn_shanghai', displayName: 'AI Engine FC',
           functionName: `${env.GAMEVALLIES_FC_PREFIX}-ai-engine`, registry: '', registryNamespace: '',
