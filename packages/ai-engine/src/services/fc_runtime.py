@@ -11,7 +11,7 @@ def internal_headers(url: str) -> dict[str, str]:
     parsed = urlsplit(url)
     origin = f'{parsed.scheme}://{parsed.netloc}'
     allowed = os.getenv('FC_INTERNAL_ORIGINS', '').split(',')
-    return {'x-fc-internal-token': os.environ['FC_INTERNAL_TOKEN']} if origin in allowed else {}
+    return {'x-gamevallies-internal-token': os.environ['FC_INTERNAL_TOKEN']} if origin in allowed else {}
 
 
 class FCTransportBoundary:
@@ -25,7 +25,7 @@ class FCTransportBoundary:
     async def __call__(self, scope, receive, send):
         if self.enabled and scope['type'] in ('http', 'websocket'):
             health = scope['type'] == 'http' and scope.get('method') == 'GET' and scope.get('path') == '/health'
-            supplied = dict(scope.get('headers', [])).get(b'x-fc-internal-token', b'')
+            supplied = dict(scope.get('headers', [])).get(b'x-gamevallies-internal-token', b'')
             if not health and not hmac.compare_digest(supplied, self.token.encode()):
                 if scope['type'] == 'websocket':
                     await send({'type': 'websocket.close', 'code': 1008})

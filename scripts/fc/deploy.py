@@ -118,7 +118,7 @@ def checkpoint_code(previous):
 
 
 def http_json(url, token, path, method='GET'):
-    request = urllib.request.Request(origin(url) + path, method=method, headers={'x-fc-internal-token': token})
+    request = urllib.request.Request(origin(url) + path, method=method, headers={'x-gamevallies-internal-token': token})
     # A transport token must never follow a redirect to another host.
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *args): return None
