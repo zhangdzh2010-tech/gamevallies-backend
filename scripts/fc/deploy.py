@@ -304,5 +304,15 @@ if __name__ == '__main__':
     try: main()
     except Exception as e:
         # SDK exceptions may contain full request bodies/environment values.
-        print(f'FC deployment stopped ({type(e).__name__}); inspect protected cloud logs/configuration.', file=sys.stderr)
+        # Only allow bounded identifier fields; never print SDK message/data bodies.
+        import re
+        def identifier(value):
+            value = str(value or '')
+            return value if re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', value) else 'unavailable'
+        data = getattr(e, 'data', None)
+        data = data if isinstance(data, dict) else {}
+        code = identifier(getattr(e, 'code', None))
+        status = identifier(getattr(e, 'status_code', None) or data.get('statusCode'))
+        request_id = identifier(data.get('RequestId') or data.get('requestId') or getattr(e, 'request_id', None))
+        print(f'FC deployment stopped ({type(e).__name__}); code={code}; status={status}; requestId={request_id}', file=sys.stderr)
         sys.exit(1)
