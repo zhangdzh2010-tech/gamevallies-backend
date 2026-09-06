@@ -1,0 +1,90 @@
+[
+  {
+    "id": "1e0207d2-a7de-4d49-b4bb-fcdbf0411003",
+    "stepKey": "intent_parse",
+    "stepOrder": 30,
+    "stageLabel": "Flow 02 - Structured Intent",
+    "displayName": "意图解析",
+    "description": "将自然语言描述解析成 GameSpec",
+    "outputClass": "small_json",
+    "minOutputTokens": null,
+    "maxOutputTokens": 1024
+  },
+  {
+    "id": "1e0207d2-a7de-4d49-b4bb-fcdbf0411005",
+    "stepKey": "code_generate.full",
+    "stepOrder": 40,
+    "stageLabel": "Flow 03 - Create Generation",
+    "displayName": "代码生成（Full LLM）",
+    "description": "完全依赖 LLM 生成首版代码",
+    "outputClass": "full_document",
+    "minOutputTokens": 16384,
+    "maxOutputTokens": 16384
+  },
+  {
+    "id": "1e0207d2-a7de-4d49-b4bb-fcdbf0411007",
+    "stepKey": "code_review",
+    "stepOrder": 50,
+    "stageLabel": "Flow 03 - Create Generation",
+    "displayName": "代码审查",
+    "description": "LLM 对生成结果进行完整性与可玩性审查",
+    "outputClass": "small_text",
+    "minOutputTokens": null,
+    "maxOutputTokens": 1024
+  },
+  {
+    "id": "1e0207d2-a7de-4d49-b4bb-fcdbf0411008",
+    "stepKey": "iterate.classify",
+    "stepOrder": 70,
+    "stageLabel": "Flow 04 - Iterate Generation",
+    "displayName": "迭代反馈分类",
+    "description": "判断用户反馈属于哪类迭代修改",
+    "outputClass": "small_text",
+    "minOutputTokens": null,
+    "maxOutputTokens": 1024
+  },
+  {
+    "id": "1e0207d2-a7de-4d49-b4bb-fcdbf0411009",
+    "stepKey": "iterate.param_adjust",
+    "stepOrder": 80,
+    "stageLabel": "Flow 04 - Iterate Generation",
+    "displayName": "迭代参数调整",
+    "description": "通过 LLM 调整游戏数值和参数",
+    "outputClass": "large_patch",
+    "minOutputTokens": 4096,
+    "maxOutputTokens": 16384
+  },
+  {
+    "id": "1e0207d2-a7de-4d49-b4bb-fcdbf0411010",
+    "stepKey": "iterate.element_change",
+    "stepOrder": 90,
+    "stageLabel": "Flow 04 - Iterate Generation",
+    "displayName": "迭代元素修改",
+    "description": "通过 LLM 修改视觉元素和对象结构",
+    "outputClass": "large_patch",
+    "minOutputTokens": 4096,
+    "maxOutputTokens": 16384
+  },
+  {
+    "id": "1e0207d2-a7de-4d49-b4bb-fcdbf0411011",
+    "stepKey": "iterate.mechanic_change",
+    "stepOrder": 100,
+    "stageLabel": "Flow 04 - Iterate Generation",
+    "displayName": "迭代机制改写",
+    "description": "通过 LLM 改写游戏核心机制",
+    "outputClass": "large_patch",
+    "minOutputTokens": 4096,
+    "maxOutputTokens": 16384
+  },
+  {
+    "id": "1e0207d2-a7de-4d49-b4bb-fcdbf0411020",
+    "stepKey": "qa_fix.syntax_structural",
+    "stepOrder": 120,
+    "stageLabel": "Flow 05 - QA Repair Families",
+    "displayName": "QA Fix / Syntax Structural",
+    "description": "Only remaining QA repair path: full-document syntax and structural recovery.",
+    "outputClass": "full_document",
+    "minOutputTokens": 16384,
+    "maxOutputTokens": 16384
+  }
+]

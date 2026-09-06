@@ -11,6 +11,7 @@ RUN sed -i 's/binaryTargets.*/binaryTargets = ["debian-openssl-3.0.x"]/' prisma/
 RUN npm ci --no-audit --no-fund && npx prisma generate && npm run build --workspaces && npm prune --omit=dev --no-audit --no-fund
 RUN mkdir -p /code/bin /code/packages && cp /usr/local/bin/node /code/bin/node && cp -a node_modules contracts prisma /code/ && for service in user-service game-service feed-service; do cp -a packages/$service /code/packages/; done && cp -a packages/platform-config /code/packages/platform-config
 COPY deploy/fc/internal-auth.cjs /code/fc-internal-auth.cjs
+COPY deploy/fc/migration-server.cjs /code/deploy/fc/migration-server.cjs
 RUN printf '#!/bin/sh\nset -eu\nexport LD_LIBRARY_PATH=/code/lib\nexport PATH=/code/bin:$PATH\ncd /code/packages/%s\nexec node dist/main.js\n' "$SERVICE" > /code/bootstrap && chmod 755 /code/bootstrap
 COPY scripts/fc/pack.py /pack.py
 RUN python3 /pack.py "$SERVICE"

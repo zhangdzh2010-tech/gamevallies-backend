@@ -9,6 +9,37 @@ permissions:
   contents: read
 
 jobs:
+  database:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: migration-ci-only
+          MYSQL_DATABASE: gamevallies
+          MYSQL_USER: gamevallies_app
+          MYSQL_PASSWORD: migration-ci-only
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 --silent"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+    env:
+      DATABASE_URL: mysql://gamevallies_app:migration-ci-only@127.0.0.1:3306/gamevallies
+      MIGRATION_TEST_ALLOW_LOCAL: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npx prisma generate
+      - run: node --test test/database-migration.test.cjs
+      - name: Verify empty and repeated database initialization on MySQL 8
+        run: node test/database-migration.integration.cjs
+
   game-service:
     runs-on: ubuntu-latest
     timeout-minutes: 15
