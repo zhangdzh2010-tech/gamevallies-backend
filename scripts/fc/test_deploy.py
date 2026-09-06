@@ -17,6 +17,32 @@ MANIFEST = json.loads(Path('deploy/fc/functions.json').read_text())
 RUNTIME['artifacts'] = {f['name']: {'sha256': 'b'*64, 'object': 'gamevallies/prod/releases/' + 'a'*40 + '/' + 'b'*64 + '/' + f['name'] + '.zip'} for f in MANIFEST['functions']}
 
 class ConfigTests(unittest.TestCase):
+    def test_skip_drain_requires_confirmed_zero_capacity(self):
+        client = Mock()
+        client.get_function.return_value.body = NS(disable_ondemand=True)
+        p = NS(current=0, target=0, default_target=None,
+               scheduled_actions=[], target_tracking_policies=[])
+        client.get_provision_config.return_value.body = p
+        deployment = d.Deployment(client, m)
+        self.assertTrue(deployment.service_is_stopped('game'))
+        for field, value in [('current', 1), ('current', None), ('target', 1),
+                             ('target', None), ('default_target', 1),
+                             ('scheduled_actions', [object()]),
+                             ('target_tracking_policies', [object()])]:
+            old = getattr(p, field)
+            setattr(p, field, value)
+            self.assertFalse(deployment.service_is_stopped('game'))
+            setattr(p, field, old)
+        client.get_function.return_value.body.disable_ondemand = False
+        self.assertFalse(deployment.service_is_stopped('game'))
+
+    def test_capacity_read_failure_is_not_ignored(self):
+        client = Mock()
+        client.get_function.return_value.body = NS(disable_ondemand=True)
+        client.get_provision_config.side_effect = RuntimeError('unavailable')
+        with self.assertRaises(RuntimeError):
+            d.Deployment(client, m).service_is_stopped('game')
+
     def test_diagnostics_exclude_sdk_message_and_request_body(self):
         import io
         error = RuntimeError('mysql://secret password')
