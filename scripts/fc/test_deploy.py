@@ -17,6 +17,36 @@ MANIFEST = json.loads(Path('deploy/fc/functions.json').read_text())
 RUNTIME['artifacts'] = {f['name']: {'sha256': 'b'*64, 'object': 'gamevallies/prod/releases/' + 'a'*40 + '/' + 'b'*64 + '/' + f['name'] + '.zip'} for f in MANIFEST['functions']}
 
 class ConfigTests(unittest.TestCase):
+    def test_diagnostics_exclude_sdk_message_and_request_body(self):
+        import io
+        error = RuntimeError('mysql://secret password')
+        error.code = 'PROVISIONING_FAILED'
+        error.data = {'RequestId': 'request-123', 'body': 'secret'}
+        output = io.StringIO()
+        with patch('sys.stderr', output):
+            d.report_error(error, 'provision-instances', 'ai-engine')
+        self.assertIn('PROVISIONING_FAILED', output.getvalue())
+        self.assertIn('ai-engine', output.getvalue())
+        self.assertNotIn('secret', output.getvalue())
+
+    def test_rollback_failure_preserves_original_failure(self):
+        import io
+        client = Mock()
+        deployment = d.Deployment(client, m, sleep=lambda _: None)
+        deployment.optional = Mock(return_value=None)
+        deployment.wait_function = Mock()
+        deployment.trigger = Mock(return_value='https://example.com')
+        deployment.migrate_database = Mock()
+        original = d.deployment_error('FUNCTION_UPDATE_FAILED', 'ai-engine')
+        client.update_function.side_effect = [original, RuntimeError('rollback secret')]
+        with patch('sys.stderr', io.StringIO()) as output:
+            with self.assertRaises(RuntimeError) as caught:
+                deployment.apply(MANIFEST, RUNTIME, ENV, 'unused.json')
+        self.assertIs(caught.exception, original)
+        self.assertIn('stage=update-function', output.getvalue())
+        self.assertIn('stage=rollback', output.getvalue())
+        self.assertNotIn('rollback secret', output.getvalue())
+
     def test_database_gate_uses_private_single_concurrency_executor(self):
         import io
         client = Mock()
