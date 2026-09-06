@@ -8,7 +8,7 @@ server {
     proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
     proxy_set_header Host $proxy_host;
     proxy_set_header X-Forwarded-Proto https;
-    proxy_set_header X-Fc-Internal-Token ${FC_INTERNAL_TOKEN};
+    proxy_set_header X-GameVallies-Internal-Token ${FC_INTERNAL_TOKEN};
     location = /health { return 200 'ok'; }
     location /game-shell/ { proxy_pass $games$request_uri; }
     location /games/ { proxy_pass $games$request_uri; }
