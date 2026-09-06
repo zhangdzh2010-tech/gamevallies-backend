@@ -17,6 +17,41 @@ MANIFEST = json.loads(Path('deploy/fc/functions.json').read_text())
 RUNTIME['artifacts'] = {f['name']: {'sha256': 'b'*64, 'object': 'gamevallies/prod/releases/' + 'a'*40 + '/' + 'b'*64 + '/' + f['name'] + '.zip'} for f in MANIFEST['functions']}
 
 class ConfigTests(unittest.TestCase):
+    def test_reuse_requires_matching_code_and_configuration(self):
+        client = Mock()
+        current = m.Function(runtime='custom.debian12', code_checksum='abc',
+                             environment_variables={'SECRET':'old'}, memory_size=1024)
+        same = m.Function(runtime='custom.debian12', code_checksum='abc',
+                          environment_variables={'SECRET':'old'}, memory_size=1024,
+                          description='version description')
+        client.get_function.return_value.body = same
+        client.list_function_versions.return_value.body = NS(versions=[NS(version_id='7')], next_token=None)
+        deployment = d.Deployment(client, m)
+        self.assertEqual(deployment.matching_version('game', current), '7')
+        same.environment_variables['SECRET'] = 'new'
+        self.assertIsNone(deployment.matching_version('game', current))
+        same.environment_variables['SECRET'] = 'old'
+        same.code_checksum = 'other'
+        self.assertIsNone(deployment.matching_version('game', current))
+
+    def test_existing_version_avoids_publish_api(self):
+        client = Mock()
+        deployment = d.Deployment(client, m)
+        deployment.matching_version = Mock(return_value='7')
+        self.assertEqual(deployment.version('game'), '7')
+        client.publish_function_version.assert_not_called()
+
+    def test_unmatched_version_error_is_not_swallowed(self):
+        client = Mock()
+        deployment = d.Deployment(client, m)
+        deployment.matching_version = Mock(return_value=None)
+        error = RuntimeError('provider detail')
+        error.code = 'VersionPublishError'
+        client.publish_function_version.side_effect = error
+        with self.assertRaises(RuntimeError) as caught:
+            deployment.version('game')
+        self.assertIs(caught.exception, error)
+
     def test_restore_uses_explicit_code_if_version_description_changed(self):
         client = Mock()
         client.get_function.return_value.body = m.Function(
