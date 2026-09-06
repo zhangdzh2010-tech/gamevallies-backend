@@ -6690,6 +6690,9 @@ export class AdminService {
   // ===================== Migration =====================
 
   async runMigration() {
+    if (process.env.DATABASE_SCHEMA_MANAGED === 'true') {
+      throw new BadRequestException('Database migrations are managed by the deployment pipeline');
+    }
     const sql = `
       CREATE TABLE IF NOT EXISTS system_configs (
         id VARCHAR(36) NOT NULL,
@@ -6708,4 +6711,3 @@ export class AdminService {
     return { success: true, message: "system_configs table created" };
   }
 }
-
