@@ -25,6 +25,23 @@ class PackageConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'separate'):
             c.runtime_config({'PUBLIC_ORIGIN':'https://app.example.com', 'CONTENT_ORIGIN':'https://app.example.com'}, False)
 
+    def test_payment_credentials_are_scoped_to_consolidated_api(self):
+        env = dict(PUBLIC_ORIGIN='https://www.example.com', CONTENT_ORIGIN='https://content.example.com',
+            WECHAT_PAY_MODE='real', ALIPAY_MODE='real')
+        required = {
+            'WECHAT_MINIAPP_APP_ID', 'WECHAT_MINIAPP_APP_SECRET', 'WECHAT_H5_APP_ID',
+            'WECHAT_H5_APP_SECRET', 'WECHAT_H5_OAUTH_SCOPE', 'WECHAT_PAY_MODE',
+            'WECHAT_PAY_MERCHANT_ID', 'WECHAT_PAY_NOTIFY_URL', 'WECHAT_PAY_SERIAL_NO',
+            'WECHAT_PAY_PRIVATE_KEY', 'WECHAT_PAY_PUBLIC_KEY', 'WECHAT_PAY_API_V3_KEY',
+            'WECHAT_PAY_API_BASE', 'ALIPAY_MODE', 'ALIPAY_APP_ID', 'ALIPAY_PRIVATE_KEY',
+            'ALIPAY_PUBLIC_KEY', 'ALIPAY_NOTIFY_URL', 'ALIPAY_GATEWAY', 'ALIPAY_SIGN_TYPE',
+        }
+        with patch.object(c, 'need', side_effect=lambda values, key: values.get(key, 'configured')):
+            runtime = c.runtime_config(env, True)
+        game = runtime['services']['game-service']
+        self.assertTrue(required.issubset(game))
+        self.assertEqual(runtime['common']['PUBLIC_WEB_BASE_URL'], 'https://www.example.com')
+
     def test_zip_bootstrap_digest_and_path_guards(self):
         with tempfile.TemporaryDirectory() as folder:
             path=Path(folder)/'frontend.zip'

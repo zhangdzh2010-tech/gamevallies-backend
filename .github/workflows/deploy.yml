@@ -58,7 +58,7 @@ jobs:
       ALIYUN_OSS_ENDPOINT: ${{ vars.ALIYUN_OSS_ENDPOINT || 'https://oss-cn-shenzhen.aliyuncs.com' }}
       ALIYUN_OSS_PREFIX: ${{ vars.ALIYUN_OSS_PREFIX || 'gamevallies/prod/' }}
       OBJECT_STORAGE_PROVIDER: ${{ vars.OBJECT_STORAGE_PROVIDER || 'aliyun-oss' }}
-      PUBLIC_ORIGIN: https://zlspace.ai
+      PUBLIC_ORIGIN: https://www.zlspace.ai
       ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_ID }}
       ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_SECRET }}
       ALIBABA_CLOUD_SECURITY_TOKEN: ${{ secrets.ALIBABA_CLOUD_SECURITY_TOKEN }}
@@ -78,6 +78,27 @@ jobs:
       ALIYUN_SMS_TPL_LOGIN: ${{ vars.ALIYUN_SMS_TPL_LOGIN }}
       ALIYUN_SMS_TPL_RESET_PASSWORD: ${{ vars.ALIYUN_SMS_TPL_RESET_PASSWORD }}
       ALIYUN_SMS_REGION_ID: ${{ vars.ALIYUN_SMS_REGION_ID }}
+      WECHAT_MINIAPP_APP_ID: ${{ secrets.WECHAT_MINIAPP_APP_ID }}
+      WECHAT_MINIAPP_APP_SECRET: ${{ secrets.WECHAT_MINIAPP_APP_SECRET }}
+      WECHAT_H5_APP_ID: ${{ secrets.WECHAT_H5_APP_ID }}
+      WECHAT_H5_APP_SECRET: ${{ secrets.WECHAT_H5_APP_SECRET }}
+      WECHAT_H5_OAUTH_SCOPE: ${{ secrets.WECHAT_H5_OAUTH_SCOPE }}
+      WECHAT_PAY_MODE: ${{ secrets.WECHAT_PAY_MODE }}
+      WECHAT_PAY_MERCHANT_ID: ${{ secrets.WECHAT_PAY_MERCHANT_ID }}
+      WECHAT_PAY_NOTIFY_URL: https://www.zlspace.ai/api/v1/subscription/wechat/notify
+      WECHAT_PAY_SERIAL_NO: ${{ secrets.WECHAT_PAY_SERIAL_NO }}
+      WECHAT_PAY_PRIVATE_KEY: ${{ secrets.WECHAT_PAY_PRIVATE_KEY }}
+      WECHAT_PAY_PUBLIC_KEY: ${{ secrets.WECHAT_PAY_PUBLIC_KEY }}
+      WECHAT_PAY_API_V3_KEY: ${{ secrets.WECHAT_PAY_API_V3_KEY }}
+      WECHAT_PAY_API_BASE: ${{ secrets.WECHAT_PAY_API_BASE }}
+      ALIPAY_MODE: ${{ secrets.ALIPAY_MODE }}
+      ALIPAY_APP_ID: ${{ secrets.ALIPAY_APP_ID }}
+      ALIPAY_PRIVATE_KEY: ${{ secrets.ALIPAY_PRIVATE_KEY }}
+      ALIPAY_PUBLIC_KEY: ${{ secrets.ALIPAY_PUBLIC_KEY }}
+      ALIPAY_NOTIFY_URL: https://www.zlspace.ai/api/v1/subscription/alipay/notify
+      ALIPAY_GATEWAY: ${{ secrets.ALIPAY_GATEWAY }}
+      ALIPAY_SIGN_TYPE: ${{ secrets.ALIPAY_SIGN_TYPE }}
+      ALIPAY_SELLER_ID: ${{ secrets.ALIPAY_SELLER_ID }}
       RELEASE_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
