@@ -33,7 +33,7 @@ def package_index(directory, manifest, env):
 
 def runtime_config(env, backend):
     runtime = {'common': {}, 'services': {}}
-    public = origin(env.get('PUBLIC_ORIGIN') or 'https://zlspace.ai')
+    public = origin(env.get('PUBLIC_ORIGIN') or 'https://www.zlspace.ai')
     content = origin(need(env, 'CONTENT_ORIGIN'))
     if content == public: raise ValueError('CONTENT_ORIGIN must be separate from the application')
     if not backend: return runtime
@@ -41,7 +41,8 @@ def runtime_config(env, backend):
     for key in ('DATABASE_URL', 'REDIS_URL', 'JWT_SECRET', 'JWT_REFRESH_SECRET', 'ADMIN_TOKEN', 'FC_INTERNAL_TOKEN'):
         common[key] = need(env, key)
     common.update(CORS_ORIGIN=public, CORS_ORIGINS=json.dumps([public]), FRONTEND_URL=public,
-                  PUBLIC_API_BASE_URL=public, APP_URL=public, BUNDLE_CDN_ENABLED='false')
+                  PUBLIC_API_BASE_URL=public, PUBLIC_WEB_BASE_URL=public, APP_URL=public,
+                  BUNDLE_CDN_ENABLED='false')
     runtime['services']['ai-engine'] = {k: env[k].strip() for k in ('LLM_API_KEY', 'LLM_BASE_URL', 'LLM_MODEL') if env.get(k, '').strip()}
     runtime['services']['ai-engine']['LLM_MODE'] = 'real'
     game = {k: need(env, k) for k in ('ALIYUN_OSS_ACCESS_KEY_ID', 'ALIYUN_OSS_ACCESS_KEY_SECRET', 'ALIYUN_OSS_BUCKET', 'ALIYUN_OSS_REGION', 'ALIYUN_OSS_ENDPOINT', 'ALIYUN_OSS_PREFIX')}
@@ -56,6 +57,26 @@ def runtime_config(env, backend):
         game.update({k: need(env, k) for k in sms_keys})
         game['ALIYUN_SMS_TPL_RESET_PASSWORD'] = env.get('ALIYUN_SMS_TPL_RESET_PASSWORD', '').strip() or game['ALIYUN_SMS_TPL_LOGIN']
         game['ALIYUN_SMS_REGION_ID'] = env.get('ALIYUN_SMS_REGION_ID', '').strip() or 'cn-hangzhou'
+    # Payment credentials belong only to the consolidated API function. Require a
+    # complete provider configuration whenever that provider is enabled so a
+    # deployment cannot silently fall back to mock or fail only after checkout.
+    wechat_keys = (
+        'WECHAT_MINIAPP_APP_ID', 'WECHAT_MINIAPP_APP_SECRET',
+        'WECHAT_H5_APP_ID', 'WECHAT_H5_APP_SECRET', 'WECHAT_H5_OAUTH_SCOPE',
+        'WECHAT_PAY_MODE', 'WECHAT_PAY_MERCHANT_ID', 'WECHAT_PAY_NOTIFY_URL',
+        'WECHAT_PAY_SERIAL_NO', 'WECHAT_PAY_PRIVATE_KEY', 'WECHAT_PAY_PUBLIC_KEY',
+        'WECHAT_PAY_API_V3_KEY', 'WECHAT_PAY_API_BASE',
+    )
+    if any(env.get(k, '').strip() for k in wechat_keys):
+        game.update({k: need(env, k) for k in wechat_keys})
+    alipay_keys = (
+        'ALIPAY_MODE', 'ALIPAY_APP_ID', 'ALIPAY_PRIVATE_KEY', 'ALIPAY_PUBLIC_KEY',
+        'ALIPAY_NOTIFY_URL', 'ALIPAY_GATEWAY', 'ALIPAY_SIGN_TYPE',
+    )
+    if any(env.get(k, '').strip() for k in alipay_keys):
+        game.update({k: need(env, k) for k in alipay_keys})
+        if env.get('ALIPAY_SELLER_ID', '').strip():
+            game['ALIPAY_SELLER_ID'] = env['ALIPAY_SELLER_ID'].strip()
     runtime['services']['game-service'] = game
     runtime['vpcConfig'] = {'vpcId': need(env, 'FC_VPC_ID'), 'vSwitchIds': [v.strip() for v in need(env, 'FC_VSWITCH_IDS').split(',') if v.strip()], 'securityGroupId': need(env, 'FC_SECURITY_GROUP_ID')}
     if env.get('FC_LOG_PROJECT') or env.get('FC_LOG_STORE'):
