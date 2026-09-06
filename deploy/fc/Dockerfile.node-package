@@ -6,6 +6,8 @@ COPY package.json package-lock.json tsconfig.base.json ./
 COPY packages ./packages
 COPY contracts ./contracts
 COPY prisma ./prisma
+# Generate only the engine matching the Debian 12 FC runtime.
+RUN python3 -c 'from pathlib import Path; import re; p=Path("prisma/schema.prisma"); p.write_text(re.sub(r"binaryTargets\\s*=\\s*\\[[^\\]]*\\]", "binaryTargets = [\\"debian-openssl-3.0.x\\"]", p.read_text()))'
 RUN npm ci --no-audit --no-fund && npx prisma generate && npm run build --workspaces && npm prune --omit=dev --no-audit --no-fund
 RUN mkdir -p /code/bin /code/packages && cp /usr/local/bin/node /code/bin/node && cp -a node_modules contracts prisma /code/ && for service in user-service game-service feed-service; do cp -a packages/$service /code/packages/; done && cp -a packages/platform-config /code/packages/platform-config
 COPY deploy/fc/internal-auth.cjs /code/fc-internal-auth.cjs
