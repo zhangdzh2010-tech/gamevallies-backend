@@ -21,6 +21,7 @@ from src.engine.qa_pipeline import QAPipeline
 
 
 CODEGEN_PROMPTS = {
+    "prompt.generation_tier_standard": "Deliver a complete standard-tier experience.",
     "prompt.game_design_template": (
         "GAME DESIGN DOCUMENT\n"
         "Game Type: {game_type}\n"
