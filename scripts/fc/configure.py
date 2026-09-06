@@ -49,6 +49,13 @@ def runtime_config(env, backend):
     if game['ALIYUN_OSS_REGION'] != env['FC_REGION']: raise ValueError('OSS/FC regions must match')
     if game['ALIYUN_OSS_ENDPOINT'] != f"https://oss-{env['FC_REGION']}.aliyuncs.com": raise ValueError('Expected regional HTTPS OSS endpoint')
     game.update(OBJECT_STORAGE_PROVIDER='aliyun-oss', GENERATION_QUEUE_ENABLED='true', GENERATION_QUEUE_WORKER_CONCURRENCY='2')
+    # SMS credentials belong only to the consolidated API.
+    sms_keys = ('ALIYUN_ACCESS_KEY_ID', 'ALIYUN_ACCESS_KEY_SECRET',
+                'ALIYUN_SMS_SIGN_NAME', 'ALIYUN_SMS_TPL_REGISTER', 'ALIYUN_SMS_TPL_LOGIN')
+    if any(env.get(k, '').strip() for k in sms_keys):
+        game.update({k: need(env, k) for k in sms_keys})
+        game['ALIYUN_SMS_TPL_RESET_PASSWORD'] = env.get('ALIYUN_SMS_TPL_RESET_PASSWORD', '').strip() or game['ALIYUN_SMS_TPL_LOGIN']
+        game['ALIYUN_SMS_REGION_ID'] = env.get('ALIYUN_SMS_REGION_ID', '').strip() or 'cn-hangzhou'
     runtime['services']['game-service'] = game
     runtime['vpcConfig'] = {'vpcId': need(env, 'FC_VPC_ID'), 'vSwitchIds': [v.strip() for v in need(env, 'FC_VSWITCH_IDS').split(',') if v.strip()], 'securityGroupId': need(env, 'FC_SECURITY_GROUP_ID')}
     if env.get('FC_LOG_PROJECT') or env.get('FC_LOG_STORE'):
