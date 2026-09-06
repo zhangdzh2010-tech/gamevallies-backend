@@ -59,7 +59,7 @@ def validate(manifest, runtime, env):
         if not re.fullmatch('[a-f0-9]{64}', common.get('FC_INTERNAL_TOKEN', '')): raise ValueError('Set 64 hex character FC_INTERNAL_TOKEN')
         for key in ('DATABASE_URL', 'REDIS_URL', 'JWT_SECRET', 'JWT_REFRESH_SECRET', 'ADMIN_TOKEN'):
             need(common, key)
-        origin(need(env, 'FC_FRONTEND_URL'))
+        if 'gateway' in names: origin(need(env, 'FC_FRONTEND_URL'))
         game_env = {**common, **runtime.get('services', {}).get('game-service', {})}
         if game_env.get('OBJECT_STORAGE_PROVIDER') != 'aliyun-oss': raise ValueError('FC requires persistent OSS storage')
         for key in ('ALIYUN_OSS_ACCESS_KEY_ID', 'ALIYUN_OSS_ACCESS_KEY_SECRET', 'ALIYUN_OSS_BUCKET', 'ALIYUN_OSS_ENDPOINT', 'ALIYUN_OSS_PREFIX'):
@@ -86,7 +86,7 @@ def function_body(f, runtime, env, endpoints):
                   'GAME_UPSTREAM': endpoints.get('game-service', 'https://unconfigured.invalid'),
                   'USER_UPSTREAM': endpoints.get('user-service', 'https://unconfigured.invalid'),
                   'AI_UPSTREAM': endpoints.get('ai-engine', 'https://unconfigured.invalid'),
-                  'FRONTEND_UPSTREAM': env['FC_FRONTEND_URL']}
+                  'FRONTEND_UPSTREAM': env.get('FC_FRONTEND_URL', 'https://unconfigured.invalid')}
     artifact = runtime['artifacts'][name]
     code = {'ossBucketName': env['ALIYUN_OSS_BUCKET'], 'ossObjectName': artifact['object']}
     custom = {'command': ['/code/bootstrap'], 'port': f['port'],

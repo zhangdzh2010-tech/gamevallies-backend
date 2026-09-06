@@ -1,28 +1,11 @@
+import { verifyAccessPayload } from '../../../user-service/dist/common/verified-jwt';
 import {
-  BadRequestException,
   CanActivate,
   ExecutionContext,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
 
-function decodeJwtPayload(token: string) {
-  const parts = token.split('.');
-  if (parts.length < 2) {
-    throw new BadRequestException('Invalid token');
-  }
-
-  try {
-    const payload = parts[1]
-      .replace(/-/g, '+')
-      .replace(/_/g, '/')
-      .padEnd(Math.ceil(parts[1].length / 4) * 4, '=');
-
-    return JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
-  } catch {
-    throw new BadRequestException('Invalid token');
-  }
-}
 
 function extractBearerToken(authHeader: unknown): string | null {
   if (typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) {
@@ -60,7 +43,7 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('Authentication required');
     }
 
-    const decoded = decodeJwtPayload(token);
+    const decoded = verifyAccessPayload(token);
     if (!decoded?.sub && !decoded?.id) {
       throw new UnauthorizedException('Invalid token');
     }
@@ -73,3 +56,4 @@ export class JwtAuthGuard implements CanActivate {
     return true;
   }
 }
+

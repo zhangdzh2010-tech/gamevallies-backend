@@ -44,7 +44,6 @@ jobs:
       FC_ACCOUNT_ID: ${{ vars.FC_ACCOUNT_ID }}
       FC_EXECUTION_ROLE: ${{ vars.FC_EXECUTION_ROLE }}
       ALIYUN_OSS_BUCKET: ${{ vars.ALIYUN_OSS_BUCKET }}
-      FC_FRONTEND_URL: ${{ vars.FC_FRONTEND_URL }}
       FC_VPC_ID: ${{ vars.FC_VPC_ID }}
       FC_VSWITCH_IDS: ${{ vars.FC_VSWITCH_IDS }}
       FC_SECURITY_GROUP_ID: ${{ vars.FC_SECURITY_GROUP_ID }}

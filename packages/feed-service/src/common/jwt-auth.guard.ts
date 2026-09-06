@@ -1,24 +1,11 @@
+import { verifyAccessPayload } from '../../../user-service/dist/common/verified-jwt';
 import {
-  BadRequestException,
   CanActivate,
   ExecutionContext,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
 
-function decodeJwtPayload(token: string) {
-  const parts = token.split('.');
-  if (parts.length < 2) {
-    throw new BadRequestException('Invalid token');
-  }
-
-  const payload = parts[1]
-    .replace(/-/g, '+')
-    .replace(/_/g, '/')
-    .padEnd(Math.ceil(parts[1].length / 4) * 4, '=');
-
-  return JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
-}
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
@@ -26,11 +13,11 @@ export class JwtAuthGuard implements CanActivate {
     const request = context.switchToHttp().getRequest();
     const authHeader = request.headers.authorization;
 
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    if (typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) {
       throw new UnauthorizedException('Authentication required');
     }
 
-    const decoded = decodeJwtPayload(authHeader.substring(7));
+    const decoded = verifyAccessPayload(authHeader.substring(7));
     if (!decoded?.sub && !decoded?.id) {
       throw new UnauthorizedException('Invalid token');
     }
@@ -43,3 +30,4 @@ export class JwtAuthGuard implements CanActivate {
     return true;
   }
 }
+

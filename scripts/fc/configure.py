@@ -42,7 +42,7 @@ def runtime_config(env, backend):
         common[key] = need(env, key)
     common.update(CORS_ORIGIN=public, CORS_ORIGINS=json.dumps([public]), FRONTEND_URL=public,
                   PUBLIC_API_BASE_URL=public, APP_URL=public, BUNDLE_CDN_ENABLED='false')
-    runtime['services']['ai-engine'] = {k: need(env, k) for k in ('LLM_API_KEY', 'LLM_BASE_URL', 'LLM_MODEL')}
+    runtime['services']['ai-engine'] = {k: env[k].strip() for k in ('LLM_API_KEY', 'LLM_BASE_URL', 'LLM_MODEL') if env.get(k, '').strip()}
     runtime['services']['ai-engine']['LLM_MODE'] = 'real'
     game = {k: need(env, k) for k in ('ALIYUN_OSS_ACCESS_KEY_ID', 'ALIYUN_OSS_ACCESS_KEY_SECRET', 'ALIYUN_OSS_BUCKET', 'ALIYUN_OSS_REGION', 'ALIYUN_OSS_ENDPOINT', 'ALIYUN_OSS_PREFIX')}
     if env.get('OBJECT_STORAGE_PROVIDER', 'aliyun-oss') != 'aliyun-oss': raise ValueError('Expected aliyun-oss')
@@ -82,7 +82,7 @@ def check_settings(env, manifest):
     backend = any(f['name'] == 'game-service' for f in manifest['functions'])
     required = ['FC_ACCOUNT_ID', 'FC_REGION', 'FC_PREFIX', 'FC_EXECUTION_ROLE', 'ALIYUN_OSS_BUCKET', 'CONTENT_ORIGIN', 'RELEASE_SHA']
     if backend:
-        required += ['FC_FRONTEND_URL', 'DATABASE_URL', 'REDIS_URL', 'JWT_SECRET', 'JWT_REFRESH_SECRET', 'ADMIN_TOKEN', 'FC_INTERNAL_TOKEN', 'FC_VPC_ID', 'FC_VSWITCH_IDS', 'FC_SECURITY_GROUP_ID', 'LLM_API_KEY', 'LLM_BASE_URL', 'LLM_MODEL', 'ALIYUN_OSS_ACCESS_KEY_ID', 'ALIYUN_OSS_ACCESS_KEY_SECRET', 'ALIYUN_OSS_REGION', 'ALIYUN_OSS_ENDPOINT', 'ALIYUN_OSS_PREFIX']
+        required += ['DATABASE_URL', 'REDIS_URL', 'JWT_SECRET', 'JWT_REFRESH_SECRET', 'ADMIN_TOKEN', 'FC_INTERNAL_TOKEN', 'FC_VPC_ID', 'FC_VSWITCH_IDS', 'FC_SECURITY_GROUP_ID', 'ALIYUN_OSS_ACCESS_KEY_ID', 'ALIYUN_OSS_ACCESS_KEY_SECRET', 'ALIYUN_OSS_REGION', 'ALIYUN_OSS_ENDPOINT', 'ALIYUN_OSS_PREFIX']
     missing = [key for key in required if not env.get(key, '').strip()]
     if missing: raise ValueError('Missing configuration: ' + ', '.join(missing))
     runtime = runtime_config(env, backend)
@@ -90,8 +90,6 @@ def check_settings(env, manifest):
     runtime['artifacts'] = {f['name']: {'sha256': '0'*64, 'object': f"{prefix}/releases/{env['RELEASE_SHA']}/{'0'*64}/{f['name']}.zip"} for f in manifest['functions']}
     from deploy import validate
     validate(manifest, runtime, env)
-    if backend and origin(env['FC_FRONTEND_URL']) in (origin(env.get('PUBLIC_ORIGIN') or 'https://zlspace.clawworks.cn'), origin(env['CONTENT_ORIGIN'])):
-        raise ValueError('FC_FRONTEND_URL must be the frontend function URL, not a gateway/content origin')
     return runtime
 
 
