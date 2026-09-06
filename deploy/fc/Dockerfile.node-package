@@ -1,0 +1,16 @@
+FROM node:20-bookworm-slim AS package
+ARG SERVICE
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY package.json package-lock.json tsconfig.base.json ./
+COPY packages ./packages
+COPY contracts ./contracts
+COPY prisma ./prisma
+RUN npm ci --no-audit --no-fund && npx prisma generate && npm run build --workspaces && npm prune --omit=dev --no-audit --no-fund
+RUN mkdir -p /code/bin /code/packages && cp /usr/local/bin/node /code/bin/node && cp -a node_modules contracts prisma /code/ && for service in user-service game-service social-service feed-service; do cp -a packages/$service /code/packages/; done && cp -a packages/platform-config /code/packages/platform-config
+COPY deploy/fc/internal-auth.cjs /code/fc-internal-auth.cjs
+RUN printf '#!/bin/sh\nset -eu\nexport LD_LIBRARY_PATH=/code/lib\nexport PATH=/code/bin:$PATH\ncd /code/packages/%s\nexec node dist/main.js\n' "$SERVICE" > /code/bootstrap && chmod 755 /code/bootstrap
+COPY scripts/fc/pack.py /pack.py
+RUN python3 /pack.py "$SERVICE"
+FROM scratch
+COPY --from=package /out/ /

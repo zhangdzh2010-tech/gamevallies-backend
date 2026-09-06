@@ -1,7 +1,0 @@
-FROM nginx:1.28-alpine
-RUN apk add --no-cache ca-certificates
-COPY deploy/fc/nginx-app.conf.template /opt/fc/app.template
-COPY deploy/fc/nginx-content.conf.template /opt/fc/content.template
-COPY deploy/fc/gateway-entrypoint.sh /docker-entrypoint.d/19-fc-config.sh
-RUN chmod +x /docker-entrypoint.d/19-fc-config.sh
-EXPOSE 8080

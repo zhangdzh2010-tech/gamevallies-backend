@@ -1,86 +1,98 @@
-# 阿里云函数计算 FC 部署与维护
+# GameVallies：阿里云 FC + OSS 代码包发布
 
-## 运行方案
+## 发布方式
 
-使用 FC 3.0 自定义容器与 ACR，不使用 ECS、服务器 Runner、Docker Compose 或 ALB。GitHub 托管 Runner 构建镜像并使用官方 Python SDK 4.8.2 发布。地域、函数前缀与资源参数在部署前明确配置。
+GitHub Actions 在 Debian 12 / linux/amd64 构建 ZIP，上传现有私有 OSS Bucket，再用 FC 3.0 官方 SDK 4.8.2 更新 `custom.debian12` 函数。Docker 仅作为构建与隔离测试工具，不登录、不推送、不部署 ACR 镜像。无需 ECS、ACR，也不需要手工维护 `FC_RUNTIME_JSON`。
 
-| 函数 | 运行方式 | 入口 |
-| --- | --- | --- |
-| frontend（前端仓库） | 按需实例 | 静态 Web 页面 |
-| user-service / social-service / feed-service | 按需实例 | 内部服务调用 |
-| game-service | 1 个预留实例，持续 CPU，禁止按需实例 | 业务 API、BullMQ 消费者、进度 |
-| ai-engine | 1 个预留实例，持续 CPU，禁止按需实例 | 内部 AI 请求和后台生成 |
-| gateway | 按需实例 | 应用域名，Web + API + Socket.IO |
-| content | 按需实例 | 独立作品内容域名，仅 /games/ |
+前端为桌面 Web 创意平台。内部 `build:h5` 是现有 Taro Web 构建命令，不代表新增移动 H5 产品。
 
-后台执行仍使用现有 BullMQ 和 AI 异步任务管理器，本轮没有改写为 FC 原生异步任务。持续 CPU 预留模式用于避免闲置冻结，两个服务有持续资源成本。`functions.json` 是初始资源配置，不代表已完成并发压测。禁止在未改造后台任务和跨实例取消前将这两个服务缩到零或增加按需副本。FC 平台重启仍可能中断在途计算；Redis 快照/数据库任务记录、现有超时对账与重试负责暴露和处理失败，不承诺计算无损续跑。
+代码目录：`deploy/fc/`、`scripts/fc/`。ZIP 根目录含可执行 `bootstrap`；Node/Python/Nginx 与所需本地库随包分发。AI 包含 Chromium；CI 在干净 Debian 12 中解压并真实启动浏览器，以发现构建镜像掩盖的依赖缺失。深圳包体限制 500 MB，超限停止发布，不自动切换 ACR。若后续增大，应将依赖拆为 FC 层。
 
-逻辑执行区域目前沿用业务代码的 `cn_shanghai`；真实 FC 地域由 `FC_REGION` 决定，二者不要混淆。部署前检查后台 Provider 的 AI 地址和区域记录是否指向新 FC AI 引擎，数据库中已保存的旧目标不会被部署器自动批量改写。
+OSS 对象路径：`gamevallies/prod/releases/<commit SHA>/<SHA256>/<function>.zip`。禁止覆盖已有对象；重试核对元数据摘要与大小。不要让生命周期规则清理仍用于回滚的发布包。业务上传路径：`gamevallies/prod/app-releases/...`。Bucket 保持私有，下载使用短期签名 URL。
 
-## 配置清单
+## GitHub 配置位置
 
-两个仓库的 Repository Variables：
+两个仓库分别打开 Settings → Environments → **Aliyun** → Environment secrets / variables。大小写和工作流一致。不需要 `services → game-service` 页面，那是旧 JSON 配置层级。Secrets 的值无法从 GitHub API 回读；截图只能核验名称，实际有效性需工作流和部署验证。
 
-| 名称 | 值 |
+### 两库共用的 Variables
+
+| 名称 | 值或用途 |
 | --- | --- |
-| ALIYUN_FC_DEPLOY_ENABLED | 准备完成后设 true，旧 ALIYUN_DEPLOY_ENABLED 无效 |
-| FC_ACCOUNT_ID / FC_REGION | 阿里云主账号 ID / FC 地域 |
-| FC_PREFIX | 专用于本项目环境的函数前缀，例如 gamevallies-prod |
-| FC_EXECUTION_ROLE | 函数执行 RAM 角色 ARN，允许必要的 ACR 拉取、VPC、NAS、SLS 操作 |
-| ACR_REGISTRY / ACR_NAMESPACE | 同账号同地域 ACR 地址与命名空间 |
-| ACR_INSTANCE_ID | 企业版 ACR 按实际情况填写 |
-| FC_FRONTEND_URL | 后端仓库必填，前端发布输出的 HTTPS 函数 origin |
+| `FC_ACCOUNT_ID` | `1318350152273303` |
+| `FC_REGION` | `cn-shenzhen`（默认） |
+| `FC_PREFIX` | `gamevallies-prod`（默认） |
+| `FC_EXECUTION_ROLE` | 已授权的 FC 执行角色完整 ARN，必填 |
+| `ALIYUN_OSS_BUCKET` | `clawworks-server-staging-1318350152273303`；注意末尾是 `BUCKET`，不是 `BUCKE` |
+| `ALIYUN_OSS_REGION` | `cn-shenzhen`（默认） |
+| `ALIYUN_OSS_ENDPOINT` | `https://oss-cn-shenzhen.aliyuncs.com`（默认） |
+| `ALIYUN_OSS_PREFIX` | `gamevallies/prod/`（默认） |
+| `OBJECT_STORAGE_PROVIDER` | `aliyun-oss`（默认） |
+| `PUBLIC_ORIGIN` | `https://zlspace.clawworks.cn`（默认） |
+| `CONTENT_ORIGIN` | 独立作品 HTTPS origin，必填；例如确认 DNS/证书后使用 `https://zlspace-content.clawworks.cn` |
+| `ALIYUN_FC_DEPLOY_ENABLED` | 首次验收前保持 `false` 或不设置；`true` 允许 main push 自动发布 |
 
-Repository Secrets：`ACR_USERNAME`、`ACR_PASSWORD`（镜像推送）；`ALIBABA_CLOUD_ACCESS_KEY_ID`、`ALIBABA_CLOUD_ACCESS_KEY_SECRET`（最小权限部署身份）；使用临时凭据时增加 `ALIBABA_CLOUD_SECURITY_TOKEN`。本实现直接支持 AK/STS 环境变量，不宣称已经接入 GitHub OIDC 信任交换。禁止配置阿里云主账号密钥。
+### 两库共用的 Secrets
 
-`FC_RUNTIME_JSON` 保存按 `deploy/fc/runtime.example.json` 填写的完整运行 JSON，不能只复制示例占位值。`common` 是服务共享环境变量，`services` 按服务覆盖；模型密钥仅放在 `services.ai-engine`。配置文件不得提交到 Git，也不写入前端构建变量。域名、支付/短信/登录密钥按实际启用功能补齐。创建 GitHub `production` Environment，部署分支限制为 main。
+| 名称 | 用途 |
+| --- | --- |
+| `ALIBABA_CLOUD_ACCESS_KEY_ID` | 部署身份 AK |
+| `ALIBABA_CLOUD_ACCESS_KEY_SECRET` | 部署身份 SK |
+| `ALIBABA_CLOUD_SECURITY_TOKEN` | 可选；临时凭据时必填 |
 
-后台需要已有 MySQL/RDS、Redis、VPC/vSwitch/安全组以及 NAS。当前 APK 上传功能仍使用本地路径，为保持既有功能，必须将 `APP_RELEASE_UPLOAD_DIR` 放在配置的 NAS 挂载目录下；旧文件单独复制并校验。Web 产品暂不运营移动服务不等于可以丢弃已有文件。作品主体与生成产物沿用数据库/现有对象存储策略，临时浏览器工作目录不作为持久存储。OSS/CDN 可后续迁移，不能直接删除历史对象或凭据。
+### 仅后端的 Variables
 
-部署身份需要对本项目前缀函数执行 Get/Create/UpdateFunction、Get/CreateTrigger、PublishFunctionVersion、Put/GetProvisionConfig、PutConcurrencyConfig，以及传递执行角色所需权限。按官方 RAM 文档限定资源与 PassRole；函数角色不授予发布权限。SDK 发布过程不回显完整请求/环境变量。运行凭据存储在受权限控制的函数配置中，本次不自动创建 KMS、RDS、NAS 或付费资源。
+| 名称 | 用途 |
+| --- | --- |
+| `FC_FRONTEND_URL` | 前端 FC 发布后输出的真实 HTTPS 触发器 origin；不能填应用域名，否则网关可能循环代理 |
+| `FC_VPC_ID` | 已有 VPC ID |
+| `FC_VSWITCH_IDS` | 同 VPC 的交换机 ID，多个用逗号分隔 |
+| `FC_SECURITY_GROUP_ID` | 允许连接共享 MySQL/Redis 的安全组 ID |
+| `FC_LOG_PROJECT` / `FC_LOG_STORE` | 可选；已有 SLS 项目和 Logstore，成对填写 |
+| `LLM_BASE_URL` / `LLM_MODEL` | 实际模型 API 地址及模型名 |
 
-## 内部调用与域名
+### 仅后端的 Secrets
 
-函数 HTTP 触发器提供真实 HTTPS URL；内部 API 使用 `FC_INTERNAL_TOKEN` 校验传输层共享凭据，业务 JWT/管理员鉴权仍保留。令牌为 32 随机字节的 64 位十六进制字符串。Node 服务通过 FC 专用 preload、AI 通过 ASGI 边界验证请求；不携带凭据的直连请求返回 403。公开健康路径不含敏感配置。服务间发送凭据只允许部署器注入的精确 origin，并禁止内部凭据随重定向流出。FC 运行凭据禁止通过请求头注入。
+| 名称 | 用途 |
+| --- | --- |
+| `DATABASE_URL` | GameVallies 独立数据库/账号连接串，密码中的特殊字符需 URL 编码 |
+| `REDIS_URL` | 专用逻辑库连接串，避免与 ClawWorks 队列键冲突；核验现有 Redis 版本与 BullMQ 兼容性 |
+| `JWT_SECRET` / `JWT_REFRESH_SECRET` | 独立高强度随机签名密钥 |
+| `ADMIN_TOKEN` | 后台访问令牌 |
+| `FC_INTERNAL_TOKEN` | 64 位十六进制随机内部通信密钥 |
+| `LLM_API_KEY` | 模型密钥，只注入 AI 引擎 |
+| `ALIYUN_OSS_ACCESS_KEY_ID` / `ALIYUN_OSS_ACCESS_KEY_SECRET` | 业务 OSS 最小权限身份，只注入 game-service |
 
-公共 gateway 不开放 /__fc/、/api/v1/internal/、/api/v1/ai/；用户创作走现有创建会话 API。内部 AI WebSocket 不对公网开放。进度使用现有会话 SSE / 游戏 Socket.IO 与持久化轮询。FC、域名入口的流式响应、连接时长和断线恢复必须在目标地域验收；构建/健康检查通过不证明这些功能全部通过。
+启用短信、微信/支付宝等功能前，需要另外按业务配置适配其独立字段；本发布配置没有默认启用这些集成。不要把所有 GitHub Secrets 整体转发给函数或前端。
 
-在 FC 自定义域名控制台绑定：应用域名所有路径 → gateway 的 LATEST；独立作品内容域名所有路径 → content 的 LATEST。配置 HTTPS 证书和 DNS。发布器不擅自修改生产域名、证书或 DNS。保持不可信作品 origin 与账户 origin 分离。
+## 权限与复用边界
 
-## 首次发布
+部署身份需要对目标前缀函数的读取、创建、更新、发布版本、HTTP 触发器、并发和预留实例管理权限，以及对上述 OSS releases 前缀的 PutObject/GetObject 权限；重复发布校验使用 HeadObject（对应 GetObject）。配置角色需要相应 PassRole 权限。执行角色的信任主体为 FC，按已配置 VPC/日志和代码读取需求授权。应用 OSS 身份仅能读写业务前缀，不能访问 ClawWorks 私有对象或删除发布包。
 
-1. 每个环境使用独立数据库/Redis 库；切换前停止旧环境针对同一队列的消费者并排空在途任务，避免旧实例与 FC 同时处理。准备数据库并单独验证 Prisma 初始化/迁移；已有数据库禁止当空库执行 db push。配置 ACR 的 frontend、user-service、game-service、social-service、feed-service、ai-engine、gateway 镜像仓库。
-2. 先部署前端函数（其 API 构建变量使用最终应用域名），从 `fc-release-<SHA>` 工件获取 frontend URL，填入后端 `FC_FRONTEND_URL`。
-3. 启用新开关并手动运行后端发布工作流。发布器先创建禁止按需实例的函数、获取触发器地址，再注入真实依赖地址并启动资源。已有函数的运行配置不会在地址发现阶段被临时占位覆盖。
-4. 发布器等待 FC 的 Active / Successful 状态，校验后台预留资源与 HTTP 健康，再记录版本和 URL。任务管理器启用 FC 时要求 Redis 配置且启动 ping 成功。
-5. 检查并切换后台 Provider 的实际执行目标，验证登录、创作、暂停/恢复、预览、发布、流式连接与已启用支付/短信功能，然后绑定/切换正式域名。首次云端业务验证尚需用户账号与真实资源。
+不创建或改动共享 MySQL/Redis 资源。部署脚本不执行数据库迁移：首次建表、已有数据迁移及 Redis 兼容性需在独立 GameVallies 库上单独验证，不能对 ClawWorks 执行 schema push。
 
-本地只验证配置（无云端变更）：
+首次部署无需 NAS；已有挂载不会被自动移除。历史 local/TOS 下载记录仍兼容，历史文件必须迁移并核验后再停用旧存储。新 OSS 配置不完整或写入失败直接报错，不回退 FC 临时磁盘。作品 HTML 的现有数据库持久化和独立内容函数继续使用，未将私有 OSS URL 误当公共作品 URL。
 
-```bash
-python -m pip install -r scripts/fc/requirements.txt
-python scripts/fc/deploy.py validate --runtime .fc-runtime.json
-```
+## 发布顺序
 
-执行时需要上表的环境变量，包括完整 40 位 `IMAGE_TAG`。`validate` 使用 SDK 模型校验但不能代替 FC 侧地域/配额/权限与网络检查。
+1. 配齐 Aliyun 环境。先运行 Actions → Deploy OSS packages to Alibaba FC，保留 `apply=false`：检查参数、构建和校验，不写云资源。
+2. 前端主干运行 `apply=true`，记录 `fc-release.json` 中 frontend 的实际 HTTPS URL，并填入后端 `FC_FRONTEND_URL`。
+3. 后端同样先校验，再以 `apply=true` 发布。脚本发现真实内部函数 URL，注入内部鉴权，检查 HTTP 健康并记录版本。
+4. game-service 与 ai-engine 各保留 1 个始终分配 CPU 的预留实例，禁止按需副本；这两项有持续费用，当前 BullMQ/后台 AI 架构不能直接缩到零。
+5. 以真实流程验收登录、一次创作、进度、取消/恢复、预览、发布、下载和实例重启后数据。独立内容 origin、SSE/WebSocket 和业务回调需实际验证；健康检查通过不等于业务验收通过。
+6. 将应用域名绑定 gateway、作品域名绑定 content，完成 HTTPS 与 DNS；此代码改造不会自动修改域名或切流。验收后再选择开启自动发布开关。
 
-## 更新与回滚
+当前 FC HTTP 路由中内部管理/AI RPC 均经过令牌或网关拒绝规则。作品与登录页面必须保持独立 origin。
 
-后端发布先通过受内部凭据保护的 /__fc/drain 设置 Redis 维护标记，阻止新任务入队，等待队列中的生成/迭代任务完成（最多约 40 分钟，连续三次空队列）。等待失败不更新函数；完成或失败后尝试解除维护。维护标记 TTL 为两小时，工作流被强制终止时需核验任务和发布状态再主动恢复，不立即再次部署。
+## 回滚
 
-每个已有函数更新前发布检查点版本，记录在无密钥的 `fc-release.json`。更新是 LATEST 原地更新，可能短暂中断连接，并非零停机蓝绿部署。失败时尝试恢复已更新函数的原版本配置。新建函数没有旧版本：停止预留容量、禁止按需实例，保留资源诊断，不自动删除。自动恢复失败会明确报错。
+发布前记录函数版本，先阻止新任务并等待已提交任务排空，再更新函数。失败自动恢复已修改函数的前一版；已有代码包函数通过版本描述中的 OSS Bucket/Object 恢复代码，不能只恢复 GetFunction 返回的配置。首次从自定义容器迁移仍支持恢复原镜像；不要提前删除旧镜像。
 
-下载对应发布工件后手动回滚：
+手动回滚：使用失败发布对应的 `fc-release.json`、同账号/地域/前缀及独立参数重新生成私有配置，再执行 `python scripts/fc/deploy.py rollback --runtime "$config" --release fc-release.json`。保留原提交及 ZIP；无上一版本的首次安装不能回滚成不存在的函数。未知来源、未记录 OSS 引用的现有代码函数会在修改前停止，需先导出并保留其代码。
 
-```bash
-python scripts/fc/deploy.py rollback --runtime .fc-runtime.json --release fc-release.json
-```
+临时运行配置权限 0600，退出时清除，不上传 Actions Artifact。发布记录只含版本、函数名与 URL；不要将函数环境变量导出到公开日志。
 
-回滚会检查账号、地域、前缀与在途任务，恢复记录中的上一函数版本。函数版本包含当时环境变量，因此密钥轮换后必须先审查回滚目标；回滚不回退数据库、NAS 文件或外部 Provider 配置。不自动清理旧版本、镜像或持久数据。
+## 官方参考
 
-## 验证依据
-
-- [FC 自定义容器](https://www.alibabacloud.com/help/en/functioncompute/create-a-custom-container-function-in-a-container-runtime)
-- [FC 预留实例 API](https://help.aliyun.com/en/functioncompute/fc/developer-reference/api-fc-2023-03-30-putprovisionconfig)
-- [函数状态与更新完成条件](https://help.aliyun.com/zh/functioncompute/states-of-custom-container-functions)
-- [FC 3.0 函数字段](https://help.aliyun.com/zh/functioncompute/api-fc-2023-03-30-struct-function)
+- [创建 Web 函数与 OSS 代码上传](https://www.alibabacloud.com/help/en/functioncompute/creating-a-web-function)
+- [FC 配额与代码包限制](https://www.alibabacloud.com/help/en/functioncompute/fc/product-overview/limits-of-usage)
+- [自定义运行时](https://www.alibabacloud.com/help/en/functioncompute/custom-runtime/)

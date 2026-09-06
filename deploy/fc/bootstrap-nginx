@@ -1,0 +1,26 @@
+#!/bin/sh
+set -eu
+export LD_LIBRARY_PATH=/code/lib
+mkdir -p /tmp/nginx/client /tmp/nginx/proxy
+if [ -f /code/gateway-entrypoint.sh ]; then
+  . /code/gateway-entrypoint.sh
+else
+  cp /code/frontend.conf /tmp/nginx/server.conf
+fi
+cat > /tmp/nginx/nginx.conf <<'EOF'
+worker_processes auto;
+pid /tmp/nginx/nginx.pid;
+error_log /dev/stderr warn;
+events { worker_connections 1024; }
+http {
+  include /code/mime.types;
+  access_log /dev/stdout;
+  client_body_temp_path /tmp/nginx/client;
+  proxy_temp_path /tmp/nginx/proxy;
+  fastcgi_temp_path /tmp/nginx/fastcgi;
+  uwsgi_temp_path /tmp/nginx/uwsgi;
+  scgi_temp_path /tmp/nginx/scgi;
+  include /tmp/nginx/server.conf;
+}
+EOF
+exec /code/nginx -p /tmp/nginx/ -c /tmp/nginx/nginx.conf -g 'daemon off;' "$@"

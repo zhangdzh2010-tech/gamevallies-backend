@@ -1,0 +1,14 @@
+FROM debian:bookworm-slim AS package
+RUN apt-get update && apt-get install -y --no-install-recommends nginx gettext-base python3 ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /code && cp /usr/sbin/nginx /usr/bin/envsubst /etc/nginx/mime.types /code/
+COPY deploy/fc/nginx-app.conf.template /code/app.template
+COPY deploy/fc/nginx-content.conf.template /code/content.template
+COPY deploy/fc/gateway-entrypoint.sh /code/gateway-entrypoint.sh
+COPY deploy/fc/bootstrap-nginx /code/bootstrap
+# Reuse gateway security/routing validation, writing runtime config only to /tmp.
+RUN sed -i 's|/opt/fc/|/code/|g; s|/etc/nginx/conf.d/default.conf|/tmp/nginx/server.conf|g; s|^envsubst |/code/envsubst |; /^nginx -t$/d' /code/gateway-entrypoint.sh && chmod 755 /code/bootstrap
+RUN sed -i 's|/etc/ssl/certs/ca-certificates.crt|/code/ca-certificates.crt|g' /code/*.template
+COPY scripts/fc/pack.py /pack.py
+RUN python3 /pack.py gateway
+FROM scratch
+COPY --from=package /out/ /
