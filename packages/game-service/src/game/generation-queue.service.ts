@@ -83,6 +83,9 @@ export class GenerationQueueService implements OnModuleDestroy {
     }
 
     try {
+      if (process.env.FC_DEPLOYMENT === 'true' && await this.queueConnection?.get('gamevallies:fc:maintenance')) {
+        return false;
+      }
       await this.queue.add(
         name,
         { taskId },

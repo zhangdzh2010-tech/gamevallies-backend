@@ -15,9 +15,7 @@
 
 ### `deployment/`
 
-- [`deployment/DEPLOY_RUNBOOK.md`](./deployment/DEPLOY_RUNBOOK.md)
   Production deployment runbook.
-- [`deployment/ENV_SYNC_GUIDE.md`](./deployment/ENV_SYNC_GUIDE.md)
   Environment variable sync and maintenance guide.
 
 ### `integration/`
@@ -32,7 +30,6 @@
   Audit of large-file and mixed-responsibility hotspots, plus the staged refactor plan.
 - [`integration/GENERATION_PIPELINE_IMPROVEMENT_PLAN.md`](./integration/GENERATION_PIPELINE_IMPROVEMENT_PLAN.md)
   Generation pipeline improvement plan.
-- [`integration/LLM_GATEWAY_ASYNC_TASK_DESIGN.md`](./integration/LLM_GATEWAY_ASYNC_TASK_DESIGN.md)
   Async task and LLM gateway design.
 - [`integration/DYNAMIC_CREATION_DIALOGUE_DESIGN.md`](./integration/DYNAMIC_CREATION_DIALOGUE_DESIGN.md)
   Dynamic creation dialogue design.
@@ -48,7 +45,6 @@
 
 ### `reference/`
 
-- [`reference/config-file.json`](./reference/config-file.json)
   Historical reference configuration sample.
 
 ## Maintenance Notes
@@ -56,3 +52,6 @@
 - Prefer updating an existing document over creating near-duplicate plans.
 - When a newer plan supersedes an older draft, mark that clearly in the new document.
 - Keep deployment and integration docs current with the real running system rather than aspirational architecture.
+
+
+- [阿里云部署与维护](deployment/ALIYUN_DEPLOYMENT.md)

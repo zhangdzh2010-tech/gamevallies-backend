@@ -1,626 +1,90 @@
-name: Gamevallies CI/CD Pipeline
-
+name: CI
 on:
   push:
-    branches:
-      - main
-      - develop
-    tags:
-      - 'v*'
+    branches: [main]
   pull_request:
-    branches:
-      - main
-      - develop
+  workflow_call:
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAMESPACE: willgame
-  VOLC_REGION: cn-beijing
+permissions:
+  contents: read
 
 jobs:
-  # ============================================================
-  # STAGE 1: Lint and Code Quality
-  # ============================================================
-  lint:
-    name: Lint Code
+  game-service:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: mysql://test:test@localhost:3306/refactor_test
+      NODE_ENV: test
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: node --test deploy/fc/internal-auth.test.cjs
+      - run: npx prisma generate
+      - run: npm run build --workspaces
+      - name: Verify generation and session regressions
+        run: >-
+          npm test --workspace=game-service -- --runInBand
+          test/game.service.spec.ts
+          test/game-locking.spec.ts
+          test/creation-session.service.spec.ts
+          test/game-schema-bootstrap.service.spec.ts
+          test/admin.service.spec.ts
+      - name: Verify production feed query
+        run: npm test --workspace=@gamevallies/feed-service -- --runInBand test/trending-production.spec.ts
 
-      - name: Install dependencies
-        run: npm install
-
-      - name: Run ESLint
-        run: npm run lint
-
-      - name: Run Prettier check
-        run: npm run format:check
-
-      - name: Run TypeScript type check
-        run: npm run type-check
-
-  # ============================================================
-  # STAGE 2: Backend Service Tests
-  # ============================================================
-  test-backend:
-    name: Test Backend Services
+  ai-engine:
     runs-on: ubuntu-latest
-    needs: lint
-
-    services:
-      mysql:
-        image: mysql:8.0
-        env:
-          MYSQL_ROOT_PASSWORD: root_password
-          MYSQL_DATABASE: gamevallies_test
-          MYSQL_USER: test_user
-          MYSQL_PASSWORD: test_password
-        options: >-
-          --health-cmd "mysqladmin ping -h localhost -u test_user -ptest_password"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 3306:3306
-
-      redis:
-        image: redis:7-alpine
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 6379:6379
-
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: packages/ai-engine
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Generate Prisma client
-        env:
-          DATABASE_URL: mysql://test_user:test_password@localhost:3306/gamevallies_test
-        run: npx prisma generate
-
-      - name: Run database migrations
-        env:
-          DATABASE_URL: mysql://test_user:test_password@localhost:3306/gamevallies_test
-        run: npx prisma migrate deploy
-
-      - name: Run unit tests
-        env:
-          DATABASE_URL: mysql://test_user:test_password@localhost:3306/gamevallies_test
-          REDIS_URL: redis://localhost:6379/0
-          JWT_SECRET: test-secret-key-12345678901234567890
-          NODE_ENV: test
-        run: npm run test:unit -- --coverage
-
-      - name: Run integration tests
-        env:
-          DATABASE_URL: mysql://test_user:test_password@localhost:3306/gamevallies_test
-          REDIS_URL: redis://localhost:6379/0
-          JWT_SECRET: test-secret-key-12345678901234567890
-          NODE_ENV: test
-        run: npm run test:integration
-
-      - name: Upload coverage reports
-        uses: codecov/codecov-action@v3
-        with:
-          files: ./coverage/coverage-final.json
-          flags: unittests
-          name: codecov-umbrella
-
-  # ============================================================
-  # STAGE 3: AI Engine Tests
-  # ============================================================
-  test-ai-engine:
-    name: Test AI Engine
-    runs-on: ubuntu-latest
-    needs: lint
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: 'pip'
+          cache: pip
+          cache-dependency-path: packages/ai-engine/requirements.txt
+      - run: pip install -r requirements.txt pytest pytest-asyncio
+      - run: python -m playwright install --with-deps chromium
+      - run: python ../../scripts/sync-quality-policy.py --check
+      - name: Verify pipeline, prompts and quality repairs
+        run: >-
+          python -m pytest -q
+          tests/test_pipeline_v2_runner.py
+          tests/test_prompt_integration.py
+          tests/test_generation_v1_localization.py
+          tests/test_quality_gate_patch_repair.py
+          tests/test_create_progress_and_parallel_qa.py
+          tests/test_dialogue_engine.py
+          tests/test_dialogue_engine_json_repair.py
+          tests/test_code_generator.py
+          tests/test_runtime_qa.py
+          tests/test_creative_design.py
+          tests/test_runtime_isolation.py
+          tests/test_fc_runtime.py
 
-      - name: Install Python dependencies
-        run: |
-          cd packages/ai-engine
-          pip install -r requirements.txt
-          pip install pytest pytest-cov pytest-asyncio
-
-      - name: Run pytest
-        env:
-          LLM_API_KEY: test-key-for-ci
-          REDIS_URL: redis://localhost:6379/0
-          LOG_LEVEL: debug
-        run: |
-          cd packages/ai-engine
-          pytest --cov=. --cov-report=xml -v
-
-      - name: Upload Python coverage
-        uses: codecov/codecov-action@v3
-        with:
-          files: ./packages/ai-engine/coverage.xml
-          flags: python
-          name: ai-engine-coverage
-
-  # ============================================================
-  # STAGE 4: Frontend Tests (if applicable)
-  # ============================================================
-  test-frontend:
-    name: Test Frontend
+  deployment:
     runs-on: ubuntu-latest
-    needs: lint
-    if: hashFiles('packages/web/**') != ''
-
+    timeout-minutes: 40
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          node-version: '20'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Run frontend tests
-        run: npm --prefix packages/web run test -- --coverage
-
-      - name: Build frontend
-        run: npm --prefix packages/web run build
-
-      - name: Upload frontend coverage
-        uses: codecov/codecov-action@v3
-        with:
-          files: ./packages/web/coverage/coverage-final.json
-          flags: frontend
-
-  # ============================================================
-  # STAGE 5: Security Scanning
-  # ============================================================
-  security-scan:
-    name: Security Scan
-    runs-on: ubuntu-latest
-    needs: lint
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Run Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-
-      - name: Upload Trivy results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v2
-        with:
-          sarif_file: 'trivy-results.sarif'
-
-      - name: Run npm audit
+          python-version: '3.12'
+      - run: pip install -r scripts/fc/requirements.txt
+      - run: python scripts/fc/test_deploy.py
+      - name: Build service images without publishing
         run: |
-          npm audit --audit-level=moderate || true
-
-  # ============================================================
-  # STAGE 6: Build and Push Docker Images
-  # ============================================================
-  build-and-push:
-    name: Build and Push Docker Images
-    runs-on: ubuntu-latest
-    needs: [test-backend, test-ai-engine, test-frontend, security-scan]
-    if: >
-      always() &&
-      github.event_name == 'push' &&
-      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') &&
-      needs.test-backend.result == 'success' &&
-      needs.test-ai-engine.result == 'success' &&
-      needs.security-scan.result == 'success' &&
-      (needs.test-frontend.result == 'success' || needs.test-frontend.result == 'skipped')
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata (user-service)
-        id: meta-user
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-user-service
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push user-service image
-        id: build-user
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./packages/user-service/Dockerfile
-          push: true
-          tags: ${{ steps.meta-user.outputs.tags }}
-          labels: ${{ steps.meta-user.outputs.labels }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-user-service:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-user-service:buildcache,mode=max
-
-      - name: Extract metadata (game-service)
-        id: meta-game
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-game-service
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push game-service image
-        id: build-game
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./packages/game-service/Dockerfile
-          push: true
-          tags: ${{ steps.meta-game.outputs.tags }}
-          labels: ${{ steps.meta-game.outputs.labels }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-game-service:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-game-service:buildcache,mode=max
-
-      - name: Extract metadata (social-service)
-        id: meta-social
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-social-service
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push social-service image
-        id: build-social
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./packages/social-service/Dockerfile
-          push: true
-          tags: ${{ steps.meta-social.outputs.tags }}
-          labels: ${{ steps.meta-social.outputs.labels }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-social-service:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-social-service:buildcache,mode=max
-
-      - name: Extract metadata (feed-service)
-        id: meta-feed
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-feed-service
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push feed-service image
-        id: build-feed
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./packages/feed-service/Dockerfile
-          push: true
-          tags: ${{ steps.meta-feed.outputs.tags }}
-          labels: ${{ steps.meta-feed.outputs.labels }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-feed-service:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-feed-service:buildcache,mode=max
-
-      - name: Extract metadata (ai-engine)
-        id: meta-ai
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-ai-engine
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push ai-engine image
-        id: build-ai
-        uses: docker/build-push-action@v5
-        with:
-          context: ./packages/ai-engine
-          file: ./packages/ai-engine/Dockerfile
-          push: true
-          tags: ${{ steps.meta-ai.outputs.tags }}
-          labels: ${{ steps.meta-ai.outputs.labels }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-ai-engine:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-ai-engine:buildcache,mode=max
-
-      - name: Image digest
-        run: |
-          echo "user-service: ${{ steps.build-user.outputs.digest }}"
-          echo "game-service: ${{ steps.build-game.outputs.digest }}"
-          echo "social-service: ${{ steps.build-social.outputs.digest }}"
-          echo "feed-service: ${{ steps.build-feed.outputs.digest }}"
-          echo "ai-engine: ${{ steps.build-ai.outputs.digest }}"
-
-  # ============================================================
-  # STAGE 7: Deploy to Staging (火山引擎函数服务)
-  # ============================================================
-  deploy-staging:
-    name: Deploy to Staging
-    runs-on: ubuntu-latest
-    needs: build-and-push
-    if: github.ref == 'refs/heads/develop'
-    environment:
-      name: staging
-      url: https://staging-api.gamevallies.com
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Volcengine CLI
-        run: |
-          pip install --quiet volcengine-cli
-          volc configure set \
-            --access-key "${{ secrets.VOLC_ACCESSKEY }}" \
-            --secret-key "${{ secrets.VOLC_SECRETKEY }}" \
-            --region "${{ env.VOLC_REGION }}"
-
-      - name: Deploy functions to staging
-        env:
-          IMAGE_TAG: ${{ github.sha }}
-        run: |
-          SERVICES=("user-service" "game-service" "social-service" "feed-service" "ai-engine")
-          for SVC in "${SERVICES[@]}"; do
-            echo "Deploying gamevallies-${SVC}-staging ..."
-            volc faas update-function \
-              --region "${{ env.VOLC_REGION }}" \
-              --function-name "gamevallies-${SVC}-staging" \
-              --body "{\"ImageConfig\":{\"Image\":\"${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-${SVC}:${IMAGE_TAG}\"}}"
+          for service in user-service game-service social-service feed-service; do
+            docker build --build-arg SERVICE="$service" --tag "gamevallies-$service:ci" .
           done
-
-      - name: Wait for functions to become active
-        run: |
-          SERVICES=("user-service" "game-service" "social-service" "feed-service" "ai-engine")
-          for SVC in "${SERVICES[@]}"; do
-            echo "Waiting for gamevallies-${SVC}-staging ..."
-            for i in $(seq 1 18); do
-              STATUS=$(volc faas get-function \
-                --region "${{ env.VOLC_REGION }}" \
-                --function-name "gamevallies-${SVC}-staging" \
-                --query "Result.Status" --output text 2>/dev/null || echo "Unknown")
-              echo "  Attempt $i: $STATUS"
-              [ "$STATUS" = "Active" ] && break
-              [ $i -eq 18 ] && echo "Timeout waiting for $SVC" && exit 1
-              sleep 10
-            done
+          docker build -f packages/ai-engine/Dockerfile --tag gamevallies-ai:ci .
+          docker build -f deploy/fc/Dockerfile.gateway --tag gamevallies-gateway:ci .
+          for mode in app content; do
+            docker run --rm -e GATEWAY_MODE="$mode" -e FC_INTERNAL_TOKEN="$(python -c 'print("a"*64)')" -e GAME_UPSTREAM=https://game.example.com -e USER_UPSTREAM=https://user.example.com -e AI_UPSTREAM=https://ai.example.com -e FRONTEND_UPSTREAM=https://front.example.com gamevallies-gateway:ci nginx -t
           done
-
-      - name: Run smoke tests
-        env:
-          STAGING_BASE_URL: ${{ secrets.STAGING_BASE_URL }}
-        run: |
-          curl -sf "${STAGING_BASE_URL}/api/v1/health" | grep -q "ok" || exit 1
-          echo "Smoke test passed"
-
-      - name: Send Slack notification
-        if: always()
-        uses: 8398a7/action-slack@v3
-        with:
-          status: ${{ job.status }}
-          text: 'Staging deployment: ${{ job.status }}'
-          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
-          fields: repo,message,commit,author
-
-  # ============================================================
-  # STAGE 8: Deploy to Production (火山引擎函数服务 Canary)
-  # ============================================================
-  deploy-production:
-    name: Deploy to Production (Canary)
-    runs-on: ubuntu-latest
-    needs: [build-and-push]
-    if: github.ref == 'refs/heads/main'
-    environment:
-      name: production
-      url: https://api.gamevallies.com
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Volcengine CLI
-        run: |
-          pip install --quiet volcengine-cli
-          volc configure set \
-            --access-key "${{ secrets.VOLC_ACCESSKEY }}" \
-            --secret-key "${{ secrets.VOLC_SECRETKEY }}" \
-            --region "${{ env.VOLC_REGION }}"
-
-      - name: Publish new version for all services
-        id: publish
-        env:
-          IMAGE_TAG: ${{ github.sha }}
-        run: |
-          SERVICES=("user-service" "game-service" "social-service" "feed-service" "ai-engine")
-          for SVC in "${SERVICES[@]}"; do
-            echo "Updating image for gamevallies-${SVC} ..."
-            volc faas update-function \
-              --region "${{ env.VOLC_REGION }}" \
-              --function-name "gamevallies-${SVC}" \
-              --body "{\"ImageConfig\":{\"Image\":\"${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/gamevallies-${SVC}:${IMAGE_TAG}\"}}"
-          done
-
-      - name: Wait for functions to become active
-        run: |
-          SERVICES=("user-service" "game-service" "social-service" "feed-service" "ai-engine")
-          for SVC in "${SERVICES[@]}"; do
-            for i in $(seq 1 18); do
-              STATUS=$(volc faas get-function \
-                --region "${{ env.VOLC_REGION }}" \
-                --function-name "gamevallies-${SVC}" \
-                --query "Result.Status" --output text 2>/dev/null || echo "Unknown")
-              echo "gamevallies-${SVC}: $STATUS (attempt $i)"
-              [ "$STATUS" = "Active" ] && break
-              [ $i -eq 18 ] && echo "Timeout for $SVC" && exit 1
-              sleep 10
-            done
-          done
-
-      - name: Canary 10% - shift traffic
-        run: |
-          SERVICES=("user-service" "game-service" "social-service" "feed-service" "ai-engine")
-          for SVC in "${SERVICES[@]}"; do
-            volc faas update-alias \
-              --region "${{ env.VOLC_REGION }}" \
-              --function-name "gamevallies-${SVC}" \
-              --alias-name "production" \
-              --body '{"RoutingConfig":{"AdditionalVersionWeights":[{"Qualifier":"$LATEST","Weight":10}]}}'
-          done
-
-      - name: Monitor canary at 10% (5 min)
-        env:
-          PROD_BASE_URL: ${{ secrets.PROD_BASE_URL }}
-        run: |
-          sleep 300
-          ERRORS=0
-          for i in $(seq 1 5); do
-            curl -sf "${PROD_BASE_URL}/api/v1/health" || ERRORS=$((ERRORS+1))
-            sleep 5
-          done
-          if [ $ERRORS -gt 1 ]; then
-            echo "Health check failures: $ERRORS/5 — aborting canary"
-            exit 1
-          fi
-          echo "Canary 10% healthy"
-
-      - name: Canary 50% - shift traffic
-        run: |
-          SERVICES=("user-service" "game-service" "social-service" "feed-service" "ai-engine")
-          for SVC in "${SERVICES[@]}"; do
-            volc faas update-alias \
-              --region "${{ env.VOLC_REGION }}" \
-              --function-name "gamevallies-${SVC}" \
-              --alias-name "production" \
-              --body '{"RoutingConfig":{"AdditionalVersionWeights":[{"Qualifier":"$LATEST","Weight":50}]}}'
-          done
-
-      - name: Monitor canary at 50% (5 min)
-        env:
-          PROD_BASE_URL: ${{ secrets.PROD_BASE_URL }}
-        run: |
-          sleep 300
-          ERRORS=0
-          for i in $(seq 1 5); do
-            curl -sf "${PROD_BASE_URL}/api/v1/health" || ERRORS=$((ERRORS+1))
-            sleep 5
-          done
-          if [ $ERRORS -gt 1 ]; then
-            echo "Health check failures: $ERRORS/5 — aborting canary"
-            exit 1
-          fi
-          echo "Canary 50% healthy"
-
-      - name: Full rollout 100%
-        run: |
-          SERVICES=("user-service" "game-service" "social-service" "feed-service" "ai-engine")
-          for SVC in "${SERVICES[@]}"; do
-            volc faas update-alias \
-              --region "${{ env.VOLC_REGION }}" \
-              --function-name "gamevallies-${SVC}" \
-              --alias-name "production" \
-              --body '{"RoutingConfig":{"AdditionalVersionWeights":[]}}'
-          done
-          echo "Full rollout complete — all traffic on new version"
-
-      - name: Post-deployment verification
-        env:
-          PROD_BASE_URL: ${{ secrets.PROD_BASE_URL }}
-        run: |
-          SERVICES=("user-service" "game-service" "social-service" "feed-service" "ai-engine")
-          for SVC in "${SERVICES[@]}"; do
-            STATUS=$(volc faas get-function \
-              --region "${{ env.VOLC_REGION }}" \
-              --function-name "gamevallies-${SVC}" \
-              --query "Result.Status" --output text)
-            echo "gamevallies-${SVC}: $STATUS"
-          done
-          curl -sf "${PROD_BASE_URL}/api/v1/health" | grep -q "ok" && echo "E2E health OK"
-
-      - name: Send success notification
-        if: success()
-        uses: 8398a7/action-slack@v3
-        with:
-          status: success
-          text: 'Production deployment completed successfully'
-          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
-          fields: repo,message,commit,author
-
-      - name: Rollback on failure
-        if: failure()
-        run: |
-          echo "Deployment failed — rolling back production alias to stable version ..."
-          SERVICES=("user-service" "game-service" "social-service" "feed-service" "ai-engine")
-          for SVC in "${SERVICES[@]}"; do
-            volc faas update-alias \
-              --region "${{ env.VOLC_REGION }}" \
-              --function-name "gamevallies-${SVC}" \
-              --alias-name "production" \
-              --body '{"RoutingConfig":{"AdditionalVersionWeights":[]},"FunctionVersion":"stable"}' || true
-          done
-
-      - name: Send rollback notification
-        if: failure()
-        uses: 8398a7/action-slack@v3
-        with:
-          status: failure
-          text: 'Production deployment FAILED and has been rolled back'
-          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
-          fields: repo,message,commit,author

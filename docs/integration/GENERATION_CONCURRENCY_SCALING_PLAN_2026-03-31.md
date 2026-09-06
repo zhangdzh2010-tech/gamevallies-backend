@@ -25,7 +25,6 @@ The plan is based on the current implementation in:
 - `/d:/Project/gamevallies/gamevallies-backend/packages/ai-engine/src/api/endpoints/generate.py`
 - `/d:/Project/gamevallies/gamevallies-backend/packages/ai-engine/src/services/async_task_manager.py`
 - `/d:/Project/gamevallies/gamevallies-backend/packages/ai-engine/src/engine/runtime_qa.py`
-- `/d:/Project/gamevallies/gamevallies-backend/scripts/deploy.py`
 
 ## 2. Executive Summary
 
@@ -746,3 +745,4 @@ to:
 - event-driven progress propagation
 
 This is the architectural foundation required for reliable generation at scale.
+

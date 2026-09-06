@@ -63,6 +63,7 @@ from ...config.timeout_store import (
     get_int as get_timeout_int,
     refresh as refresh_timeout_cache,
 )
+from ...services.fc_runtime import internal_headers
 from ...services.async_task_manager import task_manager
 from ...services.llm_gateway import gateway, llm_request_context
 from ...services.task_memory import task_memory
@@ -99,7 +100,7 @@ async def _relay_progress_to_game_service(
     if not base_url or stage == "completed":
         return
 
-    headers = {}
+    headers = internal_headers(base_url)
     if settings.ADMIN_TOKEN:
         headers["x-admin-token"] = settings.ADMIN_TOKEN
 
@@ -129,7 +130,7 @@ def _resolve_timeout_s(value: Optional[int]) -> int:
 
 
 def _game_service_headers() -> dict[str, str]:
-    headers: dict[str, str] = {}
+    headers: dict[str, str] = internal_headers(settings.GAME_SERVICE_UPSTREAM_URL)
     if settings.ADMIN_TOKEN:
         headers["x-admin-token"] = settings.ADMIN_TOKEN
     return headers
@@ -1725,3 +1726,4 @@ async def get_step_health_analytics(
             for row in rows
         ],
     }
+

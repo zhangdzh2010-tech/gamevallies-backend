@@ -39,7 +39,7 @@ describe("GameSchemaBootstrapService", () => {
       data: expect.objectContaining({
         region: "cn_shanghai",
         regionTargetId: "9d5307f1-9ee8-4f45-8b18-4e29c0012001",
-        cloudVendor: "volcengine",
+        cloudVendor: "aliyun",
         cloudRegionCode: "cn-shanghai",
       }),
     });
@@ -157,3 +157,4 @@ describe("GameSchemaBootstrapService", () => {
     );
   });
 });
+

@@ -12,7 +12,7 @@ from urllib import error, parse, request
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CATALOG_PATH = REPO_ROOT / "packages" / "game-service" / "src" / "game" / "catalogs" / "prompt-catalog.json"
-ENV_PATH = REPO_ROOT / ".env.deploy"
+ENV_PATH = REPO_ROOT / ".env.production"
 
 
 def load_env(path: Path) -> dict[str, str]:
@@ -82,3 +82,4 @@ if __name__ == "__main__":
     except Exception as exc:  # pragma: no cover - operator script
         print(str(exc), file=sys.stderr)
         raise SystemExit(1)
+

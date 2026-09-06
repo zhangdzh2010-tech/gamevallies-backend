@@ -39,7 +39,7 @@
 
 - `d:\Project\gamevallies\gamevallies-backend`
 
-并确保 [.env.deploy](/d:/Project/gamevallies/gamevallies-backend/.env.deploy) 至少包含：
+并确保 [.env.production](/d:/Project/gamevallies/gamevallies-backend/.env.production) 至少包含：
 
 - `PUBLIC_API_BASE_URL`
 - `ADMIN_TOKEN`
@@ -47,13 +47,13 @@
 ## 推荐命令
 
 ```powershell
-python scripts/run_live_creation_session_full_flow_e2e.py --env-file .env.deploy --timeout-s 1500 --wait-s 1800
+python scripts/run_live_creation_session_full_flow_e2e.py --env-file .env.production --timeout-s 1500 --wait-s 1800
 ```
 
 如果需要显式输出文件名：
 
 ```powershell
-python scripts/run_live_creation_session_full_flow_e2e.py --env-file .env.deploy --timeout-s 1500 --wait-s 1800 --output tmp_creation_session_e2e_batch_manual.json
+python scripts/run_live_creation_session_full_flow_e2e.py --env-file .env.production --timeout-s 1500 --wait-s 1800 --output tmp_creation_session_e2e_batch_manual.json
 ```
 
 ## 成功判定
@@ -158,3 +158,4 @@ python scripts/run_live_creation_session_full_flow_e2e.py --env-file .env.deploy
 - 如果主链失败，再决定是否补跑 legacy 流程
 - 每次线上实测后都保留 JSON 结果文件，便于追查失败任务
 - 如果做了多轮回放，建议按批次保留独立结果文件，不要覆盖
+

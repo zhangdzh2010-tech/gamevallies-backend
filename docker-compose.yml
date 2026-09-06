@@ -170,8 +170,8 @@ services:
 
   ai-engine:
     build:
-      context: ./packages/ai-engine
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: packages/ai-engine/Dockerfile
     container_name: gamevallies-ai-engine
     restart: unless-stopped
     ports:
@@ -243,3 +243,4 @@ volumes:
 networks:
   gamevallies-network:
     driver: bridge
+
