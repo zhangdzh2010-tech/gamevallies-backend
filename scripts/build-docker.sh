@@ -8,7 +8,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-SERVICES=(user-service game-service social-service feed-service)
+SERVICES=(game-service)
 declare -A PORTS=([user-service]=3001 [game-service]=3002 [social-service]=3003 [feed-service]=3004)
 
 build_image() {
@@ -43,3 +43,4 @@ if [[ "${TARGET}" == "all" ]]; then
 else
   build_image "${TARGET}"
 fi
+

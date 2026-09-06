@@ -30,6 +30,8 @@ export class FeedService {
     };
   }
 
+  async onModuleDestroy(): Promise<void> { await this.redis.quit(); }
+
   private async cacheGet(key: string): Promise<string | null> {
     try { return await this.redis.get(key); } catch { return null; }
   }

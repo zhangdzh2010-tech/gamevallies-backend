@@ -25,6 +25,8 @@ jobs:
       - run: node --test deploy/fc/internal-auth.test.cjs
       - run: npx prisma generate
       - run: npm run build --workspaces
+      - name: Verify consolidated API routes and authentication
+        run: node --test test/unified-api.test.cjs
       - name: Verify generation and session regressions
         run: >-
           npm test --workspace=game-service -- --runInBand

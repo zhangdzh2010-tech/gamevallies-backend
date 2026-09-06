@@ -18,7 +18,7 @@ const WECHAT_DOMAIN_VERIFICATIONS = [
   },
 ] as const;
 
-export function configureApp(app: INestApplication): void {
+export function configureApp(app: INestApplication, options: { proxy?: boolean; unified?: boolean } = {}): void {
   app.enableCors({
     origin: process.env.CORS_ORIGIN || '*',
     credentials: true,
@@ -33,7 +33,7 @@ export function configureApp(app: INestApplication): void {
     });
   }
 
-  registerUnifiedApiProxy(app);
+  if (options.proxy !== false) registerUnifiedApiProxy(app);
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -48,6 +48,13 @@ export function configureApp(app: INestApplication): void {
 
   app.setGlobalPrefix('api/v1', {
     exclude: [
+      ...(options.unified ? [
+        { path: 'admin', method: RequestMethod.GET },
+        { path: 'admin/assets/:fileName', method: RequestMethod.GET },
+        { path: 'games/:id/preview', method: RequestMethod.GET },
+        { path: 'games/:id/index.html', method: RequestMethod.GET },
+        { path: 'game-shell/index.html', method: RequestMethod.GET },
+      ] : []),
       {
         path: 'users/search',
         method: RequestMethod.GET,
@@ -83,3 +90,4 @@ export function configureApp(app: INestApplication): void {
     ],
   });
 }
+
