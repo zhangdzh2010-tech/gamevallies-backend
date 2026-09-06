@@ -4139,7 +4139,9 @@ export class AdminService {
   async listCloudRegions() {
     return this.prisma.cloudRegionCatalog.findMany({
       where: {
-        regionCode: "cn-shanghai",
+        regionCode: process.env.DATABASE_SCHEMA_MANAGED === 'true'
+          ? process.env.GAMEVALLIES_CLOUD_REGION || 'cn-hongkong'
+          : "cn-shanghai",
       },
       include: {
         account: {
