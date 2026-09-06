@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """FC 3.0 deployment using the pinned official SDK. No cloud calls without apply/rollback."""
 import argparse
+import io
 import json
 import os
 import re
@@ -73,6 +74,7 @@ def function_body(f, runtime, env, endpoints):
     values = {**runtime.get('common', {}), **runtime.get('services', {}).get(name, {})}
     if name not in ('frontend', 'gateway', 'content'):
         values.update(FC_DEPLOYMENT='true', FC_SERVICE=name, PORT=str(f['port']), NODE_ENV='production', ENVIRONMENT='production')
+        values.update(DATABASE_SCHEMA_MANAGED='true', ENABLE_LEGACY_RUNTIME_SCHEMA_BOOTSTRAP='false')
         if name != 'ai-engine': values['NODE_OPTIONS'] = '--require=/code/fc-internal-auth.cjs'
         urls = {k: v for k, v in endpoints.items() if k not in ('gateway', 'content', 'frontend')}
         values['FC_INTERNAL_ORIGINS'] = ','.join(sorted(set(urls.values())))
@@ -188,6 +190,55 @@ class Deployment:
         self.c.update_function(name, self.m.UpdateFunctionRequest(body=body))
         self.wait_function(name)
 
+    def migrate_database(self, manifest, runtime, env):
+        game = next((f for f in manifest['functions'] if f['name'] == 'game-service'), None)
+        if not game:
+            return
+        body = function_body(game, runtime, env, {})
+        name = env['FC_PREFIX'] + '-db-migrate'
+        body.update(functionName=name, cpu=0.5, memorySize=1024, timeout=900,
+                    instanceConcurrency=1, disableOndemand=False, internetAccess=False)
+        body['environmentVariables'] = {
+            'DATABASE_URL': runtime['common']['DATABASE_URL'],
+            'NODE_ENV': 'production', 'LD_LIBRARY_PATH': '/code/lib',
+            'PATH': '/code/bin:/usr/local/bin:/usr/bin:/bin',
+            'CHECKPOINT_DISABLE': '1',
+            'PRISMA_SCHEMA_ENGINE_BINARY': '/code/node_modules/@prisma/engines/schema-engine-debian-openssl-3.0.x',
+            'PRISMA_QUERY_ENGINE_LIBRARY': '/code/node_modules/.prisma/client/libquery_engine-debian-openssl-3.0.x.so.node',
+        }
+        body['customRuntimeConfig'] = {
+            'command': ['/code/bin/node', '/code/deploy/fc/migration-server.cjs'], 'port': 9000,
+            'healthCheckConfig': {'httpGetUrl': '/health', 'initialDelaySeconds': 5,
+                                 'periodSeconds': 10, 'timeoutSeconds': 3, 'failureThreshold': 6, 'successThreshold': 1},
+        }
+        old = self.optional(lambda: self.c.get_function(name, self.m.GetFunctionRequest()))
+        if old:
+            # Never turn a pre-existing unrelated function into a DB executor.
+            checkpoint_code(old.body.to_map())
+            self.c.update_function(name, self.m.UpdateFunctionRequest(body=self.m.UpdateFunctionInput().from_map(body)))
+        else:
+            self.c.create_function(self.m.CreateFunctionRequest(body=self.m.CreateFunctionInput().from_map(body)))
+        self.wait_function(name)
+        self.c.put_concurrency_config(name, self.m.PutConcurrencyConfigRequest(body=self.m.PutConcurrencyInput(reserved_concurrency=1)))
+        try:
+            from alibabacloud_tea_util.models import RuntimeOptions
+            response = self.c.invoke_function_with_options(name,
+                self.m.InvokeFunctionRequest(body=io.BytesIO(b'{}'), qualifier='LATEST'),
+                self.m.InvokeFunctionHeaders(x_fc_invocation_type='Sync', x_fc_log_type='None'),
+                RuntimeOptions(read_timeout=960000, connect_timeout=10000, autoretry=False))
+            raw = response.body.read(65536)
+            result = json.loads(raw)
+            if response.status_code != 200 or result.get('ok') is not True or result.get('stage') != 'database-ready':
+                code = result.get('code', '')
+                code = code if re.fullmatch(r'[A-Z][A-Z0-9_]{1,80}', str(code)) else 'UNKNOWN'
+                error = RuntimeError('Database migration failed: ' + code)
+                error.code = code
+                raise error
+            print('Database migrations and production seed verified.', flush=True)
+        finally:
+            # No provisioned instances or public trigger; block invocation between releases.
+            self.c.update_function(name, self.m.UpdateFunctionRequest(body=self.m.UpdateFunctionInput(disable_ondemand=True)))
+
     def apply(self, manifest, runtime, env, output):
         entries, endpoints, touched = [], {}, []
         prefix = env['FC_PREFIX']
@@ -210,6 +261,8 @@ class Deployment:
                     if stable >= 3: break
                     self.sleep(10)
                 else: raise TimeoutError('Tasks did not drain; no functions updated')
+            # The DB gate must pass before starting/updating application workers.
+            self.migrate_database(manifest, runtime, env)
             # Discover real FC trigger URLs without overwriting existing service configuration.
             for f in manifest['functions']:
                 name = prefix + '-' + f['name']
