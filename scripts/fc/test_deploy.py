@@ -26,6 +26,12 @@ class ConfigTests(unittest.TestCase):
             update=m.UpdateFunctionInput().from_map(body).to_map()
             self.assertNotIn('functionName', update)
             if f.get('background'): self.assertTrue(update['disableOndemand'])
+    def test_fc_reserved_names_are_not_sent_to_api(self):
+        for f in MANIFEST['functions']:
+            values = d.function_body(f, RUNTIME, ENV, {})['environmentVariables']
+            self.assertFalse(any(k.startswith('FC_') for k in values))
+            self.assertEqual(values['GAMEVALLIES_FC_INTERNAL_TOKEN'], RUNTIME['common']['FC_INTERNAL_TOKEN'])
+
     def test_consolidated_backend_needs_no_frontend_url(self):
         env = {k: v for k, v in ENV.items() if k != 'FC_FRONTEND_URL'}
         d.validate(MANIFEST, RUNTIME, env)
