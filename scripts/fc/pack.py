@@ -10,6 +10,9 @@ import zipfile
 code = Path('/code')
 libs = code / 'lib'; libs.mkdir(exist_ok=True)
 shutil.copy2('/etc/ssl/certs/ca-certificates.crt', code / 'ca-certificates.crt')
+# msgpackr ships both libc variants; Debian uses only the glibc binaries.
+for file in code.glob('node_modules/@msgpackr-extract/msgpackr-extract-linux-x64/*.musl.node'):
+    file.unlink()
 # Resolve every ELF dependency, including Python wheels and Chromium, in the build OS.
 for folder in [code, Path('/usr/sbin/nginx'), Path('/usr/bin/envsubst')]:
     files = folder.rglob('*') if folder.is_dir() else [folder]
