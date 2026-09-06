@@ -27,7 +27,7 @@ def reason_summary(value):
     ]
     # Extract only Python frame locations, never source lines or exception messages.
     frames = []
-    for path, line, function in re.findall(r'File "([^"\\n]+)", line (\\d+), in ([A-Za-z0-9_<>.]+)', text):
+    for path, line, function in re.findall(r'File "([^"\n]+)", line (\d+), in ([A-Za-z0-9_<>.]+)', text):
         if re.fullmatch(r'/[A-Za-z0-9_./-]{1,240}', path):
             frames.append({'file': path, 'line': int(line), 'function': function})
     return {'frames': frames[-12:], 'present': bool(text), 'markers': [x for x in markers if x in text],
