@@ -46,7 +46,7 @@ async function migrateProduction(env = process.env) {
       ? await db.$queryRawUnsafe('SELECT migration_name, checksum, finished_at, rolled_back_at FROM _prisma_migrations') : [];
     const migrations = {};
     for (const dir of readdirSync(path.join(__dirname, 'migrations'), { withFileTypes: true }).filter(x => x.isDirectory())) {
-      migrations[dir.name] = createHash('sha512').update(readFileSync(path.join(__dirname, 'migrations', dir.name, 'migration.sql'))).digest('hex');
+      migrations[dir.name] = createHash('sha256').update(readFileSync(path.join(__dirname, 'migrations', dir.name, 'migration.sql'))).digest('hex');
     }
     checkHistory(names, history, migrations);
     const result = await cli(['migrate', 'deploy', '--schema', 'prisma/schema.prisma'], childEnv);
@@ -54,7 +54,7 @@ async function migrateProduction(env = process.env) {
     const drift = await cli(['migrate', 'diff', '--from-schema-datasource', 'prisma/schema.prisma',
       '--to-schema-datamodel', 'prisma/schema.prisma', '--exit-code'], childEnv);
     if (drift.code !== 0) stop(drift.code === 2 ? 'SCHEMA_DRIFT_REQUIRES_REVIEW' : (drift.prismaCode || 'SCHEMA_VERIFICATION_FAILED'));
-    await seedProduction(db);
+    await seedProduction(db, env);
     return { ok: true, stage: 'database-ready' };
   } finally { await db.$disconnect(); }
 }
