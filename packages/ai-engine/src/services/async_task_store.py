@@ -4,7 +4,7 @@ The store is optional: when ``settings.REDIS_URL`` is empty (the default) every
 method degrades to a no-op and the async task manager behaves exactly like the
 historical pure in-memory implementation. When Redis is configured, task
 snapshots are written to a Redis hash with a TTL aligned to the in-memory
-completed-task TTL, so polling survives instance recycling (VeFaaS) and
+completed-task TTL, so polling survives container restarts and
 multi-replica deployments. Any Redis failure is caught, logged as a warning
 and degrades back to in-memory behavior — it must never break the pipeline.
 """
@@ -232,3 +232,4 @@ class AsyncTaskRedisStore:
                 "async_task_store: failed to look up idempotency key in redis: %s", exc
             )
             return None
+

@@ -1,5 +1,12 @@
-**/*.tsbuildinfo
-**/dist
 **/node_modules
-**/.git
+**/dist
+**/__pycache__
+**/*.tsbuildinfo
+.git
 **/.env
+**/.env.*
+**/*.log
+coverage
+
+**/.fc-runtime*.json
+**/fc-release*.json

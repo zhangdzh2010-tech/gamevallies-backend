@@ -295,8 +295,8 @@ async function showLogDetail(gameId, focusSection) {
     const qualityText = meta.qualityScore !== undefined && meta.qualityScore !== null ? String(meta.qualityScore) : '-';
     const strategyText = meta.strategy || '-';
     const summaryNote = g.failedReason
-      ? '当前后台持久化的是最后一次失败摘要。若需要完整逐步骤重试与报错细节，请到 VeFaaS / 应用日志查看。'
-      : '当前记录没有最终失败摘要。若要查看生成过程中的细粒度进度与临时重试，仍需结合实时 WebSocket 或 VeFaaS 日志。';
+      ? '当前后台持久化的是最后一次失败摘要。若需要完整逐步骤重试与报错细节，请到 ECS 容器日志查看。'
+      : '当前记录没有最终失败摘要。若要查看生成过程中的细粒度进度与临时重试，仍需结合实时 WebSocket 或 ECS 容器日志。';
 
     let detail = '<div class="log-detail">';
     detail += '<div class="log-hero">';
@@ -354,7 +354,7 @@ async function showLogDetail(gameId, focusSection) {
     detail += '<div class="log-kv"><div class="k">原始阶段</div><div class="v">' + escHtml(g.failedStage || finalStageRaw || '-') + '</div></div>';
     detail += '<div class="log-kv"><div class="k">最后失败时间</div><div class="v">' + (g.lastErrorAt ? new Date(g.lastErrorAt).toLocaleString('zh-CN') : '-') + '</div></div>';
     detail += '<div class="log-kv"><div class="k">总重试次数</div><div class="v">' + retryCount + '</div></div>';
-    detail += '<div class="log-kv"><div class="k">定位建议</div><div class="v">后台详情看最终摘要，完整逐步骤报错请查 VeFaaS / 应用日志</div></div>';
+    detail += '<div class="log-kv"><div class="k">定位建议</div><div class="v">后台详情看最终摘要，完整逐步骤报错请查 ECS 容器日志</div></div>';
     detail += '</div>';
     detail += g.failedReason
       ? '<div class="log-alert" style="margin-top:14px">' + escHtml(g.failedReason) + '</div>'
@@ -601,4 +601,5 @@ function renderLogs(d) {
   html += '</div></div>';
   document.getElementById('logTableWrap').innerHTML = html;
 }
+
 

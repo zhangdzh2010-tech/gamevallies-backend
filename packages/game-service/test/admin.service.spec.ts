@@ -1979,7 +1979,7 @@ describe("AdminService", () => {
   it("derives provider region fields from the selected region target", async () => {
     prisma.aiEngineRegionTarget.findUnique.mockResolvedValue({
       id: "target-1",
-      vendor: "volcengine",
+      vendor: "aliyun",
       cloudRegionCode: "cn-shanghai",
       executionRegion: "cn_shanghai",
       deployEnabled: true,
@@ -1991,7 +1991,7 @@ describe("AdminService", () => {
       name: "MiniMax Shanghai",
       providerType: "openai_compatible",
       regionTargetId: "target-1",
-      cloudVendor: "volcengine",
+      cloudVendor: "aliyun",
       cloudRegionCode: "cn-shanghai",
       region: "cn_shanghai",
       baseUrl: "https://api.minimaxi.com/v1",
@@ -2040,7 +2040,7 @@ describe("AdminService", () => {
       expect.objectContaining({
         create: expect.objectContaining({
           regionTargetId: "target-1",
-          cloudVendor: "volcengine",
+          cloudVendor: "aliyun",
           cloudRegionCode: "cn-shanghai",
           region: "cn_shanghai",
           extraConfig: expect.objectContaining({
@@ -2811,7 +2811,7 @@ describe("AdminService", () => {
   it("allows explicit runtime endpoint updates through the standard region target edit flow", async () => {
     prisma.cloudProviderAccount.findUnique.mockResolvedValue({
       id: "account-1",
-      vendor: "volcengine",
+      vendor: "aliyun",
       enabled: true,
       defaultRegistry: "registry.example.com",
       defaultRegistryNamespace: "gamevallies",
@@ -2841,7 +2841,7 @@ describe("AdminService", () => {
       regionCatalogId: "region-1",
       executionRegion: "cn_shanghai",
       displayName: "AI Engine Shanghai",
-      functionName: "gv-ai-engine-cn",
+      functionName: "ai-engine",
       aiEngineUrl: "https://ai-cn.example.com",
       deployStatus: "deployed",
       lastRevision: "12",
@@ -2884,8 +2884,8 @@ describe("AdminService", () => {
       lastDeployedAt: new Date("2026-03-22T08:00:00.000Z"),
       account: {
         id: "account-1",
-        vendor: "volcengine",
-        accountKey: "volc-default",
+        vendor: "aliyun",
+        accountKey: "aliyun-default",
         displayName: "Volcengine",
       },
       regionCatalog: {
@@ -2924,7 +2924,7 @@ describe("AdminService", () => {
   it("rejects region targets whose cloud region does not match executionRegion", async () => {
     prisma.cloudProviderAccount.findUnique.mockResolvedValue({
       id: "account-1",
-      vendor: "volcengine",
+      vendor: "aliyun",
       enabled: true,
       defaultRegistry: "registry.example.com",
       defaultRegistryNamespace: "gamevallies",
@@ -2961,9 +2961,9 @@ describe("AdminService", () => {
         aiEngineUrl: null,
         account: {
           id: "account-1",
-          accountKey: "volc-default",
+          accountKey: "aliyun-default",
           displayName: "Volcengine",
-          vendor: "volcengine",
+          vendor: "aliyun",
         },
         regionCatalog: {
           id: "region-1",
@@ -2981,9 +2981,9 @@ describe("AdminService", () => {
         aiEngineUrl: null,
         account: {
           id: "account-1",
-          accountKey: "volc-default",
+          accountKey: "aliyun-default",
           displayName: "Volcengine",
-          vendor: "volcengine",
+          vendor: "aliyun",
         },
         regionCatalog: {
           id: "region-2",
@@ -3319,3 +3319,4 @@ describe("AdminService", () => {
     expect(prisma.llmStepRoute.upsert).not.toHaveBeenCalled();
   });
 });
+

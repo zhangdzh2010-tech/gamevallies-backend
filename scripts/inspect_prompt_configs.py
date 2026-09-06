@@ -12,7 +12,7 @@ from urllib import error, request
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ENV_PATH = REPO_ROOT / ".env.deploy"
+DEFAULT_ENV_PATH = REPO_ROOT / ".env.production"
 
 
 def load_env(path: Path) -> dict[str, str]:
@@ -118,3 +118,4 @@ def main(argv: list[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
+
