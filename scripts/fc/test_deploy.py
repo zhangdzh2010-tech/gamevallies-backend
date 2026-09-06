@@ -17,6 +17,29 @@ MANIFEST = json.loads(Path('deploy/fc/functions.json').read_text())
 RUNTIME['artifacts'] = {f['name']: {'sha256': 'b'*64, 'object': 'gamevallies/prod/releases/' + 'a'*40 + '/' + 'b'*64 + '/' + f['name'] + '.zip'} for f in MANIFEST['functions']}
 
 class ConfigTests(unittest.TestCase):
+    def test_http_failure_reports_status_and_request_id_without_response_body(self):
+        import io
+        error = d.urllib.error.HTTPError('https://example.com', 502, 'secret',
+            {'x-fc-request-id': 'request-123'}, io.BytesIO(b'private response'))
+        output = io.StringIO()
+        with patch('sys.stderr', output):
+            d.report_error(error, 'http-health-check', 'content')
+        self.assertIn('status=502', output.getvalue())
+        self.assertIn('requestId=request-123', output.getvalue())
+        self.assertNotIn('secret', output.getvalue())
+        self.assertNotIn('private', output.getvalue())
+
+    def test_restore_omits_empty_custom_runtime_handler_from_fc_response(self):
+        client = Mock()
+        deployment = d.Deployment(client, m)
+        deployment.wait_function = Mock()
+        for runtime in ('custom.debian12', 'custom-container'):
+            previous = {'runtime': runtime, 'handler': '', 'description':
+                'GameVallies OSS ' + json.dumps({'ossBucketName': 'bucket', 'ossObjectName': 'old.zip'})}
+            deployment.restore_configuration('content', previous)
+            self.assertNotIn('handler', client.update_function.call_args.args[1].body.to_map())
+            self.assertEqual(previous['handler'], '')
+
     def test_reuse_requires_matching_code_and_configuration(self):
         client = Mock()
         current = m.Function(runtime='custom.debian12', code_checksum='abc',
