@@ -8,6 +8,11 @@ import sys
 import zipfile
 
 code = Path('/code')
+# FC reserves FC_* API environment names. Restore app aliases inside the process.
+bootstrap = code / 'bootstrap'
+aliases = ''.join('export ' + key + '="${GAMEVALLIES_' + key + '-${' + key + '-}}"\n'
+                  for key in ('FC_DEPLOYMENT', 'FC_SERVICE', 'FC_INTERNAL_TOKEN', 'FC_INTERNAL_ORIGINS'))
+bootstrap.write_text(bootstrap.read_text().replace('set -eu\n', 'set -eu\n' + aliases, 1))
 libs = code / 'lib'; libs.mkdir(exist_ok=True)
 shutil.copy2('/etc/ssl/certs/ca-certificates.crt', code / 'ca-certificates.crt')
 # msgpackr ships both libc variants; Debian uses only the glibc binaries.
