@@ -21,6 +21,8 @@ from src.engine.qa_pipeline import QAPipeline
 
 
 CODEGEN_PROMPTS = {
+    "prompt.visual_quality_bar": "Use cohesive {art_style} visuals for {theme}. {palette_line}",
+    "prompt.code_gen_system_standard": "Implement the complete standard-tier design.",
     "prompt.generation_tier_standard": "Deliver a complete standard-tier experience.",
     "prompt.game_design_template": (
         "GAME DESIGN DOCUMENT\n"
