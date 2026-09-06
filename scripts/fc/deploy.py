@@ -139,6 +139,13 @@ class Deployment:
             f = self.c.get_function(name, self.m.GetFunctionRequest()).body
             if f.state == 'Failed' or f.last_update_status == 'Failed': raise RuntimeError(f'Function update failed: {name}')
             if f.state == 'Active' and f.last_update_status in (None, 'Successful'): return f
+            # ZIP runtimes may omit asynchronous image-state fields entirely.
+            # Require persisted code; provisioning and HTTP health checks still follow.
+            if (f.state is None and f.last_update_status is None
+                    and getattr(f, 'runtime', None) == 'custom.debian12'
+                    and getattr(f, 'code_checksum', None)
+                    and (getattr(f, 'code_size', None) or 0) > 0):
+                return f
             self.sleep(5)
         raise TimeoutError(f'Function did not become active: {name}')
 
