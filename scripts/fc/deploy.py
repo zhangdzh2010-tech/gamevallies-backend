@@ -94,7 +94,7 @@ def function_body(f, runtime, env, endpoints):
     body = {'functionName': f"{env['FC_PREFIX']}-{name}", 'runtime': 'custom.debian12', 'code': code, 'customRuntimeConfig': custom,
             'cpu': f['cpu'], 'memorySize': f['memory'], 'diskSize': 10240 if name == 'ai-engine' else 512,
             'timeout': f.get('timeout', 900), 'instanceConcurrency': f['concurrency'],
-            'internetAccess': True, 'role': env['FC_EXECUTION_ROLE'], 'environmentVariables': values,
+            'internetAccess': True, 'role': env['FC_EXECUTION_ROLE'], 'environmentVariables': {('GAMEVALLIES_' + k if k.startswith('FC_') else k): v for k, v in values.items()},
             'disableOndemand': f.get('disableOndemand', False), 'disableInjectCredentials': 'Request',
             'description': 'GameVallies OSS ' + json.dumps(code, separators=(',', ':'))}
     for key in ('vpcConfig', 'logConfig'):
