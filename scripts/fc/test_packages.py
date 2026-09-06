@@ -25,6 +25,18 @@ for f in manifest['functions']:
             for key in ('GAME_UPSTREAM','USER_UPSTREAM','AI_UPSTREAM','FRONTEND_UPSTREAM'): command += ['-e',key+'=https://example.com']
             command += ['debian:bookworm-slim','/code/bootstrap','-t']
         else:
+            required = ['prisma/migrations/20260906000000_initial/migration.sql',
+                        'prisma/migrate-production.cjs', 'prisma/seed-production.cjs',
+                        'deploy/fc/migration-server.cjs',
+                        'node_modules/@prisma/engines/schema-engine-debian-openssl-3.0.x',
+                        'node_modules/.prisma/client/libquery_engine-debian-openssl-3.0.x.so.node']
+            for name in required:
+                if not (Path(folder) / name).is_file(): raise RuntimeError('Missing migration dependency: ' + name)
+            subprocess.run(command + ['-e', 'LD_LIBRARY_PATH=/code/lib', '-e', 'CHECKPOINT_DISABLE=1',
+                '-e', 'PRISMA_SCHEMA_ENGINE_BINARY=/code/node_modules/@prisma/engines/schema-engine-debian-openssl-3.0.x',
+                '-w', '/code', 'debian:bookworm-slim', '/code/bin/node', '/code/node_modules/prisma/build/index.js',
+                'migrate', 'diff', '--from-empty', '--to-schema-datamodel', 'prisma/schema.prisma', '--script'],
+                check=True, timeout=180, stdout=subprocess.DEVNULL)
             command += ['-e','LD_LIBRARY_PATH=/code/lib','-w','/code/packages/'+f['name'],'debian:bookworm-slim','/code/bin/node','-e',
                 "require('@prisma/client'); require('@nestjs/core'); const fs=require('fs'); if(!fs.existsSync('dist/main.js')) process.exit(1);"]
         subprocess.run(command,check=True,timeout=180)
