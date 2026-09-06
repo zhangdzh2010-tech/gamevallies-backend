@@ -204,8 +204,51 @@ class Deployment:
         t = self.c.get_trigger(name, TRIGGER).body
         return origin(t.http_trigger.url_internet)
 
+    def matching_version(self, name, current):
+        # Compare every updateable configuration field, plus immutable code identity.
+        # Descriptions are excluded: FC version descriptions can differ from LATEST.
+        def fingerprint(function):
+            data = function.to_map()
+            config = self.m.UpdateFunctionInput().from_map(data).to_map()
+            config.pop('description', None)
+            config.pop('code', None)
+            return (data.get('codeChecksum'), config)
+        wanted = fingerprint(current)
+        if not wanted[0]:
+            return None
+        token = None
+        for _ in range(10):
+            page = self.c.list_function_versions(name, self.m.ListFunctionVersionsRequest(
+                direction='BACKWARD', limit=100, next_token=token)).body
+            for version in page.versions or []:
+                candidate = self.c.get_function(name, self.m.GetFunctionRequest(
+                    qualifier=version.version_id)).body
+                if fingerprint(candidate) == wanted:
+                    return version.version_id
+            token = page.next_token
+            if not token:
+                break
+        return None
+
     def version(self, name):
-        return self.c.publish_function_version(name, self.m.PublishFunctionVersionRequest(body=self.m.PublishVersionInput(description='GameVallies deployment checkpoint'))).body.version_id
+        current = self.c.get_function(name, self.m.GetFunctionRequest()).body
+        existing = self.matching_version(name, current)
+        if existing:
+            print(f'Reusing verified matching FC version: {name}', flush=True)
+            return existing
+        try:
+            return self.c.publish_function_version(name, self.m.PublishFunctionVersionRequest(
+                body=self.m.PublishVersionInput(description='GameVallies deployment checkpoint'))).body.version_id
+        except Exception as error:
+            if getattr(error, 'code', None) != 'VersionPublishError':
+                raise
+            # A concurrent publisher may have created the same revision.
+            latest = self.c.get_function(name, self.m.GetFunctionRequest()).body
+            if latest.to_map() == current.to_map():
+                existing = self.matching_version(name, current)
+                if existing:
+                    return existing
+            raise
 
     def restore(self, name, version, code=None):
         previous = self.c.get_function(name, self.m.GetFunctionRequest(qualifier=version)).body.to_map()
