@@ -934,6 +934,7 @@ export class GameSchemaBootstrapService implements OnModuleInit {
   }
 
   async onModuleInit(): Promise<void> {
+    if (process.env.DATABASE_SCHEMA_MANAGED === 'true') return;
     try {
       if (this.isLegacyRuntimeSchemaBootstrapEnabled()) {
         this.logger.warn(
@@ -1219,4 +1220,3 @@ export class GameSchemaBootstrapService implements OnModuleInit {
     }
   }
 }
-
