@@ -1,4 +1,6 @@
 FROM python:3.12-slim-bookworm AS package
+# CPython's bundled _tkinter extension links to Tcl/Tk even in slim images.
+RUN apt-get update && apt-get install -y --no-install-recommends libtk8.6 && rm -rf /var/lib/apt/lists/*
 ENV PLAYWRIGHT_BROWSERS_PATH=/code/browsers
 COPY packages/ai-engine/requirements.txt /requirements.txt
 RUN pip install --no-cache-dir -r /requirements.txt && python -m playwright install --with-deps chromium
