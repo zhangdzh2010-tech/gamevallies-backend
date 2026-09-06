@@ -8,6 +8,7 @@ import re
 import sys
 import time
 import urllib.request
+import urllib.error
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -140,7 +141,14 @@ def report_error(error, stage, name):
         return value if re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', value) else 'unavailable'
     data = getattr(error, 'data', None)
     data = data if isinstance(data, dict) else {}
-    print(f"FC failure; stage={safe(stage)}; function={safe(name)}; type={safe(type(error).__name__)}; code={safe(getattr(error, 'code', None))}; status={safe(getattr(error, 'status_code', None))}; requestId={safe(data.get('RequestId') or data.get('requestId'))}", file=sys.stderr, flush=True)
+    status = getattr(error, 'status_code', None)
+    request_id = data.get('RequestId') or data.get('requestId')
+    if isinstance(error, urllib.error.HTTPError):
+        status = error.code
+        request_id = error.headers.get('x-fc-request-id') if error.headers else None
+    reason = getattr(error, 'reason', None)
+    reason_type = type(reason).__name__ if isinstance(reason, BaseException) else None
+    print(f"FC failure; stage={safe(stage)}; function={safe(name)}; type={safe(type(error).__name__)}; code={safe(getattr(error, 'code', None))}; status={safe(status)}; requestId={safe(request_id)}; reasonType={safe(reason_type)}", file=sys.stderr, flush=True)
 
 
 class Deployment:
@@ -258,6 +266,11 @@ class Deployment:
 
     def restore_configuration(self, name, previous):
         previous = dict(previous)
+        # GetFunction returns handler='' for custom runtimes, but UpdateFunction
+        # rejects an explicitly empty handler (InvalidArgument). It is unused by
+        # these runtimes; retain real handlers when restoring managed runtimes.
+        if previous.get('runtime', '').startswith('custom') and not previous.get('handler'):
+            previous.pop('handler', None)
         if previous.get('runtime') == 'custom-container':
             container = previous.get('customContainerConfig', {})
             previous['customContainerConfig'] = {k: v for k, v in container.items() if k in ('image', 'port', 'command', 'entrypoint', 'healthCheckConfig', 'acrInstanceId', 'registryConfig', 'accelerationType')}
@@ -396,7 +409,8 @@ class Deployment:
                 for attempt in range(18):
                     try:
                         http_json(entry['url'], token, f['health']); break
-                    except Exception:
+                    except Exception as health_error:
+                        report_error(health_error, stage, name)
                         if attempt == 17: raise deployment_error('HTTP_HEALTH_CHECK_FAILED', name) from None
                         self.sleep(5)
                 stage = 'publish-version'
