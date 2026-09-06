@@ -7,6 +7,9 @@ async function main() {
   assert.equal(process.env.MIGRATION_TEST_ALLOW_LOCAL, 'true');
   assert.ok(['127.0.0.1', 'localhost'].includes(url.hostname));
   const db = new PrismaClient();
+  process.env.GAMEVALLIES_CLOUD_REGION = 'cn-hongkong';
+  process.env.GAMEVALLIES_FC_PREFIX = 'gamevallies-test';
+  process.env.AI_ENGINE_URL = 'https://ai.example.com';
   try {
     // Start from a truly empty DB, then simulate the legacy partial bootstrap.
     const existing = await db.$queryRawUnsafe('SHOW TABLES');
@@ -23,6 +26,9 @@ async function main() {
     assert.equal(await db.user.count(), 0);
     assert.equal(await db.game.count(), 0);
     assert.equal(await db.llmGatewayProvider.count(), 0);
+    assert.equal(await db.cloudProviderAccount.count(), 1);
+    assert.equal((await db.cloudRegionCatalog.findFirst()).regionCode, 'cn-hongkong');
+    assert.equal((await db.aiEngineRegionTarget.findFirst()).aiEngineUrl, 'https://ai.example.com');
     assert.ok(await db.promptBundle.count() > 0);
     assert.ok(await db.runtimeProfileCatalog.count() > 0);
     assert.ok(await db.llmStepCatalog.count() > 0);
@@ -41,4 +47,7 @@ async function main() {
     console.log('MySQL 8: empty DB, partial DB guard, migration replay, seed preservation and drift detection passed');
   } finally { await db.$disconnect(); }
 }
-main().catch(error => { console.error(error.safeCode || error.code || error.name); process.exitCode = 1; });
+main().catch(error => {
+  // This test uses only an isolated local CI database and synthetic credentials.
+  console.error(error); process.exitCode = 1;
+});
