@@ -128,6 +128,7 @@ export interface CreateGameCommand extends CreateGameDto {
 }
 
 export interface CreateExecutionOptions {
+  sourceCode?: string | null;
   title?: string;
   orientation?: CreateGameOrientation;
   generationTier?: GenerationTier;

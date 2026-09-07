@@ -99,6 +99,7 @@ jobs:
           tests/test_async_task_api.py
           tests/test_model_transport.py
           tests/test_interactive_creation.py
+          tests/test_artifact_quality.py
           tests/test_pipeline_v2_runner.py
           tests/test_prompt_integration.py
           tests/test_generation_v1_localization.py
