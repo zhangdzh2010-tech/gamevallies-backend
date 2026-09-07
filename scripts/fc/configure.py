@@ -38,9 +38,10 @@ def runtime_config(env, backend):
     if content == public: raise ValueError('CONTENT_ORIGIN must be separate from the application')
     if not backend: return runtime
     common = runtime['common']
-    for key in ('DATABASE_URL', 'REDIS_URL', 'JWT_SECRET', 'JWT_REFRESH_SECRET', 'ADMIN_TOKEN', 'ADMIN_PASSWORD', 'FC_INTERNAL_TOKEN'):
+    for key in ('DATABASE_URL', 'REDIS_URL', 'JWT_SECRET', 'JWT_REFRESH_SECRET', 'ADMIN_TOKEN', 'FC_INTERNAL_TOKEN'):
         common[key] = need(env, key)
     common['ADMIN_USERNAME'] = env.get('ADMIN_USERNAME', 'admin').strip() or 'admin'
+    common['ADMIN_PASSWORD'] = env.get('ADMIN_PASSWORD', 'admin123').strip() or 'admin123'
     common.update(CORS_ORIGIN=public, CORS_ORIGINS=json.dumps([public]), FRONTEND_URL=public,
                   PUBLIC_API_BASE_URL=public, PUBLIC_WEB_BASE_URL=public, APP_URL=public,
                   BUNDLE_CDN_ENABLED='false')
