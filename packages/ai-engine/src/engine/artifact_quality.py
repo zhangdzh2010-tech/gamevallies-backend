@@ -11,7 +11,10 @@ DESKTOP_BRIEF_MARKER = '请生成桌面浏览器中的可交互创意作品'
 
 
 def infer_artifact_kind(description: str) -> str:
-    text = str(description or '').lower()
+    full_text = str(description or '').lower()
+    # Desktop UI appends generic science-safety guidance to every type.
+    # Classify the user's brief, not that shared suffix.
+    text = re.split(r'创作领域[：:]|呈现方式[：:]|请生成桌面浏览器中的可交互创意作品', full_text, maxsplit=1)[0]
     explicit = re.search(r'(?:作品类型|artifact[_ ]kind)\s*[:：=]\s*(game|tool|science|游戏|工具|科学演示)', text)
     if explicit:
         return {'游戏':'game', '工具':'tool', '科学演示':'science'}.get(explicit[1], explicit[1])
@@ -21,7 +24,7 @@ def infer_artifact_kind(description: str) -> str:
         return 'game'
     if re.search(r'种群|捕食者|双摆|单摆|科学|物理|化学|欧姆|电路|天体|波动|微分方程|lotka|pendulum|ohm|scientific|simulation|population model', text):
         return 'science'
-    if DESKTOP_BRIEF_MARKER in text or re.search(r'计数器|计算器|转换器|单位换算|待办|番茄钟|工具|可视化|counter|calculator|converter|todo|utility', text):
+    if DESKTOP_BRIEF_MARKER in full_text or re.search(r'计数器|计算器|转换器|单位换算|待办|番茄钟|工具|可视化|counter|calculator|converter|todo|utility', text):
         return 'tool'
     return 'game'
 

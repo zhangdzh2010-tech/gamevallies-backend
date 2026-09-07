@@ -16,6 +16,8 @@ def review(kind, **updates):
 
 @pytest.mark.parametrize('description,kind',[
     ('制作最小交互计数器，不添加游戏玩法。','tool'),
+    ('制作计数器。创作领域：自由创意。请生成桌面浏览器中的可交互创意作品。涉及科学概念时展示模型。','tool'),
+    ('制作待办清单。请生成桌面浏览器中的可交互创意作品。涉及科学概念时展示模型。','tool'),
     ('制作单位换算工具','tool'),('做一个欧姆定律电路模型，不需要游戏','science'),
     ('做一个捕食者与猎物种群模型','science'),('做一个单摆实验','science'),
     ('做一个电路教学小游戏，需要闯关','game'),('Make a memory matching game','game'),
