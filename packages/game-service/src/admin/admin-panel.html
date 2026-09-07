@@ -632,7 +632,7 @@
             class="sheet-overlay"
             onclick="closeSheetOnBackdrop(event, 'subscriptionPlanSheet')"
           >
-            <div class="sheet-panel llm-sheet-panel">
+            <div class="sheet-panel llm-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="subscriptionPlanSheetTitle">
               <div class="sheet-header">
                 <div>
                   <h3 id="subscriptionPlanSheetTitle">新建订阅套餐</h3>
@@ -892,15 +892,17 @@
               z-index: 9000;
               align-items: center;
               justify-content: center;
+              padding: 24px;
             "
           >
             <div
               style="
                 background: #fff;
-                border-radius: 14px;
+                border-radius: 12px;
                 width: 780px;
-                max-width: 95vw;
-                max-height: 85vh;
+                max-width: 100%;
+                max-height: calc(100dvh - 48px);
+                overflow: hidden;
                 display: flex;
                 flex-direction: column;
                 box-shadow: 0 25px 80px rgba(0, 0, 0, 0.2);
@@ -1399,7 +1401,7 @@
             class="sheet-overlay"
             onclick="closeSheetOnBackdrop(event, 'llmProviderSheet')"
           >
-            <div class="sheet-panel llm-sheet-panel">
+            <div class="sheet-panel llm-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="llm2ProviderSheetTitle">
               <div class="sheet-header">
                 <div>
                   <h3 id="llm2ProviderSheetTitle">新建 Provider</h3>
@@ -1588,7 +1590,7 @@
             class="sheet-overlay"
             onclick="closeSheetOnBackdrop(event, 'llmProviderTestSheet')"
           >
-            <div class="sheet-panel llm-sheet-panel llm-test-sheet-panel llm-test-compact">
+            <div class="sheet-panel llm-sheet-panel llm-test-sheet-panel llm-test-compact" role="dialog" aria-modal="true" aria-labelledby="llm2TestSheetTitle">
               <div class="sheet-header">
                 <div>
                   <h3 id="llm2TestSheetTitle">Provider 测试台</h3>
@@ -1821,6 +1823,7 @@
 
     <!-- Play Modal (fullscreen) -->
     <div id="playOverlay" class="play-overlay" style="display: none">
+      <div class="play-dialog" role="dialog" aria-modal="true" aria-labelledby="playTitle">
       <div class="play-topbar">
         <div class="title" id="playTitle">游戏试玩</div>
         <div class="actions">
@@ -1835,10 +1838,12 @@
         class="play-frame"
         sandbox="allow-scripts allow-same-origin allow-popups"
       ></iframe>
+      </div>
     </div>
 
     <!-- Preview Modal -->
     <div id="previewOverlay" class="play-overlay" style="display: none">
+      <div class="play-dialog" role="dialog" aria-modal="true" aria-labelledby="previewTitle">
       <div class="play-topbar">
         <div class="title" id="previewTitle">游戏预览</div>
         <div class="actions">
@@ -1855,10 +1860,12 @@
         class="play-frame"
         sandbox="allow-scripts allow-same-origin allow-popups"
       ></iframe>
+      </div>
     </div>
 
     <!-- Cover Preview Modal -->
     <div id="coverPreviewOverlay" class="play-overlay" style="display: none">
+      <div class="play-dialog" role="dialog" aria-modal="true" aria-labelledby="coverPreviewTitle">
       <div class="play-topbar">
         <div class="title" id="coverPreviewTitle">封面预览</div>
         <div class="actions">
@@ -1876,6 +1883,7 @@
           class="cover-preview-image"
           alt="游戏封面预览"
         />
+      </div>
       </div>
     </div>
 
