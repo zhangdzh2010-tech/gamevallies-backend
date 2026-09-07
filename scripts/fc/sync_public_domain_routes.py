@@ -30,11 +30,14 @@ def public_domain_routes(prefix: str):
     front = f'{prefix}-frontend'
     return [
         ('/api/*', game, METHODS),
+        ('/api', game, METHODS),
         ('/users/*', game, METHODS),
         ('/admin/*', game, METHODS),
+        ('/admin', game, METHODS),
         ('/games/*', game, METHODS),
         ('/game-shell/*', game, METHODS),
         ('/socket.io/*', game, METHODS),
+        ('/ws/*', game, METHODS),
         ('/9002299597e76e062cb56930926ed40c.txt', game, ['GET']),
         ('/33zqDBay4T.txt', game, ['GET']),
         ('/*', front, METHODS),
