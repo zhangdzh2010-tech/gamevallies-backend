@@ -672,6 +672,11 @@ function renderSlotStatusCell(slot) {
   `;
 }
 
+function renderLlmSectionError(wrap, message) {
+  if (!wrap) return;
+  wrap.innerHTML = `<div class="loading" style="color:#dc2626">加载失败: ${escHtml(message)}</div>`;
+}
+
 async function loadLlmGateway() {
   const sidebarWrap = document.getElementById('llm2ProviderSidebarWrap');
   const slotWrap = document.getElementById('llm2SlotTableWrap');
@@ -680,22 +685,46 @@ async function loadLlmGateway() {
   if (sidebarWrap) sidebarWrap.innerHTML = loadingMarkup;
   if (slotWrap) slotWrap.innerHTML = loadingMarkup;
   if (advancedWrap) advancedWrap.innerHTML = loadingMarkup;
+
+  currentExecutionRegion = document.getElementById('llm2-route-execution-region')?.value || currentExecutionRegion || 'cn_shanghai';
+  const regionQuery = encodeURIComponent(currentExecutionRegion);
+  const errors = [];
+
   try {
-    currentExecutionRegion = document.getElementById('llm2-route-execution-region')?.value || currentExecutionRegion || 'cn_shanghai';
-    const [providers, routes, regionTargets] = await Promise.all([
-      api('/llm/providers'),
-      api('/llm/routes?executionRegion=' + encodeURIComponent(currentExecutionRegion)),
-      api('/cloud/ai-engine-region-targets?providerSelectableOnly=true'),
-    ]);
-    llmProviders = providers || [];
-    llmRoutes = routes || [];
-    llmRegionTargets = regionTargets || [];
-    updateCurrentRegionLabel();
-    renderProviderRegionTargetOptions();
-    renderExecutionRegionOptions();
+    llmProviders = await api('/llm/providers') || [];
+  } catch (e) {
+    llmProviders = [];
+    errors.push('Provider: ' + e.message);
+    renderLlmSectionError(sidebarWrap, e.message);
+  }
+
+  try {
+    llmRoutes = await api('/llm/routes?executionRegion=' + regionQuery) || [];
+  } catch (e) {
+    llmRoutes = [];
+    errors.push('步骤绑定: ' + e.message);
+    renderLlmSectionError(slotWrap, e.message);
+    if (advancedWrap) advancedWrap.innerHTML = '';
+  }
+
+  try {
+    llmRegionTargets = await api('/cloud/ai-engine-region-targets?providerSelectableOnly=true') || [];
+  } catch (e) {
+    llmRegionTargets = [];
+    errors.push('Region: ' + e.message);
+  }
+
+  updateCurrentRegionLabel();
+  renderProviderRegionTargetOptions();
+  renderExecutionRegionOptions();
+
+  if (!errors.length || llmRoutes.length) {
     renderLlmStatusBar();
     renderSlotTable();
     renderAdvancedRouteTable();
+  }
+
+  if (!errors.length || llmProviders.length) {
     renderProviderSidebar();
     if (currentProviderId) {
       const provider = llmProviders.find(item => item.id === currentProviderId);
@@ -707,12 +736,10 @@ async function loadLlmGateway() {
       currentTestProvider = llmProviders.find(item => item.id === currentTestProviderId) || null;
       renderProviderTestHeader();
     }
-  } catch (e) {
-    const errorMarkup = `<div class="loading" style="color:#dc2626">加载失败: ${escHtml(e.message)}</div>`;
-    if (sidebarWrap) sidebarWrap.innerHTML = errorMarkup;
-    if (slotWrap) slotWrap.innerHTML = errorMarkup;
-    if (advancedWrap) advancedWrap.innerHTML = '';
-    toast('加载 LLM 网关失败: ' + e.message, 'error');
+  }
+
+  if (errors.length) {
+    toast('加载 LLM 网关部分失败: ' + errors.join(' | '), 'error');
   }
 }
 

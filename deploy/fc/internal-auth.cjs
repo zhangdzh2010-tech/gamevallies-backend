@@ -6,6 +6,20 @@ if (process.env.FC_DEPLOYMENT === 'true') {
   if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('FC_INTERNAL_TOKEN must be 32 random bytes encoded as hex');
   const origins = new Set((process.env.FC_INTERNAL_ORIGINS || '').split(',').filter(Boolean).map(v => new URL(v).origin));
   const trusted = value => { try { return origins.has(new URL(value).origin); } catch { return false; } };
+  const publicHosts = new Set(
+    (process.env.PUBLIC_APP_HOSTS || 'www.zlspace.ai')
+      .split(',')
+      .map(v => v.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const isPublicAppRequest = req => {
+    const host = String(req.headers['x-forwarded-host'] || req.headers.host || '')
+      .split(',')[0]
+      .trim()
+      .toLowerCase()
+      .replace(/:\d+$/, '');
+    return publicHosts.has(host);
+  };
   let controlQueue, controlRedis;
   async function control(req, res, path) {
     const Redis = require('ioredis');
@@ -27,7 +41,8 @@ if (process.env.FC_DEPLOYMENT === 'true') {
       const health = event === 'request' && req.method === 'GET' && ['/health', '/api/v1/health'].includes(path);
       const supplied = Buffer.from(String(req.headers['x-gamevallies-internal-token'] || ''));
       const expected = Buffer.from(token);
-      if (!health && !(supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected))) {
+      const authorized = supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);
+      if (!health && !authorized && !(event === 'request' && isPublicAppRequest(req))) {
         if (event === 'upgrade') res.destroy();
         else { res.writeHead(403, { 'Content-Type': 'application/json' }); res.end('{"error":"Forbidden"}'); }
         return true;
