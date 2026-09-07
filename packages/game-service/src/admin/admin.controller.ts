@@ -17,6 +17,7 @@ import { ok } from "../common/api-response";
 import { checkAdminToken } from "../common/admin-auth";
 import * as fs from "fs";
 import * as path from "path";
+import { createHash } from "crypto";
 
 type AdminAssetCacheEntry = {
   body: string;
@@ -41,7 +42,7 @@ export class AdminController {
       return cached;
     }
     const body = fs.readFileSync(filePath, "utf-8");
-    const etag = `"${stat.mtimeMs.toString(16)}-${Buffer.byteLength(body).toString(16)}"`;
+    const etag = `"${createHash("sha256").update(body).digest("hex")}"`;
     const entry = { body, etag, mtimeMs: stat.mtimeMs };
     adminAssetCache.set(filePath, entry);
     return entry;
@@ -58,23 +59,30 @@ export class AdminController {
       res.status(404).send("Admin asset not found");
       return;
     }
+    // A new HTML document must never reuse scripts cached from an older release.
+    const body = contentType === "html"
+      ? asset.body.replace(/\/admin\/assets\/([\w.-]+\.(?:js|css))(?=["'])/g, (url, name) => {
+          const dependency = this.readAdminAsset(name);
+          return dependency ? `${url}?v=${dependency.etag.replace(/"/g, "")}` : url;
+        })
+      : asset.body;
+    const etag = contentType === "html"
+      ? `"${createHash("sha256").update(body).digest("hex")}"`
+      : asset.etag;
+    res.setHeader("ETag", etag);
+    res.setHeader("Cache-Control", "no-cache");
     const ifNoneMatch = req.headers["if-none-match"];
-    if (ifNoneMatch && ifNoneMatch === asset.etag) {
+    if (ifNoneMatch && ifNoneMatch === etag) {
       res.status(304).end();
       return;
     }
     if (contentType) {
       res.type(contentType);
     }
-    res.setHeader("ETag", asset.etag);
-    res.setHeader(
-      "Cache-Control",
-      contentType === "html" ? "no-cache" : "public, max-age=86400",
-    );
     // FC default domains still overwrite this with attachment; the public
     // Nginx proxy strips that header on custom domains.
     res.setHeader("Content-Disposition", "inline");
-    res.send(asset.body);
+    res.send(body);
   }
 
   /**
