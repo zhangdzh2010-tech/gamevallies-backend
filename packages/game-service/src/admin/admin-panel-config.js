@@ -1462,19 +1462,11 @@ function renderTimeoutConfigs() {
     .sort((a, b) => a.order - b.order);
 
   wrap.innerHTML = `
-    <div style="margin-bottom:18px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:18px;padding:18px 20px">
-      <div style="font-size:16px;font-weight:700;color:#0f172a">只保留 6+1 个业务级超时项</div>
-      <div style="font-size:13px;color:#475569;line-height:1.7;margin-top:8px">
-        后台现在只展示会直接影响用户等待感、生成成功率和成本的关键节点。
-        request / overall、runtime QA phase、relay、cache、polling 等内部细项统一走默认值，不再放在这里手动调。
-      </div>
-    </div>
     ${sections.map((section) => `
       <div style="margin-bottom:18px;background:#fff;border:1px solid #e2e8f0;border-radius:18px;padding:18px">
         <div style="margin-bottom:14px">
           <div style="font-size:11px;font-weight:700;color:#2563eb;letter-spacing:0.04em;text-transform:uppercase">${escHtml(section.tag)}</div>
           <div style="font-size:17px;font-weight:700;color:#0f172a;margin-top:6px">${escHtml(section.title)}</div>
-          <div style="font-size:12px;color:#64748b;line-height:1.6;margin-top:6px">${escHtml(section.description)}</div>
         </div>
         <div style="display:grid;gap:12px">
           ${section.items.map((entry) => {
@@ -1488,7 +1480,6 @@ function renderTimeoutConfigs() {
                       ${entry.optional ? '<span class="badge badge-draft">Optional</span>' : ''}
                       <span class="badge ${entry.source === 'db' ? 'badge-published' : 'badge-draft'}">${escHtml(entry.source === 'db' ? 'Custom' : 'Default')}</span>
                     </div>
-                    <div style="font-size:12px;color:#64748b;line-height:1.7;margin-top:8px">${escHtml(entry.description || '')}</div>
                     <div style="font-size:11px;color:#94a3b8;margin-top:10px">
                       默认值: ${escHtml(String(entry.defaultValue ?? '-'))}${escHtml(timeoutUnitSuffix(entry))}
                       ${backingKeys.length ? ` · 关联 ${escHtml(String(backingKeys.length))} 个内部键` : ''}

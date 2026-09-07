@@ -324,7 +324,7 @@ async function showLogDetail(gameId, focusSection) {
     detail += '<div class="log-column">';
 
     detail += '<div class="log-card">';
-    detail += '<div class="log-card-title"><h4>阶段概览</h4><span class="log-card-sub">参照主流程展示当前能确认的最终阶段</span></div>';
+    detail += '<div class="log-card-title"><h4>阶段概览</h4></div>';
     detail += '<div class="log-stage-grid">';
     detail += LOG_DETAIL_STAGES.map((stage, index) => {
       let stageCls = 'pending';
@@ -348,37 +348,37 @@ async function showLogDetail(gameId, focusSection) {
     detail += '</div></div>';
 
     detail += '<div class="log-card">';
-    detail += '<div class="log-card-title"><h4>失败记录</h4><span class="log-card-sub">当前后台仅保存最终失败摘要</span></div>';
+    detail += '<div class="log-card-title"><h4>失败记录</h4></div>';
     detail += '<div class="log-kv-grid">';
     detail += '<div class="log-kv"><div class="k">失败阶段</div><div class="v">' + escHtml(finalStageLabel) + '</div></div>';
     detail += '<div class="log-kv"><div class="k">原始阶段</div><div class="v">' + escHtml(g.failedStage || finalStageRaw || '-') + '</div></div>';
     detail += '<div class="log-kv"><div class="k">最后失败时间</div><div class="v">' + (g.lastErrorAt ? new Date(g.lastErrorAt).toLocaleString('zh-CN') : '-') + '</div></div>';
     detail += '<div class="log-kv"><div class="k">总重试次数</div><div class="v">' + retryCount + '</div></div>';
-    detail += '<div class="log-kv"><div class="k">定位建议</div><div class="v">后台详情看最终摘要，完整逐步骤报错请查 ECS 容器日志</div></div>';
+    detail += '<div class="log-kv"><div class="k">定位建议</div><div class="v">查 ECS 容器日志</div></div>';
     detail += '</div>';
     detail += g.failedReason
       ? '<div class="log-alert" style="margin-top:14px">' + escHtml(g.failedReason) + '</div>'
-      : '<div class="log-note" style="margin-top:14px"><strong>暂无最终失败摘要。</strong> 这通常表示该任务最终成功，或中途临时重试未被持久化到数据库。</div>';
+      : '<div class="log-note" style="margin-top:14px">暂无失败摘要</div>';
     detail += '<div class="log-note" style="margin-top:12px">' + summaryNote + '</div>';
     detail += '</div>';
 
     detail += '<div class="log-card">';
-    detail += '<div class="log-card-title"><h4>用户输入</h4><span class="log-card-sub">用于触发生成的原始提示词</span></div>';
+    detail += '<div class="log-card-title"><h4>用户输入</h4></div>';
     detail += '<div class="log-textbox">' + escHtml(g.description || '(无)') + '</div>';
     detail += '</div>';
 
     if (spec) {
       detail += '<div class="log-card">';
-      detail += '<div class="log-card-title"><h4>Game Spec</h4><span class="log-card-sub">已保存的结构化规格</span></div>';
+      detail += '<div class="log-card-title"><h4>Game Spec</h4></div>';
       detail += '<pre class="log-code">' + escHtml(JSON.stringify(spec, null, 2)) + '</pre>';
       detail += '</div>';
     }
 
     detail += '<div class="log-card" data-log-source-card="true">';
-    detail += '<div class="log-card-title"><h4>游戏源码</h4><span class="log-card-sub">查看当前版本 bundle 保存的源码</span></div>';
+    detail += '<div class="log-card-title"><h4>游戏源码</h4></div>';
     if (sourceSections.length) {
       detail += '<div class="log-source-actions">';
-      detail += '<div class="log-source-summary">当前版本 v' + (bundle?.version || 0) + '，共 ' + sourceSections.length + ' 段源码，可直接复制排查问题。</div>';
+      detail += '<div class="log-source-summary">v' + (bundle?.version || 0) + ' · ' + sourceSections.length + ' 段</div>';
       detail += '<button class="btn btn-sm btn-secondary" onclick="copyAllLogSource(\'' + gameId + '\')">复制全部源码</button>';
       detail += '</div>';
       detail += '<div class="log-source-grid">';
@@ -404,7 +404,7 @@ async function showLogDetail(gameId, focusSection) {
     detail += '<div class="log-column">';
 
     detail += '<div class="log-card">';
-    detail += '<div class="log-card-title"><h4>记录摘要</h4><span class="log-card-sub">和主页面卡片相同的信息层级</span></div>';
+    detail += '<div class="log-card-title"><h4>记录摘要</h4></div>';
     detail += '<div class="log-kv-grid">';
     detail += '<div class="log-kv"><div class="k">状态</div><div class="v"><span class="badge badge-' + g.status + '">' + escHtml(statusText) + '</span></div></div>';
     detail += '<div class="log-kv"><div class="k">最终阶段</div><div class="v">' + escHtml(finalStageLabel) + '</div></div>';
@@ -416,7 +416,7 @@ async function showLogDetail(gameId, focusSection) {
     detail += '</div>';
 
     detail += '<div class="log-card">';
-    detail += '<div class="log-card-title"><h4>生成指标</h4><span class="log-card-sub">来自 bundle metadata / generationMeta</span></div>';
+    detail += '<div class="log-card-title"><h4>生成指标</h4></div>';
     detail += '<div class="log-kv-grid">';
     detail += '<div class="log-kv"><div class="k">生成策略</div><div class="v">' + escHtml(strategyText) + '</div></div>';
     detail += '<div class="log-kv"><div class="k">耗时</div><div class="v">' + genSeconds + '</div></div>';
@@ -430,7 +430,7 @@ async function showLogDetail(gameId, focusSection) {
     detail += '</div>';
 
     detail += '<div class="log-card">';
-    detail += '<div class="log-card-title"><h4>前台入口</h4><span class="log-card-sub">便于直接验证线上展示</span></div>';
+    detail += '<div class="log-card-title"><h4>前台入口</h4></div>';
     detail += '<div class="log-linkbox">';
     detail += '<div class="log-linkicon">↗</div>';
     detail += '<div class="log-linkmeta"><div class="label">预览地址</div><a href="' + previewUrl + '" target="_blank">' + previewUrl + '</a></div>';
