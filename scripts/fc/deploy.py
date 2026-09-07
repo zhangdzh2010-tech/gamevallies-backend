@@ -55,8 +55,14 @@ def validate(manifest, runtime, env):
     for f in manifest['functions']:
         if not 1 <= f['concurrency'] <= 200 or not 1 <= f.get('maxInstances', 2) <= 20: raise ValueError('Invalid concurrency limits')
         if not re.fullmatch(r'[a-z][a-z0-9-]+', f['name']): raise ValueError('Invalid function name')
-        if f.get('background') and (f.get('provisioned') != 1 or not f.get('disableOndemand')):
-            raise ValueError('Background services require one continuously active provisioned instance and no on-demand replicas')
+        if f.get('background'):
+            if f.get('provisioned') != 1:
+                raise ValueError('Background services require one continuously active provisioned instance')
+            if f['name'] == 'ai-engine' and f.get('disableOndemand') is not True:
+                raise ValueError('ai-engine requires disableOndemand to keep a single worker instance')
+            if f['name'] == 'game-service':
+                if f.get('maxInstances', 2) < 2:
+                    raise ValueError('game-service requires maxInstances >= 2 for admin/API overflow')
     if 'game-service' in names:
         if not re.fullmatch('[a-f0-9]{64}', common.get('FC_INTERNAL_TOKEN', '')): raise ValueError('Set 64 hex character FC_INTERNAL_TOKEN')
         for key in ('DATABASE_URL', 'REDIS_URL', 'JWT_SECRET', 'JWT_REFRESH_SECRET', 'ADMIN_TOKEN'):
@@ -402,7 +408,7 @@ class Deployment:
                 print(f'FC stage={stage}; function={name}', flush=True)
                 self.provision(name, f.get('provisioned', 0))
                 actual = self.wait_function(name)
-                if f.get('background') and not actual.disable_ondemand: raise deployment_error('BACKGROUND_ISOLATION_FAILED', name)
+                if f.get('background') and f['name'] == 'ai-engine' and not actual.disable_ondemand: raise deployment_error('BACKGROUND_ISOLATION_FAILED', name)
                 # HTTP cold start and custom health check are both exercised.
                 stage = 'http-health-check'
                 print(f'FC stage={stage}; function={name}', flush=True)
