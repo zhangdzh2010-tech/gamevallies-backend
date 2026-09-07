@@ -1325,13 +1325,74 @@ export class AdminService {
       normalized.contextWindow,
     );
     const maxTokens = this.coerceOptionalPositiveInteger(normalized.maxTokens);
+    const availableModels = this.normalizeLlmProviderAvailableModels(
+      normalized.availableModels,
+    );
     return {
       ...normalized,
       vendorPreset,
       modelCatalog,
       contextWindow,
       maxTokens,
+      availableModels,
     };
+  }
+
+  private normalizeLlmProviderAvailableModels(value: unknown): string[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const item of value) {
+      const id =
+        typeof item === "string"
+          ? item.trim()
+          : item &&
+              typeof item === "object" &&
+              typeof (item as { id?: unknown }).id === "string"
+            ? (item as { id: string }).id.trim()
+            : "";
+      if (id && !seen.has(id)) {
+        seen.add(id);
+        result.push(id);
+      }
+    }
+    return result;
+  }
+
+  private getProviderAvailableModelIds(provider: {
+    model?: string | null;
+    fastModel?: string | null;
+    extraConfig?: any;
+  }): string[] {
+    const extraConfig = this.normalizeLlmProviderExtraConfig(
+      provider?.extraConfig,
+    );
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const modelId of extraConfig.availableModels) {
+      if (!seen.has(modelId)) {
+        seen.add(modelId);
+        result.push(modelId);
+      }
+    }
+    for (const modelId of [provider?.model, provider?.fastModel]) {
+      const normalized = (modelId || "").trim();
+      if (normalized && !seen.has(normalized)) {
+        seen.add(normalized);
+        result.push(normalized);
+      }
+    }
+    return result;
+  }
+
+  private resolveNullableRouteModelOverride(value: unknown): string | null {
+    if (value === null || value === undefined || value === "") {
+      return null;
+    }
+    const normalized = String(value).trim();
+    return normalized || null;
   }
 
   private resolveOptionalPositiveInteger(
@@ -1524,6 +1585,10 @@ export class AdminService {
       current.maxTokens,
       "maxTokens",
     );
+    const availableModels =
+      body?.availableModels !== undefined
+        ? this.normalizeLlmProviderAvailableModels(body.availableModels)
+        : current.availableModels;
     return {
       ...current,
       vendorPreset,
@@ -1539,6 +1604,7 @@ export class AdminService {
       },
       contextWindow,
       maxTokens,
+      availableModels,
     };
   }
 
@@ -1566,6 +1632,11 @@ export class AdminService {
       extraConfig.modelCatalog.apiKey,
     );
     const capabilityFlags = this.normalizeLlmCapabilityFlags(extraConfig);
+    const availableModels = this.getProviderAvailableModelIds({
+      model: provider?.model,
+      fastModel: provider?.fastModel,
+      extraConfig,
+    });
     return {
       ...provider,
       extraConfig: undefined,
@@ -1583,6 +1654,8 @@ export class AdminService {
       catalogApiKeyMasked,
       contextWindow: extraConfig.contextWindow,
       maxTokens: extraConfig.maxTokens,
+      availableModels,
+      modelCount: availableModels.length,
       capabilityFlags,
       capabilitySummary: this.buildLlmCapabilitySummary(capabilityFlags),
       latestTest: latestTest
@@ -4837,9 +4910,18 @@ export class AdminService {
       providerRegionTargetId: exactProvider?.regionTargetId ?? null,
       providerRegionDisplayName: exactProvider?.region ?? null,
       providerEnabled: exactProvider?.enabled ?? null,
-      modelDefault: effectiveProvider?.model ?? exactProvider?.model ?? null,
+      modelOverride: exactRoute?.modelOverride ?? null,
+      fastModelOverride: exactRoute?.fastModelOverride ?? null,
+      modelDefault:
+        exactRoute?.modelOverride ??
+        effectiveProvider?.model ??
+        exactProvider?.model ??
+        null,
       modelFast:
-        effectiveProvider?.fastModel ?? exactProvider?.fastModel ?? null,
+        exactRoute?.fastModelOverride ??
+        effectiveProvider?.fastModel ??
+        exactProvider?.fastModel ??
+        null,
       fallbackProviderIds,
       fallbackProviders,
       fallbackProviderSummary: fallbackProviders.length
@@ -4861,8 +4943,10 @@ export class AdminService {
       effectiveProviderId: effectiveProvider?.id ?? null,
       effectiveProviderDisplayName: effectiveProvider?.name ?? null,
       effectiveProviderRegion: effectiveProvider?.region ?? null,
-      effectiveModelDefault: effectiveProvider?.model ?? null,
-      effectiveModelFast: effectiveProvider?.fastModel ?? null,
+      effectiveModelDefault:
+        exactRoute?.modelOverride ?? effectiveProvider?.model ?? null,
+      effectiveModelFast:
+        exactRoute?.fastModelOverride ?? effectiveProvider?.fastModel ?? null,
     };
   }
 
@@ -4913,7 +4997,23 @@ export class AdminService {
     if (!apiKey) {
       throw new BadRequestException("apiKey is required");
     }
-    const extraConfig = this.buildLlmProviderExtraConfig(body, existing);
+    const model = String(body.model).trim();
+    const fastModel = body.fastModel ? String(body.fastModel).trim() : null;
+    let extraConfig = this.buildLlmProviderExtraConfig(body, existing);
+    const availableModelSet = new Set(extraConfig.availableModels);
+    const mergedAvailableModels = [...extraConfig.availableModels];
+    if (model && !availableModelSet.has(model)) {
+      mergedAvailableModels.unshift(model);
+      availableModelSet.add(model);
+    }
+    if (fastModel && !availableModelSet.has(fastModel)) {
+      mergedAvailableModels.push(fastModel);
+      availableModelSet.add(fastModel);
+    }
+    extraConfig = {
+      ...extraConfig,
+      availableModels: mergedAvailableModels,
+    };
 
     const provider = await this.prisma.llmGatewayProvider.upsert({
       where: { id: providerId },
@@ -4927,8 +5027,8 @@ export class AdminService {
         region: regionTarget.executionRegion,
         baseUrl: body.baseUrl || "",
         apiKey,
-        model: body.model,
-        fastModel: body.fastModel || null,
+        model,
+        fastModel,
         requestTimeoutS: Number(body.requestTimeoutS || 600),
         connectTimeoutS: Number(body.connectTimeoutS || 15),
         enabled: body.enabled !== false,
@@ -4945,8 +5045,8 @@ export class AdminService {
         region: regionTarget.executionRegion,
         baseUrl: body.baseUrl || "",
         apiKey,
-        model: body.model,
-        fastModel: body.fastModel || null,
+        model,
+        fastModel,
         requestTimeoutS: Number(body.requestTimeoutS || 600),
         connectTimeoutS: Number(body.connectTimeoutS || 15),
         enabled: body.enabled !== false,
@@ -5145,6 +5245,7 @@ export class AdminService {
           providerType: true,
           model: true,
           fastModel: true,
+          extraConfig: true,
           enabled: true,
         },
       }),
@@ -5209,6 +5310,23 @@ export class AdminService {
         "Fallback providers must match the selected provider region",
       );
     }
+    const modelOverride = this.resolveNullableRouteModelOverride(
+      body?.modelOverride,
+    );
+    const fastModelOverride = this.resolveNullableRouteModelOverride(
+      body?.fastModelOverride,
+    );
+    const availableModelIds = this.getProviderAvailableModelIds(provider);
+    if (modelOverride && !availableModelIds.includes(modelOverride)) {
+      throw new BadRequestException(
+        `modelOverride is not available on provider: ${modelOverride}`,
+      );
+    }
+    if (fastModelOverride && !availableModelIds.includes(fastModelOverride)) {
+      throw new BadRequestException(
+        `fastModelOverride is not available on provider: ${fastModelOverride}`,
+      );
+    }
     const routeId = id || randomUUID();
 
     const route = await this.prisma.llmStepRoute.upsert({
@@ -5226,8 +5344,8 @@ export class AdminService {
         region: routeRegion,
         providerId: body.providerId,
         fallbackProviderIds,
-        modelOverride: null,
-        fastModelOverride: null,
+        modelOverride,
+        fastModelOverride,
         requestTimeoutS: null,
         connectTimeoutS: null,
         enabled: body.enabled !== false,
@@ -5237,8 +5355,8 @@ export class AdminService {
         region: routeRegion,
         providerId: body.providerId,
         fallbackProviderIds,
-        modelOverride: null,
-        fastModelOverride: null,
+        modelOverride,
+        fastModelOverride,
         requestTimeoutS: null,
         connectTimeoutS: null,
         enabled: body.enabled !== false,

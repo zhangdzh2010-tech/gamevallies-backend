@@ -574,6 +574,110 @@ function readSlotSelectValue(slotId, kind = 'provider') {
   return (element?.value || '').trim();
 }
 
+function getProviderAvailableModels(provider) {
+  if (!provider) return [];
+  const models = [];
+  if (Array.isArray(provider.availableModels)) {
+    provider.availableModels.forEach(item => {
+      const id = typeof item === 'string' ? item : item?.id;
+      if (id && !models.includes(id)) models.push(id);
+    });
+  }
+  if (provider.model && !models.includes(provider.model)) models.unshift(provider.model);
+  if (provider.fastModel && !models.includes(provider.fastModel)) models.push(provider.fastModel);
+  return models;
+}
+
+function getProviderById(providerId) {
+  return llmProviders.find(provider => provider.id === providerId) || null;
+}
+
+function buildModelSelectOptions(providerId, selectedModel, placeholder = '默认模型') {
+  const models = getProviderAvailableModels(getProviderById(providerId));
+  const items = [`<option value="" ${selectedModel ? '' : 'selected'}>${escHtml(placeholder)}</option>`];
+  models.forEach(model => {
+    items.push(`<option value="${escAttr(model)}" ${model === selectedModel ? 'selected' : ''}>${escHtml(model)}</option>`);
+  });
+  if (selectedModel && !models.includes(selectedModel)) {
+    items.push(`<option value="${escAttr(selectedModel)}" selected>[不可用] ${escHtml(selectedModel)}</option>`);
+  }
+  return items.join('');
+}
+
+function inferSlotModelSelection(slot) {
+  const routes = slot.stepKeys
+    .map(stepKey => getRouteByStepKey(stepKey))
+    .filter(Boolean);
+  if (!routes.length) return '';
+  const model = routes[0].modelOverride || '';
+  const allSame = routes.every(route => (route.modelOverride || '') === model);
+  return allSame ? model : model;
+}
+
+function parseAvailableModelsTextarea() {
+  const raw = document.getElementById('llm2-provider-available-models')?.value || '';
+  return raw
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .filter((id, index, arr) => arr.indexOf(id) === index);
+}
+
+function renderProviderModelDefaultOptions() {
+  const models = parseAvailableModelsTextarea();
+  const primarySelect = document.getElementById('llm2-provider-model');
+  const fastSelect = document.getElementById('llm2-provider-fast-model');
+  if (!primarySelect || !fastSelect) return;
+  const currentPrimary = primarySelect.value;
+  const currentFast = fastSelect.value;
+  primarySelect.innerHTML = models.length
+    ? models.map(model => `<option value="${escAttr(model)}" ${model === currentPrimary ? 'selected' : ''}>${escHtml(model)}</option>`).join('')
+    : `<option value="">${escHtml('请先添加可用模型')}</option>`;
+  if (currentPrimary && !models.includes(currentPrimary)) {
+    primarySelect.innerHTML += `<option value="${escAttr(currentPrimary)}" selected>${escHtml(currentPrimary)}</option>`;
+  }
+  fastSelect.innerHTML = `<option value="">${escHtml('无')}</option>${models.map(model => `<option value="${escAttr(model)}" ${model === currentFast ? 'selected' : ''}>${escHtml(model)}</option>`).join('')}`;
+  if (currentFast && !models.includes(currentFast)) {
+    fastSelect.innerHTML += `<option value="${escAttr(currentFast)}" selected>${escHtml(currentFast)}</option>`;
+  }
+}
+
+function mergeCatalogIntoAvailableModels() {
+  if (!llmProviderCatalogOptions.length) {
+    toast('请先加载模型目录', 'error');
+    return;
+  }
+  const merged = new Set(parseAvailableModelsTextarea());
+  llmProviderCatalogOptions.forEach(item => {
+    const id = item.id || item.label;
+    if (id) merged.add(id);
+  });
+  document.getElementById('llm2-provider-available-models').value = Array.from(merged).join('\n');
+  renderProviderModelDefaultOptions();
+  toast(`已导入 ${merged.size} 个模型`, 'success');
+}
+
+function handleSlotProviderChange(slotId) {
+  refreshSlotModelSelect(slotId);
+}
+
+function refreshSlotModelSelect(slotId) {
+  const select = document.getElementById(`llm-slot-model-${slotId}`);
+  if (!select) return;
+  const providerId = resolveSlotProviderId(slotId);
+  select.innerHTML = buildModelSelectOptions(providerId, select.value || '');
+}
+
+function handleAdvancedRouteProviderChange(stepKey) {
+  const route = llmRoutes.find(item => item.stepKey === stepKey);
+  if (!route) return;
+  const domKey = stepKey.replace(/[^a-zA-Z0-9_-]/g, '-');
+  const providerId = document.getElementById(`llm-route-binding-provider-${domKey}`)?.value || '';
+  const modelSelect = document.getElementById(`llm-route-binding-model-${domKey}`);
+  if (!modelSelect) return;
+  modelSelect.innerHTML = buildModelSelectOptions(providerId, route.modelOverride || '');
+}
+
 function buildProviderSelectOptions(regionProviders, selectedId, placeholder, options = {}) {
   const { includeFollow = false, excludeId = '' } = options;
   const items = [`<option value="" ${selectedId ? '' : 'selected'}>${escHtml(placeholder)}</option>`];
@@ -585,7 +689,9 @@ function buildProviderSelectOptions(regionProviders, selectedId, placeholder, op
   }
   regionProviders.forEach(provider => {
     if (excludeId && provider.id === excludeId) return;
-    items.push(`<option value="${escAttr(provider.id)}" ${provider.id === selectedId ? 'selected' : ''}>${escHtml(provider.name)} · ${escHtml(provider.model || '-')}</option>`);
+    const modelCount = getProviderAvailableModels(provider).length;
+    const suffix = modelCount > 1 ? ` · ${modelCount} 模型` : provider.model ? ` · ${provider.model}` : '';
+    items.push(`<option value="${escAttr(provider.id)}" ${provider.id === selectedId ? 'selected' : ''}>${escHtml(provider.name)}${escHtml(suffix)}</option>`);
   });
   return items.join('');
 }
@@ -665,7 +771,7 @@ function summarizeSlotStatus(slot) {
 function renderSlotStatusCell(slot) {
   const status = summarizeSlotStatus(slot);
   const firstRoute = slot.stepKeys.map(stepKey => getRouteByStepKey(stepKey)).find(Boolean);
-  const model = firstRoute?.modelDefault || firstRoute?.effectiveProvider?.model || '-';
+  const model = firstRoute?.modelDefault || firstRoute?.effectiveModelDefault || '-';
   return `
     <div class="llm-status-dot ${escAttr(status.tone === 'ok' ? '' : status.tone)}">${escHtml(status.label)}</div>
     <div class="llm-row-sub" style="margin-top:6px">${escHtml(model)}</div>
@@ -763,15 +869,20 @@ function renderSlotTable() {
   const wrap = document.getElementById('llm2SlotTableWrap');
   if (!wrap) return;
   const regionProviders = getRegionProviders();
-  let html = '<table class="llm-slot-table"><thead><tr><th>环节</th><th>Provider</th><th>状态</th></tr></thead><tbody>';
+  let html = '<table class="llm-slot-table"><thead><tr><th>环节</th><th>Provider</th><th>模型</th><th>状态</th></tr></thead><tbody>';
   for (const slot of LLM_BINDING_SLOTS) {
     const selection = inferSlotProviderSelection(slot);
+    const resolvedProviderId = selection.providerId === '__follow__'
+      ? resolveSlotProviderId(slot.followSlot || slot.id)
+      : selection.providerId;
+    const modelSelection = inferSlotModelSelection(slot);
     const providerOptions = buildProviderSelectOptions(
       regionProviders,
       selection.providerId,
       slot.required ? '请选择 Provider' : '可选',
       { includeFollow: Boolean(slot.followSlot) },
     );
+    const modelOptions = buildModelSelectOptions(resolvedProviderId, modelSelection);
     const fallbackOptions = slot.allowFallback
       ? buildProviderSelectOptions(
           regionProviders,
@@ -787,9 +898,12 @@ function renderSlotTable() {
       </td>
       <td>
         <div class="llm-slot-bindings">
-          <select id="llm-slot-provider-${escAttr(slot.id)}">${providerOptions}</select>
+          <select id="llm-slot-provider-${escAttr(slot.id)}" onchange="handleSlotProviderChange('${escAttr(slot.id)}')">${providerOptions}</select>
           ${slot.allowFallback ? `<select id="llm-slot-fallback-${escAttr(slot.id)}">${fallbackOptions}</select>` : ''}
         </div>
+      </td>
+      <td>
+        <select id="llm-slot-model-${escAttr(slot.id)}">${modelOptions}</select>
       </td>
       <td>${renderSlotStatusCell(slot)}</td>
     </tr>`;
@@ -809,11 +923,15 @@ function renderProviderSidebar() {
   wrap.innerHTML = `<div class="llm-provider-sidebar">${regionProviders.map(provider => {
     const latest = summarizeLatestTest(provider.latestTest);
     const statusClass = provider.enabled === false ? 'off' : 'ok';
+    const models = getProviderAvailableModels(provider);
+    const modelSummary = models.length > 1
+      ? `${models.length} 个模型 · 默认 ${provider.model || models[0]}`
+      : `${provider.model || '-'}`;
     return `<div class="llm-provider-card">
       <div class="llm-provider-card-head">
         <div>
           <div class="llm-provider-card-name">${escHtml(provider.name)}</div>
-          <div class="llm-provider-card-model">${escHtml(provider.model || '-')}${provider.fastModel ? ` · fast ${escHtml(provider.fastModel)}` : ''}</div>
+          <div class="llm-provider-card-model">${escHtml(modelSummary)}</div>
         </div>
         <span class="llm-table-status ${statusClass}">${provider.enabled !== false ? '启用' : '停用'}</span>
       </div>
@@ -827,7 +945,7 @@ function renderProviderSidebar() {
   }).join('')}</div>`;
 }
 
-async function upsertRouteForStep(stepKey, providerId, fallbackProviderIds = [], enabled = true) {
+async function upsertRouteForStep(stepKey, providerId, fallbackProviderIds = [], enabled = true, modelOverride = null) {
   const route = getRouteByStepKey(stepKey);
   if (!providerId) return;
   await api(route?.id ? '/llm/routes/' + route.id : '/llm/routes', {
@@ -837,6 +955,7 @@ async function upsertRouteForStep(stepKey, providerId, fallbackProviderIds = [],
       executionRegion: currentExecutionRegion,
       providerId,
       fallbackProviderIds,
+      modelOverride: modelOverride || null,
       enabled,
     },
   });
@@ -860,10 +979,11 @@ async function saveAllSlotBindings() {
         }
         continue;
       }
+      const modelOverride = readSlotSelectValue(slot.id, 'model') || null;
       const fallbackId = slot.allowFallback ? readSlotSelectValue(slot.id, 'fallback') : '';
       const fallbackProviderIds = fallbackId && fallbackId !== providerId ? [fallbackId] : [];
       for (const stepKey of slot.stepKeys) {
-        await upsertRouteForStep(stepKey, providerId, fallbackProviderIds, true);
+        await upsertRouteForStep(stepKey, providerId, fallbackProviderIds, true, modelOverride);
       }
     }
     toast('步骤绑定已保存');
@@ -1147,7 +1267,7 @@ function renderAdvancedRouteTable() {
     return;
   }
   const regionProviders = getRegionProviders();
-  let html = '<table class="llm-slot-table"><thead><tr><th>stepKey</th><th>Provider</th><th>状态</th><th></th></tr></thead><tbody>';
+  let html = '<table class="llm-slot-table"><thead><tr><th>stepKey</th><th>Provider</th><th>模型</th><th>状态</th><th></th></tr></thead><tbody>';
   for (const route of llmRoutes) {
     const domKey = route.stepKey.replace(/[^a-zA-Z0-9_-]/g, '-');
     const stepTitle = route.displayName ? `${route.displayName}` : route.stepKey;
@@ -1156,13 +1276,17 @@ function renderAdvancedRouteTable() {
       route.providerId || '',
       route.providerId ? '更换 Provider' : '未绑定',
     );
+    const modelOptions = buildModelSelectOptions(route.providerId || '', route.modelOverride || '');
     html += `<tr>
       <td>
         <div class="llm-row-title">${escHtml(stepTitle)}</div>
         <div class="llm-row-sub">${escHtml(route.stepKey)}</div>
       </td>
       <td>
-        <select id="llm-route-binding-provider-${escAttr(domKey)}">${providerOptions}</select>
+        <select id="llm-route-binding-provider-${escAttr(domKey)}" onchange="handleAdvancedRouteProviderChange('${escAttr(route.stepKey)}')">${providerOptions}</select>
+      </td>
+      <td>
+        <select id="llm-route-binding-model-${escAttr(domKey)}">${modelOptions}</select>
       </td>
       <td>${renderRouteStateBadge(route)}</td>
       <td><button class="abtn abtn-preview" onclick="saveRouteBinding('${escAttr(route.stepKey)}')">保存</button></td>
@@ -1180,6 +1304,7 @@ async function saveRouteBinding(stepKey) {
   }
   const domKey = stepKey.replace(/[^a-zA-Z0-9_-]/g, '-');
   const providerId = document.getElementById(`llm-route-binding-provider-${domKey}`)?.value || '';
+  const modelOverride = document.getElementById(`llm-route-binding-model-${domKey}`)?.value || '';
   const fallbackProviderIds = [];
   const enabled = true;
   if (!providerId) {
@@ -1193,6 +1318,7 @@ async function saveRouteBinding(stepKey) {
         stepKey: route.stepKey,
         executionRegion: route.executionRegion || currentExecutionRegion,
         providerId,
+        modelOverride: modelOverride || null,
         fallbackProviderIds,
         enabled,
       },
@@ -1217,8 +1343,10 @@ function resetProviderForm() {
   document.getElementById('llm2-provider-priority').value = '100';
   document.getElementById('llm2-provider-base-url').value = '';
   document.getElementById('llm2-provider-api-key').value = '';
-  document.getElementById('llm2-provider-model').value = '';
-  document.getElementById('llm2-provider-fast-model').value = '';
+  document.getElementById('llm2-provider-available-models').value = '';
+  document.getElementById('llm2-provider-model').innerHTML = '';
+  document.getElementById('llm2-provider-fast-model').innerHTML = '';
+  renderProviderModelDefaultOptions();
   document.getElementById('llm2-provider-timeout').value = '600';
   document.getElementById('llm2-provider-connect-timeout').value = '15';
   document.getElementById('llm2-provider-context-window').value = '';
@@ -1266,6 +1394,8 @@ function populateProviderForm(provider) {
   document.getElementById('llm2-provider-priority').value = provider.priority ?? 100;
   document.getElementById('llm2-provider-base-url').value = provider.baseUrl || '';
   document.getElementById('llm2-provider-api-key').value = '';
+  document.getElementById('llm2-provider-available-models').value = getProviderAvailableModels(provider).join('\n');
+  renderProviderModelDefaultOptions();
   document.getElementById('llm2-provider-model').value = provider.model || '';
   document.getElementById('llm2-provider-fast-model').value = provider.fastModel || '';
   document.getElementById('llm2-provider-timeout').value = provider.requestTimeoutS ?? 600;
@@ -1583,11 +1713,7 @@ function toggleCatalogModeFields() {
 }
 
 function renderProviderCatalogOptions() {
-  const markup = llmProviderCatalogOptions.map(item => (
-    `<option value="${escAttr(item.id)}">${escHtml(item.label || item.id)}</option>`
-  )).join('');
-  document.getElementById('llm2-provider-model-options').innerHTML = markup;
-  document.getElementById('llm2-provider-fast-model-options').innerHTML = markup;
+  // Catalog preview is merged into available models via mergeCatalogIntoAvailableModels().
 }
 
 async function loadProviderCatalogPreview() {
@@ -1615,7 +1741,7 @@ async function loadProviderCatalogPreview() {
     });
     llmProviderCatalogOptions = result.models || [];
     renderProviderCatalogOptions();
-    document.getElementById('llm2ProviderCatalogStatus').textContent = `已加载 ${llmProviderCatalogOptions.length} 个模型 · ${result.resolvedCatalogApiUrl}`;
+    document.getElementById('llm2ProviderCatalogStatus').textContent = `已加载 ${llmProviderCatalogOptions.length} 个模型 · ${result.resolvedCatalogApiUrl} · 可点击「导入到可用模型」`;
     toast(`已加载 ${llmProviderCatalogOptions.length} 个模型`, 'success');
   } catch (e) {
     document.getElementById('llm2ProviderCatalogStatus').textContent = `加载失败：${e.message}`;
@@ -1635,6 +1761,18 @@ function readOptionalPositiveIntegerInput(id, fieldLabel) {
 
 async function saveProvider() {
   try {
+    const availableModels = parseAvailableModelsTextarea();
+    const model = document.getElementById('llm2-provider-model').value.trim();
+    const fastModel = document.getElementById('llm2-provider-fast-model').value.trim();
+    if (!model) {
+      throw new Error('默认主模型不能为空');
+    }
+    if (availableModels.length && !availableModels.includes(model)) {
+      throw new Error('默认主模型必须在可用模型列表中');
+    }
+    if (fastModel && availableModels.length && !availableModels.includes(fastModel)) {
+      throw new Error('默认快模型必须在可用模型列表中');
+    }
     const body = {
       name: document.getElementById('llm2-provider-name').value.trim(),
       providerType: document.getElementById('llm2-provider-type').value,
@@ -1643,8 +1781,9 @@ async function saveProvider() {
       priority: Number(document.getElementById('llm2-provider-priority').value || 100),
       baseUrl: document.getElementById('llm2-provider-base-url').value.trim(),
       apiKey: document.getElementById('llm2-provider-api-key').value.trim(),
-      model: document.getElementById('llm2-provider-model').value.trim(),
-      fastModel: document.getElementById('llm2-provider-fast-model').value.trim(),
+      availableModels: availableModels.length ? availableModels : [model, ...(fastModel ? [fastModel] : [])],
+      model,
+      fastModel: fastModel || null,
       requestTimeoutS: Number(document.getElementById('llm2-provider-timeout').value || 600),
       connectTimeoutS: Number(document.getElementById('llm2-provider-connect-timeout').value || 15),
       contextWindow: readOptionalPositiveIntegerInput('llm2-provider-context-window', 'Context'),

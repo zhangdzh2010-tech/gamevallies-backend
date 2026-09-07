@@ -1456,27 +1456,25 @@
                         </button>
                       </div>
                     </div>
-                    <div class="llm-field">
-                      <label>主模型 *</label>
-                      <input
-                        type="text"
-                        id="llm2-provider-model"
-                        list="llm2-provider-model-options"
-                        placeholder="从下拉列表中选择"
-                      />
-                      <datalist id="llm2-provider-model-options"></datalist>
+                    <div class="llm-field full">
+                      <label>可用模型</label>
+                      <textarea
+                        id="llm2-provider-available-models"
+                        rows="4"
+                        placeholder="每行一个模型 ID&#10;MiniMax-M2.5&#10;MiniMax-M2.5-highspeed"
+                        oninput="renderProviderModelDefaultOptions()"
+                      ></textarea>
+                      <div class="hint">
+                        步骤绑定从此列表选择模型；下方主模型/快模型为 Provider 默认值
+                      </div>
                     </div>
                     <div class="llm-field">
-                      <label>快模型</label>
-                      <input
-                        type="text"
-                        id="llm2-provider-fast-model"
-                        list="llm2-provider-fast-model-options"
-                        placeholder="可选"
-                      />
-                      <datalist
-                        id="llm2-provider-fast-model-options"
-                      ></datalist>
+                      <label>默认主模型 *</label>
+                      <select id="llm2-provider-model"></select>
+                    </div>
+                    <div class="llm-field">
+                      <label>默认快模型</label>
+                      <select id="llm2-provider-fast-model"></select>
                     </div>
                     <div class="llm-field llm-field-toggle">
                       <label>启用</label>
@@ -1542,6 +1540,7 @@
                       <label>模型目录</label>
                       <div class="llm-test-actions" style="margin-bottom: 8px">
                         <button class="btn btn-secondary btn-sm" onclick="loadProviderCatalogPreview()">加载模型</button>
+                        <button class="btn btn-secondary btn-sm" type="button" onclick="mergeCatalogIntoAvailableModels()">导入到可用模型</button>
                       </div>
                       <select id="llm2-provider-catalog-mode" onchange="toggleCatalogModeFields()">
                         <option value="auto">自动</option>

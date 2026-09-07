@@ -67,6 +67,8 @@ jobs:
       JWT_SECRET: ${{ secrets.JWT_SECRET }}
       JWT_REFRESH_SECRET: ${{ secrets.JWT_REFRESH_SECRET }}
       ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+      ADMIN_USERNAME: ${{ vars.ADMIN_USERNAME || 'admin' }}
+      ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
       FC_INTERNAL_TOKEN: ${{ secrets.FC_INTERNAL_TOKEN }}
       LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
       ALIYUN_OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
