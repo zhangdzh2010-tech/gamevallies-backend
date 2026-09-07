@@ -94,6 +94,7 @@ describe("AdminService", () => {
       llmStepCatalog: {
         findMany: jest.fn(),
         findUnique: jest.fn(),
+        upsert: jest.fn(),
       },
       llmGatewayProvider: {
         findUnique: jest.fn(),
@@ -3180,6 +3181,64 @@ describe("AdminService", () => {
         modelOverride: "unknown-model",
       }),
     ).rejects.toThrow("modelOverride is not available on provider");
+  });
+
+  it("auto-seeds known llm step catalog entries before saving a route", async () => {
+    prisma.llmStepCatalog.findUnique.mockResolvedValue(null);
+    prisma.llmStepCatalog.upsert.mockResolvedValue({
+      id: "step-creative",
+      stepKey: "creative_anchors",
+      enabled: true,
+    });
+    prisma.llmGatewayProvider.findUnique.mockResolvedValue({
+      id: "provider-1",
+      name: "MiniMax Shanghai",
+      region: "cn_shanghai",
+      regionTargetId: "target-1",
+      model: "MiniMax-M2.5",
+      fastModel: null,
+      extraConfig: { availableModels: ["MiniMax-M2.5"] },
+      enabled: true,
+    });
+    prisma.llmGatewayProvider.findMany.mockResolvedValue([]);
+    prisma.llmStepRoute.upsert.mockResolvedValue({
+      id: "route-1",
+      stepKey: "creative_anchors",
+      region: "cn_shanghai",
+      providerId: "provider-1",
+      fallbackProviderIds: [],
+      modelOverride: null,
+      fastModelOverride: null,
+      requestTimeoutS: null,
+      connectTimeoutS: null,
+      enabled: true,
+      provider: {
+        id: "provider-1",
+        name: "MiniMax Shanghai",
+        region: "cn_shanghai",
+        regionTargetId: "target-1",
+        providerType: "openai_compatible",
+        model: "MiniMax-M2.5",
+        fastModel: null,
+      },
+    });
+    jest.spyOn(service, "refreshLlmGateway").mockResolvedValue({ ok: true } as any);
+
+    await service.upsertLlmRoute(undefined, {
+      stepKey: "creative_anchors",
+      providerId: "provider-1",
+      enabled: true,
+    });
+
+    expect(prisma.llmStepCatalog.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { stepKey: "creative_anchors" },
+        create: expect.objectContaining({
+          stepKey: "creative_anchors",
+          enabled: true,
+        }),
+      }),
+    );
   });
 
   it("refreshes only the selected llm gateway region and tolerates a stale endpoint when another one succeeds", async () => {

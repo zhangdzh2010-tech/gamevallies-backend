@@ -527,7 +527,7 @@ const GAME_SCHEMA_STATEMENTS = [
   ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
 ];
 
-const DEFAULT_LLM_STEP_CATALOG = [
+export const DEFAULT_LLM_STEP_CATALOG = [
   {
     id: "1e0207d2-a7de-4d49-b4bb-fcdbf0411002",
     stepKey: "creative_anchors",

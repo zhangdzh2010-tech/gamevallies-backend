@@ -983,7 +983,11 @@ async function saveAllSlotBindings() {
       const fallbackId = slot.allowFallback ? readSlotSelectValue(slot.id, 'fallback') : '';
       const fallbackProviderIds = fallbackId && fallbackId !== providerId ? [fallbackId] : [];
       for (const stepKey of slot.stepKeys) {
-        await upsertRouteForStep(stepKey, providerId, fallbackProviderIds, true, modelOverride);
+        try {
+          await upsertRouteForStep(stepKey, providerId, fallbackProviderIds, true, modelOverride);
+        } catch (error) {
+          throw new Error(`${stepKey}: ${error.message || error}`);
+        }
       }
     }
     toast('步骤绑定已保存');
