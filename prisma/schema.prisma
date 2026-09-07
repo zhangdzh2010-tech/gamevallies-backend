@@ -465,8 +465,8 @@ model LlmGatewayProvider {
   apiKey           String          @map("api_key") @db.Text
   model            String          @db.VarChar(128)
   fastModel        String?         @map("fast_model") @db.VarChar(128)
-  requestTimeoutS  Int             @default(600) @map("request_timeout_s")
-  connectTimeoutS  Int             @default(15) @map("connect_timeout_s")
+  requestTimeoutS  Int             @default(1800) @map("request_timeout_s")
+  connectTimeoutS  Int             @default(1800) @map("connect_timeout_s")
   enabled          Boolean         @default(true)
   priority         Int             @default(100)
   description      String?         @db.VarChar(255)

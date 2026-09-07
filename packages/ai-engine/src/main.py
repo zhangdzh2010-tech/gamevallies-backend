@@ -12,6 +12,7 @@ from .api.endpoints.generate import router as generate_router
 from .services.websocket_manager import manager
 from .api.models import GenerateProgress
 from .services.llm_client import _build_openai_compatible_chat_url
+from .services.async_task_manager import task_manager
 
 # Lifecycle events
 @asynccontextmanager
@@ -33,9 +34,13 @@ async def lifespan(app: FastAPI):
         print(f"LLM Base URL: {settings.LLM_BASE_URL}")
         print(f"LLM Chat Endpoint: {_build_openai_compatible_chat_url(settings.LLM_BASE_URL)}")
         print(f"LLM Model: {settings.LLM_MODEL}")
-    yield
-    # Shutdown
-    print("Shutting down PlayForge AI Engine")
+    if task_manager._store.enabled():
+        task_manager.durable.start()
+    try:
+        yield
+    finally:
+        await task_manager.durable.close()
+        print("Shutting down PlayForge AI Engine")
 
 
 # Create FastAPI app

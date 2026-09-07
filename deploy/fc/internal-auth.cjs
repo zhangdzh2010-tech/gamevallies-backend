@@ -20,19 +20,24 @@ if (process.env.FC_DEPLOYMENT === 'true') {
       .replace(/:\d+$/, '');
     return publicHosts.has(host);
   };
-  let controlQueue, controlRedis;
-  async function control(req, res, path) {
+  const drain = require('./task-drain.cjs');
+  let controlQueue, controlRedis, controlPrisma;
+  function controlClients() {
     const Redis = require('ioredis');
-    const { Queue } = require('bullmq');
     if (!controlRedis) controlRedis = new Redis(process.env.REDIS_URL, { maxRetriesPerRequest: 1 });
+  }
+  async function control(req, res, path) {
+    const { Queue } = require('bullmq');
+    const { PrismaClient } = require('@prisma/client');
+    controlClients();
+    if (!controlPrisma) controlPrisma = new PrismaClient();
     if (!controlQueue) controlQueue = new Queue('generation-execution', { connection: controlRedis });
     if (path === '/__fc/drain' && req.method === 'POST') await controlRedis.set('gamevallies:fc:maintenance', '1', 'EX', 7200);
     else if (path === '/__fc/resume' && req.method === 'POST') await controlRedis.del('gamevallies:fc:maintenance');
     else if (!(path === '/__fc/status' && req.method === 'GET')) { res.writeHead(404); res.end(); return; }
-    const jobs = await controlQueue.getJobs(['wait', 'active', 'delayed', 'prioritized']);
-    const pending = jobs.filter(j => ['pipeline_run', 'pipeline_iterate'].includes(j.name)).length;
+    const status = await drain.pendingWork(controlQueue, controlPrisma, controlRedis);
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ pending, maintenance: Boolean(await controlRedis.get('gamevallies:fc:maintenance')) }));
+    res.end(JSON.stringify(status));
   }
   const emit = http.Server.prototype.emit;
   http.Server.prototype.emit = function(event, req, res, ...rest) {
@@ -48,7 +53,28 @@ if (process.env.FC_DEPLOYMENT === 'true') {
         return true;
       }
       if (event === 'request' && path.startsWith('/__fc/') && process.env.FC_SERVICE === 'game-service') {
+        if (!authorized) { res.writeHead(403); res.end('Forbidden'); return true; }
         control(req, res, path).catch(() => { res.writeHead(503); res.end('Control unavailable'); });
+        return true;
+      }
+      if (event === 'request' && req.method === 'POST' && drain.CREATION.test(path) && process.env.FC_SERVICE === 'game-service') {
+        controlClients();
+        const admissionId = crypto.randomUUID();
+        drain.admit(controlRedis, admissionId).then(accepted => {
+          if (!accepted) {
+            res.writeHead(503, {'Content-Type':'application/json', 'Retry-After':'30'});
+            res.end(JSON.stringify({code:'GENERATION_MAINTENANCE', message:'服务更新中，请稍后重试；当前创作未扣费。'}));
+            return;
+          }
+          const release = () => { void controlRedis.zrem(drain.ADMISSIONS, admissionId).catch(() => {}); };
+          res.once('finish', release);
+          const end = res.end;
+          res.end = function(...args) { release(); return end.apply(this, args); };
+          // Keep admission until the handler responds, even if the client
+          // disconnects while the accepted request is still doing server work.
+          delete req.headers['x-gamevallies-internal-token'];
+          emit.call(this, event, req, res, ...rest);
+        }).catch(() => { res.writeHead(503); res.end('Generation temporarily unavailable'); });
         return true;
       }
       // Do not allow the caller's transport credential to escape via a proxy.

@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     LLM_GENERATION_TOKEN_BUDGET_SIMPLE: int = 6144
     LLM_GENERATION_TOKEN_BUDGET_STANDARD: int = 12288
     LLM_GENERATION_TOKEN_BUDGET_COMPLEX: int = 16384
+    # V4 defaults to reasoning enabled, sharing max_tokens with the final
+    # answer. Explicitly request bounded output for JSON/code generation.
+    LLM_DEEPSEEK_V4_THINKING: Literal["enabled", "disabled"] = "disabled"
     LLM_PROVIDER_FAILOVER_ENABLED: bool = True
     LLM_PROVIDER_HEDGING_ENABLED: bool = True
     LLM_PROVIDER_HEDGING_DELAY_S: int = 45

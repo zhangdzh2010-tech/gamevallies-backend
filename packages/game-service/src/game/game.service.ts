@@ -472,6 +472,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     generationTier?: GenerationTier | null;
     qualityScore: unknown;
     qualityBreakdown: unknown;
+    runtimeProfile?: string;
+    runtimeQaReport?: any;
   }): void {
     return gameQualityPolicy.assertCreateResultMeetsQualityGate(params);
   }
@@ -3271,6 +3273,8 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       generationTier,
       qualityScore,
       qualityBreakdown,
+      runtimeProfile: responseData?.runtime_profile,
+      runtimeQaReport: rawRuntimeQaReport,
     });
 
     const bundlePreviewUrl = this.buildPreviewUrl(gameId);

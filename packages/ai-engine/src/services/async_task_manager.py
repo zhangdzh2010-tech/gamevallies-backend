@@ -21,6 +21,7 @@ from ..api.models import (
 )
 from ..config.timeout_store import get_int as get_timeout_int
 from .async_task_store import AsyncTaskRedisStore
+from .durable_task_executor import DurableTaskExecutor, execution_task_id
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,7 @@ class AsyncTaskManager:
         self._store = store or AsyncTaskRedisStore()
         self._idempotency_index: dict[str, str] = {}
         self._progress_persisted_at: dict[str, float] = {}
+        self.durable = DurableTaskExecutor(self._store)
 
     def _completed_ttl_s(self) -> int:
         return get_timeout_int(
@@ -83,8 +85,15 @@ class AsyncTaskManager:
         timeout_s: int,
         runner: TaskRunner,
         idempotency_key: Optional[str] = None,
+        request_payload: Optional[dict[str, Any]] = None,
     ) -> AsyncTaskHandleResponse:
         idempotency_key = (idempotency_key or "").strip() or None
+
+        if request_payload is not None and self._store.enabled():
+            snapshot = AsyncTaskResponse(task_id='', task_type=task_type, status=AsyncTaskStatus.queued,
+                game_id=game_id, user_id=user_id, timeout_s=timeout_s, created_at=time.time(), ws_channel=f'game:{game_id}')
+            snapshot, deduplicated = await self.durable.submit(snapshot, request_payload, idempotency_key)
+            return self._to_handle_response(snapshot, deduplicated=deduplicated)
 
         if idempotency_key:
             existing = await self._resolve_idempotent_task(idempotency_key)
@@ -163,6 +172,10 @@ class AsyncTaskManager:
         return await self._store.load_snapshot(task_id)
 
     async def get_task(self, task_id: str) -> Optional[AsyncTaskResponse]:
+        if task_id not in self._tasks and self._store.enabled():
+            durable = await self.durable.get(task_id)
+            if durable is not None:
+                return durable
         async with self._lock:
             entry = self._tasks.get(task_id)
             if entry is not None:
@@ -180,12 +193,13 @@ class AsyncTaskManager:
         limit: int = 20,
     ) -> ListAsyncTasksResponse:
         limit = max(1, min(limit, 100))
+        persisted = await self.durable.list() if self._store.enabled() else []
         async with self._lock:
             self._prune_locked(time.time())
             items = []
             total = 0
-            for entry in reversed(self._tasks.values()):
-                snapshot = entry.snapshot
+            snapshots = [*persisted, *[entry.snapshot for entry in self._tasks.values()]]
+            for snapshot in sorted(snapshots, key=lambda item:item.created_at, reverse=True):
                 if user_id and snapshot.user_id != user_id:
                     continue
                 if game_id and snapshot.game_id != game_id:
@@ -198,6 +212,8 @@ class AsyncTaskManager:
             return ListAsyncTasksResponse(items=items, total=total)
 
     async def cancel_task(self, task_id: str) -> Optional[AsyncTaskResponse]:
+        if task_id not in self._tasks and self._store.enabled() and await self.durable.get(task_id) is not None:
+            return await self.durable.cancel(task_id)
         handle: Optional[asyncio.Task[Any]] = None
         async with self._lock:
             entry = self._tasks.get(task_id)
@@ -227,6 +243,9 @@ class AsyncTaskManager:
         message: str,
         details: Optional[dict[str, Any]] = None,
     ) -> None:
+        if execution_task_id.get():
+            await self.durable.progress(task_id, stage=stage, pct=pct, message=message, details=details or {})
+            return
         async with self._lock:
             entry = self._tasks.get(task_id)
             if entry is None:
@@ -252,6 +271,7 @@ class AsyncTaskManager:
             await self._persist_snapshot(snapshot)
 
     async def clear(self) -> None:
+        await self.durable.close()
         async with self._lock:
             for entry in self._tasks.values():
                 if entry.handle and not entry.handle.done():
@@ -259,6 +279,9 @@ class AsyncTaskManager:
             self._tasks.clear()
             self._idempotency_index.clear()
             self._progress_persisted_at.clear()
+
+    async def assert_execution_owned(self) -> None:
+        await self.durable.assert_owned()
 
     async def _run_task(self, task_id: str, runner: TaskRunner, timeout_s: int) -> None:
         await self._mark_running(task_id)

@@ -50,6 +50,7 @@ from ..models import (
 from ...engine.dialogue_engine import DialogueEngine
 from ...engine.pipeline_errors import PipelineExecutionError
 from ...engine.pipeline_v2_runner import V2PipelineRunner
+from ...engine.interactive_creation import normalize_interactive_request, is_interactive_request
 from ...engine.prompt_bundle_resolver import resolve_prompt_bundle_snapshot
 from ...engine.prompt_store import (
     cached_prompt_count,
@@ -65,6 +66,7 @@ from ...config.timeout_store import (
 )
 from ...services.fc_runtime import internal_headers
 from ...services.async_task_manager import task_manager
+from ...services.durable_task_executor import execution_attempt
 from ...services.llm_gateway import gateway, llm_request_context
 from ...services.task_memory import task_memory
 from ...services.websocket_manager import manager
@@ -96,6 +98,7 @@ async def _relay_progress_to_game_service(
     message: str,
     details: Optional[dict] = None,
 ) -> None:
+    await task_manager.assert_execution_owned()
     base_url = settings.GAME_SERVICE_UPSTREAM_URL.rstrip("/")
     if not base_url or stage == "completed":
         return
@@ -146,6 +149,7 @@ async def _relay_artifact_to_game_service(
     payload: Any,
     metadata: Optional[dict[str, Any]] = None,
 ) -> Optional[str]:
+    await task_manager.assert_execution_owned()
     base_url = settings.GAME_SERVICE_UPSTREAM_URL.rstrip("/")
     if not base_url:
         return None
@@ -229,6 +233,7 @@ async def _relay_stage_summary_to_game_service(
     details: Optional[dict[str, Any]] = None,
     artifact_ids: Optional[list[str]] = None,
 ) -> None:
+    await task_manager.assert_execution_owned()
     base_url = settings.GAME_SERVICE_UPSTREAM_URL.rstrip("/")
     if not base_url or not task_id:
         return
@@ -264,6 +269,7 @@ async def _relay_task_failure_to_game_service(
     primary_artifact_id: Optional[str] = None,
     details: Optional[dict[str, Any]] = None,
 ) -> None:
+    await task_manager.assert_execution_owned()
     base_url = settings.GAME_SERVICE_UPSTREAM_URL.rstrip("/")
     if not base_url or not task_id:
         return
@@ -678,7 +684,7 @@ def _make_progress_cb(
     loop = asyncio.get_running_loop()
     chain: asyncio.Future[None] = loop.create_future()
     chain.set_result(None)
-    progress_seq = 0
+    progress_seq = execution_attempt.get() * 1000000
 
     def progress_cb(stage: str, pct: int, message: str, details: Optional[dict] = None) -> None:
         nonlocal chain, progress_seq
@@ -694,6 +700,7 @@ def _make_progress_cb(
                 await previous
             except Exception:
                 pass
+            await task_manager.assert_execution_owned()
             if task_id:
                 await task_manager.update_progress(
                     task_id,
@@ -779,15 +786,18 @@ async def _run_pipeline_v2_internal(
     task_id: Optional[str] = None,
 ) -> RunPipelineResponse:
     effective_task_id = task_id or request.task_id
-    resolved_prompt_bundle = resolve_prompt_bundle_snapshot(
-        request.prompt_bundle_snapshot.model_copy(
-            update={
-                "layers": _normalize_v2_prompt_layers(request.prompt_bundle_snapshot.layers),
-            }
-        ),
-        runtime_profile=request.runtime_contract.runtime_profile,
-    )
-    resolved_request = request.model_copy(update={"prompt_bundle_snapshot": resolved_prompt_bundle})
+    if is_interactive_request(request):
+        resolved_request = normalize_interactive_request(request)
+    else:
+        resolved_prompt_bundle = resolve_prompt_bundle_snapshot(
+            request.prompt_bundle_snapshot.model_copy(
+                update={
+                    "layers": _normalize_v2_prompt_layers(request.prompt_bundle_snapshot.layers),
+                }
+            ),
+            runtime_profile=request.runtime_contract.runtime_profile,
+        )
+        resolved_request = normalize_interactive_request(request.model_copy(update={"prompt_bundle_snapshot": resolved_prompt_bundle}))
     request_artifact_ids = await _persist_v2_request_artifacts(
         task_id=effective_task_id,
         game_id=resolved_request.game_id,
@@ -989,15 +999,18 @@ async def _run_iteration_v2_internal(
     task_id: Optional[str] = None,
 ) -> IterateResponse:
     effective_task_id = task_id or request.task_id
-    resolved_prompt_bundle = resolve_prompt_bundle_snapshot(
-        request.prompt_bundle_snapshot.model_copy(
-            update={
-                "layers": _normalize_v2_prompt_layers(request.prompt_bundle_snapshot.layers),
-            }
-        ),
-        runtime_profile=request.runtime_contract.runtime_profile,
-    )
-    resolved_request = request.model_copy(update={"prompt_bundle_snapshot": resolved_prompt_bundle})
+    if is_interactive_request(request):
+        resolved_request = normalize_interactive_request(request)
+    else:
+        resolved_prompt_bundle = resolve_prompt_bundle_snapshot(
+            request.prompt_bundle_snapshot.model_copy(
+                update={
+                    "layers": _normalize_v2_prompt_layers(request.prompt_bundle_snapshot.layers),
+                }
+            ),
+            runtime_profile=request.runtime_contract.runtime_profile,
+        )
+        resolved_request = normalize_interactive_request(request.model_copy(update={"prompt_bundle_snapshot": resolved_prompt_bundle}))
     request_artifact_ids = await _persist_v2_request_artifacts(
         task_id=effective_task_id,
         game_id=resolved_request.game_id,
@@ -1517,6 +1530,7 @@ async def run_pipeline_v2_async(
         timeout_s=timeout_s,
         runner=runner,
         idempotency_key=x_idempotency_key or request.idempotency_key,
+        request_payload=request.model_dump(mode="json"),
     )
 
 
@@ -1581,6 +1595,7 @@ async def pipeline_iterate_v2_async(
         timeout_s=timeout_s,
         runner=runner,
         idempotency_key=x_idempotency_key or request.idempotency_key,
+        request_payload=request.model_dump(mode="json"),
     )
 
 
@@ -1727,3 +1742,23 @@ async def get_step_health_analytics(
         ],
     }
 
+
+
+async def _execute_durable_create(payload: dict, task_id: str):
+    request = RunPipelineV2Request.model_validate(payload)
+    if payload.get('_execution_attempt', 1) > 1:
+        await _relay_progress_to_game_service(game_id=request.game_id, user_id=request.user_id,
+            task_id=request.task_id or task_id, stage='recovering', pct=5,
+            message='服务恢复后正在继续创作', details={'executionAttempt': payload['_execution_attempt']})
+    return await _run_pipeline_v2_internal(request, task_id=request.task_id or task_id)
+
+
+async def _execute_durable_iterate(payload: dict, task_id: str):
+    request = IterateV2Request.model_validate(payload)
+    return await _run_iteration_v2_internal(request, task_id=request.task_id or task_id)
+
+
+task_manager.durable.runners.update({
+    AsyncTaskType.pipeline_run.value: _execute_durable_create,
+    AsyncTaskType.pipeline_iterate.value: _execute_durable_iterate,
+})
