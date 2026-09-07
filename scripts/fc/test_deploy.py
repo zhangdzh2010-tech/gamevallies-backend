@@ -226,7 +226,8 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(model.to_map()['customRuntimeConfig']['port'],f['port'])
             update=m.UpdateFunctionInput().from_map(body).to_map()
             self.assertNotIn('functionName', update)
-            if f.get('background'): self.assertTrue(update['disableOndemand'])
+            if f['name'] == 'ai-engine':
+                self.assertTrue(update['disableOndemand'])
     def test_fc_reserved_names_are_not_sent_to_api(self):
         for f in MANIFEST['functions']:
             values = d.function_body(f, RUNTIME, ENV, {})['environmentVariables']

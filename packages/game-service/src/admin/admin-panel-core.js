@@ -94,6 +94,12 @@ function extractApiErrorMessage(payload, rawText, status) {
   return fromDetailArray || fromDetail || fromMessage || fromError || strippedText || `HTTP ${status}`;
 }
 
+function isRetryableApiError(message, status) {
+  if (!message) return false;
+  if (status === 429 || status === 503) return true;
+  return /ResourceExhausted|DisableColdStart|Too Many Requests|Service Unavailable/i.test(message);
+}
+
 async function api(path, options = {}) {
   const url = API_BASE + path;
   const opts = {
@@ -103,26 +109,46 @@ async function api(path, options = {}) {
   if (opts.body && typeof opts.body === 'object') {
     opts.body = JSON.stringify(opts.body);
   }
-  try {
-    const res = await fetch(url, opts);
-    const rawText = await res.text();
-    const data = tryParseJson(rawText);
-    if (!res.ok) {
-      throw new Error(extractApiErrorMessage(data, rawText, res.status));
+  const maxAttempts = 4;
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(url, opts);
+      const rawText = await res.text();
+      const data = tryParseJson(rawText);
+      if (!res.ok) {
+        const message = extractApiErrorMessage(data, rawText, res.status);
+        if (attempt < maxAttempts && isRetryableApiError(message, res.status)) {
+          await new Promise(resolve => setTimeout(resolve, 400 * attempt));
+          continue;
+        }
+        throw new Error(message);
+      }
+      if (data && data.code !== undefined && data.code !== 0) {
+        const message = extractApiErrorMessage(data, rawText, res.status);
+        if (attempt < maxAttempts && isRetryableApiError(message, res.status)) {
+          await new Promise(resolve => setTimeout(resolve, 400 * attempt));
+          continue;
+        }
+        throw new Error(message);
+      }
+      if (data && Object.prototype.hasOwnProperty.call(data, 'data')) {
+        return data.data;
+      }
+      return data;
+    } catch (err) {
+      lastError = err;
+      if (err.message && err.message.includes('Unauthorized')) {
+        doLogout();
+      }
+      if (attempt < maxAttempts && isRetryableApiError(err.message)) {
+        await new Promise(resolve => setTimeout(resolve, 400 * attempt));
+        continue;
+      }
+      throw err;
     }
-    if (data && data.code !== undefined && data.code !== 0) {
-      throw new Error(extractApiErrorMessage(data, rawText, res.status));
-    }
-    if (data && Object.prototype.hasOwnProperty.call(data, 'data')) {
-      return data.data;
-    }
-    return data;
-  } catch (err) {
-    if (err.message && err.message.includes('Unauthorized')) {
-      doLogout();
-    }
-    throw err;
   }
+  throw lastError || new Error('Request failed');
 }
 
 async function apiForm(path, formData, options = {}) {
