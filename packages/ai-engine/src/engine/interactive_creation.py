@@ -81,6 +81,7 @@ async def _validate_interactive_html(code: str) -> dict:
             if not (await page.locator('body').inner_text()).strip(): errors.append('页面缺少可读标题或操作说明。')
             signature = "() => document.body.innerText + Array.from(document.querySelectorAll('canvas')).map(c=>c.toDataURL()).join('') + Array.from(document.querySelectorAll('svg')).map(s=>s.outerHTML).join('')"
             changed = False
+            motion_checks = []
             controls = page.locator('button, input[type=range], select')
             exercised = 0
             for index in range(min(await controls.count(), 8)):
@@ -96,7 +97,21 @@ async def _validate_interactive_html(code: str) -> dict:
                     if await control.locator('option').count() < 2: continue
                     await control.select_option(index=1)
                 else:
+                    label = (await control.inner_text()).strip()
+                    starts_motion = bool(re.search(r'开始|启动|运行|播放|演示|继续|\b(?:start|play|run|resume)\b', label, re.I)
+                        and re.search(r'\b(?:requestAnimationFrame|setInterval)\s*\(', code))
                     await control.click(timeout=2000)
+                    if starts_motion:
+                        # A slider label or a Start -> Pause label is not proof
+                        # that a simulation advances. Sample after the click's
+                        # immediate UI changes, then require continuing output.
+                        await page.wait_for_timeout(100)
+                        motion_before = await page.evaluate(signature)
+                        await page.wait_for_timeout(750)
+                        advances = motion_before != await page.evaluate(signature)
+                        motion_checks.append({'control':label,'advances':advances})
+                        if not advances:
+                            errors.append(f'点击启动控件「{label}」后，动画/模拟时间/作品内容未持续变化。检查 requestAnimationFrame 时间累加；不要对每帧小于固定步长的 elapsed 单独取整为零。')
                 exercised += 1
                 await page.wait_for_timeout(100)
                 changed = changed or before != await page.evaluate(signature)
@@ -109,7 +124,7 @@ async def _validate_interactive_html(code: str) -> dict:
                 if overflow: errors.append(f'{width}×{height} 桌面视口出现横向溢出。')
             return {'ran':True,'passed':not errors,'issues':errors,'js_errors':errors,
                 'interaction_performed':bool(exercised),'dom_changed_after_input':changed,
-                'controlsExercised':exercised,'contentChanged':changed,'viewports':viewports}
+                'controlsExercised':exercised,'contentChanged':changed,'motionChecks':motion_checks,'viewports':viewports}
         finally:
             await browser.close()
 
@@ -118,6 +133,7 @@ SYSTEM_PROMPT = '''你是桌面交互作品工程师。根据用户的原始创�
 用户的创意是最高内容约束；做模型、实验、讲解或可视化时，不要套用问答、关卡、积分、生命或输赢机制。
 优先桌面浏览器 1366×768 至 1920×1080，响应式布局，DOM/SVG/Canvas 均可。鼠标和键盘能操作所有核心功能。
 页面必须有标题、简明说明、可见且有标签的交互控件。暂停、重播、重置或参数调整必须真正改变作品状态。
+若使用固定步长推进动画或模型，必须累积帧间时间并保留余量，不能对小于步长的每帧 elapsed 单独向下取整而使模拟永不前进。
 科学作品必须说明模型、公式、单位、参数有效范围、简化假设和适用限制。不要把示意动画当成实验数据。
 科学参数必须作用于计算模型，避免仅改变显示数字。不能编造测量结果。
 所有代码和素材内联，不访问网络，不使用 iframe、弹窗、外部库、eval 或动态 Function。保持实现精炼但完整。

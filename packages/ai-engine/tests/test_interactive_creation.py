@@ -54,6 +54,38 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.changes,['增加重置按钮'])
         self.assertEqual(call.call_args.kwargs['step_key'],'iterate.element_change')
 
+    async def test_changing_slider_does_not_hide_a_stalled_start_button(self):
+        stalled = '''<!doctype html><html><head></head><body><h1>种群模型</h1>
+        <input type="range" oninput="document.querySelector('output').textContent=this.value"><output>50</output>
+        <button onclick="this.textContent='正在运行';requestAnimationFrame(frame)">开始</button>
+        <p>模拟时间 <span id="clock">0</span></p><script>
+        let previous=performance.now(),t=0;
+        function frame(now){const elapsed=(now-previous)/1000;previous=now;
+          t+=Math.floor(elapsed/5)*0.01;document.querySelector('#clock').textContent=t;
+          requestAnimationFrame(frame);}
+        </script></body></html>'''
+        report=await validate_interactive_html(stalled)
+        self.assertTrue(report['contentChanged'])
+        self.assertFalse(report['passed'])
+        self.assertFalse(report['motionChecks'][0]['advances'])
+
+    async def test_start_with_accumulated_frame_time_advances(self):
+        moving = '''<!doctype html><html><head></head><body><h1>模型</h1>
+        <button onclick="requestAnimationFrame(frame)">开始</button><output>0</output>
+        <script>let previous=performance.now(),accumulator=0,t=0;
+        function frame(now){accumulator+=(now-previous)/1000;previous=now;
+          while(accumulator>=0.05){t+=1;accumulator-=0.05;}
+          document.querySelector('output').textContent=t;requestAnimationFrame(frame);}
+        </script></body></html>'''
+        report=await validate_interactive_html(moving)
+        self.assertTrue(report['passed'],str(report['issues']))
+        self.assertTrue(report['motionChecks'][0]['advances'])
+
+    async def test_static_start_action_does_not_require_an_animation(self):
+        report=await validate_interactive_html(GOOD.replace('调整种群','开始探索'))
+        self.assertTrue(report['passed'])
+        self.assertEqual(report['motionChecks'],[])
+
     async def test_async_submission_runs_desktop_pipeline_and_persists_browser_checked_result(self):
         from fakeredis.aioredis import FakeRedis
         from src.services.async_task_store import AsyncTaskRedisStore
