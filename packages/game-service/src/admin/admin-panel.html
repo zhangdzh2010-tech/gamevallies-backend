@@ -1347,36 +1347,36 @@
             </div>
           </div>
 
-          <div class="table-wrap llm-surface">
-            <div style="padding: 16px 18px; border-bottom: 1px solid #e5e7eb">
-              <div class="llm-inline-head" style="margin-bottom: 0">
-                <div>
-                  <h3>按真实生成流程绑定</h3>
-                </div>
-                <div class="llm-summary-row" id="llm2RouteTopSummary">
-                  <span class="llm-pill"
-                    >当前区域：<strong
-                      id="llm2CurrentRegionLabel"
-                      style="color: #0f172a"
-                      >cn_shanghai</strong
-                    ></span
-                  >
-                </div>
-              </div>
-            </div>
-            <div id="llm2RouteTableWrap"></div>
-          </div>
+          <div id="llm2StatusBar" class="llm-status-bar"></div>
 
-          <div style="margin-top: 16px" class="table-wrap llm-surface">
-            <div style="padding: 16px 18px; border-bottom: 1px solid #e5e7eb">
-              <div class="llm-inline-head" style="margin-bottom: 0">
-                <div>
-                  <h3>Provider 列表</h3>
+          <div class="llm-workbench">
+            <div class="llm-workbench-main table-wrap llm-surface">
+              <div class="llm-panel-header">
+                <h3>步骤绑定</h3>
+                <div class="llm-panel-actions">
+                  <span class="llm-region-label"
+                    >区域 <strong id="llm2CurrentRegionLabel">cn_shanghai</strong></span
+                  >
+                  <button class="btn btn-primary btn-sm" onclick="saveAllSlotBindings()">
+                    保存全部
+                  </button>
                 </div>
-                <div id="llm2ProviderSummary" class="llm-summary-row"></div>
               </div>
+              <div id="llm2SlotTableWrap"></div>
+              <details class="llm-advanced-block">
+                <summary>高级：按 stepKey 单独配置</summary>
+                <div id="llm2AdvancedRouteWrap"></div>
+              </details>
             </div>
-            <div id="llm2ProviderTableWrap"></div>
+            <aside class="llm-workbench-side table-wrap llm-surface">
+              <div class="llm-panel-header">
+                <h3>Provider</h3>
+                <button class="btn btn-secondary btn-sm" onclick="openProviderSheet()">
+                  新建
+                </button>
+              </div>
+              <div id="llm2ProviderSidebarWrap"></div>
+            </aside>
           </div>
 
           <div
@@ -1398,38 +1398,15 @@
                   <h4>基础配置</h4>
                   <div class="sheet-grid">
                     <div class="llm-field">
-                      <label>名称</label>
+                      <label>名称 *</label>
                       <input
                         type="text"
                         id="llm2-provider-name"
                         placeholder="例如 MiniMax Shanghai"
                       />
                     </div>
-                    <div class="llm-field">
-                      <label>Provider 类型</label>
-                      <select id="llm2-provider-type">
-                        <option value="openai_compatible">
-                          openai_compatible
-                        </option>
-                        <option value="anthropic">anthropic</option>
-                      </select>
-                    </div>
-                    <div class="llm-field">
-                      <label>供应商预设</label>
-                      <select
-                        id="llm2-provider-vendor-preset"
-                        onchange="applyProviderVendorPreset()"
-                      >
-                        <option value="generic">generic</option>
-                        <option value="modelverse">modelverse</option>
-                      </select>
-                    </div>
-                    <div class="llm-field">
-                      <label>Region Target</label>
-                      <select id="llm2-provider-region-target"></select>
-                    </div>
                     <div class="llm-field full">
-                      <label>Base URL</label>
+                      <label>Base URL *</label>
                       <input
                         type="text"
                         id="llm2-provider-base-url"
@@ -1438,7 +1415,7 @@
                       />
                     </div>
                     <div class="llm-field full">
-                      <label>API Key</label>
+                      <label>API Key *</label>
                       <input
                         type="password"
                         id="llm2-provider-api-key"
@@ -1465,157 +1442,7 @@
                       </div>
                     </div>
                     <div class="llm-field">
-                      <label>优先级</label>
-                      <input
-                        type="number"
-                        id="llm2-provider-priority"
-                        placeholder="100"
-                      />
-                    </div>
-                    <div class="llm-field llm-field-toggle">
-                      <label>启用</label>
-                      <label class="llm-toggle-line"
-                        ><input
-                          type="checkbox"
-                          id="llm2-provider-enabled"
-                          checked
-                          style="width: auto"
-                        />
-                        Provider 可用于路由</label
-                      >
-                    </div>
-                    <div class="llm-field">
-                      <label>请求超时（秒）</label>
-                      <input
-                        type="number"
-                        id="llm2-provider-timeout"
-                        placeholder="600"
-                      />
-                    </div>
-                    <div class="llm-field">
-                      <label>连接超时（秒）</label>
-                      <input
-                        type="number"
-                        id="llm2-provider-connect-timeout"
-                        placeholder="15"
-                      />
-                    </div>
-                    <div class="llm-field">
-                      <label>Context</label>
-                      <input
-                        type="number"
-                        id="llm2-provider-context-window"
-                        placeholder="例如 128000"
-                        min="1"
-                        step="1"
-                      />
-                    </div>
-                    <div class="llm-field">
-                      <label>MaxTokens</label>
-                      <input
-                        type="number"
-                        id="llm2-provider-max-tokens"
-                        placeholder="例如 16384"
-                        min="1"
-                        step="1"
-                      />
-                    </div>
-                    <div class="llm-field full">
-                      <label>描述</label>
-                      <input
-                        type="text"
-                        id="llm2-provider-description"
-                        placeholder="可选说明"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <div class="sheet-section">
-                  <div class="llm-inline-head">
-                    <div>
-                      <h4 style="margin-bottom: 4px">模型目录</h4>
-                    </div>
-                    <div class="llm-test-actions">
-                      <button
-                        class="btn btn-secondary btn-sm"
-                        onclick="loadProviderCatalogPreview()"
-                      >
-                        加载模型
-                      </button>
-                    </div>
-                  </div>
-                  <div class="sheet-grid">
-                    <div class="llm-field">
-                      <label>模型目录模式</label>
-                      <select
-                        id="llm2-provider-catalog-mode"
-                        onchange="toggleCatalogModeFields()"
-                      >
-                        <option value="auto">自动</option>
-                        <option value="custom">自定义</option>
-                      </select>
-                    </div>
-                    <div class="llm-field">
-                      <label>目录认证方式</label>
-                      <select
-                        id="llm2-provider-catalog-auth-mode"
-                        onchange="toggleCatalogModeFields()"
-                      >
-                        <option value="inherit_provider">
-                          继承 Provider Key
-                        </option>
-                        <option value="bearer_token">单独 Bearer Token</option>
-                      </select>
-                    </div>
-                    <div class="llm-field full">
-                      <label>模型目录 URL</label>
-                      <input
-                        type="text"
-                        id="llm2-provider-catalog-api-url"
-                        placeholder="https://api.modelverse.cn/v1/models"
-                      />
-                    </div>
-                    <div
-                      class="llm-field full"
-                      id="llm2ProviderCatalogTokenWrap"
-                    >
-                      <label>模型目录 Token</label>
-                      <input
-                        type="password"
-                        id="llm2-provider-catalog-api-key"
-                        placeholder="留空表示编辑时保留原值"
-                      />
-                      <div
-                        class="hint"
-                        id="llm2-provider-catalog-api-key-hint"
-                      ></div>
-                      <div
-                        class="llm-test-actions"
-                        id="llm2-provider-catalog-api-key-actions"
-                        style="display: none; margin-top: 8px"
-                      >
-                        <button
-                          class="btn btn-secondary btn-sm"
-                          type="button"
-                          onclick="
-                            copyCurrentProviderSecret(
-                              'catalog-api-key',
-                              'Catalog Token',
-                            )
-                          "
-                        >
-                          复制目录 Token
-                        </button>
-                      </div>
-                    </div>
-                    <div class="llm-field full">
-                      <div class="sheet-muted" id="llm2ProviderCatalogStatus">
-                        尚未加载模型目录。
-                      </div>
-                    </div>
-                    <div class="llm-field">
-                      <label>主模型</label>
+                      <label>主模型 *</label>
                       <input
                         type="text"
                         id="llm2-provider-model"
@@ -1636,8 +1463,97 @@
                         id="llm2-provider-fast-model-options"
                       ></datalist>
                     </div>
+                    <div class="llm-field llm-field-toggle">
+                      <label>启用</label>
+                      <label class="llm-toggle-line"
+                        ><input
+                          type="checkbox"
+                          id="llm2-provider-enabled"
+                          checked
+                          style="width: auto"
+                        />
+                        可用于路由</label
+                      >
+                    </div>
                   </div>
                 </div>
+
+                <details class="llm-advanced-block sheet-section">
+                  <summary>高级配置</summary>
+                  <div class="sheet-grid" style="margin-top: 12px">
+                    <div class="llm-field">
+                      <label>Provider 类型</label>
+                      <select id="llm2-provider-type">
+                        <option value="openai_compatible">openai_compatible</option>
+                        <option value="anthropic">anthropic</option>
+                      </select>
+                    </div>
+                    <div class="llm-field">
+                      <label>供应商预设</label>
+                      <select id="llm2-provider-vendor-preset" onchange="applyProviderVendorPreset()">
+                        <option value="generic">generic</option>
+                        <option value="modelverse">modelverse</option>
+                      </select>
+                    </div>
+                    <div class="llm-field">
+                      <label>Region Target</label>
+                      <select id="llm2-provider-region-target"></select>
+                    </div>
+                    <div class="llm-field">
+                      <label>优先级</label>
+                      <input type="number" id="llm2-provider-priority" placeholder="100" />
+                    </div>
+                    <div class="llm-field">
+                      <label>请求超时（秒）</label>
+                      <input type="number" id="llm2-provider-timeout" placeholder="600" />
+                    </div>
+                    <div class="llm-field">
+                      <label>连接超时（秒）</label>
+                      <input type="number" id="llm2-provider-connect-timeout" placeholder="15" />
+                    </div>
+                    <div class="llm-field">
+                      <label>Context</label>
+                      <input type="number" id="llm2-provider-context-window" min="1" step="1" />
+                    </div>
+                    <div class="llm-field">
+                      <label>MaxTokens</label>
+                      <input type="number" id="llm2-provider-max-tokens" min="1" step="1" />
+                    </div>
+                    <div class="llm-field full">
+                      <label>描述</label>
+                      <input type="text" id="llm2-provider-description" />
+                    </div>
+                    <div class="llm-field full">
+                      <label>模型目录</label>
+                      <div class="llm-test-actions" style="margin-bottom: 8px">
+                        <button class="btn btn-secondary btn-sm" onclick="loadProviderCatalogPreview()">加载模型</button>
+                      </div>
+                      <select id="llm2-provider-catalog-mode" onchange="toggleCatalogModeFields()">
+                        <option value="auto">自动</option>
+                        <option value="custom">自定义</option>
+                      </select>
+                      <select id="llm2-provider-catalog-auth-mode" onchange="toggleCatalogModeFields()" style="margin-top: 8px">
+                        <option value="inherit_provider">继承 Provider Key</option>
+                        <option value="bearer_token">单独 Bearer Token</option>
+                      </select>
+                      <input type="text" id="llm2-provider-catalog-api-url" placeholder="模型目录 URL" style="margin-top: 8px" />
+                      <div class="llm-field full" id="llm2ProviderCatalogTokenWrap" style="margin-top: 8px">
+                        <input type="password" id="llm2-provider-catalog-api-key" placeholder="目录 Token（留空保留）" />
+                        <div class="hint" id="llm2-provider-catalog-api-key-hint"></div>
+                      </div>
+                      <div class="sheet-muted" id="llm2ProviderCatalogStatus" style="margin-top: 8px">尚未加载模型目录。</div>
+                    </div>
+                    <div class="llm-field full">
+                      <label>能力标注</label>
+                      <div class="llm-capability-grid">
+                        <label class="llm-toggle-line"><input type="checkbox" id="llm2-cap-full-html" style="width: auto" /> 完整 HTML 重写</label>
+                        <label class="llm-toggle-line"><input type="checkbox" id="llm2-cap-patch" style="width: auto" /> 补丁生成</label>
+                        <label class="llm-toggle-line"><input type="checkbox" id="llm2-cap-dialogue" style="width: auto" /> 对话/分类</label>
+                        <label class="llm-toggle-line"><input type="checkbox" id="llm2-cap-verified" style="width: auto" /> 已验证</label>
+                      </div>
+                    </div>
+                  </div>
+                </details>
               </div>
               <div class="sheet-footer">
                 <button
@@ -1658,7 +1574,7 @@
             class="sheet-overlay"
             onclick="closeSheetOnBackdrop(event, 'llmProviderTestSheet')"
           >
-            <div class="sheet-panel llm-sheet-panel llm-test-sheet-panel">
+            <div class="sheet-panel llm-sheet-panel llm-test-sheet-panel llm-test-compact">
               <div class="sheet-header">
                 <div>
                   <h3 id="llm2TestSheetTitle">Provider 测试台</h3>
@@ -1716,53 +1632,30 @@
                   </div>
                 </div>
 
-                <div class="sheet-section">
-                  <div class="llm-inline-head">
-                    <div>
-                      <h4 style="margin-bottom: 4px">对话测试</h4>
-                    </div>
-                    <div class="llm-test-actions">
-                      <button
-                        class="btn btn-secondary btn-sm"
-                        onclick="clearProviderChatSession()"
-                      >
-                        清空会话
-                      </button>
-                    </div>
+                <details class="llm-advanced-block sheet-section">
+                  <summary>对话测试</summary>
+                  <div class="llm-test-actions" style="margin: 12px 0">
+                    <button class="btn btn-secondary btn-sm" onclick="clearProviderChatSession()">清空会话</button>
                   </div>
                   <div id="llm2TestChatThread" class="llm-chat-thread">
                     <div class="llm-empty">暂无消息</div>
                   </div>
                   <div class="llm-chat-composer" style="margin-top: 12px">
-                    <label for="llm2-test-chat-input">发送消息</label>
-                    <textarea
-                      id="llm2-test-chat-input"
-                      rows="4"
-                      placeholder="输入你想和这个 Provider 对话的内容"
-                    ></textarea>
+                    <textarea id="llm2-test-chat-input" rows="3" placeholder="输入测试消息"></textarea>
                     <div class="llm-chat-send-row">
                       <div class="llm-test-actions">
-                        <button
-                          class="btn btn-primary"
-                          onclick="sendProviderChatMessage()"
-                        >
-                          发送
-                        </button>
+                        <button class="btn btn-primary btn-sm" onclick="sendProviderChatMessage()">发送</button>
                       </div>
                     </div>
                   </div>
-                </div>
+                </details>
 
-                <div class="sheet-section">
-                  <div class="llm-inline-head">
-                    <div>
-                      <h4 style="margin-bottom: 4px">最近测试记录</h4>
-                    </div>
-                  </div>
-                  <div id="llm2ProviderTestRecords" class="llm-record-list">
+                <details class="llm-advanced-block sheet-section">
+                  <summary>最近测试记录</summary>
+                  <div id="llm2ProviderTestRecords" class="llm-record-list" style="margin-top: 12px">
                     <div class="llm-empty">暂无测试记录</div>
                   </div>
-                </div>
+                </details>
               </div>
             </div>
           </div>

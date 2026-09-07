@@ -181,6 +181,15 @@ const PROMPT_CATALOG_BY_KEY = new Map(
   DEFAULT_PROMPT_CATALOG.map((entry) => [entry.key, entry]),
 );
 const LLM_STEP_FLOW_META: Record<string, LlmStepFlowMeta> = {
+  creative_anchors: {
+    flowGroup: "Flow 01 - Creative Anchors",
+    flowOrder: 20,
+    flowSummary: "Create auxiliary",
+    triggerSummary: "Pre-create diversity anchors",
+    journeys: ["direct_create", "session_generate"],
+    journeySummary: "Create auxiliary",
+    optional: true,
+  },
   intent_parse: {
     flowGroup: "Flow 02 - Structured Intent",
     flowOrder: 30,
@@ -205,6 +214,15 @@ const LLM_STEP_FLOW_META: Record<string, LlmStepFlowMeta> = {
       "Runs after successful create candidates; failures degrade the quality score instead of blocking delivery by themselves",
     journeys: ["direct_create", "session_generate"],
     journeySummary: "Create only",
+    optional: true,
+  },
+  "quality_gate.patch_fix": {
+    flowGroup: "Flow 03 - Create Generation",
+    flowOrder: 45,
+    flowSummary: "Create auxiliary patch repair",
+    triggerSummary: "Small patch repair during quality gate",
+    journeys: ["direct_create", "session_generate"],
+    journeySummary: "Create auxiliary",
     optional: true,
   },
   "iterate.classify": {
@@ -251,6 +269,12 @@ const LLM_STEP_FLOW_META: Record<string, LlmStepFlowMeta> = {
 };
 
 const LLM_STEP_OUTPUT_META: Record<string, LlmStepOutputMeta> = {
+  creative_anchors: {
+    outputClass: "small_json",
+    minOutputTokens: null,
+    maxOutputTokens: 1024,
+    outputSummary: "Creative anchor brief",
+  },
   intent_parse: {
     outputClass: "small_json",
     minOutputTokens: null,
@@ -268,6 +292,12 @@ const LLM_STEP_OUTPUT_META: Record<string, LlmStepOutputMeta> = {
     minOutputTokens: null,
     maxOutputTokens: 1024,
     outputSummary: "Small structured quality review",
+  },
+  "quality_gate.patch_fix": {
+    outputClass: "large_patch",
+    minOutputTokens: 4096,
+    maxOutputTokens: 16384,
+    outputSummary: "Quality gate patch repair",
   },
   "iterate.classify": {
     outputClass: "small_text",
@@ -302,7 +332,9 @@ const LLM_STEP_OUTPUT_META: Record<string, LlmStepOutputMeta> = {
 };
 
 const LLM_STEP_REQUIRED_CAPABILITIES: Record<string, string[]> = {
+  creative_anchors: ["supports_dialogue"],
   "code_generate.full": ["supports_full_html_rewrite"],
+  "quality_gate.patch_fix": ["supports_patch_generation"],
   "iterate.mechanic_change": ["supports_patch_generation"],
   "iterate.element_change": ["supports_patch_generation"],
   "iterate.param_adjust": ["supports_patch_generation"],
@@ -1495,6 +1527,10 @@ export class AdminService {
     return {
       ...current,
       vendorPreset,
+      capabilityFlags:
+        body?.capabilityFlags && typeof body.capabilityFlags === "object"
+          ? { ...body.capabilityFlags }
+          : this.normalizeLlmCapabilityFlags(current),
       modelCatalog: {
         mode: catalogMode,
         apiUrl: nextCatalogApiUrl,

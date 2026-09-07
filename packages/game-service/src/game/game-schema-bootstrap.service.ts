@@ -529,6 +529,17 @@ const GAME_SCHEMA_STATEMENTS = [
 
 const DEFAULT_LLM_STEP_CATALOG = [
   {
+    id: "1e0207d2-a7de-4d49-b4bb-fcdbf0411002",
+    stepKey: "creative_anchors",
+    stepOrder: 20,
+    stageLabel: "Flow 01 - Creative Anchors",
+    displayName: "创意锚点",
+    description: "创建前多样性/意图锚点",
+    outputClass: "small_json",
+    minOutputTokens: null,
+    maxOutputTokens: 1024,
+  },
+  {
     id: "1e0207d2-a7de-4d49-b4bb-fcdbf0411003",
     stepKey: "intent_parse",
     stepOrder: 30,
@@ -548,6 +559,17 @@ const DEFAULT_LLM_STEP_CATALOG = [
     description: "完全依赖 LLM 生成首版代码",
     outputClass: "full_document",
     minOutputTokens: 16384,
+    maxOutputTokens: 16384,
+  },
+  {
+    id: "1e0207d2-a7de-4d49-b4bb-fcdbf0411006",
+    stepKey: "quality_gate.patch_fix",
+    stepOrder: 45,
+    stageLabel: "Flow 03 - Create Generation",
+    displayName: "质量门补丁修复",
+    description: "质量门小范围补丁修复",
+    outputClass: "large_patch",
+    minOutputTokens: 4096,
     maxOutputTokens: 16384,
   },
   {
