@@ -108,6 +108,7 @@ jobs:
           tests/test_create_progress_and_parallel_qa.py
           tests/test_dialogue_engine.py
           tests/test_dialogue_engine_json_repair.py
+          tests/test_code_preflight.py
           tests/test_code_generator.py
           tests/test_runtime_qa.py
           tests/test_creative_design.py

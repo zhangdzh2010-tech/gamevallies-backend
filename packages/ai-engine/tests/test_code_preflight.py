@@ -865,3 +865,16 @@ def test_code_preflight_treats_for_of_declarators_as_declared_symbols():
     issues = validator.validate(html, runtime_contract=GameRuntimeContract())
 
     assert not any(issue.code == "undefined_symbol:c" for issue in issues)
+
+
+def test_standard_global_functions_are_not_undefined_but_missing_helpers_are():
+    html = """<html><body><script>
+      const n = parseInt('12', 10);
+      if (!isNaN(n) && isFinite(n)) console.log(n);
+      encodeURI('hello'); encodeURIComponent('hello');
+      decodeURI('hello'); decodeURIComponent('hello');
+      missingGameHelper();
+    </script></body></html>"""
+    issues = CodePreflightValidator().validate(html, runtime_contract=GameRuntimeContract())
+    undefined = {issue.code for issue in issues if issue.code.startswith('undefined_symbol:')}
+    assert undefined == {'undefined_symbol:missingGameHelper'}
