@@ -62,3 +62,25 @@ def test_resolver_merges_system_prompt_bundle_and_runtime_profile_sources():
     assert "BUNDLE REPAIR PLAYBOOK" in resolved_prompts["repair_syntax_structural"]["content"]
     assert "PROFILE_FROM_SYSTEM" in resolved_prompts["profile_few_shot"]["content"]
     assert "PROFILE_FROM_RUNTIME_PROFILE_TABLE" in resolved_prompts["profile_few_shot"]["content"]
+
+
+def test_every_runtime_variant_resolves_against_the_production_seed_catalog():
+    import json
+    from pathlib import Path
+    from src.engine.runtime_profile_ids import canonical_runtime_profiles, prompt_key_candidates_for_profile
+    from src.engine.prompt_bundle_resolver import _profile_prompt
+    root = Path(__file__).resolve().parents[3]
+    catalog = json.loads((root/'packages/game-service/src/game/catalogs/prompt-catalog.json').read_text())
+    prompts = {entry['key']:entry['value'] for entry in catalog}
+    with patch('src.engine.prompt_bundle_resolver.get_prompt',side_effect=prompts.get):
+        for profile in canonical_runtime_profiles():
+            key, value = _profile_prompt(profile)
+            assert key in prompts and value
+    assert prompt_key_candidates_for_profile('tap_challenge_combo') == (
+        'bundle.runtime.profile.tap_challenge_combo',
+        'bundle.runtime.profile.tap_challenge',
+        'bundle.runtime.profile.tap_timing')
+    # An explicit variant override must still win over the family fallback.
+    prompts['bundle.runtime.profile.tap_challenge_combo'] = 'VARIANT'
+    with patch('src.engine.prompt_bundle_resolver.get_prompt',side_effect=prompts.get):
+        assert _profile_prompt('tap_challenge_combo')[1] == 'VARIANT'

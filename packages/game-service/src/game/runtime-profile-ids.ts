@@ -22,6 +22,7 @@ export function normalizeRuntimeProfileId(profileId?: string | null): string | u
 
 export function runtimeProfileLookupCandidates(profileId?: string | null): string[] {
   const canonical = normalizeRuntimeProfileId(profileId) || DEFAULT_RUNTIME_PROFILE_ID;
-  const candidates = [canonical, ...(CANONICAL_TO_LEGACY_RUNTIME_PROFILE_IDS[canonical] || [])];
+  const legacy = CANONICAL_TO_LEGACY_RUNTIME_PROFILE_IDS[canonical] || [];
+  const candidates = [canonical, ...legacy.map(value => normalizeRuntimeProfileId(value) || value), ...legacy];
   return candidates.filter((value, index) => value && candidates.indexOf(value) === index);
 }

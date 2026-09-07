@@ -101,6 +101,7 @@ jobs:
           tests/test_interactive_creation.py
           tests/test_artifact_quality.py
           tests/test_pipeline_v2_runner.py
+          tests/test_prompt_bundle_resolver.py
           tests/test_prompt_integration.py
           tests/test_generation_v1_localization.py
           tests/test_quality_gate_patch_repair.py
