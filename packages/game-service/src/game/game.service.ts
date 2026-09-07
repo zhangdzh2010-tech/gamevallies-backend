@@ -530,6 +530,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     return gameGenerationPayload.buildIterationSourceBundleContext(params);
   }
   private buildCreateV2Payload(params: {
+    sourceCode?: string | null;
     gameId: string;
     userId: string;
     title?: string;
@@ -552,6 +553,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       game_id: params.gameId,
       user_id: params.userId,
       raw_user_input: params.description,
+      source_code: params.sourceCode || null,
       generation_tier: generationTier,
       title: params.title || null,
       platform: 'wechat_webview',
@@ -2671,13 +2673,14 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   private async resolveCreateForkSource(
     userId: string,
     dto: CreateGameCommand,
-  ): Promise<{ sourceSpec: Record<string, unknown> | null; forkedFrom: string | null; forkDepth: number }> {
+  ): Promise<{ sourceSpec: Record<string, unknown> | null; sourceCode: string | null; forkedFrom: string | null; forkDepth: number }> {
     const fallback = {
       sourceSpec: null as Record<string, unknown> | null,
+      sourceCode: null as string | null,
       forkedFrom: null as string | null,
       forkDepth: 0,
     };
-    if ((dto.entryMode || '') !== 'fork' || !dto.sourceGameId) {
+    if (!['fork', 'iterate'].includes(dto.entryMode || '') || !dto.sourceGameId) {
       return fallback;
     }
 
@@ -2691,38 +2694,39 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           visibility: true,
           allowFork: true,
           forkDepth: true,
+          description: true,
         },
       });
       if (!sourceGame) {
-        this.logger.warn(`Fork source game ${dto.sourceGameId} not found; creating without source spec`);
-        return fallback;
+        throw new NotFoundException('Source work not found');
       }
 
-      // Mirror fork.service.ts eligibility: the source must be a published,
-      // publicly visible game whose author allows forking, and self-forks are
-      // not treated as forks. Ineligible sources degrade to a plain create.
+      // Resolve the authorized source before exposing its code. Own iterations
+      // create an independent result; public forks require author permission.
       const isForkVisible = sourceGame.status === 'published'
         && (sourceGame.visibility || 'public') === 'public';
-      if (!isForkVisible || sourceGame.allowFork === false || sourceGame.authorId === userId) {
-        this.logger.warn(`Fork source game ${dto.sourceGameId} is not fork-eligible; creating without source spec`);
-        return fallback;
+      const ownIteration = dto.entryMode === 'iterate' && sourceGame.authorId === userId;
+      if (!ownIteration && (dto.entryMode !== 'fork' || !isForkVisible || sourceGame.allowFork === false || sourceGame.authorId === userId)) {
+        throw new ForbiddenException('Source work is not eligible for this operation');
       }
 
       const latestBundle = await Promise.resolve(this.bundleService.getLatestBundle(sourceGame.id))
         .catch(() => null);
       const sourceSpec = this.extractBundleGameSpec(latestBundle ? [latestBundle] : []);
-      if (!sourceSpec) {
-        this.logger.warn(`Fork source game ${sourceGame.id} has no usable bundle spec; creating without source spec`);
+      const sourceCode = latestBundle?.htmlCode;
+      if (typeof sourceCode !== 'string' || !sourceCode.trim()) {
+        throw new BadRequestException('Source work has no executable version');
       }
 
       return {
-        sourceSpec,
-        forkedFrom: sourceGame.id,
-        forkDepth: Number(sourceGame.forkDepth ?? 0) + 1,
+        sourceSpec: sourceSpec || {game_type:'unknown', source_description:sourceGame.description || ''},
+        sourceCode,
+        forkedFrom: ownIteration ? null : sourceGame.id,
+        forkDepth: ownIteration ? Number(sourceGame.forkDepth ?? 0) : Number(sourceGame.forkDepth ?? 0) + 1,
       };
     } catch (error) {
       this.logger.warn(`Failed to resolve fork source ${dto.sourceGameId}: ${this.extractErrorMessage(error)}`);
-      return fallback;
+      throw error;
     }
   }
 
@@ -2851,6 +2855,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
               entryMode: dto.entryMode ?? null,
               sourceGameId: dto.sourceGameId ?? null,
               sourceSpec: sourceSpec ?? null,
+              sourceCode: forkSource.sourceCode,
               intentBuild: initialIntentBuild,
               promptBundleSnapshot: promptBundleSnapshot ?? null,
               runtimeContract: runtimeContract ?? null,
@@ -2931,6 +2936,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
             generationTier: requestedGenerationTier,
             access,
             sourceSpec: sourceSpec ?? null,
+              sourceCode: forkSource.sourceCode,
             creationSessionId: dto.creationSessionId ?? null,
             entryMode: dto.entryMode ?? null,
             sourceGameId: dto.sourceGameId ?? null,
@@ -3122,6 +3128,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           generationTier: this.normalizeRequestedGenerationTier(metadata.generationTier) || 'standard',
           access,
           sourceSpec: this.extractTaskMetadataObject<Record<string, unknown>>(metadata, 'sourceSpec'),
+          sourceCode: typeof metadata.sourceCode === 'string' ? metadata.sourceCode : null,
           creationSessionId: typeof metadata.creationSessionId === 'string' ? metadata.creationSessionId : null,
           entryMode: typeof metadata.entryMode === 'string' ? metadata.entryMode : null,
           sourceGameId: typeof metadata.sourceGameId === 'string' ? metadata.sourceGameId : null,
@@ -4035,6 +4042,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         generationTier,
         access: options.access,
         sourceSpec: resolvedSourceSpec,
+        sourceCode: options.sourceCode,
         creationSessionId: options.creationSessionId,
         entryMode: options.entryMode,
         sourceGameId: options.sourceGameId,

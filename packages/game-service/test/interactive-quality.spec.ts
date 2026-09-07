@@ -1,17 +1,24 @@
+import { QUALITY_POLICY } from '../src/game/generated-quality-policy';
 import { assertCreateResultMeetsQualityGate } from '../src/game/game-quality.policy';
 
 describe('Desktop interaction quality gate', () => {
   const passing = {ran:true,passed:true,contentChanged:true,controlsExercised:1,issues:[],
     viewports:[{width:1366,horizontalOverflow:false},{width:1920,horizontalOverflow:false}]};
-  const result = {runtimeProfile:'interactive_experience',qualityScore:0,qualityBreakdown:{}};
-  it('accepts completed desktop checks without inventing a gameplay score', () => {
+  const keys = Object.keys(QUALITY_POLICY.artifact_rubrics.tool.weights);
+  const assessment = {policy_version:QUALITY_POLICY.version,artifact_kind:'tool',review_ran:true,passed:true,score:8,critical_issues:[],
+    scores:Object.fromEntries(keys.map(key=>[key,8])),evidence:Object.fromEntries(keys.map(key=>[key,'Concrete evidence']))};
+  const result = {runtimeProfile:'interactive_experience',qualityScore:8,qualityBreakdown:assessment};
+  it('accepts runtime checks and a valid tool score without requiring gameplay', () => {
     expect(() => assertCreateResultMeetsQualityGate({...result,runtimeQaReport:passing})).not.toThrow();
   });
   it.each([undefined,{...passing,ran:false},{...passing,contentChanged:false},{...passing,issues:['JS error']},
     {...passing,viewports:[{horizontalOverflow:true}]}])('rejects missing or failed browser checks', runtimeQaReport => {
     expect(() => assertCreateResultMeetsQualityGate({...result,runtimeQaReport})).toThrow('Desktop interaction checks');
   });
+  it.each([{}, {...assessment,review_ran:false}, {...assessment,score:NaN}, {...assessment,evidence:{}}, {...assessment,critical_issues:['Wrong result']}, {...assessment,scores:{...assessment.scores,functional_correctness:3}}])('rejects missing or contradictory type assessment',qualityBreakdown=>{
+    expect(()=>assertCreateResultMeetsQualityGate({...result,runtimeQaReport:passing,qualityBreakdown})).toThrow('Artifact-specific');
+  });
   it('retains the game score gate for game profiles', () => {
-    expect(() => assertCreateResultMeetsQualityGate({...result,runtimeProfile:'casual_arcade',runtimeQaReport:passing})).toThrow();
+    expect(() => assertCreateResultMeetsQualityGate({...result,runtimeProfile:'casual_arcade',qualityScore:0,runtimeQaReport:passing})).toThrow();
   });
 });

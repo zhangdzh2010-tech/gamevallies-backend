@@ -9,25 +9,25 @@ from ..services.llm_client import LLMClient
 from .code_generation_support import _extract_html
 from .pipeline_errors import PipelineExecutionError
 from .runtime_isolation import restrict_context_network, network_policy_meta
+from .artifact_quality import request_artifact_kind, review_prompt, assess_review, preservation_errors
 
 DESKTOP_BRIEF_MARKER = '请生成桌面浏览器中的可交互创意作品'
 
 
 def is_interactive_request(request):
-    spec = getattr(request, 'source_spec', None)
-    return (DESKTOP_BRIEF_MARKER in str(getattr(request, 'raw_user_input', '') or '')
-        or DESKTOP_BRIEF_MARKER in str(getattr(spec, 'source_description', '') or '')
-        or getattr(spec, 'game_type', '') == 'interactive_experience')
+    return request_artifact_kind(request) in ('tool', 'science')
 
 
 def normalize_interactive_request(request):
     if not is_interactive_request(request): return request
     request = request.model_copy(deep=True)
+    kind = request_artifact_kind(request)
+    request.artifact_kind = kind
     request.platform = 'desktop_web'
     request.prompt_bundle_snapshot = request.prompt_bundle_snapshot.model_copy(deep=True)
     request.prompt_bundle_snapshot.layers = {
         'creation_mode':'interactive_experience', 'source':'desktop-interactive-v1',
-        'system_prompt':SYSTEM_PROMPT,
+        'system_prompt':SYSTEM_PROMPT, 'artifact_kind':kind,
     }
     request.runtime_contract = GameRuntimeContract.model_validate({
         'version':'1.0', 'runtime_profile':'interactive_experience',
@@ -37,13 +37,13 @@ def normalize_interactive_request(request):
         'mobile_layout':{'orientation':'landscape_first','ui_scale_mode':'responsive'},
         'gameplay':{'requires_scoring':False,'requires_player_entity':False,'requires_terminal_state':False,
             'requires_restart_entry':False,'terminal_state_aliases':[],'primary_goal':'exploration_and_understanding'},
-        'metadata':{'creation_mode':'interactive_experience','platform':'desktop_web'},
+        'metadata':{'creation_mode':'interactive_experience','platform':'desktop_web','artifact_kind':kind},
     })
     # Old intent parsing may classify a biology model as a quiz. The user's
     # original brief, not those inferred game mechanics, drives this mode.
     description = str(getattr(request,'raw_user_input','') or getattr(request.source_spec,'source_description',''))
     request.source_spec = GameSpec.model_validate({
-        'game_type':'interactive_experience', 'source_description':description,
+        'game_type':'interactive_experience', 'artifact_kind':kind, 'source_description':description,
         'intent_summary':description.split('\n')[0], 'ui_language':'zh-CN',
         'generation_tier':request.generation_tier or 'standard',
         'rules':{'win_condition':'not_applicable','lose_condition':'not_applicable','scoring':'none'},
@@ -146,7 +146,10 @@ async def run_interactive(request, progress_cb=None):
     original = request.source_spec.source_description
     iterate = hasattr(request, 'current_code')
     feedback = request.iteration_intent.feedback if iterate else ''
-    prompt = original + (f'\n\n修改要求：{feedback}\n\n当前作品：\n{request.current_code}' if iterate else '')
+    source_code = request.current_code if iterate else (getattr(request, 'source_code', '') or '')
+    feedback = feedback or (original if source_code else '')
+    kind = request_artifact_kind(request)
+    prompt = original + (f'\n\n修改要求：{feedback}\n仅修改明确要求的部分，保留未要求改变的行为、模型和参数。\n当前作品：\n{source_code}' if source_code else '')
     client = LLMClient()
     issues=[]
     code=''
@@ -169,14 +172,38 @@ async def run_interactive(request, progress_cb=None):
             report = await asyncio.wait_for(validate_interactive_html(code), timeout=min(60,max(1,deadline-time.time())))
         except Exception as exc:
             raise PipelineExecutionError(f'Desktop runtime QA unavailable: {type(exc).__name__}', stage='runtime_simulation_qa',failure_family='runtime_infrastructure') from exc
+        preserved = preservation_errors(source_code, code, feedback)
+        report['issues'] = list(report.get('issues', [])) + preserved
+        report['passed'] = bool(report['passed'] and not preserved)
+        assessment = None
         if report['passed']:
+            if progress_cb: progress_cb('code_review',94,'正在按作品类型检查功能与内容',{'artifactKind':kind,'attempt':attempt})
+            remaining = max(1, int(deadline-time.time()))
+            try:
+                raw_review = await client.complete_with_truncation_retry(
+                    max_tokens=2048, system='独立审核，严格遵循分类评分规则，只返回JSON。',
+                    messages=[{'role':'user','content':review_prompt(kind, original, code, report)}],
+                    step_key='code_review', stage='code_review', prefer_fast=True,
+                    request_timeout_s=min(120,remaining), overall_timeout_s=min(120,remaining),
+                    response_size_hint='small', allow_provider_fallback=True,
+                    context_scope='request', compression_policy='code_review',
+                    truncation_retry_attempts=1, truncation_retry_max_tokens=3072, timeout_retry_attempts=0,
+                )
+                assessment = assess_review(raw_review, kind)
+            except Exception as exc:
+                raise PipelineExecutionError('Artifact review unavailable: '+type(exc).__name__,
+                    stage='code_review', failure_family='review_infrastructure') from exc
+            if not assessment['passed']:
+                report['issues'] += assessment['issues']
+        if report['passed'] and assessment and assessment['passed']:
             common = dict(html_code=code,game_spec=request.source_spec,generation_time_ms=int((time.time()-started)*1000),
-                qa_retries=attempt-1,pipeline_version='v2',runtime_profile='interactive_experience',runtime_qa_report=report)
+                qa_retries=attempt-1,pipeline_version='v2',runtime_profile='interactive_experience',runtime_qa_report=report,
+                quality_score=assessment['score'],quality_breakdown=assessment | {'runtime_checks':report})
             if iterate: return IterateResponse(**common, changes=[feedback],iteration_type='element_change')
-            return RunPipelineResponse(**common, game_id=request.game_id, strategy='llm_interactive',qa_passed=True,code_size_bytes=len(code.encode()),
-                quality_breakdown={'policy':'desktop_interaction','runtime_checks':report})
+            return RunPipelineResponse(**common, game_id=request.game_id, strategy='llm_interactive',qa_passed=True,code_size_bytes=len(code.encode()))
         issues=report['issues']
         prompt += '\n\n上一次候选代码：\n'+code
         if progress_cb: progress_cb('logic_generate',66,'正在修复桌面交互检查发现的问题',{'attempt':attempt,'issues':issues})
     raise PipelineExecutionError('Desktop interaction validation failed: '+'; '.join(issues),
-        stage='runtime_simulation_qa',retry_count=1,failure_family='interactive_validation')
+        stage='code_review' if assessment and not assessment['passed'] else 'runtime_simulation_qa',
+        retry_count=1,failure_family='artifact_quality' if assessment and not assessment['passed'] else 'interactive_validation')
