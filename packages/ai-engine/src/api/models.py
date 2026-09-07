@@ -3,7 +3,7 @@
 from __future__ import annotations
 from enum import Enum
 from pydantic import BaseModel, Field, field_validator
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Literal
 
 
 class GenerationTier(str, Enum):
@@ -172,6 +172,7 @@ class GameSpec(BaseModel):
     """Complete game specification – the core data contract of the Pipeline"""
     version: str = "1.0"
     game_type: str
+    artifact_kind: Optional[Literal["game", "tool", "science"]] = None
     generation_tier: GenerationTier = GenerationTier.standard
     source_description: str = ""
     intent_summary: str = ""
@@ -584,6 +585,8 @@ class SourceBundleContext(BaseModel):
 
 
 class RunPipelineV2Request(BaseModel):
+    artifact_kind: Optional[Literal["game", "tool", "science"]] = None
+    source_code: Optional[str] = None
     game_id: str
     user_id: str
     raw_user_input: str
@@ -604,6 +607,7 @@ class RunPipelineV2Request(BaseModel):
 
 
 class IterateV2Request(BaseModel):
+    artifact_kind: Optional[Literal["game", "tool", "science"]] = None
     game_id: str
     user_id: str
     current_code: str

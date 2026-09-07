@@ -1231,6 +1231,7 @@ describe('GameService', () => {
         metadata: expect.objectContaining({
           entryMode: 'fork',
           sourceGameId: 'source-game-1',
+          sourceCode: '<html>source</html>',
           sourceSpec: expect.objectContaining({
             game_type: 'runner',
             intent_summary: 'Original runner gameplay',
@@ -1244,88 +1245,38 @@ describe('GameService', () => {
       }));
     });
 
-    it('degrades to a description-only create when the source game has no bundle spec', async () => {
-      setupCreateQuota('user-fork-nobundle', 'game-fork-nobundle');
-      prisma.game.findUnique.mockResolvedValue({
-        id: 'source-game-2',
-        authorId: 'author-src',
-        status: 'published',
-        visibility: 'public',
-        allowFork: true,
-        forkDepth: 2,
-      });
-      bundleService.getLatestBundle.mockResolvedValue(null);
-
-      await service.create('user-fork-nobundle', {
-        description: 'remix a game without bundle',
-        entryMode: 'fork',
-        sourceGameId: 'source-game-2',
-      } as any);
-
-      expect(prisma.game.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({
-          forkedFrom: 'source-game-2',
-          forkDepth: 3,
-        }),
-      });
-      expect(generationTaskService.createTask).toHaveBeenCalledWith(expect.objectContaining({
-        metadata: expect.objectContaining({
-          entryMode: 'fork',
-          sourceGameId: 'source-game-2',
-          sourceSpec: null,
-        }),
-      }));
+    it.each([
+      ['missing source', null, null, 'Source work not found'],
+      ['missing executable', {id:'source', authorId:'other', status:'published',visibility:'public',allowFork:true}, null, 'Source work has no executable version'],
+      ['fork disabled', {id:'source', authorId:'other', status:'published',visibility:'public',allowFork:false}, null, 'Source work is not eligible'],
+      ['private source', {id:'source', authorId:'other', status:'published',visibility:'private',allowFork:true}, null, 'Source work is not eligible'],
+    ])('rejects %s before creating a task', async (_label, source, bundle, message) => {
+      setupCreateQuota('user-fork', 'game-fork');
+      prisma.game.findUnique.mockResolvedValue(source);
+      bundleService.getLatestBundle.mockResolvedValue(bundle);
+      await expect(service.create('user-fork', {description:'remix', entryMode:'fork', sourceGameId:'source'} as any)).rejects.toThrow(message as string);
+      expect(prisma.game.create).not.toHaveBeenCalled();
+      expect(generationTaskService.createTask).not.toHaveBeenCalled();
+      expect(prisma.userQuota.update).not.toHaveBeenCalled();
     });
 
-    it('skips fork lineage when the source game does not exist', async () => {
-      setupCreateQuota('user-fork-missing', 'game-fork-missing');
-      prisma.game.findUnique.mockResolvedValue(null);
+    it('carries own private iteration code and category into the queued task', async () => {
+      setupCreateQuota('owner', 'iteration');
+      prisma.game.findUnique.mockResolvedValue({id:'source',authorId:'owner',status:'generated',visibility:'private',allowFork:false,forkDepth:0});
+      const html = '<html><script>const model=12/6;</script></html>';
+      bundleService.getLatestBundle.mockResolvedValue({htmlCode:html,metadata:{gameSpec:{game_type:'interactive_experience',artifact_kind:'science',source_description:'欧姆定律'}}});
+      await service.create('owner', {description:'只修改页脚',entryMode:'iterate',sourceGameId:'source'} as any);
+      expect(generationTaskService.createTask).toHaveBeenCalledWith(expect.objectContaining({metadata:expect.objectContaining({sourceCode:html,sourceSpec:expect.objectContaining({artifact_kind:'science'})})}));
+      expect(prisma.game.create).toHaveBeenCalledWith({data:expect.objectContaining({forkedFrom:null})});
+    });
 
-      await service.create('user-fork-missing', {
-        description: 'remix a deleted game',
-        entryMode: 'fork',
-        sourceGameId: 'source-game-missing',
-      } as any);
-
+    it('does not expose another author private work through iteration', async () => {
+      setupCreateQuota('attacker','iteration');
+      prisma.game.findUnique.mockResolvedValue({id:'source',authorId:'owner',status:'generated',visibility:'private',allowFork:true});
+      await expect(service.create('attacker',{description:'iterate',entryMode:'iterate',sourceGameId:'source'} as any)).rejects.toThrow('Source work is not eligible');
       expect(bundleService.getLatestBundle).not.toHaveBeenCalled();
-      expect(prisma.game.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({
-          forkedFrom: null,
-          forkDepth: 0,
-        }),
-      });
-      expect(generationTaskService.createTask).toHaveBeenCalledWith(expect.objectContaining({
-        metadata: expect.objectContaining({
-          sourceSpec: null,
-        }),
-      }));
     });
 
-    it('skips fork lineage when the source game forbids forking', async () => {
-      setupCreateQuota('user-fork-blocked', 'game-fork-blocked');
-      prisma.game.findUnique.mockResolvedValue({
-        id: 'source-game-3',
-        authorId: 'author-src',
-        status: 'published',
-        visibility: 'public',
-        allowFork: false,
-        forkDepth: 0,
-      });
-
-      await service.create('user-fork-blocked', {
-        description: 'remix a fork-locked game',
-        entryMode: 'fork',
-        sourceGameId: 'source-game-3',
-      } as any);
-
-      expect(bundleService.getLatestBundle).not.toHaveBeenCalled();
-      expect(prisma.game.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({
-          forkedFrom: null,
-          forkDepth: 0,
-        }),
-      });
-    });
   });
 
   it('passes the requested landscape orientation into v2 creation tasks', async () => {
