@@ -82,17 +82,31 @@ async def _validate_interactive_html(code: str) -> dict:
             signature = "() => document.body.innerText + Array.from(document.querySelectorAll('canvas')).map(c=>c.toDataURL()).join('') + Array.from(document.querySelectorAll('svg')).map(s=>s.outerHTML).join('')"
             changed = False
             motion_checks = []
-            controls = page.locator('button, input[type=range], select')
+            controls = page.locator('button, input[type=range], input[type=number], input[type=text], input:not([type]), textarea, select')
             exercised = 0
             for index in range(min(await controls.count(), 8)):
                 control = controls.nth(index)
                 if not await control.is_visible() or not await control.is_enabled(): continue
                 before = await page.evaluate(signature)
                 tag = await control.evaluate('(e)=>e.tagName')
-                if tag == 'INPUT':
+                input_type = await control.get_attribute('type') if tag == 'INPUT' else None
+                if tag == 'INPUT' and input_type == 'range':
                     await control.focus()
                     await control.press('ArrowRight')
                     await control.press('ArrowRight')
+                elif tag in ('INPUT', 'TEXTAREA'):
+                    if await control.get_attribute('readonly') is not None: continue
+                    if input_type == 'number':
+                        value = await control.evaluate('''e => {
+                            const current = Number(e.value || 0), step = Number(e.step) || 1;
+                            const min = e.min === '' ? -1e6 : Number(e.min);
+                            const max = e.max === '' ? 1e6 : Number(e.max);
+                            return String(Math.max(min, Math.min(max, current + step <= max ? current + step : current - step)));
+                        }''')
+                    else:
+                        value = '验收样例'
+                    await control.fill(value)
+                    await control.press('Tab')
                 elif tag == 'SELECT':
                     if await control.locator('option').count() < 2: continue
                     await control.select_option(index=1)

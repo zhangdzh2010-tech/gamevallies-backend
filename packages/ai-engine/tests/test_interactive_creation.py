@@ -51,6 +51,13 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         for html in [noop,broken,'<html><body>incomplete']:
             self.assertFalse((await validate_interactive_html(html))['passed'])
 
+    async def test_numeric_input_updates_are_exercised_without_a_button(self):
+        html = """<html><head></head><body><h1>电流</h1><input type="number" value="12" min="0" oninput="document.querySelector('output').textContent=this.value/6"><output>2</output><script>const R=6;</script></body></html>"""
+        report = await validate_interactive_html(html)
+        self.assertTrue(report['passed'], str(report['issues']))
+        noop = html.replace('this.value/6', '2')
+        self.assertFalse((await validate_interactive_html(noop))['passed'])
+
     async def test_iteration_keeps_interactive_mode(self):
         source=normalize_interactive_request(self.request()).source_spec
         request=IterateV2Request(game_id='game',user_id='user',current_code=GOOD,timeout_s=1800,
