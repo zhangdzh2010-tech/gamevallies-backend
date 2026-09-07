@@ -4,6 +4,21 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>GameVallies 管理后台</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, sans-serif;
+        background: #0f1117;
+        color: #e8eaed;
+      }
+      .login-overlay {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+      }
+    </style>
+    <link rel="preload" href="/admin/assets/admin-panel.css" as="style" />
     <link rel="stylesheet" href="/admin/assets/admin-panel.css" />
   </head>
   <body>
@@ -1867,13 +1882,13 @@
 
     <!-- Toast container -->
     <div class="toast-container" id="toastContainer"></div>
-    <script src="/admin/assets/admin-panel-state.js"></script>
-    <script src="/admin/assets/admin-panel-core.js"></script>
-    <script src="/admin/assets/admin-panel-games.js"></script>
-    <script src="/admin/assets/admin-panel-users-logs.js"></script>
-    <script src="/admin/assets/admin-panel-config.js"></script>
-    <script src="/admin/assets/admin-panel-ops.js"></script>
-    <script src="/admin/assets/admin-panel-boot.js"></script>
+    <script defer src="/admin/assets/admin-panel-state.js"></script>
+    <script defer src="/admin/assets/admin-panel-core.js"></script>
+    <script defer src="/admin/assets/admin-panel-games.js"></script>
+    <script defer src="/admin/assets/admin-panel-users-logs.js"></script>
+    <script defer src="/admin/assets/admin-panel-config.js"></script>
+    <script defer src="/admin/assets/admin-panel-ops.js"></script>
+    <script defer src="/admin/assets/admin-panel-boot.js"></script>
   </body>
 </html>
 

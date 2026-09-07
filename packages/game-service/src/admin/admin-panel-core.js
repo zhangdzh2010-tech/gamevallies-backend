@@ -75,7 +75,25 @@ function tryParseJson(text) {
   }
 }
 
+function formatFcPlatformError(payload, rawText) {
+  const code = payload?.Code || payload?.code || '';
+  const message = payload?.Message || payload?.message || '';
+  if (code === 'ExternalRedirectForbidden') {
+    return 'API 代理配置错误：请把 www 域名上的 /api、/admin 路由直接指向 game-service（运行 sync_public_domain_routes.py），不要把 FC 默认域名当作 FC_API_URL。';
+  }
+  if (code && message) return `${code}: ${message}`;
+  if (typeof rawText === 'string') {
+    const embedded = tryParseJson(rawText.trim());
+    if (embedded?.Code === 'ExternalRedirectForbidden') {
+      return formatFcPlatformError(embedded, rawText);
+    }
+  }
+  return '';
+}
+
 function extractApiErrorMessage(payload, rawText, status) {
+  const fcError = formatFcPlatformError(payload, rawText);
+  if (fcError) return fcError;
   const fromDetailArray = Array.isArray(payload?.detail)
     ? payload.detail.map(item => {
       if (!item) return '';
@@ -96,6 +114,7 @@ function extractApiErrorMessage(payload, rawText, status) {
 
 function isRetryableApiError(message, status) {
   if (!message) return false;
+  if (/ExternalRedirectForbidden|API 代理配置错误/i.test(message)) return false;
   if (status === 429 || status === 503) return true;
   return /ResourceExhausted|DisableColdStart|Too Many Requests|Service Unavailable/i.test(message);
 }

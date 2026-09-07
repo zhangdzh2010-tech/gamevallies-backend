@@ -86,6 +86,7 @@ def function_body(f, runtime, env, endpoints):
         if name != 'ai-engine': values['NODE_OPTIONS'] = '--require=/code/fc-internal-auth.cjs'
         urls = {k: v for k, v in endpoints.items() if k not in ('gateway', 'content', 'frontend')}
         values['FC_INTERNAL_ORIGINS'] = ','.join(sorted(set(urls.values())))
+        values['PUBLIC_APP_HOSTS'] = 'www.zlspace.ai'
         values.update(AI_ENGINE_URL=urls.get('ai-engine', 'https://unconfigured.invalid'),
                       AI_ENGINE_URL_CN_SHANGHAI=urls.get('ai-engine', 'https://unconfigured.invalid'),
                       GAME_SERVICE_UPSTREAM_URL=urls.get('game-service', 'https://unconfigured.invalid'),

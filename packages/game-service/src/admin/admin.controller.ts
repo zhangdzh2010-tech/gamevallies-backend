@@ -8,45 +8,81 @@ import {
   Param,
   Body,
   Res,
+  Req,
   Headers,
 } from "@nestjs/common";
-import { Response } from "express";
+import { Request, Response } from "express";
 import { AdminService } from "./admin.service";
 import { ok } from "../common/api-response";
 import { checkAdminToken } from "../common/admin-auth";
 import * as fs from "fs";
 import * as path from "path";
 
+type AdminAssetCacheEntry = {
+  body: string;
+  etag: string;
+  mtimeMs: number;
+};
+
+const adminAssetCache = new Map<string, AdminAssetCacheEntry>();
+
 @Controller()
 export class AdminController {
   constructor(private readonly adminService: AdminService) {}
 
+  private readAdminAsset(relativePath: string): AdminAssetCacheEntry | null {
+    const filePath = path.join(__dirname, relativePath);
+    if (!fs.existsSync(filePath)) {
+      return null;
+    }
+    const stat = fs.statSync(filePath);
+    const cached = adminAssetCache.get(filePath);
+    if (cached && cached.mtimeMs === stat.mtimeMs) {
+      return cached;
+    }
+    const body = fs.readFileSync(filePath, "utf-8");
+    const etag = `"${stat.mtimeMs.toString(16)}-${Buffer.byteLength(body).toString(16)}"`;
+    const entry = { body, etag, mtimeMs: stat.mtimeMs };
+    adminAssetCache.set(filePath, entry);
+    return entry;
+  }
+
   private serveAdminFile(
+    req: Request,
     res: Response,
     relativePath: string,
     contentType?: "html" | "css" | "js",
   ) {
-    const filePath = path.join(__dirname, relativePath);
-    if (!fs.existsSync(filePath)) {
+    const asset = this.readAdminAsset(relativePath);
+    if (!asset) {
       res.status(404).send("Admin asset not found");
       return;
     }
-    const asset = fs.readFileSync(filePath, "utf-8");
+    const ifNoneMatch = req.headers["if-none-match"];
+    if (ifNoneMatch && ifNoneMatch === asset.etag) {
+      res.status(304).end();
+      return;
+    }
     if (contentType) {
       res.type(contentType);
     }
+    res.setHeader("ETag", asset.etag);
+    res.setHeader(
+      "Cache-Control",
+      contentType === "html" ? "no-cache" : "public, max-age=86400",
+    );
     // FC default domains still overwrite this with attachment; the public
     // Nginx proxy strips that header on custom domains.
     res.setHeader("Content-Disposition", "inline");
-    res.send(asset);
+    res.send(asset.body);
   }
 
   /**
    * Serve admin HTML panel (excluded from api/v1 prefix)
    */
   @Get("admin")
-  serveAdminPanel(@Res() res: Response) {
-    this.serveAdminFile(res, "admin-panel.html", "html");
+  serveAdminPanel(@Req() req: Request, @Res() res: Response) {
+    this.serveAdminFile(req, res, "admin-panel.html", "html");
   }
 
   @Post("admin/login")
@@ -58,7 +94,11 @@ export class AdminController {
   }
 
   @Get("admin/assets/:fileName")
-  serveAdminAsset(@Param("fileName") fileName: string, @Res() res: Response) {
+  serveAdminAsset(
+    @Req() req: Request,
+    @Param("fileName") fileName: string,
+    @Res() res: Response,
+  ) {
     const safeFileName = path.basename(fileName || "");
     if (!safeFileName || safeFileName !== fileName) {
       res.status(404).send("Admin asset not found");
@@ -70,7 +110,7 @@ export class AdminController {
       return;
     }
     const contentType = ext === ".css" ? "css" : "js";
-    this.serveAdminFile(res, safeFileName, contentType);
+    this.serveAdminFile(req, res, safeFileName, contentType);
   }
 
   @Get("admin/games")
