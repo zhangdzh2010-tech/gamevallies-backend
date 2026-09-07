@@ -3091,6 +3091,97 @@ describe("AdminService", () => {
     expect(refreshSpy).toHaveBeenCalledWith("target-1");
   });
 
+  it("persists route modelOverride when it belongs to the provider model list", async () => {
+    prisma.llmStepCatalog.findUnique.mockResolvedValue({
+      id: "step-1",
+      stepKey: "code_generate.full",
+      stepOrder: 40,
+      displayName: "Full Code Generation",
+      enabled: true,
+    });
+    prisma.llmGatewayProvider.findUnique.mockResolvedValue({
+      id: "provider-1",
+      name: "MiniMax Shanghai",
+      region: "cn_shanghai",
+      regionTargetId: "target-1",
+      model: "MiniMax-M2.5",
+      fastModel: "MiniMax-M2.5-fast",
+      extraConfig: {
+        availableModels: ["MiniMax-M2.5", "MiniMax-M2.5-fast", "MiniMax-M2.5-highspeed"],
+      },
+      enabled: true,
+    });
+    prisma.llmGatewayProvider.findMany.mockResolvedValue([]);
+    prisma.llmStepRoute.upsert.mockResolvedValue({
+      id: "route-1",
+      stepKey: "code_generate.full",
+      region: "cn_shanghai",
+      providerId: "provider-1",
+      fallbackProviderIds: [],
+      modelOverride: "MiniMax-M2.5-highspeed",
+      fastModelOverride: null,
+      requestTimeoutS: null,
+      connectTimeoutS: null,
+      enabled: true,
+      provider: {
+        id: "provider-1",
+        name: "MiniMax Shanghai",
+        region: "cn_shanghai",
+        regionTargetId: "target-1",
+        providerType: "openai_compatible",
+        model: "MiniMax-M2.5",
+        fastModel: "MiniMax-M2.5-fast",
+      },
+    });
+    jest.spyOn(service, "refreshLlmGateway").mockResolvedValue({ ok: true } as any);
+
+    await service.upsertLlmRoute(undefined, {
+      stepKey: "code_generate.full",
+      executionRegion: "cn_shanghai",
+      providerId: "provider-1",
+      modelOverride: "MiniMax-M2.5-highspeed",
+      enabled: true,
+    });
+
+    expect(prisma.llmStepRoute.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          modelOverride: "MiniMax-M2.5-highspeed",
+        }),
+        update: expect.objectContaining({
+          modelOverride: "MiniMax-M2.5-highspeed",
+        }),
+      }),
+    );
+  });
+
+  it("rejects route modelOverride that is not available on the provider", async () => {
+    prisma.llmStepCatalog.findUnique.mockResolvedValue({
+      id: "step-1",
+      stepKey: "code_generate.full",
+      enabled: true,
+    });
+    prisma.llmGatewayProvider.findUnique.mockResolvedValue({
+      id: "provider-1",
+      name: "MiniMax Shanghai",
+      region: "cn_shanghai",
+      regionTargetId: "target-1",
+      model: "MiniMax-M2.5",
+      fastModel: null,
+      extraConfig: { availableModels: ["MiniMax-M2.5"] },
+      enabled: true,
+    });
+    prisma.llmGatewayProvider.findMany.mockResolvedValue([]);
+
+    await expect(
+      service.upsertLlmRoute(undefined, {
+        stepKey: "code_generate.full",
+        providerId: "provider-1",
+        modelOverride: "unknown-model",
+      }),
+    ).rejects.toThrow("modelOverride is not available on provider");
+  });
+
   it("refreshes only the selected llm gateway region and tolerates a stale endpoint when another one succeeds", async () => {
     prisma.aiEngineRegionTarget.findUnique.mockResolvedValue({
       id: "target-1",

@@ -1378,6 +1378,10 @@
         width: 100%;
         max-width: 280px;
       }
+      .llm-slot-table select[id^="llm-slot-model-"] {
+        width: 100%;
+        max-width: 220px;
+      }
       .llm-status-dot {
         display: inline-flex;
         align-items: center;
