@@ -53,6 +53,13 @@ def normalize_interactive_request(request):
     return request
 
 
+def extract_interactive_document(text: str) -> str:
+    code = _extract_html(text)
+    # Strip an explanation after a complete document; never invent missing code.
+    endings = list(re.finditer(r'</html\s*>', code, re.I))
+    return code[:endings[-1].end()] if endings else code
+
+
 async def validate_interactive_html(code: str) -> dict:
     from .runtime_qa import _runtime_qa_max_concurrency, _runtime_qa_semaphore
     async with _runtime_qa_semaphore(_runtime_qa_max_concurrency()):
@@ -61,8 +68,11 @@ async def validate_interactive_html(code: str) -> dict:
 
 async def _validate_interactive_html(code: str) -> dict:
     """Execute supplied HTML in a network-isolated Chromium context."""
-    if not re.search(r'</html\s*>\s*$', code, re.I) or '<script' not in code.lower():
-        return {'passed':False,'issues':['输出必须是包含交互脚本的完整 HTML 文档。']}
+    has_end = bool(re.search(r'</html\s*>\s*$', code, re.I))
+    has_script = bool(re.search(r'<script\b|\son(?:click|input|change|submit|keydown|keyup)\s*=', code, re.I))
+    if not has_end or not has_script:
+        shape = f'bytes={len(code.encode())}, complete_html={has_end}, executable_script={has_script}'
+        return {'passed':False,'issues':['输出必须是包含交互脚本的完整 HTML 文档。'+shape]}
     if len(code.encode()) > 300000:
         return {'passed':False,'issues':['作品超过 300 KB，请精简内联代码。']}
     from playwright.async_api import async_playwright
@@ -180,7 +190,7 @@ async def run_interactive(request, progress_cb=None):
             truncation_retry_attempts=1, truncation_retry_max_tokens=16384,
             timeout_retry_attempts=0,
         )
-        code = _extract_html(text)
+        code = extract_interactive_document(text)
         if progress_cb: progress_cb('runtime_simulation_qa',90,'正在检查桌面显示与交互',{'attempt':attempt})
         try:
             report = await asyncio.wait_for(validate_interactive_html(code), timeout=min(60,max(1,deadline-time.time())))
