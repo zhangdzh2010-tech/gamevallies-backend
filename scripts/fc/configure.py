@@ -38,8 +38,9 @@ def runtime_config(env, backend):
     if content == public: raise ValueError('CONTENT_ORIGIN must be separate from the application')
     if not backend: return runtime
     common = runtime['common']
-    for key in ('DATABASE_URL', 'REDIS_URL', 'JWT_SECRET', 'JWT_REFRESH_SECRET', 'ADMIN_TOKEN', 'FC_INTERNAL_TOKEN'):
+    for key in ('DATABASE_URL', 'REDIS_URL', 'JWT_SECRET', 'JWT_REFRESH_SECRET', 'ADMIN_TOKEN', 'ADMIN_PASSWORD', 'FC_INTERNAL_TOKEN'):
         common[key] = need(env, key)
+    common['ADMIN_USERNAME'] = env.get('ADMIN_USERNAME', 'admin').strip() or 'admin'
     common.update(CORS_ORIGIN=public, CORS_ORIGINS=json.dumps([public]), FRONTEND_URL=public,
                   PUBLIC_API_BASE_URL=public, PUBLIC_WEB_BASE_URL=public, APP_URL=public,
                   BUNDLE_CDN_ENABLED='false')
@@ -114,7 +115,7 @@ def check_settings(env, manifest):
     backend = any(f['name'] == 'game-service' for f in manifest['functions'])
     required = ['FC_ACCOUNT_ID', 'FC_REGION', 'FC_PREFIX', 'FC_EXECUTION_ROLE', 'ALIYUN_OSS_BUCKET', 'CONTENT_ORIGIN', 'RELEASE_SHA']
     if backend:
-        required += ['DATABASE_URL', 'REDIS_URL', 'JWT_SECRET', 'JWT_REFRESH_SECRET', 'ADMIN_TOKEN', 'FC_INTERNAL_TOKEN', 'FC_VPC_ID', 'FC_VSWITCH_IDS', 'FC_SECURITY_GROUP_ID', 'ALIYUN_OSS_ACCESS_KEY_ID', 'ALIYUN_OSS_ACCESS_KEY_SECRET', 'ALIYUN_OSS_REGION', 'ALIYUN_OSS_ENDPOINT', 'ALIYUN_OSS_PREFIX']
+        required += ['DATABASE_URL', 'REDIS_URL', 'JWT_SECRET', 'JWT_REFRESH_SECRET', 'ADMIN_TOKEN', 'ADMIN_PASSWORD', 'FC_INTERNAL_TOKEN', 'FC_VPC_ID', 'FC_VSWITCH_IDS', 'FC_SECURITY_GROUP_ID', 'ALIYUN_OSS_ACCESS_KEY_ID', 'ALIYUN_OSS_ACCESS_KEY_SECRET', 'ALIYUN_OSS_REGION', 'ALIYUN_OSS_ENDPOINT', 'ALIYUN_OSS_PREFIX']
     missing = [key for key in required if not env.get(key, '').strip()]
     if missing: raise ValueError('Missing configuration: ' + ', '.join(missing))
     runtime = runtime_config(env, backend)

@@ -49,6 +49,12 @@
         margin-bottom: 24px;
         font-size: 13px;
       }
+      .login-label {
+        display: block;
+        font-size: 12px;
+        color: #64748b;
+        margin-bottom: 6px;
+      }
       .login-box input {
         width: 100%;
         padding: 10px 14px;

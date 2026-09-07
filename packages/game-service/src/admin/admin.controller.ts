@@ -49,6 +49,14 @@ export class AdminController {
     this.serveAdminFile(res, "admin-panel.html", "html");
   }
 
+  @Post("admin/login")
+  loginAdmin(@Body() body: { username?: string; password?: string }) {
+    return ok(
+      this.adminService.loginAdmin(body?.username, body?.password),
+      "Login successful",
+    );
+  }
+
   @Get("admin/assets/:fileName")
   serveAdminAsset(@Param("fileName") fileName: string, @Res() res: Response) {
     const safeFileName = path.basename(fileName || "");
@@ -645,6 +653,21 @@ export class AdminController {
     return ok(
       await this.adminService.resetUserPassword(id, body.password),
       "Password reset",
+    );
+  }
+
+  @Post("admin/change-password")
+  async changeAdminPassword(
+    @Headers("x-admin-token") token: string,
+    @Body() body: { currentPassword?: string; newPassword?: string },
+  ) {
+    checkAdminToken(token);
+    return ok(
+      await this.adminService.changeAdminPassword(
+        body?.currentPassword,
+        body?.newPassword,
+      ),
+      "Password updated",
     );
   }
 
