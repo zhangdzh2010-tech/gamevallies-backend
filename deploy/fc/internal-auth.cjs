@@ -7,7 +7,7 @@ if (process.env.FC_DEPLOYMENT === 'true') {
   const origins = new Set((process.env.FC_INTERNAL_ORIGINS || '').split(',').filter(Boolean).map(v => new URL(v).origin));
   const trusted = value => { try { return origins.has(new URL(value).origin); } catch { return false; } };
   const publicHosts = new Set(
-    (process.env.PUBLIC_APP_HOSTS || 'www.zlspace.ai')
+    (process.env.PUBLIC_APP_HOSTS || 'www.zlspace.ai,api.zlspace.ai')
       .split(',')
       .map(v => v.trim().toLowerCase())
       .filter(Boolean),
