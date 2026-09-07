@@ -35,8 +35,8 @@ export class AdminController {
     if (contentType) {
       res.type(contentType);
     }
-    // FC may default string responses to `attachment`, which makes browsers
-    // download the admin HTML and assets instead of rendering them.
+    // FC default domains still overwrite this with attachment; the public
+    // Nginx proxy strips that header on custom domains.
     res.setHeader("Content-Disposition", "inline");
     res.send(asset);
   }

@@ -17,6 +17,23 @@ class PackageConfigTests(unittest.TestCase):
             'enableInstanceMetrics': True, 'enableRequestMetrics': True,
             'logBeginRule': 'DefaultRegex'})
 
+    def test_nginx_strips_fc_attachment_from_browser_html_routes(self):
+        import re
+        def blocks(path):
+            text = (Path(__file__).resolve().parents[2] / path).read_text(encoding='utf-8')
+            return re.findall(r'location[^{]+\{[^}]+\}', text)
+        def block_for(items, prefix):
+            matches = [b for b in items if b.split('{', 1)[0].strip().endswith(prefix)]
+            self.assertTrue(matches, prefix)
+            return matches[0]
+        app = blocks('deploy/fc/nginx-app.conf.template')
+        content = blocks('deploy/fc/nginx-content.conf.template')
+        for prefix in (' /admin', ' /games/', ' /game-shell/'):
+            self.assertIn('proxy_hide_header Content-Disposition', block_for(app, prefix))
+        self.assertNotIn('proxy_hide_header Content-Disposition', block_for(app, '/api/v1/growth'))
+        for prefix in (' /games/', ' /game-shell/'):
+            self.assertIn('proxy_hide_header Content-Disposition', block_for(content, prefix))
+
     def test_rejects_missing_settings_together_without_values(self):
         with self.assertRaisesRegex(ValueError, 'FC_ACCOUNT_ID.*FC_REGION.*FC_PREFIX'):
             c.check_settings({}, {'functions': [{'name':'frontend'}]})

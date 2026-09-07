@@ -11,7 +11,13 @@ server {
     proxy_set_header X-Forwarded-Proto https;
     proxy_set_header X-GameVallies-Internal-Token ${FC_INTERNAL_TOKEN};
     location = /health { return 200 'ok'; }
-    location /game-shell/ { proxy_pass $games$request_uri; }
-    location /games/ { proxy_pass $games$request_uri; }
+    location /game-shell/ {
+        proxy_pass $games$request_uri;
+        proxy_hide_header Content-Disposition;
+    }
+    location /games/ {
+        proxy_pass $games$request_uri;
+        proxy_hide_header Content-Disposition;
+    }
     location / { return 404; }
 }
