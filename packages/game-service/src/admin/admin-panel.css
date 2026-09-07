@@ -1268,6 +1268,190 @@
         background: rgba(248, 250, 252, 0.9);
       }
 
+      .llm-status-bar {
+        margin-bottom: 16px;
+        border-radius: 16px;
+        border: 1px solid #dbe4f0;
+        padding: 14px 18px;
+        background: #fff;
+      }
+      .llm-status-bar.is-ok {
+        border-color: #bbf7d0;
+        background: #f0fdf4;
+      }
+      .llm-status-bar.is-warn {
+        border-color: #fde68a;
+        background: #fffbeb;
+      }
+      .llm-status-bar.is-error {
+        border-color: #fecaca;
+        background: #fef2f2;
+      }
+      .llm-status-bar-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .llm-status-main {
+        font-size: 15px;
+        font-weight: 700;
+        color: #0f172a;
+      }
+      .llm-status-meta {
+        font-size: 12px;
+        color: #64748b;
+      }
+      .llm-workbench {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 320px;
+        gap: 16px;
+        align-items: start;
+      }
+      @media (max-width: 1100px) {
+        .llm-workbench {
+          grid-template-columns: 1fr;
+        }
+      }
+      .llm-workbench-main,
+      .llm-workbench-side {
+        padding: 0;
+      }
+      .llm-panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 16px 18px;
+        border-bottom: 1px solid #e5e7eb;
+      }
+      .llm-panel-header h3 {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 700;
+        color: #0f172a;
+      }
+      .llm-panel-actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .llm-region-label {
+        font-size: 12px;
+        color: #64748b;
+      }
+      .llm-slot-table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      .llm-slot-table th,
+      .llm-slot-table td {
+        padding: 14px 18px;
+        border-bottom: 1px solid #eef2f7;
+        vertical-align: middle;
+      }
+      .llm-slot-table th {
+        font-size: 11px;
+        color: #64748b;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        background: #f8fafc;
+      }
+      .llm-slot-label {
+        font-weight: 700;
+        color: #0f172a;
+        font-size: 14px;
+      }
+      .llm-slot-steps {
+        font-size: 11px;
+        color: #94a3b8;
+        margin-top: 4px;
+      }
+      .llm-slot-bindings {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .llm-slot-bindings select {
+        width: 100%;
+        max-width: 280px;
+      }
+      .llm-status-dot {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .llm-status-dot::before {
+        content: "";
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        background: #22c55e;
+      }
+      .llm-status-dot.warn::before {
+        background: #f59e0b;
+      }
+      .llm-status-dot.error::before {
+        background: #ef4444;
+      }
+      .llm-provider-sidebar {
+        display: flex;
+        flex-direction: column;
+      }
+      .llm-provider-card {
+        padding: 14px 18px;
+        border-bottom: 1px solid #eef2f7;
+      }
+      .llm-provider-card:last-child {
+        border-bottom: none;
+      }
+      .llm-provider-card-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .llm-provider-card-name {
+        font-size: 14px;
+        font-weight: 700;
+        color: #0f172a;
+      }
+      .llm-provider-card-model {
+        font-size: 11px;
+        color: #64748b;
+        margin-top: 4px;
+      }
+      .llm-provider-card-actions {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        margin-top: 10px;
+      }
+      .llm-advanced-block {
+        padding: 0 18px 18px;
+      }
+      .llm-advanced-block summary {
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 700;
+        color: #475569;
+        padding: 14px 0 0;
+      }
+      .llm-capability-grid {
+        display: grid;
+        gap: 8px;
+      }
+      .llm-test-compact {
+        width: min(520px, 95vw) !important;
+      }
+      .llm-test-compact .sheet-body {
+        padding-top: 0;
+      }
+
       /* Shared workspace layout */
       .workspace-page {
         display: flex;
