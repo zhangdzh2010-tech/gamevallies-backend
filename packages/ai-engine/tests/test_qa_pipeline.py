@@ -1019,9 +1019,11 @@ def test_syntax_repair_token_budget_is_capped_for_full_document_fix():
     assert qa._estimate_syntax_repair_max_tokens(large_code, truncation_risk=True) <= 12288
 
 
-def test_syntax_repair_timeout_is_capped():
-    assert qa._estimate_repair_timeout_s(max_tokens=4096) <= 60
-    assert qa._estimate_repair_timeout_s(max_tokens=16384) <= 60
+def test_syntax_repair_honors_configured_long_timeout():
+    with patch("src.engine.qa_pipeline.get_timeout_int", return_value=1800):
+        assert qa._estimate_repair_timeout_s(max_tokens=4096) == 1800
+        assert qa._estimate_repair_timeout_s(max_tokens=16384) == 1800
+        assert qa._estimate_script_repair_timeout_s(max_tokens=4096) == 1800
 
 
 def test_syntax_only_repair_guard_rejects_mixed_errors():

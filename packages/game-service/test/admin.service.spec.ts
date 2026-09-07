@@ -199,7 +199,7 @@ describe("AdminService", () => {
           category: "timeout",
           sectionId: "business_create_mainline",
           minValue: 10,
-          maxValue: 120,
+          maxValue: 1800,
           source: "catalog",
           isDefault: true,
         }),
@@ -558,12 +558,12 @@ describe("AdminService", () => {
           configKey: "timeout.ai_engine.iterate.param_adjust_request_s",
         },
         update: expect.objectContaining({
-          configValue: "90",
+          configValue: "240",
           category: "timeout",
         }),
         create: expect.objectContaining({
           configKey: "timeout.ai_engine.iterate.param_adjust_request_s",
-          configValue: "90",
+          configValue: "240",
         }),
       }),
     );
@@ -590,12 +590,12 @@ describe("AdminService", () => {
           configKey: "timeout.ai_engine.iterate.mechanic_change_overall_s",
         },
         update: expect.objectContaining({
-          configValue: "270",
+          configValue: "240",
           category: "timeout",
         }),
         create: expect.objectContaining({
           configKey: "timeout.ai_engine.iterate.mechanic_change_overall_s",
-          configValue: "270",
+          configValue: "240",
         }),
       }),
     );
@@ -623,10 +623,10 @@ describe("AdminService", () => {
   it("rejects out-of-range business timeout configs instead of silently clamping them", async () => {
     await expect(
       service.upsertConfig("timeout.business.create_generation_s", {
-        value: "999",
+        value: "1801",
         category: "timeout",
       }),
-    ).rejects.toThrow(/between 60 and 600 s/i);
+    ).rejects.toThrow(/between 60 and 1800 s/i);
 
     expect(prisma.systemConfig.upsert).not.toHaveBeenCalled();
   });
