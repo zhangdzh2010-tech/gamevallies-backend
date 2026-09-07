@@ -671,7 +671,7 @@ function refreshSlotModelSelect(slotId) {
 function handleAdvancedRouteProviderChange(stepKey) {
   const route = llmRoutes.find(item => item.stepKey === stepKey);
   if (!route) return;
-  const domKey = stepKey.replace(/[^a-zA-Z0-9_-]/g, '-');
+  const domKey = getRouteDomKey(stepKey);
   const providerId = document.getElementById(`llm-route-binding-provider-${domKey}`)?.value || '';
   const modelSelect = document.getElementById(`llm-route-binding-model-${domKey}`);
   if (!modelSelect) return;
@@ -891,7 +891,7 @@ function renderSlotTable() {
           { excludeId: selection.providerId === '__follow__' ? resolveSlotProviderId(slot.followSlot || slot.id) : selection.providerId },
         )
       : '';
-    html += `<tr>
+    html += `<tr id="llm-slot-row-${escAttr(slot.id)}">
       <td>
         <div class="llm-slot-label">${escHtml(slot.label)}</div>
         <div class="llm-slot-steps">${escHtml(slot.stepKeys.join(' · '))}</div>
@@ -1263,25 +1263,21 @@ function readSelectValue(selectId) {
   return (select?.value || '').trim();
 }
 
-function renderAdvancedRouteTable() {
-  const wrap = document.getElementById('llm2AdvancedRouteWrap');
-  if (!wrap) return;
-  if (!llmRoutes.length) {
-    wrap.innerHTML = '<div class="loading" style="padding:16px 0">暂无 stepKey</div>';
-    return;
-  }
+function getRouteDomKey(stepKey) {
+  return stepKey.replace(/[^a-zA-Z0-9_-]/g, '-');
+}
+
+function buildAdvancedRouteRowHtml(route) {
+  const domKey = getRouteDomKey(route.stepKey);
   const regionProviders = getRegionProviders();
-  let html = '<table class="llm-slot-table"><thead><tr><th>stepKey</th><th>Provider</th><th>模型</th><th>状态</th><th></th></tr></thead><tbody>';
-  for (const route of llmRoutes) {
-    const domKey = route.stepKey.replace(/[^a-zA-Z0-9_-]/g, '-');
-    const stepTitle = route.displayName ? `${route.displayName}` : route.stepKey;
-    const providerOptions = buildProviderSelectOptions(
-      regionProviders,
-      route.providerId || '',
-      route.providerId ? '更换 Provider' : '未绑定',
-    );
-    const modelOptions = buildModelSelectOptions(route.providerId || '', route.modelOverride || '');
-    html += `<tr>
+  const stepTitle = route.displayName ? `${route.displayName}` : route.stepKey;
+  const providerOptions = buildProviderSelectOptions(
+    regionProviders,
+    route.providerId || '',
+    route.providerId ? '更换 Provider' : '未绑定',
+  );
+  const modelOptions = buildModelSelectOptions(route.providerId || '', route.modelOverride || '');
+  return `<tr id="llm-advanced-route-row-${escAttr(domKey)}">
       <td>
         <div class="llm-row-title">${escHtml(stepTitle)}</div>
         <div class="llm-row-sub">${escHtml(route.stepKey)}</div>
@@ -1292,9 +1288,59 @@ function renderAdvancedRouteTable() {
       <td>
         <select id="llm-route-binding-model-${escAttr(domKey)}">${modelOptions}</select>
       </td>
-      <td>${renderRouteStateBadge(route)}</td>
-      <td><button class="abtn abtn-preview" onclick="saveRouteBinding('${escAttr(route.stepKey)}')">保存</button></td>
+      <td id="llm-route-binding-status-${escAttr(domKey)}">${renderRouteStateBadge(route)}</td>
+      <td>
+        <button class="abtn abtn-preview" id="llm-route-binding-save-${escAttr(domKey)}" onclick="saveRouteBinding('${escAttr(route.stepKey)}')">保存</button>
+      </td>
     </tr>`;
+}
+
+function updateAdvancedRouteRow(route) {
+  const domKey = getRouteDomKey(route.stepKey);
+  const row = document.getElementById(`llm-advanced-route-row-${domKey}`);
+  if (!row) return false;
+  const template = document.createElement('tbody');
+  template.innerHTML = buildAdvancedRouteRowHtml(route);
+  const nextRow = template.firstElementChild;
+  if (!nextRow) return false;
+  row.replaceWith(nextRow);
+  return true;
+}
+
+function upsertLlmRouteCache(route) {
+  if (!route?.stepKey) return;
+  const index = llmRoutes.findIndex(item => item.stepKey === route.stepKey);
+  if (index >= 0) {
+    llmRoutes[index] = route;
+  } else {
+    llmRoutes.push(route);
+  }
+}
+
+function refreshSlotRowsForStepKey(stepKey) {
+  for (const slot of LLM_BINDING_SLOTS) {
+    if (!slot.stepKeys.includes(stepKey)) continue;
+    const statusCell = document.querySelector(`#llm-slot-row-${slot.id} td:last-child`);
+    if (statusCell) {
+      statusCell.innerHTML = renderSlotStatusCell(slot);
+    }
+  }
+}
+
+async function fetchRoutePresentation(routeId) {
+  return api('/llm/routes/' + encodeURIComponent(routeId));
+}
+
+function renderAdvancedRouteTable() {
+  const wrap = document.getElementById('llm2AdvancedRouteWrap');
+  if (!wrap) return;
+  if (!llmRoutes.length) {
+    wrap.innerHTML = '<div class="loading" style="padding:16px 0">暂无 stepKey</div>';
+    return;
+  }
+  let html = '<table class="llm-slot-table"><thead><tr><th>stepKey</th><th>Provider</th><th>模型</th><th>状态</th><th></th></tr></thead><tbody>';
+  for (const route of llmRoutes) {
+    html += buildAdvancedRouteRowHtml(route);
   }
   html += '</tbody></table>';
   wrap.innerHTML = html;
@@ -1306,17 +1352,22 @@ async function saveRouteBinding(stepKey) {
     toast('未找到步骤绑定', 'error');
     return;
   }
-  const domKey = stepKey.replace(/[^a-zA-Z0-9_-]/g, '-');
+  const domKey = getRouteDomKey(stepKey);
   const providerId = document.getElementById(`llm-route-binding-provider-${domKey}`)?.value || '';
   const modelOverride = document.getElementById(`llm-route-binding-model-${domKey}`)?.value || '';
+  const saveButton = document.getElementById(`llm-route-binding-save-${domKey}`);
   const fallbackProviderIds = [];
   const enabled = true;
   if (!providerId) {
     toast('请先选择 Provider', 'error');
     return;
   }
+  if (saveButton) {
+    saveButton.disabled = true;
+    saveButton.textContent = '保存中...';
+  }
   try {
-    await api(route.id ? '/llm/routes/' + route.id : '/llm/routes', {
+    const saved = await api(route.id ? '/llm/routes/' + route.id : '/llm/routes', {
       method: route.id ? 'PUT' : 'POST',
       body: {
         stepKey: route.stepKey,
@@ -1327,10 +1378,26 @@ async function saveRouteBinding(stepKey) {
         enabled,
       },
     });
+    const routeId = saved?.id || route.id;
+    if (!routeId) {
+      toast('步骤绑定已保存');
+      return;
+    }
+    const refreshed = await fetchRoutePresentation(routeId);
+    upsertLlmRouteCache(refreshed);
+    if (!updateAdvancedRouteRow(refreshed)) {
+      renderAdvancedRouteTable();
+    }
+    refreshSlotRowsForStepKey(stepKey);
+    renderLlmStatusBar();
     toast('步骤绑定已保存');
-    await loadLlmGateway();
   } catch (e) {
     toast('保存步骤绑定失败: ' + e.message, 'error');
+  } finally {
+    if (saveButton) {
+      saveButton.disabled = false;
+      saveButton.textContent = '保存';
+    }
   }
 }
 
