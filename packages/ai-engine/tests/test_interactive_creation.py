@@ -3,7 +3,7 @@ import asyncio
 import json
 from unittest.mock import patch, AsyncMock
 from src.api.models import RunPipelineV2Request, IterateV2Request, GameSpec
-from src.engine.interactive_creation import normalize_interactive_request, is_interactive_request, run_interactive, validate_interactive_html
+from src.engine.interactive_creation import normalize_interactive_request, is_interactive_request, run_interactive, validate_interactive_html, extract_interactive_document
 
 GOOD = '''<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{margin:24px;font:18px sans-serif}button{padding:12px}</style></head><body><h1>种群模型</h1><p>简化模型，不是实验数据</p><output id="count">10</output><button onclick="document.getElementById('count').textContent='20'">调整种群</button><script>let population=10;</script></body></html>'''
 
@@ -57,6 +57,15 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(report['passed'], str(report['issues']))
         noop = html.replace('this.value/6', '2')
         self.assertFalse((await validate_interactive_html(noop))['passed'])
+
+    async def test_complete_document_with_inline_handlers_and_trailing_prose(self):
+        html = GOOD.replace('<script>let population=10;</script>', '')
+        wrapped = '```html\n' + html + '\n```\n以上为完整实现。'
+        code = extract_interactive_document(wrapped)
+        self.assertEqual(code, html)
+        self.assertTrue((await validate_interactive_html(code))['passed'])
+        truncated = extract_interactive_document(html.replace('</html>', ''))
+        self.assertFalse((await validate_interactive_html(truncated))['passed'])
 
     async def test_iteration_keeps_interactive_mode(self):
         source=normalize_interactive_request(self.request()).source_spec
