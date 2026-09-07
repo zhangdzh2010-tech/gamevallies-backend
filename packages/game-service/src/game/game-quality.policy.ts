@@ -110,6 +110,25 @@ export function assertCreateResultMeetsQualityGate(params: {
       error.failedStage = 'runtime_simulation_qa';
       throw error;
     }
+    const assessment = params.qualityBreakdown as any;
+    const kind = assessment?.artifact_kind;
+    const rubric = kind === 'tool' ? QUALITY_POLICY.artifact_rubrics.tool
+      : kind === 'science' ? QUALITY_POLICY.artifact_rubrics.science : null;
+    const score = normalizeQualityScore(params.qualityScore);
+    const finiteScore = (v: any) => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 10;
+    const metrics = assessment?.scores || {};
+    const weighted = rubric ? Object.entries(rubric.weights).reduce((sum, [key, weight]) => sum + metrics[key] * weight, 0) : NaN;
+    if (!rubric || assessment?.policy_version !== QUALITY_POLICY_VERSION
+      || assessment?.review_ran !== true || assessment?.passed !== true
+      || !finiteScore(assessment?.score)
+      || !Array.isArray(assessment?.critical_issues) || assessment.critical_issues.length
+      || !Object.keys(rubric.weights).every(key => finiteScore(metrics[key]) && typeof assessment?.evidence?.[key] === 'string' && assessment.evidence[key].trim())
+      || !Object.entries(rubric.minimums).every(([key, minimum]) => metrics[key] >= minimum)
+      || score === null || !Number.isFinite(weighted) || weighted + 0.005 < rubric.pass_score
+      || Math.abs(score - weighted) > 0.011 || Math.abs(Number(assessment?.score) - score) > 0.011) {
+      throw buildCreateQualityGateError({generationTier: params.generationTier || 'standard',
+        message:'Artifact-specific quality assessment is missing, invalid or below threshold'});
+    }
     return;
   }
   const gate = resolveCreateQualityGate(params.generationTier);

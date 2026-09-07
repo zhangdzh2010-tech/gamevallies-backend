@@ -1,10 +1,18 @@
 import unittest
 import asyncio
+import json
 from unittest.mock import patch, AsyncMock
 from src.api.models import RunPipelineV2Request, IterateV2Request, GameSpec
 from src.engine.interactive_creation import normalize_interactive_request, is_interactive_request, run_interactive, validate_interactive_html
 
 GOOD = '''<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{margin:24px;font:18px sans-serif}button{padding:12px}</style></head><body><h1>种群模型</h1><p>简化模型，不是实验数据</p><output id="count">10</output><button onclick="document.getElementById('count').textContent='20'">调整种群</button><script>let population=10;</script></body></html>'''
+
+async def fake_llm(**kwargs):
+    if kwargs.get('step_key') == 'code_review':
+        return json.dumps({'artifact_kind':'science','complete':True,'critical_issues':[],
+            'scores':{k:8 for k in ['scientific_correctness','parameter_fidelity','explanation_integrity','visual_clarity']},
+            'evidence':{k:'Fixture assertion for routing test' for k in ['scientific_correctness','parameter_fidelity','explanation_integrity','visual_clarity']},'issues':[]})
+    return GOOD
 
 class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
     def request(self):
@@ -30,7 +38,7 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
 
     async def test_create_result_requires_real_browser_qa(self):
         request=normalize_interactive_request(self.request())
-        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',new=AsyncMock(return_value=GOOD)):
+        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',new=AsyncMock(side_effect=fake_llm)):
             result=await run_interactive(request)
         self.assertTrue(result.qa_passed)
         self.assertEqual(result.runtime_profile,'interactive_experience')
@@ -43,16 +51,23 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         for html in [noop,broken,'<html><body>incomplete']:
             self.assertFalse((await validate_interactive_html(html))['passed'])
 
+    async def test_numeric_input_updates_are_exercised_without_a_button(self):
+        html = """<html><head></head><body><h1>电流</h1><input type="number" value="12" min="0" oninput="document.querySelector('output').textContent=this.value/6"><output>2</output><script>const R=6;</script></body></html>"""
+        report = await validate_interactive_html(html)
+        self.assertTrue(report['passed'], str(report['issues']))
+        noop = html.replace('this.value/6', '2')
+        self.assertFalse((await validate_interactive_html(noop))['passed'])
+
     async def test_iteration_keeps_interactive_mode(self):
         source=normalize_interactive_request(self.request()).source_spec
         request=IterateV2Request(game_id='game',user_id='user',current_code=GOOD,timeout_s=1800,
             source_spec=source,iteration_intent={'feedback':'增加重置按钮'})
         request=normalize_interactive_request(request)
         self.assertTrue(is_interactive_request(request))
-        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',new=AsyncMock(return_value=GOOD)) as call:
+        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',new=AsyncMock(side_effect=fake_llm)) as call:
             result=await run_interactive(request)
         self.assertEqual(result.changes,['增加重置按钮'])
-        self.assertEqual(call.call_args.kwargs['step_key'],'iterate.element_change')
+        self.assertEqual(call.call_args_list[0].kwargs['step_key'],'iterate.element_change')
 
     async def test_changing_slider_does_not_hide_a_stalled_start_button(self):
         stalled = '''<!doctype html><html><head></head><body><h1>种群模型</h1>
@@ -96,7 +111,7 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         manager.durable.runners.update(generate.task_manager.durable.runners)
         try:
             with patch.object(generate,'task_manager',manager), patch.object(settings,'GAME_SERVICE_UPSTREAM_URL',''), patch(
-                'src.engine.interactive_creation.LLMClient.complete_with_truncation_retry', new=AsyncMock(return_value=GOOD)):
+                'src.engine.interactive_creation.LLMClient.complete_with_truncation_retry', new=AsyncMock(side_effect=fake_llm)):
                 handle=await generate.run_pipeline_v2_async(self.request(), x_idempotency_key='desktop-e2e')
                 for _ in range(200):
                     result=await manager.get_task(handle.task_id)
