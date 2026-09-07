@@ -59,7 +59,7 @@ def validate(manifest, runtime, env):
             raise ValueError('Background services require one continuously active provisioned instance and no on-demand replicas')
     if 'game-service' in names:
         if not re.fullmatch('[a-f0-9]{64}', common.get('FC_INTERNAL_TOKEN', '')): raise ValueError('Set 64 hex character FC_INTERNAL_TOKEN')
-        for key in ('DATABASE_URL', 'REDIS_URL', 'JWT_SECRET', 'JWT_REFRESH_SECRET', 'ADMIN_TOKEN', 'ADMIN_PASSWORD'):
+        for key in ('DATABASE_URL', 'REDIS_URL', 'JWT_SECRET', 'JWT_REFRESH_SECRET', 'ADMIN_TOKEN'):
             need(common, key)
         if 'gateway' in names: origin(need(env, 'FC_FRONTEND_URL'))
         game_env = {**common, **runtime.get('services', {}).get('game-service', {})}
