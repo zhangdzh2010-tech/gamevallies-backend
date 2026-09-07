@@ -203,7 +203,7 @@ function renderPromptDedupPanel(summary, options = {}) {
       <div class="log-card-title" style="margin-bottom:8px">
         <div>
           <strong style="font-size:14px;color:#0f172a">${escHtml(options.title || 'Prompt 去重')}</strong>
-          <div class="log-card-sub">${escHtml(options.subtitle || '提示词准入阶段的去重指标')}</div>
+          ${options.subtitle ? `<div class="log-card-sub">${escHtml(options.subtitle)}</div>` : ''}
         </div>
         <span class="badge badge-generating">${escHtml(String(summary.count || 1))} 次样本</span>
       </div>
@@ -372,7 +372,6 @@ function renderRouteSnapshotPanel(snapshot, options = {}) {
       ${renderPromptDedupPanel(promptDedupSummary, {
         compact: true,
         title: 'Prompt 去重',
-        subtitle: '本次路由快照记录的提示词去重指标',
       })}
       <pre class="log-code" style="max-height:180px;margin-top:10px">${escHtml(JSON.stringify(snapshot, null, 2))}</pre>
     </div>
@@ -481,7 +480,6 @@ function renderLlmUsageSummary(logs) {
         ${renderPromptDedupPanel(promptDedupSummary, {
           compact: true,
           title: 'Prompt 去重',
-          subtitle: '当前已采集 LLM 调用的聚合去重指标',
         })}
       </div>
     `;
@@ -503,7 +501,6 @@ function renderLlmUsageSummary(logs) {
       ${renderPromptDedupPanel(promptDedupSummary, {
         compact: true,
         title: 'Prompt 去重',
-        subtitle: '当前已采集 LLM 调用的聚合去重指标',
       })}
     </div>
   `;
@@ -1108,7 +1105,6 @@ function resetProviderForm() {
   renderProviderCatalogOptions();
   renderProviderRegionTargetOptions();
   document.getElementById('llm2ProviderSheetTitle').textContent = '新建 Provider';
-  document.getElementById('llm2ProviderSheetDesc').textContent = '支持供应商预设、模型目录自动/自定义配置，以及下拉方式选择模型。';
   document.getElementById('llm2-provider-name').value = '';
   document.getElementById('llm2-provider-type').value = 'openai_compatible';
   document.getElementById('llm2-provider-vendor-preset').value = 'generic';
@@ -1140,7 +1136,6 @@ function populateProviderForm(provider) {
   llmProviderCatalogOptions = [];
   renderProviderCatalogOptions();
   document.getElementById('llm2ProviderSheetTitle').textContent = '编辑 Provider';
-  document.getElementById('llm2ProviderSheetDesc').textContent = '编辑基础配置、模型目录来源和默认模型，保存后会刷新网关缓存。';
   document.getElementById('llm2-provider-name').value = provider.name || '';
   document.getElementById('llm2-provider-type').value = provider.providerType || 'openai_compatible';
   document.getElementById('llm2-provider-vendor-preset').value = provider.vendorPreset || 'generic';
@@ -1182,7 +1177,6 @@ function closeSheetOnBackdrop(event, sheetId) {
 function resetSubscriptionPlanForm() {
   currentSubscriptionPlanId = null;
   document.getElementById('subscriptionPlanSheetTitle').textContent = '新建订阅套餐';
-  document.getElementById('subscriptionPlanSheetDesc').textContent = '配置价格、额度、推荐标签和启用状态。历史上已经成交的套餐删除时会自动归档。';
   document.getElementById('subscriptionPlanName').value = '';
   document.getElementById('subscriptionPlanPeriod').value = 'monthly';
   document.getElementById('subscriptionPlanPriceYuan').value = '';
@@ -1206,7 +1200,6 @@ function openSubscriptionPlanSheet(id) {
     }
     currentSubscriptionPlanId = plan.id;
     document.getElementById('subscriptionPlanSheetTitle').textContent = '编辑订阅套餐';
-    document.getElementById('subscriptionPlanSheetDesc').textContent = `正在编辑 ${plan.name}，保存后会立即作为用户侧套餐配置生效。`;
     document.getElementById('subscriptionPlanName').value = plan.name || '';
     document.getElementById('subscriptionPlanPeriod').value = plan.period || 'monthly';
     document.getElementById('subscriptionPlanPriceYuan').value = Number(plan.priceYuan || 0).toFixed(2);
@@ -1587,11 +1580,7 @@ function openProviderTestSheet(id) {
   document.getElementById('llm2-test-chat-input').value = '';
   renderProviderChatThread();
   renderProviderTestHeader();
-  setProviderTestStatusBanner(
-    'info',
-    '测试台已就绪',
-    '你可以先运行一键连通测试，或直接发起多轮对话来观察回复质量与延时。',
-  );
+  setProviderTestStatusBanner('info', '测试台已就绪');
   document.getElementById('llmProviderTestSheet').classList.add('active');
   loadProviderTestRecords();
 }
@@ -1607,7 +1596,7 @@ async function runProviderSmokeTest() {
     return;
   }
   try {
-    setProviderTestStatusBanner('loading', '正在进行连通测试', '会按当前 Region 的可用 ai-engine 节点顺序尝试。');
+    setProviderTestStatusBanner('loading', '正在进行连通测试');
     const result = await api('/llm/providers/' + currentTestProviderId + '/test', { method: 'POST' });
     if (currentTestProvider) {
       currentTestProvider.latestTest = result;
@@ -1640,7 +1629,7 @@ function renderProviderChatThread() {
   const wrap = document.getElementById('llm2TestChatThread');
   if (!wrap) return;
   if (!llmTestMessages.length) {
-    wrap.innerHTML = '<div class="llm-empty">从一条消息开始，观察回复内容和每轮延时。</div>';
+    wrap.innerHTML = '<div class="llm-empty">暂无消息</div>';
     return;
   }
   wrap.innerHTML = llmTestMessages.map(message => {
@@ -1680,7 +1669,7 @@ async function sendProviderChatMessage() {
     .filter(item => (item.role === 'user' || item.role === 'assistant') && !item.pending)
     .map(item => ({ role: item.role, content: item.content }));
   try {
-    setProviderTestStatusBanner('loading', '正在请求 Provider 回复', '这次会带上当前会话上下文，并记录本轮延时。');
+    setProviderTestStatusBanner('loading', '正在请求 Provider 回复');
     const result = await api('/llm/providers/' + currentTestProviderId + '/test-chat', {
       method: 'POST',
       body: {

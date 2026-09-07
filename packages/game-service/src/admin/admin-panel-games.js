@@ -574,11 +574,9 @@ function renderGameDetail(g) {
           <div class="text">点击上传新的封面图片，支持 PNG / JPG / WEBP / AVIF / GIF</div>
           <div class="filename" id="coverFileName" style="display:none"></div>
         </div>
-        <div class="cover-editor-note">运营可以上传一张精修后的封面图，系统会优先展示这张图片，覆盖当前自动生成封面。</div>
         <div class="form-group" style="margin-top:12px">
           <label>外部图片地址</label>
           <input class="cover-url-input" type="text" id="e-coverUrl" placeholder="https://example.com/cover.jpg" oninput="previewPendingCoverUrl()">
-          <div class="hint">也可以直接粘贴一个可公开访问的图片 URL。若同时上传了本地图片，将优先使用本地图片。</div>
         </div>
         <input type="hidden" id="e-currentCoverUrl" value="${escAttr(coverUrl)}">
         <input type="hidden" id="coverEditorGameTitle" value="${escAttr(g.title)}">
@@ -591,7 +589,7 @@ function renderGameDetail(g) {
         <div class="cover-editor-preview" id="coverEditorPreviewBox">
           ${coverUrl
             ? `<img src="${escAttr(coverUrl)}" alt="${escAttr(g.title)}">`
-            : '<div class="cover-editor-placeholder">上传图片或填写图片地址后，可在这里预览新的封面效果。</div>'}
+            : '<div class="cover-editor-placeholder">暂无预览</div>'}
         </div>
         <div class="cover-editor-note" id="coverEditorPreviewLabel">${coverUrl ? '当前封面预览' : '等待新的封面内容'}</div>
       </div>
@@ -658,7 +656,7 @@ function renderPendingCoverPreview(url, label) {
   if (resolvedUrl) {
     previewBox.innerHTML = `<img src="${escAttr(resolvedUrl)}" alt="${escAttr(gameTitle)}">`;
   } else {
-    previewBox.innerHTML = '<div class="cover-editor-placeholder">上传图片或填写图片地址后，可在这里预览新的封面效果。</div>';
+    previewBox.innerHTML = '<div class="cover-editor-placeholder">暂无预览</div>';
   }
   previewLabel.textContent = label;
 }

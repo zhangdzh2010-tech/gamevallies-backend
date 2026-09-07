@@ -11,7 +11,6 @@
     <div id="loginOverlay" class="login-overlay" style="display: none">
       <div class="login-box">
         <h2>GameVallies 管理后台</h2>
-        <p>请输入管理员账号和密码</p>
         <label class="login-label" for="usernameInput">账号</label>
         <input
           type="text"
@@ -97,11 +96,7 @@
           <div class="dashboard-page">
             <div class="dashboard-hero">
               <div class="dashboard-hero-copy">
-                <div class="dashboard-eyebrow">Admin Workspace</div>
                 <h2 class="dashboard-title">运营仪表盘</h2>
-                <p class="dashboard-subtitle">
-                  把内容供给、生成质量、订阅收入和异常热点放在同一屏里，方便你巡检平台状态，并且快速回到需要处理的游戏、任务、订阅配置和创建入口。
-                </p>
                 <div class="dashboard-meta">
                   <span class="llm-pill">生产环境</span>
                   <span class="llm-pill">gamevallies.com</span>
@@ -173,78 +168,57 @@
               <div class="stat-card stat-card-blue">
                 <div class="stat-head">
                   <div class="label">总游戏数</div>
-                  <div class="stat-pill">内容池</div>
                 </div>
                 <div class="value" id="s-games">-</div>
-                <div class="sub">当前平台累计可管理的作品库存。</div>
               </div>
               <div class="stat-card stat-card-cyan">
                 <div class="stat-head">
                   <div class="label">总播放次数</div>
-                  <div class="stat-pill">活跃度</div>
                 </div>
                 <div class="value" id="s-plays">-</div>
-                <div class="sub">用户整体试玩与消费内容的热度。</div>
               </div>
               <div class="stat-card stat-card-violet">
                 <div class="stat-head">
                   <div class="label">总点赞数</div>
-                  <div class="stat-pill">反馈</div>
                 </div>
                 <div class="value" id="s-likes">-</div>
-                <div class="sub">正向反馈是否在持续累积。</div>
               </div>
               <div class="stat-card stat-card-slate">
                 <div class="stat-head">
                   <div class="label">总用户数</div>
-                  <div class="stat-pill">用户池</div>
                 </div>
                 <div class="value" id="s-users">-</div>
-                <div class="sub">当前后台可见的总用户规模。</div>
               </div>
               <div class="stat-card stat-card-emerald">
                 <div class="stat-head">
                   <div class="label">总 Fork 数</div>
-                  <div class="stat-pill">创作链</div>
                 </div>
                 <div class="value" id="s-forks">-</div>
-                <div class="sub">社区二创和延展创作的活跃程度。</div>
               </div>
               <div class="stat-card stat-card-amber">
                 <div class="stat-head">
                   <div class="label">平均质量分</div>
-                  <div class="stat-pill">质量</div>
                 </div>
                 <div class="value" id="s-quality">-</div>
-                <div class="sub">生成结果整体质量的稳定水平。</div>
               </div>
               <div class="stat-card stat-card-rose">
                 <div class="stat-head">
                   <div class="label">平均重试次数</div>
-                  <div class="stat-pill">风险</div>
                 </div>
                 <div class="value" id="s-retries">-</div>
-                <div class="sub">生成修复成本与异常波动的体感指标。</div>
               </div>
               <div class="stat-card stat-card-cyan">
                 <div class="stat-head">
                   <div class="label">订阅套餐数</div>
-                  <div class="stat-pill">订阅</div>
                 </div>
                 <div class="value" id="s-sub-plans">-</div>
-                <div class="sub">
-                  当前后台可配置的套餐总数，包含启用和归档套餐。
-                </div>
               </div>
               <div class="stat-card stat-card-emerald">
                 <div class="stat-head">
                   <div class="label">总收入金额</div>
-                  <div class="stat-pill">营收</div>
                 </div>
                 <div class="value" id="s-revenue">-</div>
-                <div class="sub" id="s-revenue-sub">
-                  按所选时间段统计的已支付订阅收入。
-                </div>
+                <div class="sub" id="s-revenue-sub"></div>
               </div>
             </div>
 
@@ -253,9 +227,6 @@
                 <div class="dashboard-card-header">
                   <div>
                     <div class="dashboard-card-title">订阅概览</div>
-                    <div class="dashboard-card-sub">
-                      结合时间段查看套餐数、有效订阅与收入，方便快速感知商业化状态。
-                    </div>
                   </div>
                 </div>
                 <div class="dashboard-subscription-meta">
@@ -277,9 +248,6 @@
                 <div class="dashboard-card-header">
                   <div>
                     <div class="dashboard-card-title">状态分布</div>
-                    <div class="dashboard-card-sub">
-                      快速感知当前作品池里发布、草稿、生成中和失败状态的占比。
-                    </div>
                   </div>
                 </div>
                 <div id="statusBars" class="dashboard-chip-row"></div>
@@ -289,10 +257,6 @@
                 <div class="dashboard-card-header">
                   <div>
                     <div class="dashboard-card-title">失败阶段分布</div>
-                    <div class="dashboard-card-sub">
-                      把当前最常见的卡点直接拉出来，方便优先追 pipeline 和 QA
-                      问题。
-                    </div>
                   </div>
                 </div>
                 <div id="failureStageBars" class="dashboard-chip-row"></div>
@@ -302,9 +266,6 @@
                 <div class="dashboard-card-header">
                   <div>
                     <div class="dashboard-card-title">重试次数分布</div>
-                    <div class="dashboard-card-sub">
-                      观察生成任务是否开始变重，或者修复轮次是否突然抬升。
-                    </div>
                   </div>
                 </div>
                 <div id="retryBars" class="dashboard-chip-row"></div>
@@ -314,10 +275,6 @@
                 <div class="dashboard-card-header">
                   <div>
                     <div class="dashboard-card-title">质量分分布</div>
-                    <div class="dashboard-card-sub">
-                      看高质量和低质量产物是否在持续分化，辅助评估当前模型与
-                      prompt 状态。
-                    </div>
                   </div>
                 </div>
                 <div id="qualityBars" class="dashboard-chip-row"></div>
@@ -327,10 +284,6 @@
                 <div class="dashboard-card-header">
                   <div>
                     <div class="dashboard-card-title">高频失败原因</div>
-                    <div class="dashboard-card-sub">
-                      按失败次数聚合最常见的 stage
-                      和错误摘要，便于直接挑出结构性问题。
-                    </div>
                   </div>
                 </div>
                 <div id="failureReasonList" class="dashboard-reason-list"></div>
@@ -345,13 +298,8 @@
             <div id="gameListView">
               <div class="workspace-hero">
                 <div class="workspace-hero-copy">
-                  <div class="workspace-eyebrow">Content Operations</div>
                   <h2>游戏管理</h2>
-                  <p>
-                    集中处理作品上下架、预览试玩、作者信息和源码编辑，把内容巡检和手工运营操作放在同一个工作区里。
-                  </p>
                   <div class="workspace-meta">
-                    <span class="llm-pill">后台主控台</span>
                     <span class="llm-pill" id="gamesSummaryPill">等待加载</span>
                   </div>
                 </div>
@@ -390,9 +338,6 @@
                 <div class="workspace-surface-header">
                   <div>
                     <div class="workspace-surface-title">作品列表</div>
-                    <div class="workspace-surface-sub">
-                      支持搜索、状态筛选、预览试玩和内容编辑。
-                    </div>
                   </div>
                   <div class="workspace-summary-row" id="gamesSummary"></div>
                 </div>
@@ -409,14 +354,8 @@
           <div class="workspace-page">
             <div class="workspace-hero">
               <div class="workspace-hero-copy">
-                <div class="workspace-eyebrow">Generation Intelligence</div>
                 <h2>生成记录</h2>
-                <p>
-                  围绕每次生成的结果页视角查看状态、失败原因、策略、QA
-                  情况和源码详情，帮助你快速甄别结构性问题。
-                </p>
                 <div class="workspace-meta">
-                  <span class="llm-pill">任务结果聚合</span>
                   <span class="llm-pill" id="logsSummaryPill">等待加载</span>
                 </div>
               </div>
@@ -462,9 +401,6 @@
               <div class="workspace-surface-header">
                 <div>
                   <div class="workspace-surface-title">结果列表</div>
-                  <div class="workspace-surface-sub">
-                    按游戏结果维度聚合，支持快速进入任务详情和源码查看。
-                  </div>
                 </div>
                 <div class="workspace-summary-row" id="logsSummary"></div>
               </div>
@@ -489,9 +425,6 @@
               <h2 style="font-size: 18px; font-weight: 600; color: #1e293b">
                 异步任务管理
               </h2>
-              <p style="font-size: 12px; color: #94a3b8; margin-top: 4px">
-                查看持久化生成任务、阶段事件和 LLM 调用错误。
-              </p>
             </div>
             <button class="btn btn-secondary" onclick="loadTasks()">
               刷新任务
@@ -544,14 +477,8 @@
             <div id="userListView">
               <div class="workspace-hero">
                 <div class="workspace-hero-copy">
-                  <div class="workspace-eyebrow">User Operations</div>
                   <h2>用户管理</h2>
-                  <p>
-                    统一查看用户规模、角色分布、创作者体量和 Pro
-                    状态，支持快速编辑资料、重置密码和进行后台运营处理。
-                  </p>
                   <div class="workspace-meta">
-                    <span class="llm-pill">账号运营</span>
                     <span class="llm-pill" id="usersSummaryPill">等待加载</span>
                   </div>
                 </div>
@@ -582,9 +509,6 @@
                 <div class="workspace-surface-header">
                   <div>
                     <div class="workspace-surface-title">用户列表</div>
-                    <div class="workspace-surface-sub">
-                      支持按角色和关键字段筛选，进入用户详情继续编辑。
-                    </div>
                   </div>
                   <div class="workspace-summary-row" id="usersSummary"></div>
                 </div>
@@ -600,13 +524,8 @@
           <div class="workspace-page">
             <div class="workspace-hero">
               <div class="workspace-hero-copy">
-                <div class="workspace-eyebrow">Monetization Workspace</div>
                 <h2>订阅套餐</h2>
-                <p>
-                  在这里配置套餐价格、额度、推荐位与启用状态，并按时间段查看套餐销售表现和收入汇总。
-                </p>
                 <div class="workspace-meta">
-                  <span class="llm-pill">订阅配置是后台事实源</span>
                   <span class="llm-pill" id="subscriptionSummaryPill"
                     >等待加载</span
                   >
@@ -660,26 +579,19 @@
               <div class="workspace-kpi">
                 <div class="k">套餐总数</div>
                 <div class="v" id="subscriptionTotalPlans">-</div>
-                <div class="sub">
-                  当前后台可管理的套餐总数，包含启用和归档。
-                </div>
               </div>
               <div class="workspace-kpi workspace-kpi-cyan">
                 <div class="k">活跃套餐</div>
                 <div class="v" id="subscriptionActivePlans">-</div>
-                <div class="sub">仍在对外售卖或可继续复用的套餐数量。</div>
               </div>
               <div class="workspace-kpi workspace-kpi-emerald">
                 <div class="k">有效订阅</div>
                 <div class="v" id="subscriptionActiveSubscribers">-</div>
-                <div class="sub">当前仍在有效期内的订阅数。</div>
               </div>
               <div class="workspace-kpi workspace-kpi-amber">
                 <div class="k">收入金额</div>
                 <div class="v" id="subscriptionTotalRevenue">-</div>
-                <div class="sub" id="subscriptionRevenueHint">
-                  按所选时间段统计的已支付订阅收入。
-                </div>
+                <div class="sub" id="subscriptionRevenueHint"></div>
               </div>
             </div>
 
@@ -687,9 +599,6 @@
               <div class="workspace-surface-header">
                 <div>
                   <div class="workspace-surface-title">套餐列表</div>
-                  <div class="workspace-surface-sub">
-                    支持直接查看价格、额度、推荐位、历史订单与收入。
-                  </div>
                 </div>
                 <div
                   class="workspace-summary-row"
@@ -712,9 +621,6 @@
               <div class="sheet-header">
                 <div>
                   <h3 id="subscriptionPlanSheetTitle">新建订阅套餐</h3>
-                  <p id="subscriptionPlanSheetDesc">
-                    配置价格、额度、推荐标签和启用状态。历史上已经成交的套餐删除时会自动归档。
-                  </p>
                 </div>
                 <button
                   class="modal-close"
@@ -815,16 +721,7 @@
                         rows="5"
                         placeholder="每行一条特性，例如：&#10;每月30次创建&#10;无限AI迭代&#10;优先生成"
                       ></textarea>
-                      <div class="hint">
-                        支持换行或逗号分隔，保存时会自动整理为数组。
-                      </div>
                     </div>
-                  </div>
-                </div>
-                <div class="sheet-section">
-                  <h4>说明</h4>
-                  <div class="subscription-inline-note">
-                    这里保存的是平台真实套餐配置。用户侧套餐列表和下单逻辑会读取同一套数据，默认种子只在首次空库时初始化，不会再覆盖后台编辑结果。
                   </div>
                 </div>
               </div>
@@ -907,10 +804,6 @@
             <button class="btn btn-primary" onclick="changePassword()">
               更新密码
             </button>
-            <div class="hint" style="margin-top: 12px">
-              注意：修改后当前会话仍有效。重启服务后需在环境变量中同步更新
-              ADMIN_PASSWORD。
-            </div>
           </div>
         </div>
 
@@ -930,10 +823,6 @@
               <h2 style="font-size: 18px; font-weight: 600; color: #1e293b">
                 五步 Prompt 管理
               </h2>
-              <p style="font-size: 12px; color: #94a3b8; margin-top: 3px">
-                按当前五步生成主链展示系统 prompt、live prompt bundle 和 runtime
-                profile few-shot。
-              </p>
             </div>
             <div style="display: flex; gap: 8px; flex-wrap: wrap">
               <button
@@ -1182,10 +1071,6 @@
               <h2 style="font-size: 18px; font-weight: 600; color: #1e293b">
                 APP 分发工作台
               </h2>
-              <p style="font-size: 12px; color: #94a3b8; margin-top: 4px">
-                统一管理 H5 下载弹窗策略、iOS / Android 版本、APK
-                上传与最近转化事件。
-              </p>
             </div>
             <div style="display: flex; gap: 8px; flex-wrap: wrap">
               <button class="btn btn-secondary" onclick="loadAppDistribution()">
@@ -1202,9 +1087,6 @@
               <div class="llm-inline-head">
                 <div>
                   <h3>下载弹窗策略</h3>
-                  <p>
-                    前端 H5 会读取这里的开关、阈值、文案和 Universal Link 配置。
-                  </p>
                 </div>
                 <div style="display: flex; gap: 8px; flex-wrap: wrap">
                   <button
@@ -1234,9 +1116,6 @@
                 <div class="llm-inline-head">
                   <div>
                     <h3 id="appReleaseFormTitle">创建版本</h3>
-                    <p>
-                      先建版本记录，再按平台补充下载地址或上传 Android APK。
-                    </p>
                   </div>
                   <div style="display: flex; gap: 8px; flex-wrap: wrap">
                     <button
@@ -1318,10 +1197,6 @@
                       id="app-release-downloadUrl"
                       placeholder="https://example.com/download"
                     />
-                    <div class="hint">
-                      Android 外链、iOS App Store 链接或 Universal Link
-                      都填这里。
-                    </div>
                   </div>
                   <div class="form-group full">
                     <label>二维码地址</label>
@@ -1348,10 +1223,6 @@
                       />
                       保存后直接标记为当前激活版本
                     </label>
-                    <div class="hint">
-                      仅对 published 状态生效。Android 上传包建议先保持
-                      draft，上传成功后再发布。
-                    </div>
                   </div>
                 </div>
               </div>
@@ -1392,10 +1263,6 @@
               <div class="llm-inline-head">
                 <div>
                   <h3>最近转化事件</h3>
-                  <p>
-                    用于快速检查曝光、关闭、下载点击和继续 H5
-                    的埋点是否正常入库。
-                  </p>
                 </div>
                 <div style="display: flex; gap: 8px; flex-wrap: wrap">
                   <button
@@ -1431,10 +1298,6 @@
               <h2 style="font-size: 18px; font-weight: 600; color: #1e293b">
                 生成链路超时配置
               </h2>
-              <p style="font-size: 12px; color: #94a3b8; margin-top: 4px">
-                统一管理 game-service 与 ai-engine 的生成超时、轮询与 relay
-                时长。
-              </p>
             </div>
             <div style="display: flex; gap: 8px; flex-wrap: wrap">
               <button
@@ -1463,10 +1326,6 @@
           <div class="llm-hero">
             <div>
               <h2>LLM 网关工作台</h2>
-              <p>
-                首屏聚焦 Provider
-                状态、真实 LLM 步骤绑定和在线测试。创建与编辑按需展开，测试支持多轮对话与延时查看。
-              </p>
             </div>
             <div class="llm-tools">
               <span class="llm-toolbar-label">Execution Region</span>
@@ -1493,11 +1352,6 @@
               <div class="llm-inline-head" style="margin-bottom: 0">
                 <div>
                   <h3>按真实生成流程绑定</h3>
-                  <p>
-                    这里只展示当前线上真实会调用的 LLM
-                    步骤。创建会话本身不再调用 LLM；直接生成、会话生成、迭代和 QA
-                    修复会映射到这里；复刻当前复制 bundle，不直接调用 LLM。
-                  </p>
                 </div>
                 <div class="llm-summary-row" id="llm2RouteTopSummary">
                   <span class="llm-pill"
@@ -1518,9 +1372,6 @@
               <div class="llm-inline-head" style="margin-bottom: 0">
                 <div>
                   <h3>Provider 列表</h3>
-                  <p>
-                    在这里查看模型、timeout、最近一次测试，并从列表进入编辑或测试台。
-                  </p>
                 </div>
                 <div id="llm2ProviderSummary" class="llm-summary-row"></div>
               </div>
@@ -1537,9 +1388,6 @@
               <div class="sheet-header">
                 <div>
                   <h3 id="llm2ProviderSheetTitle">新建 Provider</h3>
-                  <p id="llm2ProviderSheetDesc">
-                    支持供应商预设、模型目录自动/自定义配置，以及下拉方式选择模型。
-                  </p>
                 </div>
                 <button class="modal-close" onclick="closeProviderSheet()">
                   &times;
@@ -1661,9 +1509,6 @@
                         min="1"
                         step="1"
                       />
-                      <div class="hint">
-                        可选。用于记录 provider 的总上下文窗口。
-                      </div>
                     </div>
                     <div class="llm-field">
                       <label>MaxTokens</label>
@@ -1674,9 +1519,6 @@
                         min="1"
                         step="1"
                       />
-                      <div class="hint">
-                        可选。网关会把实际请求的 max_tokens 限制在该值以内。
-                      </div>
                     </div>
                     <div class="llm-field full">
                       <label>描述</label>
@@ -1693,9 +1535,6 @@
                   <div class="llm-inline-head">
                     <div>
                       <h4 style="margin-bottom: 4px">模型目录</h4>
-                      <p class="sheet-muted">
-                        预设可自动填充，也支持手动覆盖模型目录 URL 与目录认证。
-                      </p>
                     </div>
                     <div class="llm-test-actions">
                       <button
@@ -1823,9 +1662,6 @@
               <div class="sheet-header">
                 <div>
                   <h3 id="llm2TestSheetTitle">Provider 测试台</h3>
-                  <p id="llm2TestSheetDesc">
-                    支持单次连通测试、多轮对话和最近测试延时查看。
-                  </p>
                 </div>
                 <button class="modal-close" onclick="closeProviderTestSheet()">
                   &times;
@@ -1884,9 +1720,6 @@
                   <div class="llm-inline-head">
                     <div>
                       <h4 style="margin-bottom: 4px">对话测试</h4>
-                      <p class="sheet-muted">
-                        每一轮助手回复都会显示延时、模型和时间戳。
-                      </p>
                     </div>
                     <div class="llm-test-actions">
                       <button
@@ -1898,9 +1731,7 @@
                     </div>
                   </div>
                   <div id="llm2TestChatThread" class="llm-chat-thread">
-                    <div class="llm-empty">
-                      从一条消息开始，观察回复内容和每轮延时。
-                    </div>
+                    <div class="llm-empty">暂无消息</div>
                   </div>
                   <div class="llm-chat-composer" style="margin-top: 12px">
                     <label for="llm2-test-chat-input">发送消息</label>
@@ -1910,9 +1741,6 @@
                       placeholder="输入你想和这个 Provider 对话的内容"
                     ></textarea>
                     <div class="llm-chat-send-row">
-                      <div class="sheet-muted">
-                        将携带当前会话上下文一起发送，并在每轮回复旁展示模型、时间戳和延时。
-                      </div>
                       <div class="llm-test-actions">
                         <button
                           class="btn btn-primary"
@@ -1929,9 +1757,6 @@
                   <div class="llm-inline-head">
                     <div>
                       <h4 style="margin-bottom: 4px">最近测试记录</h4>
-                      <p class="sheet-muted">
-                        用于快速查看最近若干次交互的成功率和延时。
-                      </p>
                     </div>
                   </div>
                   <div id="llm2ProviderTestRecords" class="llm-record-list">
@@ -1976,7 +1801,6 @@
               <div class="form-group">
                 <label>Slug</label>
                 <input type="text" id="c-slug" placeholder="自动生成" />
-                <div class="hint">URL 友好标识符，自动从标题生成</div>
               </div>
               <div class="form-group">
                 <label>游戏类型</label>
@@ -2001,7 +1825,6 @@
                   id="c-tags"
                   placeholder="标签1, 标签2, 标签3"
                 />
-                <div class="hint">用逗号分隔多个标签</div>
               </div>
               <div class="form-group full">
                 <label>描述</label>
