@@ -97,6 +97,24 @@ describe("CreationSessionService", () => {
       }),
     );
     expect(gameService.create).not.toHaveBeenCalled();
+    expect(repo.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("preserves another draft and running session when opening a new tab", async () => {
+    const existing = [
+      rowFromCreateData('ready-draft','user-1',{status:'ready',revision:1,metadata:{}}),
+      rowFromCreateData('running-task','user-1',{status:'generating',revision:1,metadata:{}}),
+    ];
+    repo.updateMany.mockImplementation(async () => { existing.forEach(r => {r.status='abandoned';}); return {count:2}; });
+    repo.create.mockImplementation(async ({data}:any) => rowFromCreateData('new','user-1',data));
+    await service.createSession('user-1',{prompt:'new independent idea'});
+    expect(existing.map(r=>r.status)).toEqual(['ready','generating']);
+  });
+
+  it("allows restarting an already abandoned session idempotently", async () => {
+    repo.findUnique.mockResolvedValue(rowFromCreateData('abandoned','user-1',{status:'abandoned',revision:1,metadata:{}}));
+    expect((await service.abandonSession('user-1','abandoned')).status).toBe('abandoned');
+    expect(repo.update).not.toHaveBeenCalled();
   });
 
   it("treats appended content as the user's latest generation brief", async () => {

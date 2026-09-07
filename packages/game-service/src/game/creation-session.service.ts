@@ -14,7 +14,6 @@ import {
   SkipCreationSessionQuestionDto,
 } from "./dto";
 import {
-  CREATION_SESSION_GENERATING_EXPIRE_MS,
   CREATION_SESSION_INTERACTIVE_STATUSES,
   DEFAULT_CREATION_SESSION_GENERATION_TIER,
   DEFAULT_CREATION_SESSION_QUESTION_BUDGET,
@@ -99,58 +98,9 @@ export class CreationSessionService {
       },
     };
 
-    const generatingExpireCutoff = new Date(
-      Date.now() - CREATION_SESSION_GENERATING_EXPIRE_MS,
-    );
-
-    const created = this.prisma?.$transaction
-      ? await this.prisma.$transaction(async (tx: any) => {
-          const scopedRepo = tx?.gameCreationSession || repo;
-          // Auto-abandon interactive sessions (initializing / collecting / ready)
-          await scopedRepo.updateMany({
-            where: {
-              userId,
-              status: { in: [...CREATION_SESSION_INTERACTIVE_STATUSES] },
-            },
-            data: {
-              status: "abandoned",
-            },
-          });
-          // Auto-abandon stale generating sessions (older than 10 min)
-          await scopedRepo.updateMany({
-            where: {
-              userId,
-              status: "generating",
-              updatedAt: { lt: generatingExpireCutoff },
-            },
-            data: {
-              status: "abandoned",
-            },
-          });
-          return scopedRepo.create({ data: createData });
-        })
-      : await (async () => {
-          await repo.updateMany({
-            where: {
-              userId,
-              status: { in: [...CREATION_SESSION_INTERACTIVE_STATUSES] },
-            },
-            data: {
-              status: "abandoned",
-            },
-          });
-          await repo.updateMany({
-            where: {
-              userId,
-              status: "generating",
-              updatedAt: { lt: generatingExpireCutoff },
-            },
-            data: {
-              status: "abandoned",
-            },
-          });
-          return repo.create({ data: createData });
-        })();
+    // A new draft must not abandon another tab's ready session or a running
+    // task. Explicit abandon and task timeout own those lifecycle transitions.
+    const created = await repo.create({ data: createData });
 
     return this.toSnapshot(created);
   }
@@ -526,7 +476,7 @@ export class CreationSessionService {
       throw new ConflictException("Creation session already completed");
     }
     if (session.status === "abandoned") {
-      throw new ConflictException("Creation session was already abandoned");
+      return this.toSnapshot(session);
     }
     const metadata = this.normalizeMetadata(session.metadata);
     const next = await repo.update({
