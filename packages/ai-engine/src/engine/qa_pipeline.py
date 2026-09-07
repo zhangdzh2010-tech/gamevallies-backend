@@ -401,7 +401,7 @@ class QAPipeline:
             timeout_s = max(timeout_s, 50)
         if max_tokens >= 12288:
             timeout_s = max(timeout_s, 60)
-        return min(timeout_s, 60)
+        return timeout_s
 
     @staticmethod
     def _syntax_repair_hedge_delay_s(request_timeout_s: int) -> int:
@@ -418,7 +418,7 @@ class QAPipeline:
         *,
         max_tokens: int,
     ) -> int:
-        return min(30, max(18, cls._estimate_repair_timeout_s(max_tokens=max_tokens) - 20))
+        return get_timeout_int("timeout.ai_engine.qa_fast_repair_s", 120, min_value=1)
 
     @staticmethod
     def _script_syntax_error_line_numbers(errors: List[QACheckError]) -> List[int]:
@@ -1748,7 +1748,7 @@ class QAPipeline:
                                 min(3072, len(script_window.encode("utf-8")) // 3 + 768),
                             ),
                         )
-                        window_timeout_s = min(script_timeout_s, 24)
+                        window_timeout_s = script_timeout_s
                         repaired_window = await self._complete_script_repair_prompt_with_retry(
                             prompt=window_prompt,
                             step_key="qa_fix.syntax_structural",

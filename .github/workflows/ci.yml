@@ -66,6 +66,7 @@ jobs:
           test/creation-session.service.spec.ts
           test/game-schema-bootstrap.service.spec.ts
           test/admin.service.spec.ts
+          test/timeout-admin-catalog.spec.ts
           test/growth.service.spec.ts
       - name: Verify production feed query
         run: npm test --workspace=@gamevallies/feed-service -- --runInBand test/trending-production.spec.ts
@@ -87,6 +88,8 @@ jobs:
       - run: pip install -r requirements.txt pytest pytest-asyncio
       - run: python -m playwright install --with-deps chromium
       - run: python ../../scripts/sync-quality-policy.py --check
+      - name: Verify configured LLM repair timeouts
+        run: python -m pytest -q tests/test_qa_pipeline.py -k timeout
       - name: Verify pipeline, prompts and quality repairs
         run: >-
           python -m pytest -q

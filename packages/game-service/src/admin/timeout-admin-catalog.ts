@@ -92,7 +92,7 @@ const BUSINESS_TIMEOUT_CATALOG: VisibleTimeoutCatalogEntry[] = [
     unit: "s",
     valueType: "int",
     minValue: 30,
-    maxValue: 300,
+    maxValue: 1800,
     itemOrder: 20,
     section: SECTION_CREATE_ENTRY,
     backingKeys: [
@@ -105,11 +105,11 @@ const BUSINESS_TIMEOUT_CATALOG: VisibleTimeoutCatalogEntry[] = [
     readDefaultValue: (reader) =>
       reader.default("timeout.ai_engine.intent_parse.overall_s"),
     buildUpdates: (value) => {
-      const overall = clampInt(value, 30, 300);
+      const overall = clampInt(value, 30, 1800);
       return [
         {
           key: "timeout.ai_engine.intent_parse.request_s",
-          value: String(clampInt(Math.round(overall * 0.5), 15, overall)),
+          value: String(overall),
         },
         {
           key: "timeout.ai_engine.intent_parse.overall_s",
@@ -126,7 +126,7 @@ const BUSINESS_TIMEOUT_CATALOG: VisibleTimeoutCatalogEntry[] = [
     unit: "s",
     valueType: "int",
     minValue: 60,
-    maxValue: 600,
+    maxValue: 1800,
     itemOrder: 10,
     section: SECTION_CREATE_MAINLINE,
     backingKeys: ["timeout.ai_engine.llm_long_generation_s"],
@@ -138,18 +138,18 @@ const BUSINESS_TIMEOUT_CATALOG: VisibleTimeoutCatalogEntry[] = [
     buildUpdates: (value) => [
       {
         key: "timeout.ai_engine.llm_long_generation_s",
-        value: String(clampInt(value, 60, 600)),
+        value: String(clampInt(value, 60, 1800)),
       },
     ],
   },
   {
     key: "timeout.business.qa_repair_s",
     displayName: "QA 自动修复超时",
-    description: "控制 QA 修复阶段的总预算，快修分支会按比例自动推导。",
+    description: "控制 QA 修复请求预算，完整修复与快修分支使用相同超时。",
     unit: "s",
     valueType: "int",
     minValue: 60,
-    maxValue: 360,
+    maxValue: 1800,
     itemOrder: 20,
     section: SECTION_CREATE_MAINLINE,
     backingKeys: [
@@ -162,7 +162,7 @@ const BUSINESS_TIMEOUT_CATALOG: VisibleTimeoutCatalogEntry[] = [
     readDefaultValue: (reader) =>
       reader.default("timeout.ai_engine.qa_repair_s"),
     buildUpdates: (value) => {
-      const repair = clampInt(value, 60, 360);
+      const repair = clampInt(value, 60, 1800);
       return [
         {
           key: "timeout.ai_engine.qa_repair_s",
@@ -170,7 +170,7 @@ const BUSINESS_TIMEOUT_CATALOG: VisibleTimeoutCatalogEntry[] = [
         },
         {
           key: "timeout.ai_engine.qa_fast_repair_s",
-          value: String(clampInt(Math.round(repair * (2 / 3)), 30, repair)),
+          value: String(repair),
         },
       ];
     },
@@ -183,7 +183,7 @@ const BUSINESS_TIMEOUT_CATALOG: VisibleTimeoutCatalogEntry[] = [
     unit: "s",
     valueType: "int",
     minValue: 10,
-    maxValue: 120,
+    maxValue: 1800,
     itemOrder: 30,
     section: SECTION_CREATE_MAINLINE,
     backingKeys: [
@@ -196,8 +196,8 @@ const BUSINESS_TIMEOUT_CATALOG: VisibleTimeoutCatalogEntry[] = [
     readDefaultValue: (reader) =>
       reader.default("timeout.ai_engine.runtime_qa.max_s"),
     buildUpdates: (value) => {
-      const max = clampInt(value, 10, 120);
-      const base = clampFloat(max * (8 / 30), 3, max, 2);
+      const max = clampInt(value, 10, 1800);
+      const base = max;
       return [
         {
           key: "timeout.ai_engine.runtime_qa.base_s",
@@ -218,7 +218,7 @@ const BUSINESS_TIMEOUT_CATALOG: VisibleTimeoutCatalogEntry[] = [
     unit: "s",
     valueType: "int",
     minValue: 90,
-    maxValue: 480,
+    maxValue: 1800,
     itemOrder: 10,
     section: SECTION_ITERATE,
     backingKeys: [
@@ -235,19 +235,19 @@ const BUSINESS_TIMEOUT_CATALOG: VisibleTimeoutCatalogEntry[] = [
     readDefaultValue: (reader) =>
       reader.default("timeout.ai_engine.iterate.element_change_overall_s"),
     buildUpdates: (value) => {
-      const iterate = clampInt(value, 90, 480);
+      const iterate = clampInt(value, 90, 1800);
       return [
         {
           key: "timeout.ai_engine.iterate.param_adjust_request_s",
-          value: String(clampInt(Math.round(iterate * 0.375), 30, iterate)),
+          value: String(iterate),
         },
         {
           key: "timeout.ai_engine.iterate.param_adjust_overall_s",
-          value: String(clampInt(Math.round(iterate * 0.75), 30, iterate)),
+          value: String(iterate),
         },
         {
           key: "timeout.ai_engine.iterate.element_change_request_s",
-          value: String(clampInt(Math.round(iterate * 0.5), 30, iterate)),
+          value: String(iterate),
         },
         {
           key: "timeout.ai_engine.iterate.element_change_overall_s",
@@ -255,11 +255,11 @@ const BUSINESS_TIMEOUT_CATALOG: VisibleTimeoutCatalogEntry[] = [
         },
         {
           key: "timeout.ai_engine.iterate.mechanic_change_request_s",
-          value: String(clampInt(Math.round(iterate * 0.5625), 30, iterate)),
+          value: String(iterate),
         },
         {
           key: "timeout.ai_engine.iterate.mechanic_change_overall_s",
-          value: String(clampInt(Math.round(iterate * 1.125), 30, 540)),
+          value: String(iterate),
         },
       ];
     },
