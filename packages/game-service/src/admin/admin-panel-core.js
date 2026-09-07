@@ -6,27 +6,63 @@ function checkAuth() {
   } else {
     document.getElementById('loginOverlay').style.display = 'none';
     document.getElementById('app').style.display = 'block';
-    document.getElementById('tokenDisplay').textContent = 'Token: ' + token.substring(0, 4) + '***';
+    document.getElementById('accountDisplay').textContent =
+      '账号: ' + (adminUsername || 'admin');
     init();
   }
 }
 
-function doLogin() {
-  const val = document.getElementById('tokenInput').value.trim();
-  if (!val) { toast('请输入令牌', 'error'); return; }
-  token = val;
-  localStorage.setItem('gv_admin_token', token);
-  checkAuth();
+async function doLogin() {
+  const username = document.getElementById('usernameInput').value.trim();
+  const password = document.getElementById('passwordInput').value;
+  if (!username || !password) {
+    toast('请输入账号和密码', 'error');
+    return;
+  }
+  try {
+    const res = await fetch(API_BASE + '/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    const rawText = await res.text();
+    const data = tryParseJson(rawText);
+    if (!res.ok) {
+      throw new Error(extractApiErrorMessage(data, rawText, res.status));
+    }
+    if (data && data.code !== undefined && data.code !== 0) {
+      throw new Error(extractApiErrorMessage(data, rawText, res.status));
+    }
+    const payload = data && Object.prototype.hasOwnProperty.call(data, 'data')
+      ? data.data
+      : data;
+    if (!payload?.token) {
+      throw new Error('登录失败：未返回会话令牌');
+    }
+    token = payload.token;
+    adminUsername = payload.username || username;
+    localStorage.setItem('gv_admin_token', token);
+    localStorage.setItem('gv_admin_username', adminUsername);
+    document.getElementById('passwordInput').value = '';
+    checkAuth();
+  } catch (e) {
+    toast('登录失败: ' + e.message, 'error');
+  }
 }
 
 function doLogout() {
   token = '';
+  adminUsername = '';
   localStorage.removeItem('gv_admin_token');
+  localStorage.removeItem('gv_admin_username');
   checkAuth();
 }
 
-document.getElementById('tokenInput').addEventListener('keydown', e => {
+document.getElementById('passwordInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') doLogin();
+});
+document.getElementById('usernameInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('passwordInput').focus();
 });
 
 // ===================== API =====================
@@ -361,22 +397,23 @@ function switchTab(tab) {
 }
 
 
-// ===================== Admin Token =====================
-async function changeToken() {
-  const current = document.getElementById('set-current-token').value;
-  const newTk = document.getElementById('set-new-token').value;
-  const confirm = document.getElementById('set-confirm-token').value;
-  if (!current) { toast('请输入当前令牌', 'error'); return; }
-  if (newTk.length < 6) { toast('新令牌至少6个字符', 'error'); return; }
-  if (newTk !== confirm) { toast('两次输入不一致', 'error'); return; }
+// ===================== Admin Password =====================
+async function changePassword() {
+  const current = document.getElementById('set-current-password').value;
+  const newPassword = document.getElementById('set-new-password').value;
+  const confirm = document.getElementById('set-confirm-password').value;
+  if (!current) { toast('请输入当前密码', 'error'); return; }
+  if (newPassword.length < 6) { toast('新密码至少6个字符', 'error'); return; }
+  if (newPassword !== confirm) { toast('两次输入不一致', 'error'); return; }
   try {
-    await api('/change-token', { method: 'POST', body: { newToken: newTk } });
-    token = newTk;
-    localStorage.setItem('gv_admin_token', token);
-    document.getElementById('set-current-token').value = '';
-    document.getElementById('set-new-token').value = '';
-    document.getElementById('set-confirm-token').value = '';
-    toast('管理员令牌已更新');
+    await api('/change-password', {
+      method: 'POST',
+      body: { currentPassword: current, newPassword },
+    });
+    document.getElementById('set-current-password').value = '';
+    document.getElementById('set-new-password').value = '';
+    document.getElementById('set-confirm-password').value = '';
+    toast('管理员密码已更新');
   } catch (e) { toast('更新失败: ' + e.message, 'error'); }
 }
 

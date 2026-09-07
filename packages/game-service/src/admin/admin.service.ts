@@ -9,6 +9,11 @@ import {
 import { ConfigService } from "@nestjs/config";
 import { PrismaService } from "../prisma/prisma.service";
 import {
+  getAdminPassword,
+  getAdminUsername,
+  validateAdminLogin,
+} from "../common/admin-auth";
+import {
   GameStatus,
   GenerationTaskStatus,
   InteractionAction,
@@ -3311,6 +3316,34 @@ export class AdminService {
     return {
       deleted: true,
       deactivated: false,
+    };
+  }
+
+  // ===================== Admin Auth =====================
+
+  loginAdmin(username: string | undefined, password: string | undefined) {
+    validateAdminLogin(username, password);
+    return {
+      token: this.getAdminToken(),
+      username: getAdminUsername(),
+    };
+  }
+
+  async changeAdminPassword(
+    currentPassword: string | undefined,
+    newPassword: string | undefined,
+  ) {
+    if (currentPassword !== getAdminPassword()) {
+      throw new BadRequestException("Current password is incorrect");
+    }
+    if (!newPassword || newPassword.length < 6) {
+      throw new BadRequestException("New password must be at least 6 characters");
+    }
+    process.env.ADMIN_PASSWORD = newPassword;
+    return {
+      success: true,
+      message:
+        "Admin password updated (runtime only, update environment for persistence)",
     };
   }
 

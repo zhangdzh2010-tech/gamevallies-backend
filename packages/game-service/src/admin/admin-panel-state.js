@@ -1,5 +1,6 @@
 const API_BASE = window.location.origin + '/api/v1/admin';
 let token = localStorage.getItem('gv_admin_token') || '';
+let adminUsername = localStorage.getItem('gv_admin_username') || '';
 let currentPage = 1;
 let totalPages = 1;
 let searchTimeout = null;
