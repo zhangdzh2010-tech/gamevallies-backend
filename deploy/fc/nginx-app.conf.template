@@ -29,9 +29,19 @@ server {
     location = /9002299597e76e062cb56930926ed40c.txt { proxy_pass $api$request_uri; }
     location /api/ { proxy_pass $api$request_uri; }
     location /users/ { proxy_pass $api$request_uri; }
-    location /admin { proxy_pass $games$request_uri; }
-    location /games/ { proxy_pass $games$request_uri; }
-    location /game-shell/ { proxy_pass $games$request_uri; }
+    # FC default domains force attachment; strip it so /admin HTML renders.
+    location /admin {
+        proxy_pass $games$request_uri;
+        proxy_hide_header Content-Disposition;
+    }
+    location /games/ {
+        proxy_pass $games$request_uri;
+        proxy_hide_header Content-Disposition;
+    }
+    location /game-shell/ {
+        proxy_pass $games$request_uri;
+        proxy_hide_header Content-Disposition;
+    }
     location /socket.io/ {
         proxy_pass $games$request_uri;
         proxy_set_header Host $proxy_host;
