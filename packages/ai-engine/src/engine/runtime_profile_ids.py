@@ -44,7 +44,7 @@ def runtime_profile_lookup_candidates(profile_id: str | None) -> Tuple[str, ...]
     canonical = normalize_runtime_profile_id(profile_id)
     legacy = CANONICAL_TO_LEGACY_RUNTIME_PROFILE_IDS.get(canonical, ())
     seen: list[str] = []
-    for candidate in (canonical, *legacy):
+    for candidate in (canonical, *(normalize_runtime_profile_id(item) for item in legacy), *legacy):
         if candidate and candidate not in seen:
             seen.append(candidate)
     return tuple(seen)
