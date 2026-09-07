@@ -22,7 +22,7 @@
       "concurrency": 20,
       "timeout": 900,
       "background": true,
-      "provisioned": 2,
+      "provisioned": 1,
       "disableOndemand": false,
       "maxInstances": 2
     },
