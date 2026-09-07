@@ -53,7 +53,7 @@ jobs:
           node-version: '20'
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - run: node --test deploy/fc/internal-auth.test.cjs
+      - run: node --test deploy/fc/internal-auth.test.cjs deploy/fc/task-drain.test.cjs
       - run: npx prisma generate
       - run: npm run build --workspaces
       - name: Verify consolidated API routes and authentication
@@ -61,6 +61,7 @@ jobs:
       - name: Verify generation and session regressions
         run: >-
           npm test --workspace=game-service -- --runInBand
+          test/interactive-quality.spec.ts
           test/game.service.spec.ts
           test/game-locking.spec.ts
           test/creation-session.service.spec.ts
@@ -93,6 +94,11 @@ jobs:
       - name: Verify pipeline, prompts and quality repairs
         run: >-
           python -m pytest -q
+          tests/test_durable_task_executor.py
+          tests/test_async_task_idempotency_and_store.py
+          tests/test_async_task_api.py
+          tests/test_model_transport.py
+          tests/test_interactive_creation.py
           tests/test_pipeline_v2_runner.py
           tests/test_prompt_integration.py
           tests/test_generation_v1_localization.py

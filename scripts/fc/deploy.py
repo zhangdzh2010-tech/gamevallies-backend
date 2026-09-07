@@ -124,8 +124,10 @@ def checkpoint_code(previous):
     return code
 
 
-def http_json(url, token, path, method='GET'):
-    request = urllib.request.Request(origin(url) + path, method=method, headers={'x-gamevallies-internal-token': token})
+def http_json(url, token, path, method='GET', admin_token=None):
+    headers = {'x-gamevallies-internal-token': token}
+    if admin_token: headers['x-admin-token'] = admin_token
+    request = urllib.request.Request(origin(url) + path, method=method, headers=headers)
     # A transport token must never follow a redirect to another host.
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *args): return None
@@ -133,6 +135,21 @@ def http_json(url, token, path, method='GET'):
         data = res.read(65536)
         try: return json.loads(data) if data else {}
         except json.JSONDecodeError: return {}
+
+
+def drain_status(url, token, admin_token):
+    status = http_json(url, token, '/__fc/status')
+    # Also protect the first deployment from the old queue-only status API.
+    # This independent SQL view must succeed before any function is replaced.
+    active = 0
+    for state in ('queued', 'running'):
+        response = http_json(url, token, '/api/v1/admin/tasks?status=' + state + '&limit=1', admin_token=admin_token)
+        data = response.get('data', response)
+        total = data.get('total') if isinstance(data, dict) else None
+        if not isinstance(total, int) or total < 0:
+            raise RuntimeError('Unable to verify durable generation task count')
+        active += total
+    return {**status, 'activeTasks': active, 'pending': max(status.get('pending', 0), active)}
 
 
 def deployment_error(code, name):
@@ -364,7 +381,7 @@ class Deployment:
                 http_json(old_game_url, token, '/__fc/drain', 'POST'); drained = True
                 stable = 0
                 for _ in range(240):
-                    status = http_json(old_game_url, token, '/__fc/status')
+                    status = drain_status(old_game_url, token, runtime['common']['ADMIN_TOKEN'])
                     stable = stable + 1 if status.get('pending') == 0 and status.get('maintenance') else 0
                     if stable >= 3: break
                     self.sleep(10)
@@ -487,7 +504,7 @@ def main():
         try:
             if game:
                 http_json(game['url'], token, '/__fc/drain', 'POST')
-                if http_json(game['url'], token, '/__fc/status')['pending']: raise RuntimeError('Wait for tasks to drain before rollback')
+                if drain_status(game['url'], token, runtime['common']['ADMIN_TOKEN'])['pending']: raise RuntimeError('Wait for tasks to drain before rollback')
             for entry in reversed(release['functions']):
                 if not entry.get('previousVersion'): raise ValueError('First installation has no previous version')
                 if not entry['name'].startswith(os.environ['FC_PREFIX'] + '-'): raise ValueError('Rollback function prefix mismatch')

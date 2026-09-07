@@ -17,6 +17,16 @@ MANIFEST = json.loads(Path('deploy/fc/functions.json').read_text())
 RUNTIME['artifacts'] = {f['name']: {'sha256': 'b'*64, 'object': 'gamevallies/prod/releases/' + 'a'*40 + '/' + 'b'*64 + '/' + f['name'] + '.zip'} for f in MANIFEST['functions']}
 
 class ConfigTests(unittest.TestCase):
+    def test_drain_includes_sql_tasks_with_old_queue_only_endpoint(self):
+        with patch.object(d, 'http_json', side_effect=[
+            {'pending':0,'maintenance':True}, {'data':{'total':0}}, {'data':{'total':1}},
+        ]):
+            self.assertEqual(d.drain_status('https://example.com', 'internal', 'admin')['pending'], 1)
+
+    def test_drain_rejects_unreadable_sql_state(self):
+        with patch.object(d, 'http_json', side_effect=[{'pending':0,'maintenance':True}, {'code':401}]):
+            with self.assertRaises(RuntimeError): d.drain_status('https://example.com', 'internal', 'admin')
+
     def test_http_control_uses_header_forwarded_by_fc(self):
         import io
         response = Mock()

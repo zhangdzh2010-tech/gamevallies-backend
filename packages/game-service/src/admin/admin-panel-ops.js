@@ -1469,8 +1469,8 @@ function populateProviderForm(provider) {
   renderProviderModelDefaultOptions();
   document.getElementById('llm2-provider-model').value = provider.model || '';
   document.getElementById('llm2-provider-fast-model').value = provider.fastModel || '';
-  document.getElementById('llm2-provider-timeout').value = provider.requestTimeoutS ?? 600;
-  document.getElementById('llm2-provider-connect-timeout').value = provider.connectTimeoutS ?? 15;
+  document.getElementById('llm2-provider-timeout').value = provider.requestTimeoutS ?? 1800;
+  document.getElementById('llm2-provider-connect-timeout').value = provider.connectTimeoutS ?? 1800;
   document.getElementById('llm2-provider-context-window').value = provider.contextWindow ?? '';
   document.getElementById('llm2-provider-max-tokens').value = provider.maxTokens ?? '';
   document.getElementById('llm2-provider-description').value = provider.description || '';
@@ -1855,8 +1855,8 @@ async function saveProvider() {
       availableModels: availableModels.length ? availableModels : [model, ...(fastModel ? [fastModel] : [])],
       model,
       fastModel: fastModel || null,
-      requestTimeoutS: Number(document.getElementById('llm2-provider-timeout').value || 600),
-      connectTimeoutS: Number(document.getElementById('llm2-provider-connect-timeout').value || 15),
+      requestTimeoutS: Number(document.getElementById('llm2-provider-timeout').value || 1800),
+      connectTimeoutS: Number(document.getElementById('llm2-provider-connect-timeout').value || 1800),
       contextWindow: readOptionalPositiveIntegerInput('llm2-provider-context-window', 'Context'),
       maxTokens: readOptionalPositiveIntegerInput('llm2-provider-max-tokens', 'MaxTokens'),
       description: document.getElementById('llm2-provider-description').value.trim(),

@@ -7,6 +7,7 @@ from contextlib import suppress
 from copy import copy
 from dataclasses import dataclass, field
 import json
+import hashlib
 import logging
 import math
 import re
@@ -26,6 +27,13 @@ from .task_memory import task_memory
 logger = logging.getLogger(__name__)
 
 Message = Dict[str, str]
+
+
+def _apply_model_output_mode(payload: dict, route: Any) -> None:
+    """Use documented native DeepSeek fields only on the official endpoint."""
+    if (urlparse(route.base_url).hostname == "api.deepseek.com"
+            and str(route.model).lower().startswith("deepseek-v4-")):
+        payload["thinking"] = {"type": settings.LLM_DEEPSEEK_V4_THINKING}
 
 
 @dataclass
@@ -1936,6 +1944,17 @@ class LLMClient:
         stage: str,
         sampling_profile: Optional[Dict[str, Any]] = None,  # P1.1 GAP-1a
     ) -> str:
+        from .async_task_manager import task_manager
+        checkpoint = hashlib.sha256(json.dumps({
+            "step": step_key, "provider": route.provider_id, "model": route.model,
+            "config": route.config_version, "messages": messages, "system": system,
+            "max_tokens": max_tokens, "sampling": sampling_profile,
+            "thinking": settings.LLM_DEEPSEEK_V4_THINKING,
+        }, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        restored = await task_manager.durable.checkpoint_get(checkpoint)
+        if restored is not None:
+            logger.warning("llm_checkpoint_restored task_id=%s step=%s", get_request_context().get("task_id"), step_key)
+            return restored
         semaphore = _llm_call_semaphore(_llm_max_concurrency())
         queue_started = time.perf_counter()
         await semaphore.acquire()
@@ -2038,6 +2057,7 @@ class LLMClient:
                 "failoverReason": route.route_snapshot.get("failover_reason"),
                 "providerVerified": route.route_snapshot.get("provider_verified"),
             })
+            await task_manager.durable.checkpoint_put(checkpoint, completion_result.text)
             return completion_result.text
         except asyncio.CancelledError:
             latency_ms = int((time.time() - started_at) * 1000)
@@ -2437,6 +2457,7 @@ class LLMClient:
             "messages": payload_messages,
             "max_tokens": max_tokens,
         }
+        _apply_model_output_mode(payload, route)
         # P1.1 GAP-1a: whitelist common OpenAI-compatible sampling knobs.
         if sampling_profile:
             for k in (
@@ -2543,6 +2564,7 @@ class LLMClient:
             "max_tokens": max_tokens,
             "stream": True,
         }
+        _apply_model_output_mode(payload, route)
         headers = {
             "Authorization": f"Bearer {route.api_key}",
             "Content-Type": "application/json",

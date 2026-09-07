@@ -95,7 +95,23 @@ export function assertCreateResultMeetsQualityGate(params: {
   generationTier?: GenerationTier | null;
   qualityScore: unknown;
   qualityBreakdown: unknown;
+  runtimeProfile?: string;
+  runtimeQaReport?: any;
 }): void {
+  if (params.runtimeProfile === 'interactive_experience') {
+    const report = params.runtimeQaReport;
+    if (report?.ran !== true || report?.passed !== true || report?.contentChanged !== true
+      || !(Number(report?.controlsExercised) > 0)
+      || !Array.isArray(report?.issues) || report.issues.length
+      || !Array.isArray(report?.viewports) || report.viewports.length < 2
+      || report.viewports.some((item: any) => item.horizontalOverflow !== false)) {
+      const error = buildCreateQualityGateError({ generationTier: params.generationTier || 'standard', message: 'Desktop interaction checks did not pass' });
+      error.failureFamily = 'interactive_validation';
+      error.failedStage = 'runtime_simulation_qa';
+      throw error;
+    }
+    return;
+  }
   const gate = resolveCreateQualityGate(params.generationTier);
   const qualityScore = normalizeQualityScore(params.qualityScore);
   const reviewRan = didStructuredReviewRun(params.qualityBreakdown);

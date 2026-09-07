@@ -16,6 +16,7 @@ from urllib.parse import unquote
 
 import httpx
 import pymysql
+from .fc_runtime import internal_headers
 
 from ..api.models import ProviderCatalogPreviewRequest, ProviderCatalogPreviewResponse, ProviderTestChatRequest, ProviderTestChatResponse
 from ..config.settings import settings
@@ -404,8 +405,8 @@ class LLMGateway:
                 api_key=row["api_key"],
                 model=row["model"],
                 fast_model=row.get("fast_model"),
-                request_timeout_s=int(row.get("request_timeout_s") or 600),
-                connect_timeout_s=int(row.get("connect_timeout_s") or 15),
+                request_timeout_s=int(row.get("request_timeout_s") or 1800),
+                connect_timeout_s=int(row.get("connect_timeout_s") or 1800),
                 enabled=bool(row.get("enabled", True)),
                 priority=int(row.get("priority") or 100),
                 description=row.get("description"),
@@ -857,7 +858,7 @@ class LLMGateway:
             "userId": context.get("user_id"),
             **payload,
         }
-        headers = {}
+        headers = internal_headers(base_url)
         if settings.ADMIN_TOKEN:
             headers["x-admin-token"] = settings.ADMIN_TOKEN
 
@@ -869,13 +870,14 @@ class LLMGateway:
                     min_value=0.1,
                 )
             ) as client:
-                await client.post(
+                response = await client.post(
                     f"{base_url}/api/v1/internal/generation/llm-call-log",
                     json=body,
                     headers=headers,
                 )
+                response.raise_for_status()
         except Exception as exc:
-            logger.debug("Failed to relay llm call log to game-service: %s", exc)
+            logger.warning("Failed to relay llm call log to game-service: %s", exc)
 
     async def emit_task_activity(self, payload: dict[str, Any]) -> None:
         base_url = settings.GAME_SERVICE_UPSTREAM_URL.rstrip("/")
@@ -889,7 +891,7 @@ class LLMGateway:
             "userId": context.get("user_id"),
             **payload,
         }
-        headers = {}
+        headers = internal_headers(base_url)
         if settings.ADMIN_TOKEN:
             headers["x-admin-token"] = settings.ADMIN_TOKEN
 
@@ -901,13 +903,14 @@ class LLMGateway:
                     min_value=0.1,
                 )
             ) as client:
-                await client.post(
+                response = await client.post(
                     f"{base_url}/api/v1/internal/generation/task-activity",
                     json=body,
                     headers=headers,
                 )
+                response.raise_for_status()
         except Exception as exc:
-            logger.debug("Failed to relay task activity to game-service: %s", exc)
+            logger.warning("Failed to relay task activity to game-service: %s", exc)
 
     async def verify_provider_capabilities(
         self,

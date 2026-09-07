@@ -28,5 +28,8 @@ test('FC boundary rejects direct access and permits trusted service calls withou
     const axios=require('axios');assert.equal((await axios.get(url+'/private')).status,200);
     const response=await originalFetch(url+'/private',{headers:{'x-gamevallies-internal-token':'wrong'}});
     assert.equal(response.status,403);
+    process.env.FC_SERVICE='game-service';
+    const control=await originalFetch(url+'/__fc/status',{headers:{'x-forwarded-host':'www.zlspace.ai'}});
+    assert.equal(control.status,403);
   } finally { http.Server.prototype.emit = emit; server.closeAllConnections();await new Promise(r=>server.close(r)); }
 });

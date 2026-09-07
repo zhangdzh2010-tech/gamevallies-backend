@@ -46,6 +46,7 @@ from .qa_pipeline import QAPipeline, SYNTAX_REPAIR_FAMILY
 from .quality_scorer import LLMReviewResult, QAStaticResult, QualityScorer, RuntimeQAResult
 from .restart_entry import has_restart_entry
 from .runtime_profile_ids import DEFAULT_RUNTIME_PROFILE_ID, normalize_runtime_profile_id
+from .interactive_creation import is_interactive_request, normalize_interactive_request, run_interactive
 from .runtime_qa import run_runtime_qa
 # P1.3 PR-11 wire-up: optional fire-and-forget scheduler for runtime_qa.
 # Guarded import so pipeline runner still loads in stripped deploys.
@@ -329,6 +330,8 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
         progress_cb: ProgressCallback,
         stage_context: dict[str, str],
     ) -> RunPipelineResponse:
+        if is_interactive_request(request):
+            return await run_interactive(normalize_interactive_request(request), progress_cb)
         start_ms = int(time.time() * 1000)
         # P1.2 GAP-3: reset per-request fun_score so PR-10's filter_fixable
         # starts from a clean slate instead of inheriting a prior request's
@@ -471,6 +474,8 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                             "attempt": quality_attempt,
                             "maxAttempts": len(attempt_plan),
                             "failedProviderId": (last_route_snapshot or {}).get("provider_id"),
+                            "failureFamily": "code_generation",
+                            "issues": [{"type": type(issue).__name__, "message": issue.message} for issue in preflight_issues],
                         },
                     )
                     await asyncio.sleep(min(quality_attempt, 2))
@@ -693,6 +698,8 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                         "runtimeProfile": runtime_profile,
                         "failedStage": exc.stage,
                         "failedProviderId": (last_route_snapshot or {}).get("provider_id"),
+                        "failureFamily": getattr(exc, "failure_family", None),
+                        "reason": str(exc)[:2000],
                         "attempt": quality_attempt,
                         "maxAttempts": len(attempt_plan),
                     },
@@ -799,6 +806,8 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
         progress_cb: ProgressCallback,
         stage_context: dict[str, str],
     ) -> IterateResponse:
+        if is_interactive_request(request):
+            return await run_interactive(normalize_interactive_request(request), progress_cb)
         start_ms = int(time.time() * 1000)
         # P1.2 GAP-3: mirror the create-path reset so iterate runs also start
         # with a clean fun_score slate for PR-10 filter_fixable.
