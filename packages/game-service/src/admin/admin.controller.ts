@@ -35,6 +35,9 @@ export class AdminController {
     if (contentType) {
       res.type(contentType);
     }
+    // FC may default string responses to `attachment`, which makes browsers
+    // download the admin HTML and assets instead of rendering them.
+    res.setHeader("Content-Disposition", "inline");
     res.send(asset);
   }
 
