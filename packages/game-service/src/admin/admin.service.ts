@@ -44,6 +44,7 @@ import {
   isBusinessTimeoutConfigKey,
   listBusinessTimeoutConfigs,
 } from "./timeout-admin-catalog";
+import { DEFAULT_LLM_STEP_CATALOG } from "../game/game-schema-bootstrap.service";
 
 interface LegacyPreviewBackfillOptions {
   limit?: number;
@@ -1393,6 +1394,39 @@ export class AdminService {
     }
     const normalized = String(value).trim();
     return normalized || null;
+  }
+
+  private getDefaultLlmStepCatalogEntry(stepKey: string) {
+    return (
+      DEFAULT_LLM_STEP_CATALOG.find((entry) => entry.stepKey === stepKey) ??
+      null
+    );
+  }
+
+  private async ensureLlmStepCatalogEntry(stepKey: string) {
+    const definition = this.getDefaultLlmStepCatalogEntry(stepKey);
+    if (!definition) {
+      return null;
+    }
+    return this.prisma.llmStepCatalog.upsert({
+      where: { stepKey },
+      create: {
+        id: definition.id,
+        stepKey: definition.stepKey,
+        stepOrder: definition.stepOrder,
+        stageLabel: definition.stageLabel,
+        displayName: definition.displayName,
+        description: definition.description,
+        enabled: true,
+      },
+      update: {
+        stepOrder: definition.stepOrder,
+        stageLabel: definition.stageLabel,
+        displayName: definition.displayName,
+        description: definition.description,
+        enabled: true,
+      },
+    });
   }
 
   private resolveOptionalPositiveInteger(
@@ -5231,7 +5265,7 @@ export class AdminService {
       throw new BadRequestException("providerId is required");
     }
 
-    const [step, provider] = await Promise.all([
+    const [stepLookup, provider] = await Promise.all([
       this.prisma.llmStepCatalog.findUnique({
         where: { stepKey: body.stepKey },
       }),
@@ -5251,6 +5285,10 @@ export class AdminService {
       }),
     ]);
 
+    let step = stepLookup;
+    if (!step || step.enabled === false) {
+      step = await this.ensureLlmStepCatalogEntry(body.stepKey);
+    }
     if (!step || step.enabled === false) {
       throw new BadRequestException("Unknown or disabled stepKey");
     }
