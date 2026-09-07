@@ -1,5 +1,7 @@
 // CI-only MySQL 8 acceptance. Explicit opt-in prevents accidental live DB use.
 const assert = require('node:assert/strict');
+const { readdirSync } = require('node:fs');
+const path = require('node:path');
 const { PrismaClient } = require('@prisma/client');
 const { migrateProduction } = require('../prisma/migrate-production.cjs');
 async function main() {
@@ -21,8 +23,13 @@ async function main() {
     await db.$executeRawUnsafe('DROP TABLE migration_test_sentinel');
     assert.equal((await migrateProduction()).ok, true);
     const records = await db.$queryRawUnsafe('SELECT * FROM _prisma_migrations');
-    assert.equal(records.length, 1);
-    assert.ok(records[0].finished_at);
+    const migrationNames = readdirSync(path.join(__dirname, '../prisma/migrations'), {withFileTypes:true})
+      .filter(entry => entry.isDirectory()).map(entry => entry.name).sort();
+    assert.deepEqual(records.map(row => row.migration_name).sort(), migrationNames);
+    assert.ok(records.every(row => row.finished_at && !row.rolled_back_at));
+    const timeoutDefaults = await db.$queryRawUnsafe("SELECT COLUMN_DEFAULT AS value FROM information_schema.columns WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'llm_gateway_providers' AND COLUMN_NAME IN ('request_timeout_s', 'connect_timeout_s')");
+    assert.equal(timeoutDefaults.length, 2);
+    assert.ok(timeoutDefaults.every(row => Number(row.value) === 1800));
     assert.equal(await db.user.count(), 0);
     assert.equal(await db.game.count(), 0);
     assert.equal(await db.llmGatewayProvider.count(), 0);
