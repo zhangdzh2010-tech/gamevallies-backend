@@ -32,6 +32,7 @@ class SlotState(BaseModel):
     lose_condition: Optional[str] = None
     scoring: Optional[str] = None
     lives: Optional[int] = Field(default=None, ge=1, le=99)
+    entities: Optional[List[Dict[str, str]]] = None
 
     REQUIRED_SLOTS: List[str] = Field(
         default=["game_type", "core_mechanic", "theme", "input_method", "win_condition", "difficulty"],
