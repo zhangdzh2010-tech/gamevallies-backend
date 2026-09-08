@@ -67,13 +67,11 @@ _READY_TRANSITION_RE = re.compile(
 _NULL_INIT_DECL_RE = re.compile(
     rf"\b(?:const|let|var)\s+(?P<name>{_IDENTIFIER_RE})\s*=\s*null\b"
 )
-_CANVAS_NULL_DECL_RE = re.compile(r"\b(?:const|let|var)\s+canvas\s*=\s*null\b")
 _LANE_HELPER_CALL_RE = re.compile(r"\.\s*(?P<name>laneX|laneCenterX|laneY)\s*\(")
 _GRID_CELL_PROPERTY_READ_RE = re.compile(
     r"\bgrid\s*\[\s*(?P<row>[^\]]+?)\s*\]\s*\[\s*(?P<col>[^\]]+?)\s*\]\s*\.(?P<prop>[A-Za-z_$][A-Za-z0-9_$]*)"
 )
 _SCRIPT_BLOCK_RE = re.compile(r"(<script\b[^>]*>)(?P<body>[\s\S]*?)(</script>)", re.IGNORECASE)
-_CTX_NULL_DECL_RE = re.compile(r"\b(?:const|let|var)\s+ctx\s*=\s*null\b")
 _BLOCK_COMMENT_RE = re.compile(r"/\*[\s\S]*?\*/")
 _LINE_COMMENT_RE = re.compile(r"//[^\n]*")
 _STRING_RE = re.compile(r"(['\"`])(?:\\.|(?!\1)[\s\S])*?\1")
@@ -156,51 +154,6 @@ class CodePreflightValidator:
         "  return rowBucket ? rowBucket[col] : null;\n"
         "}\n"
     )
-    _SAFE_CTX_HELPER = (
-        "function __safeCanvasContext() {\n"
-        "  const noop = () => {};\n"
-        "  return {\n"
-        "    clearRect: noop,\n"
-        "    fillRect: noop,\n"
-        "    strokeRect: noop,\n"
-        "    beginPath: noop,\n"
-        "    closePath: noop,\n"
-        "    moveTo: noop,\n"
-        "    lineTo: noop,\n"
-        "    arc: noop,\n"
-        "    rect: noop,\n"
-        "    roundRect: noop,\n"
-        "    fill: noop,\n"
-        "    stroke: noop,\n"
-        "    save: noop,\n"
-        "    restore: noop,\n"
-        "    translate: noop,\n"
-        "    rotate: noop,\n"
-        "    scale: noop,\n"
-        "    setTransform: noop,\n"
-        "    fillText: noop,\n"
-        "    strokeText: noop,\n"
-        "    drawImage: noop,\n"
-        "    measureText: () => ({ width: 0 }),\n"
-        "    createLinearGradient: () => ({ addColorStop: noop }),\n"
-        "    createRadialGradient: () => ({ addColorStop: noop }),\n"
-        "    createPattern: () => null,\n"
-        "  };\n"
-        "}\n"
-    )
-    _SAFE_CANVAS_HELPER = (
-        "function __safeCanvasElement() {\n"
-        "  return {\n"
-        "    width: 0,\n"
-        "    height: 0,\n"
-        "    style: {},\n"
-        "    getContext: () => __safeCanvasContext(),\n"
-        "    addEventListener: () => {},\n"
-        "    removeEventListener: () => {},\n"
-        "    getBoundingClientRect: () => ({ left: 0, top: 0, width: 0, height: 0 }),\n"
-        "  };\n"
-        "}\n"
-    )
     _SAFE_ALPHA_HELPER = (
         "function __withAlpha(color, alpha) {\n"
         "  const normalized = String(color || '').trim();\n"
@@ -268,45 +221,10 @@ class CodePreflightValidator:
         if not html_code or "<script" not in (html_code or "").lower():
             return html_code
         seen_codes = {issue.code for issue in (issues or [])}
-        repaired = self._repair_nullable_canvas_runtime_objects(html_code)
-        repaired = self._repair_nested_grid_reads(repaired, runtime_contract)
+        repaired = self._repair_nested_grid_reads(html_code, runtime_contract)
         if not seen_codes or "unsafe_color_alpha_concat" in seen_codes:
             repaired = self._repair_unsafe_color_alpha_concat(repaired)
         return repaired or html_code
-
-    def _repair_nullable_canvas_runtime_objects(self, html_code: str) -> str:
-        body = extract_script_content(html_code or "")
-        if body is None:
-            return html_code
-
-        has_ctx_helper = "__safeCanvasContext" in body
-        has_canvas_helper = "__safeCanvasElement" in body
-        needs_ctx_helper = bool(_CTX_NULL_DECL_RE.search(body)) and (
-            "getContext('2d')" in body or 'getContext("2d")' in body
-        )
-        needs_canvas_helper = bool(_CANVAS_NULL_DECL_RE.search(body)) and (
-            "gameCanvas" in body or ".getContext(" in body or "canvas." in body
-        )
-        if not needs_ctx_helper and not needs_canvas_helper:
-            return html_code
-
-        updated_body = body
-        helper_prefix = ""
-        if needs_ctx_helper:
-            updated_body = _CTX_NULL_DECL_RE.sub("let ctx = __safeCanvasContext()", updated_body, count=1)
-            if not has_ctx_helper:
-                helper_prefix += self._SAFE_CTX_HELPER
-                has_ctx_helper = True
-        if needs_canvas_helper:
-            updated_body = _CANVAS_NULL_DECL_RE.sub("let canvas = __safeCanvasElement()", updated_body, count=1)
-            if not has_ctx_helper:
-                helper_prefix += self._SAFE_CTX_HELPER
-                has_ctx_helper = True
-            if not has_canvas_helper:
-                helper_prefix += self._SAFE_CANVAS_HELPER
-
-        updated_body = f"{helper_prefix}{updated_body}"
-        return replace_script_content(html_code, updated_body)
 
     def render_guidance(self, issues: Iterable[CodePreflightIssue]) -> str:
         visible = []

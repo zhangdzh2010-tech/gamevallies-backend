@@ -1275,24 +1275,31 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
             ) from exc
 
         gdd.canvas.target_fps = runtime_contract.canvas.target_fps
+        states = list(runtime_contract.state.required_states)
+        terminal = next((name for name in states if name in {"game_over", "level_complete"}), states[-1])
         gdd.state_machine = {
-            "states": runtime_contract.state.required_states,
-            "initial": runtime_contract.state.required_states[0],
-            "transitions": {
-                runtime_contract.state.required_states[0]: runtime_contract.state.required_states[1],
-                runtime_contract.state.required_states[1]: runtime_contract.state.required_states[2],
-                runtime_contract.state.required_states[2]: runtime_contract.state.required_states[-1],
-                runtime_contract.state.required_states[-1]: runtime_contract.state.required_states[1],
-            },
+            "states": states,
+            "initial": states[0],
+            "transitions": {states[0]: states[1], states[1]: states[2],
+                states[2]: terminal, terminal: states[1]},
         }
+        if "paused" in states:
+            gdd.state_machine["transitions"]["paused"] = "playing"
+            gdd.state_machine["conditional_transitions"] = [
+                {"from": "playing", "to": "paused", "on": "pause_or_blur"},
+                {"from": "paused", "to": "playing", "on": "resume"},
+            ]
         if "touch" in runtime_contract.input.required_modes:
             gdd.input_map.setdefault("touchstart", "primary_action")
             gdd.input_map.setdefault("touchmove", "primary_drag")
             gdd.input_map.setdefault("touchend", "primary_release")
         if "pointer" in runtime_contract.input.required_modes:
             gdd.input_map.setdefault("pointerdown", "primary_action")
-            gdd.input_map.setdefault("pointermove", "primary_drag")
+            gdd.input_map["pointermove"] = "primary_move" if "move" in runtime_contract.input.gestures else "primary_drag"
             gdd.input_map.setdefault("pointerup", "primary_release")
+        if "keyboard" in runtime_contract.input.required_modes:
+            gdd.input_map["keydown"] = "primary_move"
+            gdd.input_map["keyup"] = "primary_release"
         gdd.input_map.setdefault("click_game_over", "restart")
         return gdd
 
