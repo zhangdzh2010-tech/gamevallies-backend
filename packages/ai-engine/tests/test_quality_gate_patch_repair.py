@@ -58,6 +58,19 @@ def _spec() -> GameSpec:
     )
 
 
+def test_catch_and_many_are_not_cat_and_man_characters():
+    spec = _spec().model_copy(update={
+        'source_description': 'Move a boat to catch as many stars as possible',
+        'intent_summary': 'catch stars',
+    })
+    assert not V2PipelineRunner._is_character_driven_spec(spec)
+    for description in ['a cat hero catches stars', 'a man sailing a boat', '主角是小狐狸']:
+        assert V2PipelineRunner._is_character_driven_spec(spec.model_copy(update={'source_description': description}))
+    review = LLMReviewResult(ran=True, is_complete_game=True, has_real_gameplay=True,
+        difficulty_balanced=True, fun_score=6, visual_polish_score=6, character_quality_score=4)
+    assert V2PipelineRunner._should_attempt_quality_patch_repair(spec, review, SimpleNamespace(final_score=6.5))
+
+
 def _near_miss_review(**overrides) -> LLMReviewResult:
     values = dict(
         ran=True,
