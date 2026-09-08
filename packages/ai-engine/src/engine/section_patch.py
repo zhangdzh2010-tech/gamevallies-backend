@@ -585,9 +585,6 @@ def parse_patch_response(
     cleaned = _strip_code_fences(raw_text)
     if not cleaned:
         return None, None
-    if _looks_like_full_html(cleaned):
-        return None, _extract_html(cleaned)
-
     allowed = {_normalize_section_name(section) for section in allowed_sections}
     allowed.discard(None)
 
@@ -632,6 +629,11 @@ def parse_patch_response(
                 )
         if patches:
             return patches, None
+
+    # A valid JSON patch can itself contain HTML literals inside its JS.
+    # Parse that envelope before considering the legacy full-document fallback.
+    if _looks_like_full_html(cleaned):
+        return None, _extract_html(cleaned)
 
     legacy_patches = [
         patch for patch in _parse_legacy_marker_blocks(cleaned)

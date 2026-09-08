@@ -23,6 +23,7 @@ from .section_patch import (
     apply_section_patches,
     build_patch_protocol,
     build_section_context,
+    extract_body_content,
     ensure_structured_section_markers,
     parse_patch_response,
     validate_patch_candidate,
@@ -477,6 +478,8 @@ class PipelineV2QualityPolicyMixin:
                 "allowedSections": list(allowed_sections),
                 "patchAttempt": patch_attempt,
                 "maxPatchAttempts": QUALITY_GATE_PATCH_ATTEMPTS_PER_FAILURE,
+                "reviewIssues": list(review.issues or [])[:6],
+                "qualityGateErrors": quality_gate_errors[:6],
             },
         )
         _p2_emit(
@@ -486,23 +489,33 @@ class PipelineV2QualityPolicyMixin:
             sections=",".join(allowed_sections),
             final_score=float(getattr(quality, "final_score", 0.0) or 0.0),
         )
+        failure_stage = "request_prepare"
+        response_chars = 0
+        patch_count = 0
         try:
             normalized_code = ensure_structured_section_markers(code)
+            body_context = re.sub(r"<script\b[^>]*>[\s\S]*?</script>", "", extract_body_content(normalized_code) or "", flags=re.I)
             prompt = "\n\n".join(
                 part
                 for part in [
                     build_patch_protocol(allowed_sections, task_label="quality gate repair"),
                     self._build_review_quality_guidance(spec, review, quality, quality_gate_errors),
+                    "ORIGINAL USER REQUIREMENTS (preserve):\n" + str(spec.source_description or ""),
+                    "UNCHANGED BODY STRUCTURE (read-only; reuse these element IDs, do not invent missing controls):\n" + body_context,
                     build_section_context(normalized_code, allowed_sections),
                 ]
                 if part
             )
+            failure_stage = "provider_request"
             text = await self._request_quality_gate_patch_text(
                 prompt=prompt,
                 spec=spec,
                 prompt_bundle_snapshot=request.prompt_bundle_snapshot.model_dump(),
             )
+            response_chars = len(text or "")
+            failure_stage = "patch_parse"
             patches, full_html = parse_patch_response(text, allowed_sections=allowed_sections)
+            patch_count = len(patches or [])
             if patches:
                 candidate = apply_section_patches(normalized_code, patches)
                 touched_sections = {patch.section for patch in patches}
@@ -512,6 +525,7 @@ class PipelineV2QualityPolicyMixin:
             else:
                 raise RuntimeError("patch_parse_empty")
 
+            failure_stage = "patch_validation"
             validation_errors = validate_patch_candidate(
                 normalized_code,
                 candidate,
@@ -520,6 +534,7 @@ class PipelineV2QualityPolicyMixin:
             if validation_errors:
                 raise RuntimeError("patch_validation_failed:" + ",".join(validation_errors))
 
+            failure_stage = "static_qa"
             static_check = self.qa_pipeline.check(candidate)
             if not static_check.passed:
                 raise RuntimeError(
@@ -534,6 +549,7 @@ class PipelineV2QualityPolicyMixin:
             if touched_sections & {PATCH_SECTION_SCRIPT, PATCH_SECTION_BODY}:
                 # SCRIPT/BODY changes can alter behavior; STYLE-only patches
                 # keep the previous runtime QA verdict.
+                failure_stage = "runtime_qa"
                 candidate, runtime_qa, runtime_retries, qa_warnings = await self._run_runtime_qa_loop(
                     code=candidate,
                     runtime_contract=runtime_contract,
@@ -547,6 +563,7 @@ class PipelineV2QualityPolicyMixin:
                 )
                 runtime_qa_reran = True
 
+            failure_stage = "review"
             patched_review = await self.code_reviewer.review(candidate)
             patched_quality = self.quality_scorer.compute(
                 static=QAStaticResult(
@@ -561,6 +578,7 @@ class PipelineV2QualityPolicyMixin:
                 review=patched_review,
                 code=candidate,
             )
+            failure_stage = "quality_gate"
             remaining_errors = self._quality_gate_errors(
                 spec,
                 patched_review,
@@ -572,7 +590,24 @@ class PipelineV2QualityPolicyMixin:
                     "patch_quality_gate_still_failing:" + "; ".join(remaining_errors[:3])
                 )
         except Exception as exc:  # noqa: BLE001 - any failure falls back to regeneration
-            reason = str(exc)[:300]
+            # Provider exceptions may contain request credentials; expose only
+            # our known validation failures, never raw provider response bodies.
+            raw_reason = str(exc)
+            reason = raw_reason[:700] if raw_reason.startswith((
+                "patch_parse_empty", "patch_validation_failed:", "patch_static_qa_failed:",
+                "patch_quality_gate_still_failing:",
+            )) else type(exc).__name__
+            self._notify(progress_cb, "code_review", 95, "Targeted quality repair rejected", {
+                "gameId": request.game_id,
+                "userId": request.user_id,
+                "patchAttempt": patch_attempt,
+                "failureStage": failure_stage,
+                "rejectionReason": reason,
+                "exceptionClass": type(exc).__name__,
+                "responseChars": response_chars,
+                "patchCount": patch_count,
+                "allowedSections": list(allowed_sections),
+            })
             logger.warning(
                 "Quality-gate patch repair attempt %s/%s for game %s failed; falling back to full regeneration: %s",
                 patch_attempt,

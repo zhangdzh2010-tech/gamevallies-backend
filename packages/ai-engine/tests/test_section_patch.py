@@ -181,3 +181,11 @@ def test_validate_patch_candidate_rejects_multiple_html_documents():
     )
 
     assert "multiple_html_documents" in errors
+
+
+def test_json_patch_with_embedded_html_literal_is_not_a_full_document():
+    import json
+    script = "const label = '<html lang=\"zh\">';"
+    patches, full_html = parse_patch_response(json.dumps({"patches":[{"section":"SCRIPT","content":script}]}), allowed_sections=(PATCH_SECTION_SCRIPT,))
+    assert full_html is None
+    assert patches == [SectionPatch(section=PATCH_SECTION_SCRIPT, content=script)]
