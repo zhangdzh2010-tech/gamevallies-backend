@@ -88,6 +88,7 @@
         >
           订阅套餐
         </div>
+        <div class="tab" data-tab="grants" onclick="switchTab('grants')">套餐授予</div>
         <div class="tab" data-tab="prompts" onclick="switchTab('prompts')">
           Prompt 配置
         </div>
@@ -487,6 +488,20 @@
         </div>
 
         <!-- User Management -->
+        <div id="page-grants" class="page">
+          <div class="section-title">套餐授予</div>
+          <p>为测试、补偿或运营活动授予套餐。立即生效，不收款、不自动续费；已有有效套餐时不会覆盖权益。</p>
+          <div class="form-grid">
+            <div class="form-group"><label for="grantSearch">搜索用户（手机号、邮箱或昵称）</label><input id="grantSearch" maxlength="128"><button class="btn" onclick="searchGrantUsers()">搜索用户</button></div>
+            <div class="form-group"><label for="grantUser">目标用户</label><select id="grantUser" onchange="loadGrantPage()"><option value="">请先搜索并选择用户</option></select></div>
+            <div class="form-group"><label for="grantPlan">授予套餐</label><select id="grantPlan" onchange="updateGrantPreview()"></select></div>
+            <div class="form-group"><label for="grantReason">授予原因（必填）</label><textarea id="grantReason" maxlength="255" placeholder="例如：种子作品生成测试" oninput="grantRequest = null"></textarea></div>
+          </div>
+          <p id="grantCurrent" role="status"></p><p id="grantPreview"></p>
+          <button id="grantSubmit" class="btn btn-primary" disabled onclick="submitSubscriptionGrant()">确认授予套餐</button>
+          <p id="grantMessage" role="status" aria-live="polite"></p>
+          <div class="section-title">最近 50 条授予记录</div><div id="grantHistory"></div>
+        </div>
         <div id="page-users" class="page">
           <div class="workspace-page" id="userWorkspace">
             <div id="userListView">
@@ -1893,6 +1908,7 @@
     <script defer src="/admin/assets/admin-panel-core.js"></script>
     <script defer src="/admin/assets/admin-panel-games.js"></script>
     <script defer src="/admin/assets/admin-panel-users-logs.js"></script>
+    <script defer src="/admin/assets/admin-panel-grants.js"></script>
     <script defer src="/admin/assets/admin-panel-config.js"></script>
     <script defer src="/admin/assets/admin-panel-ops.js"></script>
     <script defer src="/admin/assets/admin-panel-boot.js"></script>
