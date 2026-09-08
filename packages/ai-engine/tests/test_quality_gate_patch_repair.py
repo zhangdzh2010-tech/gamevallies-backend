@@ -152,6 +152,7 @@ def _run_create_with_mocks(
     review_side_effect,
     compute_side_effect,
     patch_text_return=PATCH_RESPONSE_TEXT,
+    patch_text_side_effect=None,
     patch_repair_enabled=True,
     progress_cb=None,
 ):
@@ -208,7 +209,7 @@ def _run_create_with_mocks(
             patch.object(
                 runner,
                 "_request_quality_gate_patch_text",
-                new=AsyncMock(return_value=patch_text_return),
+                new=AsyncMock(return_value=patch_text_return, side_effect=patch_text_side_effect),
             )
         )
         mock_runtime_loop = stack.enter_context(
@@ -408,3 +409,45 @@ def test_patch_request_overrides_full_document_system_output_contract():
     assert system.index('CURRENT REPAIR OUTPUT OVERRIDE') > system.index('Return ONLY one complete HTML')
     assert 'Return only a valid JSON object' in system
     assert 'All safety, gameplay, language and quality requirements' in system
+
+
+def test_invalid_patch_reference_gets_one_correction_and_full_qa():
+    bad = json.dumps({"patches": [{"section": "SCRIPT", "operation": "replace_exact",
+        "search": "does not exist", "content": "unsafe fragment"}]})
+    response, mocks = _run_create_with_mocks(
+        generate_side_effect=[(_generated(BASE_CODE, "provider-a"), [])],
+        flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])],
+        review_side_effect=[_near_miss_review(), _passing_review()],
+        compute_side_effect=[_quality(5.9), _quality(7.1)],
+        patch_text_side_effect=[bad, PATCH_RESPONSE_TEXT],
+    )
+    assert mocks.patch_text.await_count == 2
+    assert "PATCH APPLICATION REJECTED" in mocks.patch_text.await_args.kwargs["prompt"]
+    assert "ORIGINAL" in mocks.patch_text.await_args.kwargs["prompt"]
+    assert mocks.generate.await_count == 1
+    assert mocks.runtime_loop.await_count == 1
+    assert "PATCHED_QUALITY_FIX" in response.html_code
+
+
+def test_explicit_desktop_requirements_override_touch_only_defaults():
+    from src.engine.code_generator import CodeGenerator
+    for brief in ["桌面小游戏，用鼠标移动和方向键", "Desktop game with mouse control"]:
+        contract = CodeGenerator._build_requested_platform_contract(_spec().model_copy(update={"source_description": brief}))
+        assert "not touchstart alone" in contract
+        assert "without requiring a pressed button" in contract
+    assert CodeGenerator._build_requested_platform_contract(_spec()) == ""
+
+
+def test_invalid_patch_correction_is_bounded_and_falls_back():
+    bad = json.dumps({"patches": [{"section": "SCRIPT", "operation": "replace_exact",
+        "search": "does not exist", "content": "unsafe fragment"}]})
+    response, mocks = _run_create_with_mocks(
+        generate_side_effect=[(_generated(BASE_CODE, "provider-a"), []), (_generated(BASE_CODE, "provider-b"), [])],
+        flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])] * 2,
+        review_side_effect=[_near_miss_review(), _passing_review()],
+        compute_side_effect=[_quality(5.9), _quality(7.1)],
+        patch_text_side_effect=[bad, bad],
+    )
+    assert mocks.patch_text.await_count == 2
+    assert mocks.generate.await_count == 2
+    assert mocks.runtime_loop.await_count == 0
