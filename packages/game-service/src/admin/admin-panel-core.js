@@ -434,6 +434,7 @@ function switchTab(tab) {
   if (tab === 'tasks') loadTasks();
   if (tab === 'users') { showUserList(); loadUsers(); }
   if (tab === 'subscriptions') loadSubscriptionPlans();
+  if (tab === 'grants') loadGrantPage();
   if (tab === 'prompts') loadConfigs();
   if (tab === 'appdist') loadAppDistribution();
   if (tab === 'timeouts') loadTimeoutConfigs();

@@ -943,3 +943,21 @@ model RuntimeProfileCatalog {
   @@index([enabled, updatedAt])
   @@map("runtime_profile_catalog")
 }
+
+// Administrator grants are separate from payment orders and revenue.
+model AdminSubscriptionGrant {
+  id String @id @db.VarChar(36)
+  userId String @map("user_id") @db.VarChar(36)
+  planId String @map("plan_id") @db.VarChar(64)
+  subscriptionId String @unique @map("subscription_id") @db.VarChar(36)
+  userLabel String @map("user_label") @db.VarChar(255)
+  planName String @map("plan_name") @db.VarChar(128)
+  quota Int
+  startedAt DateTime @map("started_at") @db.DateTime(3)
+  expiresAt DateTime @map("expires_at") @db.DateTime(3)
+  reason String @db.VarChar(255)
+  operator String @db.VarChar(128)
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  @@index([userId, createdAt])
+  @@map("admin_subscription_grants")
+}
