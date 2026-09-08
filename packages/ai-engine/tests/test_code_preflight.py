@@ -323,7 +323,7 @@ def test_code_preflight_auto_repair_targets_primary_script_not_just_first_script
     assert not any(issue.code == "unsafe_nested_grid_read" for issue in issues)
 
 
-def test_code_preflight_auto_repair_replaces_null_ctx_with_safe_canvas_context():
+def test_code_preflight_keeps_uninitialized_ctx_visible_to_validation():
     validator = CodePreflightValidator()
     html = """
     <!DOCTYPE html>
@@ -351,12 +351,12 @@ def test_code_preflight_auto_repair_replaces_null_ctx_with_safe_canvas_context()
     repaired = validator.auto_repair(html, runtime_contract=GameRuntimeContract())
     issues = validator.validate(repaired, runtime_contract=GameRuntimeContract())
 
-    assert "__safeCanvasContext" in repaired
-    assert "let ctx = __safeCanvasContext()" in repaired
-    assert not any(issue.code == "nullable_runtime_object:ctx" for issue in issues)
+    assert "__safeCanvasContext" not in repaired
+    assert "let ctx = null" in repaired
+    assert any(issue.code == "nullable_runtime_object:ctx" for issue in issues)
 
 
-def test_code_preflight_auto_repair_replaces_null_canvas_with_safe_canvas_element():
+def test_code_preflight_keeps_uninitialized_canvas_visible_to_validation():
     validator = CodePreflightValidator()
     html = """
     <!DOCTYPE html>
@@ -380,9 +380,9 @@ def test_code_preflight_auto_repair_replaces_null_canvas_with_safe_canvas_elemen
     repaired = validator.auto_repair(html, runtime_contract=GameRuntimeContract())
     issues = validator.validate(repaired, runtime_contract=GameRuntimeContract())
 
-    assert "__safeCanvasElement" in repaired
-    assert "let canvas = __safeCanvasElement()" in repaired
-    assert not any(issue.code == "nullable_runtime_object:canvas" for issue in issues)
+    assert "__safeCanvasElement" not in repaired
+    assert "let canvas = null" in repaired
+    assert any(issue.code == "nullable_runtime_object:canvas" for issue in issues)
 
 
 def test_code_preflight_allows_top_level_non_null_assignment_before_first_frame():
@@ -878,3 +878,39 @@ def test_standard_global_functions_are_not_undefined_but_missing_helpers_are():
     issues = CodePreflightValidator().validate(html, runtime_contract=GameRuntimeContract())
     undefined = {issue.code for issue in issues if issue.code.startswith('undefined_symbol:')}
     assert undefined == {'undefined_symbol:missingGameHelper'}
+
+
+def test_preflight_preserves_lazy_canvas_initialization_and_real_ellipse_rendering():
+    import asyncio
+    from playwright.async_api import async_playwright
+    source = """<!DOCTYPE html><html><body><canvas id="gameCanvas" width="80" height="80"></canvas>
+    <script>
+    let canvas = null;
+    let ctx = null;
+    function init() {
+      if (ctx) return;
+      canvas = document.getElementById('gameCanvas');
+      ctx = canvas.getContext('2d');
+    }
+    init();
+    ctx.fillStyle = '#ff0000';
+    ctx.beginPath();
+    ctx.ellipse(40,40,20,10,0,0,Math.PI*2);
+    ctx.fill();
+    </script></body></html>"""
+    repaired = CodePreflightValidator().auto_repair(source, runtime_contract=GameRuntimeContract())
+    assert "__safeCanvas" not in repaired
+    async def check():
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
+            try:
+                page = await browser.new_page()
+                errors = []
+                page.on('pageerror', lambda e: errors.append(str(e)))
+                await page.set_content(repaired)
+                pixel = await page.evaluate("Array.from(document.getElementById('gameCanvas').getContext('2d').getImageData(40,40,1,1).data)")
+                assert not errors
+                assert pixel == [255,0,0,255]
+            finally:
+                await browser.close()
+    asyncio.run(check())

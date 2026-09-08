@@ -502,3 +502,16 @@ def test_explicit_desktop_contract_survives_every_genre_profile():
         assert contract.input.required_modes == ["pointer", "keyboard"]
         assert contract.input.gestures == ["click", "move"]
         assert "paused" in contract.state.required_states
+
+
+def test_design_keeps_pause_distinct_from_terminal_and_honors_mouse_move():
+    runner = V2PipelineRunner()
+    spec = _spec().model_copy(update={"source_description": "桌面，鼠标移动和方向键，暂停"})
+    contract = runner._compose_runtime_contract(base_contract=GameRuntimeContract(), spec=spec,
+        runtime_profile="tap_challenge_combo", entrypoint="create")
+    with patch.object(runner.game_designer, "design", new=AsyncMock(return_value=GDD())):
+        gdd = asyncio.run(runner._build_gdd(spec, contract))
+    assert gdd.state_machine["transitions"]["playing"] == "game_over"
+    assert gdd.state_machine["transitions"]["paused"] == "playing"
+    assert gdd.input_map["pointermove"] == "primary_move"
+    assert "keydown" in gdd.input_map
