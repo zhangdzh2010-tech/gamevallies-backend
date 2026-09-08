@@ -7,6 +7,7 @@ from typing import Any, Optional
 from ..api.models import GameRuntimeContract, GameSpec, QACheckError, RunPipelineV2Request
 from ..config.settings import settings
 from .code_generator import CodeGenerator
+from .pipeline_errors import PipelineExecutionError
 from .generated_quality_policy import QUALITY_POLICY
 from .quality_scorer import LLMReviewResult, QAStaticResult
 from .runtime_profile_ids import normalize_runtime_profile_id
@@ -30,7 +31,6 @@ from .section_patch import (
 )
 from .pipeline_v2_support import (
     DEFAULT_CREATE_FULL_GENERATION_ATTEMPTS,
-    QUALITY_GATE_PATCH_ATTEMPTS_PER_FAILURE,
     QUALITY_GATE_PATCH_MAX_FINAL_SCORE_GAP,
     QUALITY_GATE_PATCH_MAX_DIMENSION_GAP,
     ProgressCallback,
@@ -426,45 +426,8 @@ class PipelineV2QualityPolicyMixin:
         previous_runtime_qa: Any,
         progress_cb: ProgressCallback,
         allow_runtime_qa_unavailable: bool,
-    ) -> Optional[_QualityGatePatchOutcome]:
-        for patch_attempt in range(1, QUALITY_GATE_PATCH_ATTEMPTS_PER_FAILURE + 1):
-            outcome = await self._attempt_quality_gate_patch_once(
-                request=request,
-                spec=spec,
-                runtime_contract=runtime_contract,
-                code=code,
-                generation_strategy=generation_strategy,
-                base_retries=base_retries,
-                review=review,
-                quality=quality,
-                quality_gate_errors=quality_gate_errors,
-                previous_runtime_qa=previous_runtime_qa,
-                progress_cb=progress_cb,
-                allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
-                patch_attempt=patch_attempt,
-            )
-            if outcome is not None:
-                return outcome
-        return None
-
-
-    async def _attempt_quality_gate_patch_once(
-        self,
-        *,
-        request: RunPipelineV2Request,
-        spec: GameSpec,
-        runtime_contract: GameRuntimeContract,
-        code: str,
-        generation_strategy: str,
-        base_retries: int,
-        review: LLMReviewResult,
-        quality: Any,
-        quality_gate_errors: list[str],
-        previous_runtime_qa: Any,
-        progress_cb: ProgressCallback,
-        allow_runtime_qa_unavailable: bool,
-        patch_attempt: int,
-    ) -> Optional[_QualityGatePatchOutcome]:
+    ) -> _QualityGatePatchOutcome:
+        patch_attempt = 1
         allowed_sections = self._quality_patch_allowed_sections(spec, review)
         self._notify(
             progress_cb,
@@ -477,7 +440,7 @@ class PipelineV2QualityPolicyMixin:
                 "runtimeProfile": runtime_contract.runtime_profile,
                 "allowedSections": list(allowed_sections),
                 "patchAttempt": patch_attempt,
-                "maxPatchAttempts": QUALITY_GATE_PATCH_ATTEMPTS_PER_FAILURE,
+                "maxPatchAttempts": 1,
                 "reviewIssues": list(review.issues or [])[:6],
                 "qualityGateErrors": quality_gate_errors[:6],
             },
@@ -498,7 +461,7 @@ class PipelineV2QualityPolicyMixin:
             prompt = "\n\n".join(
                 part
                 for part in [
-                    build_patch_protocol(allowed_sections, task_label="quality gate repair"),
+                    build_patch_protocol(allowed_sections, task_label="quality gate repair", strict=True),
                     self._build_review_quality_guidance(spec, review, quality, quality_gate_errors),
                     "ORIGINAL USER REQUIREMENTS (preserve):\n" + str(spec.source_description or ""),
                     "UNCHANGED BODY STRUCTURE (read-only; reuse these element IDs, do not invent missing controls):\n" + body_context,
@@ -514,7 +477,7 @@ class PipelineV2QualityPolicyMixin:
             )
             response_chars = len(text or "")
             failure_stage = "patch_parse"
-            patches, full_html = parse_patch_response(text, allowed_sections=allowed_sections)
+            patches, _ = parse_patch_response(text, allowed_sections=allowed_sections, strict=True)
             patch_count = len(patches or [])
             if patches:
                 failure_stage = "patch_application"
@@ -541,16 +504,13 @@ class PipelineV2QualityPolicyMixin:
                     )
                     response_chars = len(text or "")
                     failure_stage = "patch_correction_parse"
-                    patches, full_html = parse_patch_response(text, allowed_sections=allowed_sections)
+                    patches, _ = parse_patch_response(text, allowed_sections=allowed_sections, strict=True)
                     patch_count = len(patches or [])
                     if not patches:
                         raise RuntimeError("patch_parse_empty")
                     failure_stage = "patch_application"
                     candidate = apply_section_patches(normalized_code, patches)
                 touched_sections = {patch.section for patch in patches}
-            elif full_html:
-                candidate = ensure_structured_section_markers(full_html)
-                touched_sections = set(allowed_sections)
             else:
                 raise RuntimeError("patch_parse_empty")
 
@@ -615,16 +575,24 @@ class PipelineV2QualityPolicyMixin:
                 review_required=self._is_structured_review_required(spec),
             )
             if remaining_errors:
-                raise RuntimeError(
-                    "patch_quality_gate_still_failing:" + "; ".join(remaining_errors[:3])
+                raise PipelineExecutionError(
+                    "Patched candidate failed quality gate: " + "; ".join(remaining_errors[:3])
+                    + " Review issues: " + "; ".join(patched_review.issues[:6]),
+                    stage="code_review", failure_family="quality_gate",
+                    artifacts=[
+                        self._build_text_artifact(artifact_type="failed_quality_candidate", payload=candidate,
+                            metadata={"stage": "code_review"}),
+                        self._build_json_artifact(artifact_type="quality_review_report",
+                            payload={"issues": patched_review.issues, "gateErrors": remaining_errors},
+                            metadata={"stage": "code_review"}),
+                    ],
                 )
         except Exception as exc:  # noqa: BLE001 - any failure falls back to regeneration
             # Provider exceptions may contain request credentials; expose only
             # our known validation failures, never raw provider response bodies.
             raw_reason = str(exc)
-            reason = raw_reason[:700] if raw_reason.startswith((
+            reason = raw_reason[:700] if isinstance(exc, PipelineExecutionError) or raw_reason.startswith((
                 "patch_parse_empty", "patch_validation_failed:", "patch_static_qa_failed:",
-                "patch_quality_gate_still_failing:",
             )) else type(exc).__name__
             self._notify(progress_cb, "code_review", 95, "Targeted quality repair rejected", {
                 "gameId": request.game_id,
@@ -638,9 +606,7 @@ class PipelineV2QualityPolicyMixin:
                 "allowedSections": list(allowed_sections),
             })
             logger.warning(
-                "Quality-gate patch repair attempt %s/%s for game %s failed; falling back to full regeneration: %s",
-                patch_attempt,
-                QUALITY_GATE_PATCH_ATTEMPTS_PER_FAILURE,
+                "Quality repair for game %s failed; returning failure to orchestrator: %s",
                 request.game_id,
                 reason,
             )
@@ -650,7 +616,14 @@ class PipelineV2QualityPolicyMixin:
                 game_type=getattr(spec, "game_type", None),
                 reason=reason,
             )
-            return None
+            # The orchestrator owns retries. Preserve the exact failed candidate,
+            # structured report and stage instead of replacing them with stale scores.
+            if isinstance(exc, PipelineExecutionError):
+                raise
+            raise PipelineExecutionError(
+                "Quality repair failed during " + failure_stage + ": " + reason,
+                stage="code_review", failure_family="repair_contract",
+            ) from exc
 
         logger.info(
             "Quality-gate patch repair for game %s passed the quality gate (sections=%s)",

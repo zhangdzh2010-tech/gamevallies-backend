@@ -8,6 +8,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from .requested_platform import requires_desktop
 from ..api.models import (
     GDD,
     GameRuntimeContract,
@@ -1176,8 +1177,7 @@ class CodeGenerator(CodeGenerationPromptsMixin):
 
     @staticmethod
     def _build_requested_platform_contract(spec: Optional[GameSpec]) -> str:
-        brief = str(getattr(spec, "source_description", "") or "")
-        if not re.search(r"桌面|电脑|键盘|鼠标|\b(?:desktop|pc|keyboard|mouse)\b", brief, re.I):
+        if not requires_desktop(spec):
             return ""
         return (
             "EXPLICIT DESKTOP INPUT CONTRACT (overrides generic mobile-first defaults):\n"
