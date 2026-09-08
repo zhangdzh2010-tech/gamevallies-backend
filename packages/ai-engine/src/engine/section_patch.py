@@ -61,6 +61,7 @@ class SectionPatch:
     content: str
     operation: str = "replace_section"
     anchor: Optional[str] = None
+    search: Optional[str] = None
 
 
 def _html_marker_start(name: str) -> str:
@@ -439,6 +440,10 @@ def build_patch_protocol(
         '- Use the shape: {"patches":[{"section":"SCRIPT","operation":"replace_section","content":"..."}]}',
         f"- Allowed sections: {section_list}",
         "- Omit unchanged sections.",
+        '- Prefer surgical edits: {"section":"SCRIPT","operation":"replace_exact","search":"unique exact existing code","content":"replacement code"}.',
+        "- replace_exact search must match exactly once in that section. Multiple non-overlapping surgical edits are allowed.",
+        "- replace_section must contain the COMPLETE section, not one function or a fragment. Use at most one replace_section per section.",
+        "- Never use unsupported operations or invent anchors. Preserve all unrelated code and DOM references.",
         "- STYLE content must be raw CSS inside the existing <style> block, without <style> tags.",
         "- BODY content must be raw HTML inside the existing <body> block, without <body> tags.",
         "- SCRIPT content must be raw JavaScript inside the main inline <script> block, without <script> tags.",
@@ -607,6 +612,7 @@ def parse_patch_response(
                         section=section,
                         content=content,
                         operation=str(item.get("operation") or "replace_section"),
+                        search=item.get("search") if isinstance(item.get("search"), str) else None,
                         anchor=(
                             str(item.get("anchor")).strip().upper()
                             if item.get("anchor") is not None
@@ -655,7 +661,30 @@ def apply_section_patches(
     patches: Iterable[SectionPatch],
 ) -> str:
     updated = ensure_structured_section_markers(html)
+    whole_sections = set()
     for patch in patches:
+        if patch.operation not in {"replace_section", "replace_block", "replace_exact"}:
+            raise ValueError("patch_validation_failed:unsupported_operation")
+        if patch.operation == "replace_section":
+            if patch.section in whole_sections:
+                raise ValueError("patch_validation_failed:duplicate_section_replacement:" + patch.section)
+            whole_sections.add(patch.section)
+        if patch.operation == "replace_exact":
+            existing = extract_patchable_sections(updated).get(patch.section)
+            if existing is None or not patch.search or existing.count(patch.search) != 1:
+                raise ValueError("patch_validation_failed:search_not_unique:" + patch.section)
+            replacement = existing.replace(patch.search, patch.content, 1)
+            if patch.section == PATCH_SECTION_SCRIPT:
+                updated = replace_script_content(updated, replacement)
+            elif patch.section == PATCH_SECTION_STYLE:
+                updated = replace_style_content(updated, replacement)
+            elif patch.section == PATCH_SECTION_BODY:
+                updated = replace_body_content(updated, replacement)
+            continue
+        if patch.operation == "replace_block":
+            anchors = PATCHABLE_SCRIPT_ANCHORS if patch.section == PATCH_SECTION_SCRIPT else PATCHABLE_HTML_ANCHORS if patch.section == PATCH_SECTION_BODY else ()
+            if patch.anchor not in anchors:
+                raise ValueError("patch_validation_failed:unsupported_anchor")
         if patch.section == PATCH_SECTION_STYLE:
             updated = replace_style_content(updated, patch.content)
         elif patch.section == PATCH_SECTION_BODY:

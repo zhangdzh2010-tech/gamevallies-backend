@@ -61,3 +61,15 @@ def test_review_uses_safe_prompt_format_for_literal_json_examples():
     assert result.has_real_gameplay is True
     assert result.visual_polish_score == 7.0
     assert result.character_quality_score == 6.0
+
+
+def test_review_receives_original_desktop_requirements_and_evidence_rules():
+    reviewer = CodeReviewer()
+    client = AsyncMock(return_value='{"is_complete_game":true,"issues":[]}')
+    with patch('src.engine.code_reviewer.require_prompt', side_effect=lambda key: '{code_preview}' if key.endswith('template') else 'mobile reviewer'), patch.object(reviewer._client,'is_enabled',return_value=True), patch.object(reviewer._client,'complete_with_truncation_retry',new=client):
+        asyncio.run(reviewer.review('<html>game</html>', user_requirements='桌面小游戏，鼠标和方向键操作，数字倒计时'))
+    call = client.await_args.kwargs
+    assert '桌面小游戏' in call['messages'][0]['content']
+    assert 'Do not require touch gestures or haptics for desktop games' in call['system']
+    assert 'concrete code-supported defect' in call['system']
+    assert '<html>game</html>' in call['messages'][0]['content']

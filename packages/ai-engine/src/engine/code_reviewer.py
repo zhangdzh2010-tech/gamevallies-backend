@@ -42,7 +42,7 @@ class CodeReviewer:
     def __init__(self) -> None:
         self._client = LLMClient()
 
-    async def review(self, html_code: str) -> LLMReviewResult:
+    async def review(self, html_code: str, *, user_requirements: str = "") -> LLMReviewResult:
         """Run LLM review. Returns LLMReviewResult(ran=False) on any failure."""
         if not self._client.is_enabled():
             logger.debug("LLM not enabled – skipping code review")
@@ -51,6 +51,18 @@ class CodeReviewer:
         code_preview = _build_code_preview(html_code)
         prompt = safe_format_prompt(require_prompt("prompt.code_review_template"), code_preview=code_preview)
         system = require_prompt("prompt.code_review_system")
+        if user_requirements:
+            system += (
+                "\nREQUIREMENT-SCOPED REVIEW: Evaluate the target platform and requested scope in ORIGINAL USER REQUIREMENTS. "
+                "Explicit desktop mouse/keyboard requirements take precedence over generic mobile defaults. "
+                "Do not require touch gestures or haptics for desktop games. Do not treat unrequested features "
+                "(such as radial timers instead of readable numeric timers) as missing requirements. "
+                "For non-character games, grade the intentional design and readability of the actual props rather than anatomy. "
+                "Still assess real gameplay, responsive controls, coherent composition and required feedback rigorously. "
+                "For each low score, include a concrete code-supported defect and a feasible correction in issues; "
+                "distinguish missing required behavior from optional aesthetic suggestions."
+            )
+            prompt = "ORIGINAL USER REQUIREMENTS:\n" + user_requirements + "\n\n" + prompt
 
         try:
             raw = await self._client.complete_with_truncation_retry(

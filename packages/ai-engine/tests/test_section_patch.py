@@ -189,3 +189,24 @@ def test_json_patch_with_embedded_html_literal_is_not_a_full_document():
     patches, full_html = parse_patch_response(json.dumps({"patches":[{"section":"SCRIPT","content":script}]}), allowed_sections=(PATCH_SECTION_SCRIPT,))
     assert full_html is None
     assert patches == [SectionPatch(section=PATCH_SECTION_SCRIPT, content=script)]
+
+
+def test_surgical_edits_preserve_unrelated_code_and_reject_ambiguous_search():
+    import pytest
+    code = HTML.replace('const score = 1;', 'const score = 1; const lives = 3;')
+    patches, _ = parse_patch_response('{"patches":[{"section":"SCRIPT","operation":"replace_exact","search":"const score = 1;","content":"const score = 10;"}]}', allowed_sections=(PATCH_SECTION_SCRIPT,))
+    candidate = apply_section_patches(code, patches)
+    assert 'const score = 10; const lives = 3;' in candidate
+    assert "id='hud'" in candidate
+    with pytest.raises(ValueError, match='search_not_unique'):
+        apply_section_patches(code, [SectionPatch(section='SCRIPT', operation='replace_exact', search='const ', content='let ')])
+
+
+def test_unknown_operations_and_duplicate_full_sections_never_overwrite_script():
+    import pytest
+    with pytest.raises(ValueError, match='unsupported_operation'):
+        apply_section_patches(HTML, [SectionPatch(section='SCRIPT', operation='replace_function', content='fragment')])
+    with pytest.raises(ValueError, match='unsupported_anchor'):
+        apply_section_patches(HTML, [SectionPatch(section='SCRIPT', operation='replace_block', anchor='invented', content='fragment')])
+    with pytest.raises(ValueError, match='duplicate_section_replacement'):
+        apply_section_patches(HTML, [SectionPatch(section='SCRIPT', content='first'), SectionPatch(section='SCRIPT', content='second')])
