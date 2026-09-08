@@ -645,6 +645,9 @@ class CodeGenerationPromptsMixin:
         generation_tier = cls._resolve_generation_tier(spec)
         lines = [
             "IMPLEMENTATION SHAPE:",
+            "- Explicit subjects, colors and scenery in the original brief override ALL generic entity names, geometric shape hints, palettes and background defaults in the generated spec.",
+            "- Draw requested actors and props as recognizable multi-part procedural illustrations: silhouette, interior detail, highlight/shadow and reactive motion. Primitive shapes are construction parts, never the final placeholder hero.",
+            "- Deliver coherent foreground/background depth, legible HUD hierarchy, and immediate motion/particle feedback for success and damage. Keep every requested rule and control intact; visual polish must not replace functionality.",
             "- Use one canvas and one primary requestAnimationFrame loop.",
             "- Keep the whole experience coherent inside one HTML file and one shared state model.",
             "- Reuse the same controls and state machine across the whole experience instead of creating disconnected subsystems.",

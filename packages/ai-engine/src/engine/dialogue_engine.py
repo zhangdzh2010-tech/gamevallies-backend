@@ -1528,6 +1528,18 @@ def _select_visual_variant(
             "effects": list(preset.get("effects", [])),
         }
 
+    if normalized_theme or explicit_art_style:
+        # Free-form themes are explicit too. A Chinese/night-sky brief must not
+        # inherit an unrelated random meadow palette merely because it is not
+        # one of the English preset keys.
+        return {
+            "theme": explicit_theme.strip() or explicit_art_style.strip(),
+            "palette": re.findall(r'#[0-9a-fA-F]{6}\b', source_description),
+            "background": explicit_theme.strip() or explicit_art_style.strip(),
+            "art_style": explicit_art_style or "custom procedural illustration matching the brief",
+            "effects": [],
+        }
+
     variants = VISUAL_VARIANTS_BY_GAME_TYPE.get(game_type, VISUAL_VARIANTS_BY_GAME_TYPE.get("casual", []))
     if not variants:
         return {
@@ -2365,5 +2377,4 @@ def _plan_signature_moment(game_type: str, theme: str, mechanic: str, zh: bool) 
     if game_type == "educational":
         return f"Use {mechanic_text} in {theme_text} to create one visible learning payoff."
     return f"Create one standout beat in {theme_text} where {mechanic_text} feels instantly replayable."
-
 
