@@ -517,7 +517,36 @@ class PipelineV2QualityPolicyMixin:
             patches, full_html = parse_patch_response(text, allowed_sections=allowed_sections)
             patch_count = len(patches or [])
             if patches:
-                candidate = apply_section_patches(normalized_code, patches)
+                failure_stage = "patch_application"
+                try:
+                    candidate = apply_section_patches(normalized_code, patches)
+                except ValueError as patch_error:
+                    # The failed batch is atomic: correct against the ORIGINAL source,
+                    # never against a partially applied batch. One bounded format retry.
+                    if not str(patch_error).startswith("patch_validation_failed:"):
+                        raise
+                    self._notify(progress_cb, "code_review", 95, "Correcting invalid patch references", {
+                        "gameId": request.game_id, "userId": request.user_id,
+                        "rejectionReason": str(patch_error)[:300], "correctionAttempt": 1,
+                    })
+                    failure_stage = "patch_correction_request"
+                    text = await self._request_quality_gate_patch_text(
+                        prompt=prompt + "\n\nPATCH APPLICATION REJECTED: " + str(patch_error)[:300]
+                        + "\nNo edits were applied. Return a corrected JSON batch against the ORIGINAL "
+                        "sections above. Prefer ONE complete replace_section per changed section "
+                        "if exact search cannot be guaranteed. Include all initialization, input "
+                        "handlers and rendering; never replace the whole script with a fragment.",
+                        spec=spec,
+                        prompt_bundle_snapshot=request.prompt_bundle_snapshot.model_dump(),
+                    )
+                    response_chars = len(text or "")
+                    failure_stage = "patch_correction_parse"
+                    patches, full_html = parse_patch_response(text, allowed_sections=allowed_sections)
+                    patch_count = len(patches or [])
+                    if not patches:
+                        raise RuntimeError("patch_parse_empty")
+                    failure_stage = "patch_application"
+                    candidate = apply_section_patches(normalized_code, patches)
                 touched_sections = {patch.section for patch in patches}
             elif full_html:
                 candidate = ensure_structured_section_markers(full_html)

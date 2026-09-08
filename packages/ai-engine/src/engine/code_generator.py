@@ -1170,7 +1170,24 @@ class CodeGenerator(CodeGenerationPromptsMixin):
                     require_prompt("prompt.code_gen_system"),
                     spec=spec,
                 ),
+                self._build_requested_platform_contract(spec),
             ],
+        )
+
+    @staticmethod
+    def _build_requested_platform_contract(spec: Optional[GameSpec]) -> str:
+        brief = str(getattr(spec, "source_description", "") or "")
+        if not re.search(r"桌面|电脑|键盘|鼠标|\b(?:desktop|pc|keyboard|mouse)\b", brief, re.I):
+            return ""
+        return (
+            "EXPLICIT DESKTOP INPUT CONTRACT (overrides generic mobile-first defaults):\n"
+            "Implement the original desktop requirements. All visible controls, including start, "
+            "pause, resume and restart, must respond to mouse clicks, not touchstart alone. "
+            "When mouse movement is requested, pointer movement must control the player without "
+            "requiring a pressed button or a drag. Implement requested keyboard controls too. "
+            "Use CSS-to-canvas coordinate conversion and resize handling. Preserve touch support "
+            "where compatible. Pause on blur and reset every gameplay state on restart. "
+            "Generate random shape geometry once per entity, not every render frame."
         )
 
     async def iterate(
