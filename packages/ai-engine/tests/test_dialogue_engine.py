@@ -22,6 +22,16 @@ from src.engine.dialogue_engine import (
 )
 from src.services.llm_client import LLMResponseTruncatedError
 
+
+def test_explicit_freeform_theme_never_inherits_unrelated_random_scenery():
+    from src.engine.dialogue_engine import _select_visual_variant
+    for seed in ['one', 'two', 'three']:
+        visual = _select_visual_variant('casual', explicit_theme='靛蓝夜空、月牙、远山',
+            explicit_art_style='Canvas程序绘图', source_description='主色 #121234', variation_seed=seed)
+        assert visual['background'] == '靛蓝夜空、月牙、远山'
+        assert visual['palette'] == ['#121234']
+        assert visual['effects'] == []
+
 TEST_PROMPTS = {
     "prompt.slot_output_contract": (
         "NON-NEGOTIABLE OUTPUT CONTRACT:\n"
