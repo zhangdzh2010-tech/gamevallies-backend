@@ -495,7 +495,7 @@ SLOT_JSON_SCHEMA = """{
   "audio_style": null,
   "special_rules": null,
   "reference_game": null,
-  "entities": [{"name": "subject named in the brief", "role": "player/obstacle/collectible/enemy/npc", "shape": "recognizable illustrated silhouette and details, not a placeholder primitive", "color": "requested color"}]
+  "entities": [{"name": "subject named in the brief; scenery such as moon, mountains and particles must use background, never npc", "role": "player/obstacle/collectible/enemy/npc/background", "shape": "recognizable illustrated silhouette and details, not a placeholder primitive", "color": "requested color"}]
 }"""
 
 NULLISH_TEXT = {"", "null", "none", "unknown", "n/a", "na", "not specified", "unspecified"}
@@ -873,7 +873,7 @@ def _normalize_slot_payload(slot_data: Dict[str, Any]) -> Dict[str, Any]:
                 for entity in value[:12]:
                     if not isinstance(entity, dict):
                         continue
-                    if entity.get('role') not in {'player', 'obstacle', 'collectible', 'enemy', 'npc'}:
+                    if entity.get('role') not in {'player', 'obstacle', 'collectible', 'enemy', 'npc', 'background'}:
                         continue
                     if not isinstance(entity.get('name'), str) or not entity['name'].strip():
                         continue

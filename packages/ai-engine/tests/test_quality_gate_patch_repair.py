@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.api.models import (
     GDD,
+    GameEntity,
     GameRuntimeContract,
     GameSpec,
     GenerateCodeResult,
@@ -69,6 +70,17 @@ def test_catch_and_many_are_not_cat_and_man_characters():
     review = LLMReviewResult(ran=True, is_complete_game=True, has_real_gameplay=True,
         difficulty_balanced=True, fun_score=6, visual_polish_score=6, character_quality_score=4)
     assert V2PipelineRunner._should_attempt_quality_patch_repair(spec, review, SimpleNamespace(final_score=6.5))
+
+
+def test_scenery_mislabeled_as_npc_does_not_require_character_art():
+    spec = _spec().model_copy(update={"entities": [
+        GameEntity(name="crescent moon", role="npc"),
+        GameEntity(name="distant mountains", role="npc"),
+        GameEntity(name="glowing star dust", role="npc"),
+    ]})
+    assert not V2PipelineRunner._is_character_driven_spec(spec)
+    assert V2PipelineRunner._is_character_driven_spec(spec.model_copy(update={
+        "entities": [GameEntity(name="village merchant", role="npc")]}))
 
 
 def _near_miss_review(**overrides) -> LLMReviewResult:

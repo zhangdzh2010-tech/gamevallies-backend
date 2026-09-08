@@ -145,7 +145,11 @@ class PipelineV2QualityPolicyMixin:
             )
         ):
             return True
-        if any(entity.role in {"enemy", "npc"} for entity in (spec.entities or [])):
+        # Parsers sometimes label non-interactive scenery as NPCs. A moon or
+        # mountain silhouette does not introduce a character drawing requirement.
+        scenery = re.compile(r"\b(?:moon|mountains?|sky|clouds?|star\s*dust|particles?|scenery|background)\b|月牙|月亮|远山|山脉|天空|云朵|星屑|背景", re.I)
+        if any(entity.role == "enemy" or (entity.role == "npc" and not scenery.search(entity.name))
+               for entity in (spec.entities or [])):
             return True
         return False
 
