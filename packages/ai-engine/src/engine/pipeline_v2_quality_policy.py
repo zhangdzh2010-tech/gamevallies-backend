@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import logging
+import re
 from typing import Any, Optional
 from ..api.models import GameRuntimeContract, GameSpec, QACheckError, RunPipelineV2Request
 from ..config.settings import settings
@@ -111,7 +112,8 @@ class PipelineV2QualityPolicyMixin:
             if str(part or "").strip()
         ).lower()
         if any(
-            marker in searchable
+            (bool(re.search(r"\b" + re.escape(marker) + r"\b", searchable))
+             if marker.isascii() else marker in searchable)
             for marker in (
                 "character",
                 "hero",
