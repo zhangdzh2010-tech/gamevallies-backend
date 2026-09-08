@@ -210,3 +210,22 @@ def test_unknown_operations_and_duplicate_full_sections_never_overwrite_script()
         apply_section_patches(HTML, [SectionPatch(section='SCRIPT', operation='replace_block', anchor='invented', content='fragment')])
     with pytest.raises(ValueError, match='duplicate_section_replacement'):
         apply_section_patches(HTML, [SectionPatch(section='SCRIPT', content='first'), SectionPatch(section='SCRIPT', content='second')])
+
+
+def test_strict_quality_contract_rejects_partial_batches_and_prose():
+    import pytest
+    from src.engine.section_patch import parse_patch_response
+    for response in ["Here is the corrected script", "<html><script>bad()</script></html>",
+        '{"patches":[{"section":"SCRIPT","operation":"replace_section","content":"valid"},{"section":"UNAUTHORIZED","content":"bad"}]}']:
+        with pytest.raises(ValueError, match="patch_validation_failed:"):
+            parse_patch_response(response, allowed_sections=["SCRIPT"], strict=True)
+
+
+def test_strict_contract_preserves_literal_markdown_inside_javascript():
+    import json
+    from src.engine.section_patch import parse_patch_response
+    script = 'const example = "```json";'
+    patches, document = parse_patch_response(json.dumps({"patches": [{"section": "SCRIPT",
+        "operation": "replace_section", "content": script}]}), allowed_sections=["SCRIPT"], strict=True)
+    assert patches[0].content == script
+    assert document is None

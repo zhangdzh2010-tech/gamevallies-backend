@@ -426,6 +426,7 @@ def build_patch_protocol(
     *,
     task_label: str,
     preferred_targets: Optional[Sequence[str]] = None,
+    strict: bool = False,
 ) -> str:
     section_list = ", ".join(allowed_sections)
     normalized_preferred_targets: List[str] = []
@@ -460,7 +461,8 @@ def build_patch_protocol(
         [
             "- Prefer replace_section operations when you need to rewrite a whole section.",
             "- Use replace_block only when one safe anchor is enough.",
-            "- Do NOT return a full HTML document unless patching is impossible.",
+            ("- Never return a full HTML document; only the declared JSON patch format is accepted."
+             if strict else "- Do NOT return a full HTML document unless patching is impossible."),
         ]
     )
     return "\n".join(lines)
@@ -586,7 +588,38 @@ def parse_patch_response(
     raw_text: str,
     *,
     allowed_sections: Sequence[str],
+    strict: bool = False,
 ) -> tuple[Optional[List[SectionPatch]], Optional[str]]:
+    if strict:
+        # Production quality repair has one wire format. Never reinterpret
+        # prose, malformed JSON or a partial batch as an entire game script.
+        cleaned = (raw_text or "").strip()
+        if cleaned.startswith("```json") and cleaned.endswith("```"):
+            cleaned = cleaned[7:-3].strip()
+        try:
+            payload = json.loads(cleaned)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("patch_validation_failed:invalid_json") from exc
+        items = payload.get("patches") if isinstance(payload, dict) else None
+        if not isinstance(items, list) or not items:
+            raise ValueError("patch_validation_failed:missing_patches")
+        patches = []
+        for item in items:
+            if not isinstance(item, dict):
+                raise ValueError("patch_validation_failed:invalid_patch")
+            section, anchor = _normalize_patch_target(item.get("section"))
+            operation = item.get("operation")
+            if section not in allowed_sections or operation not in {"replace_section", "replace_exact", "replace_block"}:
+                raise ValueError("patch_validation_failed:invalid_target_or_operation")
+            if not isinstance(item.get("content"), str):
+                raise ValueError("patch_validation_failed:invalid_content")
+            search = item.get("search")
+            if operation == "replace_exact" and (not isinstance(search, str) or not search):
+                raise ValueError("patch_validation_failed:invalid_search")
+            patches.append(SectionPatch(section=section, operation=operation,
+                content=item["content"], search=search, anchor=item.get("anchor") or anchor))
+        return patches, None
+
     cleaned = _strip_code_fences(raw_text)
     if not cleaned:
         return None, None

@@ -155,6 +155,7 @@ def _run_create_with_mocks(
     patch_text_side_effect=None,
     patch_repair_enabled=True,
     progress_cb=None,
+    runtime_loop_error=None,
 ):
     """Drive _run_create_impl with the standard heavy-mock harness.
 
@@ -171,6 +172,8 @@ def _run_create_with_mocks(
     runtime_contract = GameRuntimeContract(runtime_profile="casual_lane_dash")
 
     def _runtime_loop(**kwargs):
+        if runtime_loop_error is not None:
+            raise runtime_loop_error
         return (kwargs["code"], SimpleNamespace(ran=True, js_errors=[]), 0, [])
 
     with ExitStack() as stack:
@@ -344,14 +347,14 @@ def test_patch_validation_failure_falls_back_to_full_regeneration():
         progress_cb=lambda *event: events.append(event),
     )
     rejection = next(event[3] for event in events if event[2] == "Targeted quality repair rejected")
-    assert rejection["failureStage"] == "patch_validation"
-    assert "missing_canvas" in rejection["rejectionReason"]
+    assert rejection["failureStage"] == "patch_parse"
+    assert "invalid_json" in rejection["rejectionReason"]
     assert rejection["responseChars"] > 0
 
     assert mocks.patch_text.await_count == 1
     assert mocks.generate.await_count == 2
     second_call = mocks.generate.await_args_list[1].kwargs
-    assert "QUALITY AND PRESENTATION CORRECTIONS" in second_call["generation_guidance"]
+    assert "invalid_json" in second_call["generation_guidance"]
     assert response.html_code == second_code
 
 
@@ -451,3 +454,51 @@ def test_invalid_patch_correction_is_bounded_and_falls_back():
     assert mocks.patch_text.await_count == 2
     assert mocks.generate.await_count == 2
     assert mocks.runtime_loop.await_count == 0
+
+
+def test_repair_runtime_failure_reaches_regeneration_with_actual_reason():
+    from src.engine.pipeline_errors import PipelineExecutionError
+    failure = PipelineExecutionError("Generated code failed runtime QA: ReferenceError: ship is not defined",
+        stage="runtime_simulation_qa", failure_family="runtime_qa",
+        artifacts=[{"artifact_type": "runtime_qa_report", "payload": {"error": "ship is not defined"}}])
+    response, mocks = _run_create_with_mocks(
+        generate_side_effect=[(_generated(BASE_CODE, "provider-a"), []), (_generated(BASE_CODE, "provider-b"), [])],
+        flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])] * 2,
+        review_side_effect=[_near_miss_review(), _passing_review()],
+        compute_side_effect=[_quality(5.9), _quality(7.1)], runtime_loop_error=failure,
+    )
+    guidance = mocks.generate.await_args_list[1].kwargs["generation_guidance"]
+    assert "ship is not defined" in guidance
+    assert "runtime_simulation_qa" in guidance
+
+
+def test_terminal_repair_failure_preserves_original_exception_and_artifacts():
+    import pytest
+    from src.engine.pipeline_errors import PipelineExecutionError
+    failure = PipelineExecutionError("Generated code failed runtime QA: missing canvas",
+        stage="runtime_simulation_qa", failure_family="runtime_qa",
+        artifacts=[{"artifact_type": "failed_runtime_candidate", "payload": BASE_CODE}])
+    with pytest.raises(PipelineExecutionError) as caught:
+        _run_create_with_mocks(
+            generate_side_effect=[(_generated(BASE_CODE, "provider-a"), [])] * 2,
+            flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])] * 2,
+            review_side_effect=[_near_miss_review()] * 2,
+            compute_side_effect=[_quality(5.9)] * 2, runtime_loop_error=failure,
+        )
+    assert caught.value is failure
+    assert caught.value.artifacts[0]["payload"] == BASE_CODE
+
+
+def test_explicit_desktop_contract_survives_every_genre_profile():
+    from src.engine.requested_platform import normalize_requested_platform
+    original = _spec().model_copy(update={"source_description": "桌面游戏，鼠标移动或方向键控制小船，暂停按钮和失焦暂停"})
+    spec = normalize_requested_platform(original)
+    assert original.platform_constraints.input_mode == "touch_only"
+    assert spec.platform_constraints.input_mode == "pointer_keyboard"
+    runner = V2PipelineRunner()
+    for profile in ["tap_challenge_combo", "casual_lane_dash", "puzzle_grid", "casual_arcade_orbit"]:
+        contract = runner._compose_runtime_contract(base_contract=GameRuntimeContract(), spec=spec,
+            runtime_profile=profile, entrypoint="create")
+        assert contract.input.required_modes == ["pointer", "keyboard"]
+        assert contract.input.gestures == ["click", "move"]
+        assert "paused" in contract.state.required_states

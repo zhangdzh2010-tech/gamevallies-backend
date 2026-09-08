@@ -98,7 +98,6 @@ from .pipeline_v2_support import (
     DEFAULT_STAGE_TOTAL_ATTEMPTS,
     DEFAULT_CREATE_FULL_GENERATION_ATTEMPTS,
     QUALITY_GATE_PATCH_STEP_KEY,
-    QUALITY_GATE_PATCH_ATTEMPTS_PER_FAILURE,
     QUALITY_GATE_PATCH_MAX_FINAL_SCORE_GAP,
     QUALITY_GATE_PATCH_MAX_DIMENSION_GAP,
     GENERATION_PROGRESS_HEARTBEAT_INTERVAL_S,
@@ -604,20 +603,19 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                             progress_cb=progress_cb,
                             allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
                         )
-                        if patch_outcome is not None:
-                            # Patch repair passed the full gate; adopt the
-                            # patched candidate without spending another
-                            # full-generation attempt.
-                            qa_result.code = patch_outcome.code
-                            review = patch_outcome.review
-                            quality = patch_outcome.quality
-                            code_bytes = len(patch_outcome.code.encode("utf-8"))
-                            if patch_outcome.runtime_qa_reran:
-                                runtime_qa = patch_outcome.runtime_qa
-                                runtime_retries += patch_outcome.runtime_retries
-                            qa_warnings.extend(patch_outcome.qa_warnings)
-                            last_quality_exc = None
-                            break
+                        # Patch repair passed the full gate; adopt the
+                        # patched candidate without spending another
+                        # full-generation attempt.
+                        qa_result.code = patch_outcome.code
+                        review = patch_outcome.review
+                        quality = patch_outcome.quality
+                        code_bytes = len(patch_outcome.code.encode("utf-8"))
+                        if patch_outcome.runtime_qa_reran:
+                            runtime_qa = patch_outcome.runtime_qa
+                            runtime_retries += patch_outcome.runtime_retries
+                        qa_warnings.extend(patch_outcome.qa_warnings)
+                        last_quality_exc = None
+                        break
                     if (
                         quality_attempt >= len(attempt_plan)
                         and self._can_accept_showcase_near_miss(

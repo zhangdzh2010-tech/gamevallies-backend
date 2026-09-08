@@ -2709,7 +2709,7 @@ def test_run_create_impl_retries_when_review_quality_gate_fails():
         gameplay_depth_bonus=0.0,
     )
 
-    with patch.object(
+    with patch.object(runner, "_should_attempt_quality_patch_repair", return_value=False), patch.object(
         runner,
         "_build_create_spec",
         new=AsyncMock(return_value=spec),
