@@ -87,3 +87,8 @@ fc-release*.json
 # FC code artifacts (no runtime secrets in git)
 fc-packages/
 .fc-runtime*.json
+
+# All environment files except sanitized templates
+.env.*
+!.env.example
+!.env.*.example
