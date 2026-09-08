@@ -32,6 +32,21 @@ def test_explicit_freeform_theme_never_inherits_unrelated_random_scenery():
         assert visual['palette'] == ['#121234']
         assert visual['effects'] == []
 
+
+def test_explicit_actors_survive_slot_normalization_and_spec_build():
+    from src.api.models import SlotState
+    from src.engine.dialogue_engine import _build_game_spec
+    actors = [
+        {'name': '小船', 'role': 'player', 'shape': 'curved hull with deck and rim', 'color': 'indigo'},
+        {'name': '金色星星', 'role': 'collectible', 'shape': 'five pointed star', 'color': 'gold'},
+        {'name': '紫色陨石', 'role': 'obstacle', 'shape': 'rock with flaming tail', 'color': 'purple'},
+    ]
+    normalized = _normalize_slot_payload({'game_type': 'casual', 'entities': actors})
+    spec = _build_game_spec(SlotState(**normalized), source_description='移动小船接住金色星星并避开紫色陨石')
+    assert [e.name for e in spec.entities] == ['小船', '金色星星', '紫色陨石']
+    assert spec.entities[0].shape == actors[0]['shape']
+    assert 'entities' not in _normalize_slot_payload({'entities': [None, {'role': 'player'}, {'name': 'x', 'role': 'invalid'}]})
+
 TEST_PROMPTS = {
     "prompt.slot_output_contract": (
         "NON-NEGOTIABLE OUTPUT CONTRACT:\n"

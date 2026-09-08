@@ -494,7 +494,8 @@ SLOT_JSON_SCHEMA = """{
   "visual_style": null,
   "audio_style": null,
   "special_rules": null,
-  "reference_game": null
+  "reference_game": null,
+  "entities": [{"name": "subject named in the brief", "role": "player/obstacle/collectible/enemy/npc", "shape": "recognizable illustrated silhouette and details, not a placeholder primitive", "color": "requested color"}]
 }"""
 
 NULLISH_TEXT = {"", "null", "none", "unknown", "n/a", "na", "not specified", "unspecified"}
@@ -865,6 +866,22 @@ def _normalize_slot_payload(slot_data: Dict[str, Any]) -> Dict[str, Any]:
             # Optional malformed extension must not break otherwise valid slots.
             if type(value) is int and 1 <= value <= 99:
                 normalized[key] = value
+            continue
+        if key == "entities":
+            if isinstance(value, list):
+                entities = []
+                for entity in value[:12]:
+                    if not isinstance(entity, dict):
+                        continue
+                    if entity.get('role') not in {'player', 'obstacle', 'collectible', 'enemy', 'npc'}:
+                        continue
+                    if not isinstance(entity.get('name'), str) or not entity['name'].strip():
+                        continue
+                    entities.append({field: entity[field].strip()[:240]
+                        for field in ('name', 'role', 'shape', 'color')
+                        if isinstance(entity.get(field), str) and entity[field].strip()})
+                if entities:
+                    normalized[key] = entities
             continue
         if key == "special_rules":
             if isinstance(value, str):
@@ -2066,7 +2083,7 @@ def _build_game_spec(
         source_description=normalized_description,
         variation_seed=variation_seed,
     )
-    entity_defs = _select_entity_variant(
+    entity_defs = slots.entities or _select_entity_variant(
         game_type,
         source_description=normalized_description,
         theme=visual_variant["theme"],
@@ -2377,4 +2394,3 @@ def _plan_signature_moment(game_type: str, theme: str, mechanic: str, zh: bool) 
     if game_type == "educational":
         return f"Use {mechanic_text} in {theme_text} to create one visible learning payoff."
     return f"Create one standout beat in {theme_text} where {mechanic_text} feels instantly replayable."
-
