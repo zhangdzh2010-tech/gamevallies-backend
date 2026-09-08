@@ -259,7 +259,8 @@ def test_runtime_qa_and_code_review_run_concurrently_and_both_feed_quality_gate(
         timeline["runtime_end"] = time.monotonic()
         return kwargs["code"], runtime_result, 0, []
 
-    async def review(code):
+    async def review(code, *, user_requirements=""):
+        assert user_requirements == "a neon dodge arcade game"
         timeline["review_start"] = time.monotonic()
         await asyncio.sleep(0.15)
         timeline["review_end"] = time.monotonic()
@@ -291,7 +292,8 @@ def test_runtime_qa_failure_keeps_error_semantics_and_discards_review():
             failure_family="runtime_qa",
         )
 
-    async def review(code):
+    async def review(code, *, user_requirements=""):
+        assert user_requirements == "a neon dodge arcade game"
         try:
             await asyncio.sleep(5)
             review_state["completed"] = True
@@ -336,7 +338,8 @@ def test_runtime_qa_failure_retry_then_success_uses_fresh_review():
             )
         return kwargs["code"], runtime_result, 0, []
 
-    async def review(code):
+    async def review(code, *, user_requirements=""):
+        assert user_requirements == "a neon dodge arcade game"
         review_calls.append(code)
         return review_results[len(review_calls) - 1]
 
