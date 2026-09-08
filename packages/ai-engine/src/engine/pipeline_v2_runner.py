@@ -506,7 +506,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                         allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
                         operation="create",  # P1.3 PR-11
                         concurrent_review_factory=(
-                            self.code_reviewer.review if review_requested else None
+                            (lambda html: self.code_reviewer.review(html, user_requirements=spec.source_description or "")) if review_requested else None
                         ),
                         concurrent_review_state=concurrent_review,
                     )
@@ -558,6 +558,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                     review = await self._resolve_concurrent_review(
                         concurrent_review,
                         qa_result.code,
+                        user_requirements=spec.source_description or "",
                     )
                 quality = self.quality_scorer.compute(
                     static=QAStaticResult(
@@ -999,7 +1000,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                 # (prefer_fast=True) and returns LLMReviewResult(ran=False)
                 # on its own internal failures.
                 review = await asyncio.wait_for(
-                    self.code_reviewer.review(code),
+                    self.code_reviewer.review(code, user_requirements=spec.source_description or ""),
                     timeout=timeout_s,
                 )
             except asyncio.TimeoutError:
@@ -1851,6 +1852,8 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
         self,
         review_state: Optional[dict[str, Any]],
         code: str,
+        *,
+        user_requirements: str = "",
     ) -> LLMReviewResult:
         task = review_state.pop("task", None) if review_state else None
         if task is not None:
@@ -1860,7 +1863,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
             # stale review and re-run against the final code.
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-        return await self.code_reviewer.review(code)
+        return await self.code_reviewer.review(code, user_requirements=user_requirements)
 
     def _notify(
         self,

@@ -564,7 +564,7 @@ class PipelineV2QualityPolicyMixin:
                 runtime_qa_reran = True
 
             failure_stage = "review"
-            patched_review = await self.code_reviewer.review(candidate)
+            patched_review = await self.code_reviewer.review(candidate, user_requirements=spec.source_description or "")
             patched_quality = self.quality_scorer.compute(
                 static=QAStaticResult(
                     passed=static_check.passed,
