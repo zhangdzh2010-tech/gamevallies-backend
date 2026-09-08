@@ -153,6 +153,7 @@ def _run_create_with_mocks(
     compute_side_effect,
     patch_text_return=PATCH_RESPONSE_TEXT,
     patch_repair_enabled=True,
+    progress_cb=None,
 ):
     """Drive _run_create_impl with the standard heavy-mock harness.
 
@@ -222,7 +223,7 @@ def _run_create_with_mocks(
         response = asyncio.run(
             runner._run_create_impl(
                 request,
-                progress_cb=None,
+                progress_cb=progress_cb,
                 stage_context={"stage": "spec_build"},
             )
         )
@@ -315,11 +316,16 @@ def test_near_miss_uses_patch_repair_and_skips_full_regeneration():
     assert mocks.patch_text.await_count == 1
     # SCRIPT section was patched, so runtime QA must be re-run.
     assert mocks.runtime_loop.await_count == 1
+    prompt = mocks.patch_text.await_args.kwargs["prompt"]
+    assert "UNCHANGED BODY STRUCTURE" in prompt
+    assert "id='gameCanvas'" in prompt
+    assert _spec().source_description in prompt
     assert "PATCHED_QUALITY_FIX" in response.html_code
     assert response.quality_score == 7.1
 
 
 def test_patch_validation_failure_falls_back_to_full_regeneration():
+    events = []
     generated_first = _generated(BASE_CODE, "provider-a")
     second_code = BASE_CODE.replace("background:#111", "background:#222")
     generated_second = _generated(second_code, "provider-b")
@@ -334,7 +340,12 @@ def test_patch_validation_failure_falls_back_to_full_regeneration():
         compute_side_effect=[_quality(5.9), _quality(7.1)],
         # Full document without canvas/script fails validate_patch_candidate.
         patch_text_return="<!DOCTYPE html><html><body>tiny</body></html>",
+        progress_cb=lambda *event: events.append(event),
     )
+    rejection = next(event[3] for event in events if event[2] == "Targeted quality repair rejected")
+    assert rejection["failureStage"] == "patch_validation"
+    assert "missing_canvas" in rejection["rejectionReason"]
+    assert rejection["responseChars"] > 0
 
     assert mocks.patch_text.await_count == 1
     assert mocks.generate.await_count == 2
@@ -386,3 +397,14 @@ def test_disabled_flag_keeps_existing_full_regeneration_behavior():
     second_call = mocks.generate.await_args_list[1].kwargs
     assert "QUALITY AND PRESENTATION CORRECTIONS" in second_call["generation_guidance"]
     assert response.html_code == second_code
+
+
+def test_patch_request_overrides_full_document_system_output_contract():
+    runner = V2PipelineRunner()
+    client = AsyncMock(return_value='{"patches":[]}')
+    with patch.object(runner.code_generator, '_build_system_prompt', return_value='Return ONLY one complete HTML document.'), patch.object(runner.code_generator._client, 'complete_with_truncation_retry', new=client):
+        asyncio.run(runner._request_quality_gate_patch_text(prompt='repair', spec=_spec(), prompt_bundle_snapshot={}))
+    system = client.await_args.kwargs['system']
+    assert system.index('CURRENT REPAIR OUTPUT OVERRIDE') > system.index('Return ONLY one complete HTML')
+    assert 'Return only a valid JSON object' in system
+    assert 'All safety, gameplay, language and quality requirements' in system

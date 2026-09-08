@@ -198,7 +198,12 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
         # primary model, not the fast lane.
         return await generator._client.complete_with_truncation_retry(
             max_tokens=token_budget,
-            system=generator._build_system_prompt(prompt_bundle_snapshot, spec=spec),
+            system=generator._build_system_prompt(prompt_bundle_snapshot, spec=spec) + (
+                "\n\nCURRENT REPAIR OUTPUT OVERRIDE:\n"
+                "For this repair turn, replace the full-HTML output requirement above with the PATCH-FIRST JSON contract in the request. "
+                "Return only a valid JSON object containing patches for the allowed sections; do not return a complete HTML document. "
+                "All safety, gameplay, language and quality requirements above still apply to the resulting document."
+            ),
             messages=[{"role": "user", "content": prompt}],
             step_key=step_key,
             stage="code_review",
