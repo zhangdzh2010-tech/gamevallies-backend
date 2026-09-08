@@ -4,6 +4,15 @@ const redis = { get: jest.fn(), setex: jest.fn() };
 jest.mock('ioredis', () => jest.fn(() => redis));
 
 describe('Production trending query', () => {
+  it('ranks actual engagement even before any work has likes', async () => {
+    const publishedAt = new Date();
+    const prisma = { game: { findMany: jest.fn().mockResolvedValue([
+      { id: 'a', likeCount: 0, playCount: 0, forkCount: 0, publishedAt },
+      { id: 'b', likeCount: 0, playCount: 20, forkCount: 2, publishedAt },
+    ]) } };
+    const result = await new FeedService(prisma as any).getTrendingFeed();
+    expect(result.data.map((game: { id: string }) => game.id)).toEqual(['b', 'a']);
+  });
   beforeEach(() => { jest.clearAllMocks(); redis.get.mockResolvedValue(null); });
 
   it('bounds the real query and uses the candidate pool for pagination', async () => {

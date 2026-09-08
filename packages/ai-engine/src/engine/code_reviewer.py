@@ -27,22 +27,13 @@ from .quality_scorer import LLMReviewResult
 
 logger = logging.getLogger(__name__)
 
-def _build_code_preview(html_code: str, limit: int = 8000) -> str:
-    """Build a stable review preview without hiding the file ending.
+def _build_code_preview(html_code: str, limit: int | None = None) -> str:
+    """Review the complete artifact; slicing hides gameplay and character drawing.
 
-    Showing both the head and tail avoids false "truncated/incomplete" judgments
-    that happen when the reviewer only sees the first chunk of a valid HTML file.
+    Kept the optional argument for older callers; no source is silently omitted.
+    Provider context admission must fail explicitly if a document cannot fit.
     """
-    if len(html_code) <= limit:
-        return html_code
-
-    head_len = limit // 2
-    tail_len = limit - head_len
-    return (
-        html_code[:head_len]
-        + "\n\n... [middle omitted for review; original file continues] ...\n\n"
-        + html_code[-tail_len:]
-    )
+    return html_code
 
 
 class CodeReviewer:
@@ -70,7 +61,7 @@ class CodeReviewer:
                 stage="qa_checking",
                 prefer_fast=True,
                 response_size_hint="small",
-                context_scope="task",
+                context_scope="request",
                 compression_policy="code_review",
                 truncation_retry_attempts=1,
                 truncation_retry_increment=512,
