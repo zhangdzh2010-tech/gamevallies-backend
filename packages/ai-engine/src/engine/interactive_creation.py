@@ -9,7 +9,7 @@ from ..services.llm_client import LLMClient
 from .code_generation_support import _extract_html
 from .pipeline_errors import PipelineExecutionError
 from .runtime_isolation import restrict_context_network, network_policy_meta
-from .artifact_quality import request_artifact_kind, review_prompt, assess_review, preservation_errors
+from .artifact_quality import request_artifact_kind, review_prompt, assess_review, preservation_errors, preserve_cosmetic_scripts
 
 DESKTOP_BRIEF_MARKER = '请生成桌面浏览器中的可交互创意作品'
 
@@ -190,7 +190,7 @@ async def run_interactive(request, progress_cb=None):
             truncation_retry_attempts=1, truncation_retry_max_tokens=16384,
             timeout_retry_attempts=0,
         )
-        code = extract_interactive_document(text)
+        code = preserve_cosmetic_scripts(source_code, extract_interactive_document(text), feedback)
         if progress_cb: progress_cb('runtime_simulation_qa',90,'正在检查桌面显示与交互',{'attempt':attempt})
         try:
             report = await asyncio.wait_for(validate_interactive_html(code), timeout=min(60,max(1,deadline-time.time())))
@@ -206,7 +206,7 @@ async def run_interactive(request, progress_cb=None):
             try:
                 raw_review = await client.complete_with_truncation_retry(
                     max_tokens=2048, system='独立审核，严格遵循分类评分规则，只返回JSON。',
-                    messages=[{'role':'user','content':review_prompt(kind, original, code, report)}],
+                    messages=[{'role':'user','content':review_prompt(kind, original + ("\n修改要求：" + feedback if feedback else ""), code, report)}],
                     step_key='code_review', stage='code_review', prefer_fast=True,
                     request_timeout_s=min(120,remaining), overall_timeout_s=min(120,remaining),
                     response_size_hint='small', allow_provider_fallback=True,

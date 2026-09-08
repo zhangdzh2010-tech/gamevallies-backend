@@ -2037,8 +2037,12 @@ export class AdminService {
     // Update game metadata
     const gameUpdate: any = {};
     if (data.title !== undefined) gameUpdate.title = data.title;
-    if (data.description !== undefined)
+    if (data.description !== undefined) {
       gameUpdate.description = data.description;
+      // Public presenters prefer userIdea over the legacy description field.
+      // Keep an administrator's edited copy consistent across public surfaces.
+      gameUpdate.userIdea = data.description.trim();
+    }
     if (data.slug !== undefined) gameUpdate.slug = data.slug;
     if (data.gameType !== undefined) {
       gameUpdate.gameType = normalizeGameType(

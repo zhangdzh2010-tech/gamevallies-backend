@@ -102,7 +102,7 @@ export class FeedService {
       ? Math.min(10000, Math.max(100, Math.floor(configuredLimit)))
       : 1000;
     const normalizedQuery = (query || '').trim().toLowerCase();
-    const cacheKey = `feed:trending:v2:${candidateLimit}:${page}:${limit}:${normalizedQuery || '*'}`;
+    const cacheKey = `feed:trending:v3:${candidateLimit}:${page}:${limit}:${normalizedQuery || '*'}`;
     const cached = await this.cacheGet(cacheKey);
 
     if (cached) {
@@ -135,7 +135,10 @@ export class FeedService {
       const publishedTime = game.publishedAt ? new Date(game.publishedAt).getTime() : now;
       const ageHours = Math.max(0, now - publishedTime) / (1000 * 60 * 60);
       const decayFactor = Math.exp(-0.01 * ageHours);
-      const finalScore = score * decayFactor;
+      // Views and remixes still distinguish works before the first likes arrive.
+      const engagement = Math.log1p(Math.max(0, plays) + 3 * Math.max(0, likes) +
+        5 * Math.max(0, Number(game.forkCount) || 0));
+      const finalScore = (score + 0.1 * engagement) * decayFactor;
 
       return { ...game, score: finalScore };
     });

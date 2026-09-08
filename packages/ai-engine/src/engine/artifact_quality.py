@@ -19,7 +19,7 @@ def infer_artifact_kind(description: str) -> str:
     if explicit:
         return {'游戏':'game', '工具':'tool', '科学演示':'science'}.get(explicit[1], explicit[1])
     # Exclusions are not positive requests for gameplay.
-    positive = re.sub(r'(?:不要|不添加|不加入|不需要|禁止|without|no)\s*[^。\n.;；]{0,60}(?:游戏|gameplay|game)[^。\n.;；]*', '', text)
+    positive = re.sub(r'(?:不要|不做|不制作|不添加|不加入|不需要|禁止|without|no)\s*[^。\n.;；]{0,60}(?:游戏|gameplay|game)[^。\n.;；]*', '', text)
     if re.search(r'小游戏|闯关|消除游戏|益智游戏|游戏玩法|做.{0,8}游戏|(?:make|build|create).{0,50}\bgame\b', positive):
         return 'game'
     if re.search(r'种群|捕食者|双摆|单摆|科学|物理|化学|欧姆|电路|天体|波动|微分方程|lotka|pendulum|ohm|scientific|simulation|population model', text):
@@ -90,13 +90,29 @@ def assess_review(raw: str, kind: str) -> dict:
             'review_ran':False,'passed':False,'score':0,'issues':['分类审核未返回完整、有效且有依据的评分。']}
 
 
+def cosmetic_only_edit(feedback: str) -> bool:
+    """A model-preservation request alone does not prohibit layout/resize JS."""
+    return bool(re.search(
+        r'(?:仅|只|only)\s*(?:修改|调整|更改|改|change|edit)?\s*(?:标题|文案|颜色|主色|外观|页脚|字体|title|text|colou?r|footer|style)',
+        feedback, re.I)) and not re.search(r'布局|尺寸|resize|layout|新增|增加|修复|计算|交互|行为', feedback, re.I)
+
+
+def preserve_cosmetic_scripts(original: str, candidate: str, feedback: str) -> str:
+    """Carry executable source over directly for strictly presentational edits."""
+    if not original or not cosmetic_only_edit(feedback):
+        return candidate
+    pattern = r'<script\b[^>]*>[\s\S]*?</script\s*>'
+    source = re.findall(pattern, original, re.I)
+    if len(source) != len(re.findall(pattern, candidate, re.I)):
+        return candidate  # Fail the invariant below instead of guessing structure.
+    scripts = iter(source)
+    return re.sub(pattern, lambda _: next(scripts), candidate, flags=re.I)
+
+
 def preservation_errors(original: str, candidate: str, feedback: str) -> list[str]:
-    """Conservative invariant for explicitly cosmetic-only edits: scripts stay identical."""
-    if not original or not re.search(r'仅|只|only|不要修改|保留.*(?:模型|逻辑|方程)', feedback, re.I):
+    if not original or not cosmetic_only_edit(feedback):
         return []
-    if not re.search(r'颜色|主色|外观|页脚|标题|文案|字体|footer|colou?r|title|style', feedback, re.I):
-        return []
-    scripts = lambda html: re.findall(r'<script\b[^>]*>(.*?)</script\s*>', html, re.I|re.S)
+    scripts = lambda html: re.findall(r'<script\b[^>]*>[\s\S]*?</script\s*>', html, re.I)
     if scripts(original) != scripts(candidate):
         return ['此次仅修改呈现内容，必须原样保留原作品的所有脚本、模型方程及计算参数。']
     return []

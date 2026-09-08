@@ -5,8 +5,27 @@ import { BadRequestException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { AdminService } from "../src/admin/admin.service";
 import promptCatalog from "../src/game/catalogs/prompt-catalog.json";
+import { presentGame } from "../src/common/game-presenter";
 
 describe("AdminService", () => {
+  it("shows edited admin copy publicly instead of the old generation prompt", async () => {
+    const stored: any = {
+      id: "copy-regression", title: "森林的平衡", bundles: [],
+      description: "旧提示词", userIdea: "部署验收测试作品",
+    };
+    const db: any = { game: {
+      findUnique: jest.fn().mockResolvedValue(stored),
+      update: jest.fn().mockImplementation(async ({ data }) => Object.assign(stored, data)),
+    }};
+    const admin = new AdminService(db, new ConfigService(), {} as any);
+    jest.spyOn(admin as any, "invalidateFeedCache").mockResolvedValue(undefined);
+    jest.spyOn(admin, "getGame").mockImplementation(async () => stored);
+    await admin.updateGame(stored.id, { description: "观察猎物与捕食者的动态平衡。" });
+    expect(presentGame(stored).description).toBe("观察猎物与捕食者的动态平衡。");
+    await admin.updateGame(stored.id, { title: "新的标题" });
+    expect(presentGame(stored).description).toBe("观察猎物与捕食者的动态平衡。");
+  });
+
   let service: AdminService;
   let prisma: any;
   let configService: ConfigService;
@@ -3469,4 +3488,3 @@ describe("AdminService", () => {
     expect(prisma.llmStepRoute.upsert).not.toHaveBeenCalled();
   });
 });
-

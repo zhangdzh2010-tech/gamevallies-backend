@@ -16,6 +16,8 @@ def review(kind, **updates):
 
 @pytest.mark.parametrize('description,kind',[
     ('制作最小交互计数器，不添加游戏玩法。','tool'),
+    ('制作中文五色配色工具。所有按钮有明确反馈，不做游戏计分，不添加倒计时。','tool'),
+    ('做一个欧姆定律演示，不制作游戏玩法。','science'),
     ('制作计数器。创作领域：自由创意。请生成桌面浏览器中的可交互创意作品。涉及科学概念时展示模型。','tool'),
     ('制作待办清单。请生成桌面浏览器中的可交互创意作品。涉及科学概念时展示模型。','tool'),
     ('制作单位换算工具','tool'),('做一个欧姆定律电路模型，不需要游戏','science'),
@@ -58,3 +60,19 @@ def test_cosmetic_iteration_cannot_change_model_scripts():
     assert not preservation_errors(source,source.replace('v1','v2'),'仅修改页脚文案')
     assert preservation_errors(source,source.replace('a=1','a=2'),'仅修改页脚文案')
     assert not preservation_errors(source,source.replace('a=1','a=2'),'将参数a改为2')
+
+
+def test_layout_fix_does_not_freeze_all_scripts():
+    source = '<script>resize(900); model(1);</script>'
+    candidate = '<script>resize(320); model(1);</script>'
+    assert not preservation_errors(source, candidate, '保留模型方程，调整标题区域和布局，修复Canvas尺寸')
+
+
+def test_cosmetic_edit_restores_source_scripts():
+    from src.engine.artifact_quality import preserve_cosmetic_scripts
+    source = '<h1>旧名</h1><script>model(1);</script>'
+    candidate = '<h1>新名</h1><script>model(2);</script>'
+    result = preserve_cosmetic_scripts(source, candidate, '仅修改标题')
+    assert result == '<h1>新名</h1><script>model(1);</script>'
+    assert not preservation_errors(source, result, '仅修改标题')
+    assert preserve_cosmetic_scripts(source, candidate, '修改模型参数') == candidate
