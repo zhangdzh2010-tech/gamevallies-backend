@@ -813,7 +813,11 @@ def _resolve_gateway_output_limit(
             limit_source = "caller_capped_by_gateway" if effective < requested else "caller_requested"
         return effective, requested, limit_source
     if requested_max_tokens is not None:
-        return max(1, int(requested_max_tokens)), hint_tokens, "caller_fallback"
+        # The second value is the caller's request, not the hint default.
+        # complete_with_truncation_retry uses it as its initial budget; returning
+        # 512 here silently reduced a 2048-token structured review to 512.
+        requested = max(1, int(requested_max_tokens))
+        return requested, requested, "caller_fallback"
     return hint_tokens, hint_tokens, "hint_fallback"
 
 

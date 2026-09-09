@@ -468,6 +468,13 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                         stage="logic_generate",
                         retry_count=max(0, quality_attempt - 1),
                         failure_family="code_generation",
+                        artifacts=[
+                            self._build_text_artifact(artifact_type="failed_preflight_candidate",
+                                payload=generated.html_code, metadata={"attempt":quality_attempt,"stage":"logic_generate"}),
+                            self._build_json_artifact(artifact_type="preflight_report", payload={
+                                "attempt":quality_attempt,"issues":[{"code":issue.code,"message":issue.message} for issue in preflight_issues],
+                            }, metadata={"stage":"logic_generate"}),
+                        ],
                     )
                     next_provider_exclusions = self._advance_generation_provider_exclusions(
                         last_route_snapshot,
@@ -599,6 +606,14 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                         stage="code_review",
                         retry_count=max(0, quality_attempt - 1),
                         failure_family="quality_gate",
+                        artifacts=[
+                            self._build_text_artifact(artifact_type="failed_quality_candidate",
+                                payload=qa_result.code, metadata={"attempt":quality_attempt,"stage":"code_review"}),
+                            self._build_json_artifact(artifact_type="quality_review_report", payload={
+                                "attempt":quality_attempt,"issues":review.issues,
+                                "gateErrors":quality_gate_errors,"final_score":quality.final_score,
+                            }, metadata={"stage":"code_review"}),
+                        ],
                     )
                     if (
                         getattr(settings, "QUALITY_GATE_PATCH_REPAIR_ENABLED", True)

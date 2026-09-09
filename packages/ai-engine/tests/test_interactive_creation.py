@@ -143,7 +143,7 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         second = GOOD.replace('<h1>种群模型</h1>', '<h1>第二次候选</h1>')
         failed = {'ran':True,'passed':False,'issues':['simulator stalled']}
         with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
-                   new=AsyncMock(side_effect=[GOOD, second])), patch(
+                   new=AsyncMock(side_effect=[GOOD, json.dumps({'patches':[{'search':'<h1>种群模型</h1>', 'replace':'<h1>第二次候选</h1>'}]})])), patch(
                    'src.engine.interactive_creation.validate_interactive_html',
                    new=AsyncMock(return_value=failed)):
             with self.assertRaises(PipelineExecutionError) as caught:
@@ -156,6 +156,99 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(report['runtime']['passed'])
         self.assertIn('simulator stalled', report['runtime']['issues'])
         self.assertIsNone(report['assessment'])
+
+    async def test_native_confirm_is_rejected_even_when_another_control_works(self):
+        html = GOOD.replace('</body>', '<button onclick="if(confirm(\'确认\'))document.querySelector(\'output\').textContent=0">清空</button></body>')
+        report = await validate_interactive_html(html)
+        self.assertFalse(report['passed'])
+        self.assertTrue(report['contentChanged'])
+        self.assertEqual(report['sandbox'], 'allow-scripts')
+        self.assertTrue(report['sandboxViolations'])
+
+    async def test_inline_confirmation_and_isolated_storage_work_in_sandbox(self):
+        html = GOOD.replace('</body>', '''<button onclick="document.querySelector('dialog').showModal()">清空</button>
+        <dialog><button onclick="localStorage.clear();this.parentElement.close()">确认</button></dialog>
+        <script>localStorage.setItem('own-data','1');sessionStorage.setItem('own','2');</script></body>''')
+        report = await validate_interactive_html(html)
+        self.assertTrue(report['passed'], str(report['issues']))
+        self.assertFalse(report['js_errors'])
+
+    async def test_vertical_core_clipping_is_rejected_but_long_explanation_is_allowed(self):
+        clipped = GOOD.replace('button{padding:12px}', 'button{padding:12px;margin-top:700px}')
+        report = await validate_interactive_html(clipped)
+        self.assertFalse(report['passed'])
+        self.assertGreater(report['viewports'][1]['coreOutsideCount'], 0)
+        self.assertGreater(report['viewports'][1]['hiddenReveal']['coreOutsideCount'], 0)
+        explanation = GOOD.replace('</body>', '<p style="height:1200px">次要解释可以在下方阅读。</p></body>')
+        self.assertTrue((await validate_interactive_html(explanation))['passed'])
+
+    async def test_blocked_slider_keys_are_not_hidden_by_other_working_controls(self):
+        html = GOOD.replace('</body>', '<input type="range" min="0" max="10" value="4" onkeydown="event.preventDefault()"></body>')
+        report = await validate_interactive_html(html)
+        self.assertFalse(report['passed'])
+        self.assertTrue(any('方向键' in issue for issue in report['issues']))
+
+    async def test_reset_must_recompute_initial_nonempty_result(self):
+        html = GOOD.replace('</body>', '<button onclick="document.querySelector(\'output\').textContent=\'—\'">重置</button></body>')
+        report = await validate_interactive_html(html)
+        self.assertFalse(report['passed'])
+        self.assertTrue(any('重置未恢复' in issue for issue in report['issues']))
+        fixed = html.replace("textContent='—'", "textContent='10'")
+        self.assertTrue((await validate_interactive_html(fixed))['passed'])
+
+    async def test_plot_boundaries_are_checked_after_slider_maximum(self):
+        html = '''<html><head></head><body><h1>波形</h1><canvas width="400" height="100"></canvas>
+        <input type="range" min="1" max="4" value="1" oninput="draw(+this.value)"><script>
+        const c=document.querySelector('canvas'),ctx=c.getContext('2d');
+        function draw(a){ctx.clearRect(0,0,400,100);ctx.beginPath();
+          for(let x=0;x<400;x++)ctx.lineTo(x,50+20*a*Math.sin(x/20));ctx.stroke();}draw(1);
+        </script></body></html>'''
+        report = await validate_interactive_html(html)
+        self.assertFalse(report['passed'])
+        self.assertTrue(report['drawingIssues'])
+        self.assertTrue((await validate_interactive_html(html.replace('20*a*Math.sin','10*a*Math.sin')))['passed'])
+
+    async def test_local_patch_is_used_instead_of_second_full_generation(self):
+        failed = {'ran':True,'passed':False,'issues':['修正标题']}
+        passed = {'ran':True,'passed':True,'issues':[]}
+        patch_json = json.dumps({'patches':[{'search':'<h1>种群模型</h1>','replace':'<h1>生态观察</h1>'}]})
+        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
+            new=AsyncMock(side_effect=[GOOD,patch_json,await fake_llm(step_key='code_review')])) as llm, patch(
+            'src.engine.interactive_creation.validate_interactive_html',new=AsyncMock(side_effect=[failed,passed])):
+            result = await run_interactive(normalize_interactive_request(self.request()))
+        self.assertEqual([c.kwargs['step_key'] for c in llm.call_args_list],
+                         ['code_generate.full','quality_gate.patch_fix','code_review'])
+        self.assertIn('<h1>生态观察</h1>', result.html_code)
+        self.assertEqual(result.runtime_qa_report['generationAttempts'],
+                         {'fullGenerationCalls':1,'patchCalls':1,'qaAttempts':2})
+
+    async def test_invalid_patch_keeps_original_candidate_and_does_not_regenerate(self):
+        from src.engine.pipeline_errors import PipelineExecutionError
+        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
+            new=AsyncMock(side_effect=[GOOD,'not json'])) as llm, patch(
+            'src.engine.interactive_creation.validate_interactive_html',
+            new=AsyncMock(return_value={'ran':True,'passed':False,'issues':['problem']})):
+            with self.assertRaises(PipelineExecutionError) as caught:
+                await run_interactive(normalize_interactive_request(self.request()))
+        self.assertEqual(llm.call_count, 2)
+        self.assertEqual(next(a['payload']['runtime']['generationAttempts'] for a in caught.exception.artifacts
+                             if a['artifact_type']=='interactive_validation_report'),
+                         {'fullGenerationCalls':1,'patchCalls':1,'qaAttempts':1})
+        self.assertEqual(next(a['payload'] for a in caught.exception.artifacts
+                             if a['artifact_type']=='failed_interactive_candidate'),GOOD)
+
+    async def test_review_infrastructure_failure_retains_candidate_without_regeneration(self):
+        from src.engine.pipeline_errors import PipelineExecutionError
+        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
+            new=AsyncMock(side_effect=[GOOD,RuntimeError('review unavailable')])) as llm, patch(
+            'src.engine.interactive_creation.validate_interactive_html',
+            new=AsyncMock(return_value={'ran':True,'passed':True,'issues':[]})):
+            with self.assertRaises(PipelineExecutionError) as caught:
+                await run_interactive(normalize_interactive_request(self.request()))
+        self.assertEqual(caught.exception.failure_family,'review_infrastructure')
+        self.assertEqual(llm.call_count,2)
+        self.assertEqual(next(a['payload'] for a in caught.exception.artifacts
+                             if a['artifact_type']=='failed_interactive_candidate'),GOOD)
 
     async def test_async_submission_runs_desktop_pipeline_and_persists_browser_checked_result(self):
         from fakeredis.aioredis import FakeRedis

@@ -86,7 +86,7 @@ class CodeReviewer:
                 step_key="code_review",
                 stage="qa_checking",
                 prefer_fast=True,
-                response_size_hint="small",
+                response_size_hint="medium_structured",
                 context_scope="request",
                 compression_policy="code_review",
                 truncation_retry_attempts=1,

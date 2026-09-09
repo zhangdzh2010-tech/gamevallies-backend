@@ -8,8 +8,8 @@ from ..api.models import GameRuntimeContract, GameSpec, RunPipelineResponse, Ite
 from ..services.llm_client import LLMClient
 from .code_generation_support import _extract_html
 from .pipeline_errors import PipelineExecutionError
-from .runtime_isolation import restrict_context_network, network_policy_meta
 from .artifact_quality import request_artifact_kind, review_prompt, assess_review, preservation_errors, preserve_cosmetic_scripts
+from .interactive_repair import apply_interactive_patch, repair_prompt
 
 DESKTOP_BRIEF_MARKER = '请生成桌面浏览器中的可交互创意作品'
 
@@ -75,94 +75,8 @@ async def _validate_interactive_html(code: str) -> dict:
         return {'passed':False,'issues':['输出必须是包含交互脚本的完整 HTML 文档。'+shape]}
     if len(code.encode()) > 300000:
         return {'passed':False,'issues':['作品超过 300 KB，请精简内联代码。']}
-    from playwright.async_api import async_playwright
-    errors = []
-    async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=True, args=['--no-sandbox','--disable-dev-shm-usage'])
-        try:
-            context = await browser.new_context(viewport={'width':1440,'height':900},service_workers='block')
-            await restrict_context_network(context)
-            page = await context.new_page()
-            page.on('pageerror', lambda error: errors.append(str(error)[:500]))
-            secured = re.sub(r'(<head\b[^>]*>)', lambda m:m.group(1)+network_policy_meta(), code, count=1,flags=re.I)
-            if secured == code: secured = network_policy_meta()+code
-            await page.set_content(secured, wait_until='domcontentloaded',timeout=15000)
-            await page.wait_for_timeout(300)
-            if not (await page.locator('body').inner_text()).strip(): errors.append('页面缺少可读标题或操作说明。')
-            signature = "() => document.body.innerText + Array.from(document.querySelectorAll('canvas')).map(c=>c.toDataURL()).join('') + Array.from(document.querySelectorAll('svg')).map(s=>s.outerHTML).join('')"
-            changed = False
-            motion_checks = []
-            controls = page.locator('button, input[type=range], input[type=number], input[type=text], input:not([type]), textarea, select')
-            exercised = 0
-            for index in range(min(await controls.count(), 8)):
-                control = controls.nth(index)
-                if not await control.is_visible() or not await control.is_enabled(): continue
-                before = await page.evaluate(signature)
-                tag = await control.evaluate('(e)=>e.tagName')
-                input_type = await control.get_attribute('type') if tag == 'INPUT' else None
-                if tag == 'INPUT' and input_type == 'range':
-                    await control.focus()
-                    await control.press('ArrowRight')
-                    await control.press('ArrowRight')
-                elif tag in ('INPUT', 'TEXTAREA'):
-                    if await control.get_attribute('readonly') is not None: continue
-                    if input_type == 'number':
-                        value = await control.evaluate('''e => {
-                            const current = Number(e.value || 0), step = Number(e.step) || 1;
-                            const min = e.min === '' ? -1e6 : Number(e.min);
-                            const max = e.max === '' ? 1e6 : Number(e.max);
-                            return String(Math.max(min, Math.min(max, current + step <= max ? current + step : current - step)));
-                        }''')
-                    else:
-                        value = '验收样例'
-                    await control.fill(value)
-                    await control.press('Tab')
-                elif tag == 'SELECT':
-                    if await control.locator('option').count() < 2: continue
-                    await control.select_option(index=1)
-                else:
-                    label = (await control.inner_text()).strip()
-                    starts_motion = bool(re.search(r'开始|启动|运行|播放|演示|继续|\b(?:start|play|run|resume)\b', label, re.I)
-                        and re.search(r'\b(?:requestAnimationFrame|setInterval)\s*\(', code))
-                    await control.click(timeout=2000)
-                    if starts_motion:
-                        # A slider label or a Start -> Pause label is not proof
-                        # that a simulation advances. Sample after the click's
-                        # immediate UI changes, then require continuing output.
-                        await page.wait_for_timeout(100)
-                        motion_before = await page.evaluate(signature)
-                        # A valid countdown may render only once per second.
-                        # A fixed 750 ms snapshot wrongly rejects it and triggers
-                        # expensive full-document regeneration. Keep requiring
-                        # post-click progress, but sample over two timer ticks;
-                        # fast animations return as soon as progress is visible.
-                        advances = False
-                        observed_after_ms = 0
-                        for _ in range(22):
-                            await page.wait_for_timeout(100)
-                            observed_after_ms += 100
-                            if motion_before != await page.evaluate(signature):
-                                advances = True
-                                break
-                        motion_checks.append({'control':label,'advances':advances,
-                            'observationBudgetMs':2200,'observedAfterMs':observed_after_ms})
-                        if not advances:
-                            errors.append(f'点击启动控件「{label}」后，动画/模拟时间/作品内容未持续变化。检查 requestAnimationFrame 时间累加；不要对每帧小于固定步长的 elapsed 单独取整为零。')
-                exercised += 1
-                await page.wait_for_timeout(100)
-                changed = changed or before != await page.evaluate(signature)
-            if not exercised or not changed: errors.append('未检测到可操作且能改变作品内容的交互控件。')
-            viewports=[]
-            for width,height in [(1000,460),(1000,600),(1366,768),(1920,1080)]:
-                await page.set_viewport_size({'width':width,'height':height})
-                overflow = await page.evaluate('() => document.documentElement.scrollWidth > innerWidth + 2')
-                viewports.append({'width':width,'height':height,'horizontalOverflow':overflow})
-                if overflow: errors.append(f'{width}×{height} 桌面视口出现横向溢出。')
-            return {'ran':True,'passed':not errors,'issues':errors,'js_errors':errors,
-                'interaction_performed':bool(exercised),'dom_changed_after_input':changed,
-                'controlsExercised':exercised,'contentChanged':changed,'motionChecks':motion_checks,'viewports':viewports}
-        finally:
-            await browser.close()
+    from .interactive_browser_qa import browser_report
+    return await browser_report(code)
 
 
 SYSTEM_PROMPT = '''你是桌面交互作品工程师。根据用户的原始创意，输出单个可离线运行的完整 HTML，只有代码，不要 Markdown。
@@ -174,6 +88,11 @@ SYSTEM_PROMPT = '''你是桌面交互作品工程师。根据用户的原始创�
 科学作品必须说明模型、公式、单位、参数有效范围、简化假设和适用限制。不要把示意动画当成实验数据。
 科学参数必须作用于计算模型，避免仅改变显示数字。不能编造测量结果。
 所有代码和素材内联，不访问网络，不使用 iframe、弹窗、外部库、eval 或动态 Function。保持实现精炼但完整。
+正式播放环境是iframe sandbox="allow-scripts"，没有allow-modals或同源权限。不能调用alert/confirm/prompt；编辑、确认与错误提示必须使用页面内控件。宿主仅提供作品隔离的localStorage/sessionStorage接口。
+长清单使用有界的内部滚动区域，主操作和汇总留在1000×600首屏内；非核心说明可用details折叠或标记data-work-secondary。不能隐藏核心按钮绕过首屏约束。
+输入内容一律按纯文本处理，不把用户字符串直接拼进innerHTML。筛选只改变可见条目，不能悄悄改变总计口径；重置恢复完整初态。
+表单控件必须保留方向键/Home/End默认操作。倒计时使用绝对截止时间与暂停余量，后台恢复补足真实经过时间；不要用钳制后的动画dt当计时时钟。
+绘图须为所有参数边界预留坐标与标注空间；检查最小/最大值，角弧采用正确方向与最小夹角，曲线峰值和摆球不能越出画布。重置前取消旧动画回调，避免重复循环。
 不要依赖宿主提供游戏 runtime、积分回调或 game_over 消息。遵从用户选择的方向和内容。'''
 
 
@@ -190,25 +109,56 @@ async def run_interactive(request, progress_cb=None):
     client = LLMClient()
     issues=[]
     code=''
+    candidate_history=[]
+    full_generations=0
+    patch_calls=0
+    qa_attempts=0
     for attempt in range(1, 3):
         if progress_cb: progress_cb('logic_generate',60,'正在实现桌面互动作品',{'attempt':attempt,'maxAttempts':2,'runtimeProfile':'interactive_experience'})
         remaining = max(1, int(deadline-time.time()))
-        text = await client.complete_with_truncation_retry(
-            max_tokens=8192, system=SYSTEM_PROMPT,
-            messages=[{'role':'user','content':prompt + ('\n\n请修复以下运行检查问题，返回完整作品：\n'+'\n'.join(issues) if issues else '')}],
-            step_key='iterate.element_change' if iterate else 'code_generate.full', stage='logic_generate',
-            request_timeout_s=remaining, overall_timeout_s=remaining, response_size_hint='full_document',
-            allow_provider_fallback=True,
-            context_scope='request', compression_policy='code_generation',
-            truncation_retry_attempts=1, truncation_retry_max_tokens=16384,
-            timeout_retry_attempts=0,
-        )
-        code = preserve_cosmetic_scripts(source_code, extract_interactive_document(text), feedback)
+        local_repair = bool(code and re.search(r'</html\s*>\s*$', code, re.I))
+        if local_repair:
+            patch_calls += 1
+            text = await client.complete_with_truncation_retry(
+                max_tokens=4096, system='修复现有交互作品，只输出精确替换补丁JSON，不重写整个作品。',
+                messages=[{'role':'user','content':repair_prompt(original,code,issues)}],
+                step_key='quality_gate.patch_fix', stage='logic_generate',
+                request_timeout_s=remaining, overall_timeout_s=remaining,
+                response_size_hint='large_patch', allow_provider_fallback=True,
+                context_scope='request', compression_policy='iteration_rewrite',
+                truncation_retry_attempts=1, truncation_retry_max_tokens=8192,
+                timeout_retry_attempts=0, provider_retry_on_timeout_errors=False,
+            )
+            try:
+                candidate = apply_interactive_patch(code, text)
+            except ValueError as exc:
+                issues = [str(exc)]
+                report = dict(report, passed=False, issues=issues, generationAttempts={
+                    'fullGenerationCalls':full_generations,'patchCalls':patch_calls,'qaAttempts':qa_attempts})
+                break
+        else:
+            full_generations += 1
+            text = await client.complete_with_truncation_retry(
+                max_tokens=8192, system=SYSTEM_PROMPT,
+                messages=[{'role':'user','content':prompt + ('\n\n请修复以下运行检查问题，返回完整作品：\n'+'\n'.join(issues) if issues else '')}],
+                step_key='iterate.element_change' if iterate else 'code_generate.full', stage='logic_generate',
+                request_timeout_s=remaining, overall_timeout_s=remaining, response_size_hint='full_document',
+                allow_provider_fallback=True,
+                context_scope='request', compression_policy='code_generation',
+                truncation_retry_attempts=1, truncation_retry_max_tokens=16384,
+                timeout_retry_attempts=0, provider_retry_on_timeout_errors=False,
+            )
+            candidate = extract_interactive_document(text)
+        code = preserve_cosmetic_scripts(source_code, candidate, feedback)
         if progress_cb: progress_cb('runtime_simulation_qa',90,'正在检查桌面显示与交互',{'attempt':attempt})
+        qa_attempts += 1
         try:
             report = await asyncio.wait_for(validate_interactive_html(code), timeout=min(60,max(1,deadline-time.time())))
         except Exception as exc:
-            raise PipelineExecutionError(f'Desktop runtime QA unavailable: {type(exc).__name__}', stage='runtime_simulation_qa',failure_family='runtime_infrastructure') from exc
+            raise PipelineExecutionError(f'Desktop runtime QA unavailable: {type(exc).__name__}',
+                stage='runtime_simulation_qa',failure_family='runtime_infrastructure',
+                artifacts=candidate_history + [{'artifact_type':'failed_interactive_candidate',
+                    'content_type':'text/html','payload':code,'metadata':{'attempt':attempt,'stage':'runtime_simulation_qa'}}]) from exc
         preserved = preservation_errors(source_code, code, feedback)
         report['issues'] = list(report.get('issues', [])) + preserved
         report['passed'] = bool(report['passed'] and not preserved)
@@ -222,16 +172,26 @@ async def run_interactive(request, progress_cb=None):
                     messages=[{'role':'user','content':review_prompt(kind, original + ("\n修改要求：" + feedback if feedback else ""), code, report)}],
                     step_key='code_review', stage='code_review', prefer_fast=True,
                     request_timeout_s=min(120,remaining), overall_timeout_s=min(120,remaining),
-                    response_size_hint='small', allow_provider_fallback=True,
+                    response_size_hint='medium_structured', allow_provider_fallback=True,
                     context_scope='request', compression_policy='code_review',
                     truncation_retry_attempts=1, truncation_retry_max_tokens=3072, timeout_retry_attempts=0,
                 )
                 assessment = assess_review(raw_review, kind)
             except Exception as exc:
                 raise PipelineExecutionError('Artifact review unavailable: '+type(exc).__name__,
-                    stage='code_review', failure_family='review_infrastructure') from exc
+                    stage='code_review', failure_family='review_infrastructure',
+                    artifacts=candidate_history + [
+                        {'artifact_type':'failed_interactive_candidate','content_type':'text/html',
+                         'payload':code,'metadata':{'attempt':attempt,'stage':'code_review'}},
+                        {'artifact_type':'interactive_validation_report','content_type':'application/json',
+                         'payload':report,'metadata':{'attempt':attempt,'stage':'code_review'}},
+                    ]) from exc
             if not assessment['passed']:
                 report['issues'] += assessment['issues']
+        report['generationAttempts']={'fullGenerationCalls':full_generations,'patchCalls':patch_calls,'qaAttempts':qa_attempts}
+        candidate_history.append({'artifact_type':'interactive_candidate','content_type':'text/html',
+            'payload':code,'metadata':{'attempt':attempt,'operation':'patch' if local_repair else 'full_generation',
+                                     'runtimePassed':report['passed'],'reviewPassed':bool(assessment and assessment['passed'])}})
         if report['passed'] and assessment and assessment['passed']:
             common = dict(html_code=code,game_spec=request.source_spec,generation_time_ms=int((time.time()-started)*1000),
                 qa_retries=attempt-1,pipeline_version='v2',runtime_profile='interactive_experience',runtime_qa_report=report,
@@ -239,7 +199,8 @@ async def run_interactive(request, progress_cb=None):
             if iterate: return IterateResponse(**common, changes=[feedback],iteration_type='element_change')
             return RunPipelineResponse(**common, game_id=request.game_id, strategy='llm_interactive',qa_passed=True,code_size_bytes=len(code.encode()))
         issues=report['issues']
-        prompt += '\n\n上一次候选代码：\n'+code
+        # Only one current candidate is sent to the repair model. Accumulating
+        # previous complete documents increases cost and encourages regressions.
         if progress_cb: progress_cb('logic_generate',66,'正在修复桌面交互检查发现的问题',{'attempt':attempt,'issues':issues})
     raise PipelineExecutionError('Desktop interaction validation failed: '+'; '.join(issues),
         stage='code_review' if assessment and not assessment['passed'] else 'runtime_simulation_qa',
@@ -247,7 +208,7 @@ async def run_interactive(request, progress_cb=None):
         # Use the existing author-scoped artifact channel, not progress messages.
         # Without the rejected candidate a failed desktop run cannot be replayed
         # locally, forcing another paid generation just to diagnose the failure.
-        artifacts=[
+        artifacts=candidate_history + [
             {'artifact_type':'failed_interactive_candidate','content_type':'text/html',
              'payload':code,'metadata':{'attempt':attempt,'runtimeProfile':'interactive_experience'}},
             {'artifact_type':'interactive_validation_report','content_type':'application/json',

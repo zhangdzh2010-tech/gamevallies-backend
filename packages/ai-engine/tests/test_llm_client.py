@@ -81,6 +81,31 @@ def test_adaptive_token_budget_is_disabled_for_full_document_generation_steps():
     assert _adaptive_token_budget_enabled_for_step("intent_parse") is True
 
 
+def test_unconfigured_provider_limit_preserves_explicit_review_budget():
+    route = SimpleNamespace(max_tokens=None)
+    assert llm_client_module._resolve_gateway_output_limit(
+        route, requested_max_tokens=2048, response_size_hint="small",
+    ) == (2048, 2048, "caller_fallback")
+    assert llm_client_module._resolve_gateway_output_limit(
+        SimpleNamespace(max_tokens=1024), requested_max_tokens=2048,
+        response_size_hint="medium_structured",
+    ) == (1024, 2048, "caller_capped_by_gateway")
+
+
+def test_review_retry_starts_with_caller_budget_when_gateway_has_no_limit():
+    client = LLMClient()
+    with patch.object(client, 'is_enabled', return_value=True), patch.object(
+        llm_client_module.gateway, 'resolve', return_value=SimpleNamespace(max_tokens=None)
+    ), patch.object(client, 'complete', new=AsyncMock(return_value='{}')) as call, patch.object(
+        llm_client_module, '_adaptive_token_budget_enabled_for_step', return_value=False
+    ):
+        asyncio.run(client.complete_with_truncation_retry(
+            messages=[{'role':'user','content':'review'}], max_tokens=2048,
+            step_key='code_review', response_size_hint='small',
+        ))
+    assert call.call_args.kwargs['max_tokens'] == 2048
+
+
 def test_build_anthropic_base_url_strips_openai_style_suffixes():
     assert _build_anthropic_base_url("https://api.gptsapi.net/v1") == "https://api.gptsapi.net"
     assert _build_anthropic_base_url("https://api.gptsapi.net/v1/messages") == "https://api.gptsapi.net"
