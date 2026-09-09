@@ -18,7 +18,6 @@ except Exception:  # pragma: no cover
         return None
 
 from .section_patch import (
-    PATCH_SECTION_BODY,
     PATCH_SECTION_SCRIPT,
     PATCH_SECTION_STYLE,
     apply_section_patches,
@@ -332,7 +331,7 @@ class PipelineV2QualityPolicyMixin:
             lines.append(
                 "- Improve gameplay payoff and visual finish together; a technically valid prototype is not enough to pass."
             )
-        for issue in (review.issues or [])[:4]:
+        for issue in (review.issues or [])[:10]:
             normalized_issue = str(issue or "").strip()
             if normalized_issue:
                 lines.append(f"- Reviewer issue to address: {normalized_issue}")
@@ -384,6 +383,26 @@ class PipelineV2QualityPolicyMixin:
 
 
     @classmethod
+    def _quality_patch_regressed(cls, spec: GameSpec, review: LLMReviewResult,
+                                 quality: Any, outcome: _QualityGatePatchOutcome) -> bool:
+        if not outcome.review.ran:
+            return True
+        for field in ("is_complete_game", "has_real_gameplay", "difficulty_balanced"):
+            if getattr(review, field) and not getattr(outcome.review, field):
+                return True
+        thresholds = cls._quality_gate_thresholds(spec)
+        # Compare deficits, not bonus points above the gate. Fixing a failing
+        # dimension may trade excess polish, but may not introduce a new miss.
+        for field, threshold in (
+            ("fun_score", thresholds["fun_score"]),
+            ("visual_polish_score", thresholds["visual_polish_score"]),
+            ("character_quality_score", cls._quality_patch_character_threshold(spec)),
+        ):
+            if min(getattr(outcome.review, field), threshold) + 1e-6 < min(getattr(review, field), threshold):
+                return True
+        return min(outcome.quality.final_score, thresholds["final_score"]) + 1e-6 < min(quality.final_score, thresholds["final_score"])
+
+    @classmethod
     def _quality_patch_allowed_sections(
         cls,
         spec: GameSpec,
@@ -423,11 +442,11 @@ class PipelineV2QualityPolicyMixin:
         review: LLMReviewResult,
         quality: Any,
         quality_gate_errors: list[str],
-        previous_runtime_qa: Any,
         progress_cb: ProgressCallback,
         allow_runtime_qa_unavailable: bool,
+        patch_attempt: int = 1,
+        max_patch_attempts: int = 1,
     ) -> _QualityGatePatchOutcome:
-        patch_attempt = 1
         allowed_sections = self._quality_patch_allowed_sections(spec, review)
         self._notify(
             progress_cb,
@@ -440,8 +459,8 @@ class PipelineV2QualityPolicyMixin:
                 "runtimeProfile": runtime_contract.runtime_profile,
                 "allowedSections": list(allowed_sections),
                 "patchAttempt": patch_attempt,
-                "maxPatchAttempts": 1,
-                "reviewIssues": list(review.issues or [])[:6],
+                "maxPatchAttempts": max_patch_attempts,
+                "reviewIssues": list(review.issues or [])[:10],
                 "qualityGateErrors": quality_gate_errors[:6],
             },
         )
@@ -464,6 +483,10 @@ class PipelineV2QualityPolicyMixin:
                     build_patch_protocol(allowed_sections, task_label="quality gate repair", strict=True),
                     self._build_review_quality_guidance(spec, review, quality, quality_gate_errors),
                     "ORIGINAL USER REQUIREMENTS (preserve):\n" + str(spec.source_description or ""),
+                    "REPAIR DISCIPLINE: Preserve working behavior and composition. Fix concrete defects before optional polish. "
+                    "Prefer small replace_exact edits using a unique complete function or surrounding block. "
+                    "Do not rewrite the whole script merely to add feedback. Check every reported defect against the source; "
+                    "retain fixes from previous rounds, including timing, pause, coordinates and restart.",
                     "UNCHANGED BODY STRUCTURE (read-only; reuse these element IDs, do not invent missing controls):\n" + body_context,
                     build_section_context(normalized_code, allowed_sections),
                 ]
@@ -523,34 +546,33 @@ class PipelineV2QualityPolicyMixin:
             if validation_errors:
                 raise RuntimeError("patch_validation_failed:" + ",".join(validation_errors))
 
-            failure_stage = "static_qa"
-            static_check = self.qa_pipeline.check(candidate)
-            if not static_check.passed:
+            failure_stage = "contract_qa"
+            contract_errors = self._validate_contract_bundle(candidate, runtime_contract)
+            if contract_errors:
                 raise RuntimeError(
                     "patch_static_qa_failed:"
-                    + "; ".join(error.message for error in static_check.errors[:3])
+                    + "; ".join(error.message for error in contract_errors[:3])
                 )
 
-            runtime_qa_reran = False
-            runtime_retries = 0
-            qa_warnings: list[dict[str, Any]] = []
-            runtime_qa = previous_runtime_qa
-            if touched_sections & {PATCH_SECTION_SCRIPT, PATCH_SECTION_BODY}:
-                # SCRIPT/BODY changes can alter behavior; STYLE-only patches
-                # keep the previous runtime QA verdict.
-                failure_stage = "runtime_qa"
-                candidate, runtime_qa, runtime_retries, qa_warnings = await self._run_runtime_qa_loop(
-                    code=candidate,
-                    runtime_contract=runtime_contract,
-                    progress_cb=progress_cb,
-                    game_id=request.game_id,
-                    user_id=request.user_id,
-                    allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
-                    tier=getattr(getattr(spec, "generation_tier", None), "value", None)
-                        or str(getattr(spec, "generation_tier", "") or ""),
-                    operation="create",
-                )
-                runtime_qa_reran = True
+            # CSS can hide controls or intercept clicks, so every changed
+            # document needs runtime QA, including STYLE-only patches.
+            failure_stage = "runtime_qa"
+            candidate, runtime_qa, runtime_retries, qa_warnings = await self._run_runtime_qa_loop(
+                code=candidate,
+                runtime_contract=runtime_contract,
+                progress_cb=progress_cb,
+                game_id=request.game_id,
+                user_id=request.user_id,
+                allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
+                tier=getattr(getattr(spec, "generation_tier", None), "value", None)
+                    or str(getattr(spec, "generation_tier", "") or ""),
+                operation="create",
+            )
+            # Runtime QA can repair code. Validate and score that exact output.
+            contract_errors = self._validate_contract_bundle(candidate, runtime_contract)
+            if contract_errors:
+                raise RuntimeError("patch_static_qa_failed:" + "; ".join(error.message for error in contract_errors[:3]))
+            static_check = self.qa_pipeline.check(candidate)
 
             failure_stage = "review"
             patched_review = await self.code_reviewer.review(candidate, user_requirements=spec.source_description or "")
@@ -574,19 +596,9 @@ class PipelineV2QualityPolicyMixin:
                 patched_quality,
                 review_required=self._is_structured_review_required(spec),
             )
-            if remaining_errors:
-                raise PipelineExecutionError(
-                    "Patched candidate failed quality gate: " + "; ".join(remaining_errors[:3])
-                    + " Review issues: " + "; ".join(patched_review.issues[:6]),
-                    stage="code_review", failure_family="quality_gate",
-                    artifacts=[
-                        self._build_text_artifact(artifact_type="failed_quality_candidate", payload=candidate,
-                            metadata={"stage": "code_review"}),
-                        self._build_json_artifact(artifact_type="quality_review_report",
-                            payload={"issues": patched_review.issues, "gateErrors": remaining_errors},
-                            metadata={"stage": "code_review"}),
-                    ],
-                )
+            if not patched_review.ran:
+                remaining_errors.append("Repair must receive a structured review before it can replace the previous candidate.")
+            await self._remember_code(candidate, label=f"quality_patch_candidate_{patch_attempt}")
         except Exception as exc:  # noqa: BLE001 - any failure falls back to regeneration
             # Provider exceptions may contain request credentials; expose only
             # our known validation failures, never raw provider response bodies.
@@ -626,12 +638,12 @@ class PipelineV2QualityPolicyMixin:
             ) from exc
 
         logger.info(
-            "Quality-gate patch repair for game %s passed the quality gate (sections=%s)",
+            "Quality-gate patch candidate for game %s assessed (sections=%s)",
             request.game_id,
             ",".join(sorted(touched_sections)),
         )
         _p2_emit(
-            "quality_gate_patch_success",
+            "quality_gate_patch_assessed" if remaining_errors else "quality_gate_patch_success",
             tier=getattr(getattr(spec, "generation_tier", None), "value", None),
             game_type=getattr(spec, "game_type", None),
             sections=",".join(sorted(touched_sections)),
@@ -641,12 +653,15 @@ class PipelineV2QualityPolicyMixin:
             progress_cb,
             "code_review",
             96,
-            "Targeted quality fixes passed the quality gate",
+            "Targeted quality fixes need another pass" if remaining_errors else "Targeted quality fixes passed the quality gate",
             {
                 "gameId": request.game_id,
                 "userId": request.user_id,
                 "runtimeProfile": runtime_contract.runtime_profile,
                 "patchedSections": sorted(touched_sections),
+                "patchAttempt": patch_attempt,
+                "qualityGateErrors": remaining_errors,
+                "reviewIssues": patched_review.issues,
             },
         )
         return _QualityGatePatchOutcome(
@@ -654,9 +669,9 @@ class PipelineV2QualityPolicyMixin:
             review=patched_review,
             quality=patched_quality,
             runtime_qa=runtime_qa,
-            runtime_qa_reran=runtime_qa_reran,
             runtime_retries=runtime_retries,
             qa_warnings=qa_warnings,
+            gate_errors=remaining_errors,
         )
 
 

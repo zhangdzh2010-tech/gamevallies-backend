@@ -156,6 +156,7 @@ def _run_create_with_mocks(
     patch_repair_enabled=True,
     progress_cb=None,
     runtime_loop_error=None,
+    contract_side_effect=None,
 ):
     """Drive _run_create_impl with the standard heavy-mock harness.
 
@@ -188,6 +189,8 @@ def _run_create_with_mocks(
             patch("src.engine.pipeline_v2_runner.task_memory.append_decision", new=AsyncMock())
         )
         stack.enter_context(patch.object(runner.pre_gen_validator, "validate", return_value=[]))
+        mock_contract = stack.enter_context(patch.object(runner, "_validate_contract_bundle",
+            return_value=[], side_effect=contract_side_effect))
         mock_generate = stack.enter_context(
             patch.object(runner, "_generate_create_code", new=AsyncMock(side_effect=generate_side_effect))
         )
@@ -236,6 +239,7 @@ def _run_create_with_mocks(
         generate=mock_generate,
         patch_text=mock_patch_text,
         runtime_loop=mock_runtime_loop,
+        contract=mock_contract,
     )
 
 
@@ -515,3 +519,88 @@ def test_design_keeps_pause_distinct_from_terminal_and_honors_mouse_move():
     assert gdd.state_machine["transitions"]["paused"] == "playing"
     assert gdd.input_map["pointermove"] == "primary_move"
     assert "keydown" in gdd.input_map
+
+
+def test_second_repair_keeps_first_fix_and_uses_fresh_review():
+    first_review = _near_miss_review(issues=["movement needs elapsed seconds"])
+    second_review = _near_miss_review(fun_score=6.5, visual_polish_score=6.2,
+        character_quality_score=6.2, issues=["pause must freeze the countdown"])
+    second_patch = json.dumps({"patches": [{"section": "SCRIPT", "operation": "replace_exact",
+        "search": "// PATCHED_QUALITY_FIX", "content": "// PATCHED_QUALITY_FIX\n// PAUSE_FIXED"}]})
+    response, mocks = _run_create_with_mocks(
+        generate_side_effect=[(_generated(BASE_CODE, "provider-a"), [])],
+        flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])],
+        review_side_effect=[first_review, second_review, _passing_review()],
+        compute_side_effect=[_quality(5.9), _quality(6.4), _quality(7.1)],
+        patch_text_side_effect=[PATCH_RESPONSE_TEXT, second_patch],
+    )
+    assert mocks.generate.await_count == 1
+    assert mocks.patch_text.await_count == 2
+    assert mocks.runtime_loop.await_count == 2
+    assert mocks.contract.call_count == 4  # before and after each runtime validation
+    prompt = mocks.patch_text.await_args.kwargs["prompt"]
+    assert "// PATCHED_QUALITY_FIX" in prompt
+    assert "pause must freeze the countdown" in prompt
+    assert "movement needs elapsed seconds" not in prompt
+    assert "// PAUSE_FIXED" in response.html_code
+
+
+def test_regressing_patch_never_replaces_the_next_repair_base():
+    rejected = json.dumps({"patches": [{"section": "SCRIPT", "operation": "replace_section",
+        "content": "// REGRESSED_CANDIDATE\n" + BASE_SCRIPT}]})
+    response, mocks = _run_create_with_mocks(
+        generate_side_effect=[(_generated(BASE_CODE, "provider-a"), [])],
+        flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])],
+        review_side_effect=[_near_miss_review(), _near_miss_review(has_real_gameplay=False), _passing_review()],
+        compute_side_effect=[_quality(5.9), _quality(5.0), _quality(7.1)],
+        patch_text_side_effect=[rejected, PATCH_RESPONSE_TEXT],
+    )
+    assert "REGRESSED_CANDIDATE" not in mocks.patch_text.await_args.kwargs["prompt"]
+    assert "discarded" in mocks.patch_text.await_args.kwargs["prompt"]
+    assert "REGRESSED_CANDIDATE" not in response.html_code
+    assert mocks.generate.await_count == 1
+
+
+def test_exhausted_quality_repairs_preserve_candidate_without_full_regeneration():
+    import pytest
+    from src.engine.pipeline_errors import PipelineExecutionError
+    with pytest.raises(PipelineExecutionError) as caught:
+        _run_create_with_mocks(
+            generate_side_effect=[(_generated(BASE_CODE, "provider-a"), [])],
+            flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])],
+            review_side_effect=[_near_miss_review()] * 3,
+            compute_side_effect=[_quality(5.9)] * 3,
+        )
+    failure = caught.value
+    assert failure.failure_family == "quality_repair_exhausted"
+    assert "PATCHED_QUALITY_FIX" in failure.artifacts[0]["payload"]
+    assert failure.artifacts[1]["payload"]["patchAttempts"] == 2
+    assert failure.artifacts[1]["payload"]["fun_score"] == 6.0
+
+
+def test_style_patch_also_runs_runtime_validation():
+    style_patch = json.dumps({"patches": [{"section": "STYLE", "operation": "replace_section",
+        "content": "body{margin:0;background:linear-gradient(#111,#445);}"}]})
+    response, mocks = _run_create_with_mocks(
+        generate_side_effect=[(_generated(BASE_CODE, "provider-a"), [])],
+        flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])],
+        review_side_effect=[_near_miss_review(), _passing_review()],
+        compute_side_effect=[_quality(5.9), _quality(7.1)], patch_text_return=style_patch,
+    )
+    assert mocks.runtime_loop.await_count == 1
+    assert mocks.contract.call_count == 2
+    assert "linear-gradient" in response.html_code
+
+
+def test_contract_regression_after_runtime_repair_cannot_pass():
+    from src.api.models import QACheckError
+    response, mocks = _run_create_with_mocks(
+        generate_side_effect=[(_generated(BASE_CODE, "provider-a"), []), (_generated(BASE_CODE, "provider-b"), [])],
+        flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])] * 2,
+        review_side_effect=[_near_miss_review(), _passing_review()],
+        compute_side_effect=[_quality(5.9), _quality(7.1)],
+        contract_side_effect=[[], [QACheckError(type="contract_input", message="keyboard handler removed", severity="error")]],
+    )
+    assert mocks.runtime_loop.await_count == 1
+    assert mocks.generate.await_count == 2
+    assert "keyboard handler removed" in mocks.generate.await_args.kwargs["generation_guidance"]

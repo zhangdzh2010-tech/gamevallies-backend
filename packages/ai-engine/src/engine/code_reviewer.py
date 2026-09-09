@@ -51,6 +51,20 @@ class CodeReviewer:
         code_preview = _build_code_preview(html_code)
         prompt = safe_format_prompt(require_prompt("prompt.code_review_template"), code_preview=code_preview)
         system = require_prompt("prompt.code_review_system")
+        system += (
+            "\nAUTHORITATIVE SCORING RUBRIC (supersedes generic premium-mobile examples in the template): "
+            "Assess the supplied complete source against its original brief. A focused, intentionally simple game "
+            "can earn 7-8 with a complete requested loop, responsive controls, readable coherent composition "
+            "and working feedback; extra mechanics or expensive effects are not prerequisites. "
+            "Scores of 5-6 mean identifiable implementation or presentation defects; 9-10 require exceptional execution. "
+            "Do not award points merely because comments claim a feature exists. Trace the executed paths. "
+            "Check elapsed-time movement, countdown and pause, single coordinate conversion, button hit regions "
+            "and full restart reset. Missing required start/pause/resume/restart behavior means is_complete_game=false. "
+            "Do not penalize absent sound, haptics, idle animation or transition effects unless the brief requires them "
+            "or their absence causes a concrete usability defect. issues must list code-supported defects with the "
+            "relevant function/expression and a feasible local correction, ordered by required behavior first. "
+            "Exclude optional enhancements from issues and score deductions. Do not claim to have seen rendered pixels."
+        )
         if user_requirements:
             system += (
                 "\nREQUIREMENT-SCOPED REVIEW: Evaluate the target platform and requested scope in ORIGINAL USER REQUIREMENTS. "
