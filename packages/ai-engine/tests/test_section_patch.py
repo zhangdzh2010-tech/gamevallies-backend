@@ -229,3 +229,16 @@ def test_strict_contract_preserves_literal_markdown_inside_javascript():
         "operation": "replace_section", "content": script}]}), allowed_sections=["SCRIPT"], strict=True)
     assert patches[0].content == script
     assert document is None
+
+
+def test_correction_protocol_cannot_repeat_an_ambiguous_search():
+    import json
+    import pytest
+    from src.engine.section_patch import build_patch_protocol, parse_patch_response
+    prompt = build_patch_protocol(['SCRIPT'], task_label='correction', strict=True, replace_sections_only=True)
+    assert 'replace_exact' not in prompt
+    assert 'replace_block' not in prompt
+    with pytest.raises(ValueError, match='complete_section_required'):
+        parse_patch_response(json.dumps({'patches':[{'section':'SCRIPT','operation':'replace_exact','search':'ctx.restore();','content':'ctx.restore();drawGlow();'}]}), allowed_sections=['SCRIPT'], strict=True, replace_sections_only=True)
+    patches, _ = parse_patch_response(json.dumps({'patches':[{'section':'SCRIPT','operation':'replace_section','content':'function draw(){ctx.restore();}'}]}), allowed_sections=['SCRIPT'], strict=True, replace_sections_only=True)
+    assert len(patches) == 1

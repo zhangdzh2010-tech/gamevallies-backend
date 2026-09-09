@@ -427,6 +427,7 @@ def build_patch_protocol(
     task_label: str,
     preferred_targets: Optional[Sequence[str]] = None,
     strict: bool = False,
+    replace_sections_only: bool = False,
 ) -> str:
     section_list = ", ".join(allowed_sections)
     normalized_preferred_targets: List[str] = []
@@ -449,6 +450,16 @@ def build_patch_protocol(
         "- BODY content must be raw HTML inside the existing <body> block, without <body> tags.",
         "- SCRIPT content must be raw JavaScript inside the main inline <script> block, without <script> tags.",
     ]
+    if replace_sections_only:
+        # A rejected exact search cannot be repaired by reusing a protocol that
+        # still prefers exact searches. The correction has one operation only.
+        lines = [line for line in lines if "replace_exact" not in line]
+        lines.extend([
+            "- The ONLY allowed operation is replace_section. Return at most one complete replacement per changed section.",
+            "- Include every existing initialization, input handler and rendering function; modify only the necessary statements within that full source.",
+            "- No anchors, search fields, fragments or full HTML documents. Return JSON only.",
+        ])
+        return "\n".join(lines)
     if normalized_preferred_targets:
         lines.append(f"- Preferred patch targets: {', '.join(normalized_preferred_targets)}.")
     if PATCH_SECTION_SCRIPT in allowed_sections:
@@ -589,6 +600,7 @@ def parse_patch_response(
     *,
     allowed_sections: Sequence[str],
     strict: bool = False,
+    replace_sections_only: bool = False,
 ) -> tuple[Optional[List[SectionPatch]], Optional[str]]:
     if strict:
         # Production quality repair has one wire format. Never reinterpret
@@ -611,6 +623,8 @@ def parse_patch_response(
             operation = item.get("operation")
             if section not in allowed_sections or operation not in {"replace_section", "replace_exact", "replace_block"}:
                 raise ValueError("patch_validation_failed:invalid_target_or_operation")
+            if replace_sections_only and (operation != "replace_section" or anchor or item.get("anchor") or item.get("search")):
+                raise ValueError("patch_validation_failed:complete_section_required")
             if not isinstance(item.get("content"), str):
                 raise ValueError("patch_validation_failed:invalid_content")
             search = item.get("search")

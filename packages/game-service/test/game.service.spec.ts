@@ -647,22 +647,14 @@ describe('GameService', () => {
     expect(mockedAxios.post).toHaveBeenCalledTimes(1);
   });
 
-  it('biases classroom and quiz prompts toward the grid puzzle runtime profile', () => {
-    expect(
-      (service as any).inferRuntimeProfileHint(
-        '请设计一个课堂小游戏，包含3道配套练习题，帮助学生巩固浮力知识点',
-        '浮力的故事',
-      ),
-    ).toBe('puzzle_grid');
-  });
-
-  it('routes quiz-show showcase prompts toward tap challenge runtime profiles', () => {
-    expect(
-      (service as any).inferRuntimeProfileHint(
-        '做一个历史知识闯关小游戏，像节目答题秀一样有节奏感，并且答对后有连击奖励和主持人播报',
-        '历史答题舞台秀',
-      ),
-    ).toBe('tap_challenge_combo');
+  it('leaves automatic runtime selection to the AI engine', async () => {
+    const snapshot = await (service as any).buildPromptBundleSnapshot('create', undefined, 'standard');
+    const contract = await (service as any).buildDefaultRuntimeContract('create', undefined, 'landscape', 'standard');
+    expect(snapshot.layers.profile_few_shot).toBeUndefined();
+    expect(runtimeProfileService.resolveRuntimeProfile).toHaveBeenCalledWith(undefined);
+    expect(contract.metadata.profile_selection).toBe('auto');
+    expect(contract.metadata.source).toBe('game-service');
+    expect(contract.canvas.orientation).toBe('landscape_first');
   });
 
   it('prefers persisted upstream base URLs when fetching upstream snapshots', async () => {
@@ -1096,7 +1088,7 @@ describe('GameService', () => {
       pipelineVersion: 'v2',
       promptBundleId: 'runtime-v2-default',
       promptBundleVersion: 1,
-      runtimeProfile: 'puzzle_grid',
+      runtimeProfile: 'casual_arcade',
       contractVersion: '1.0',
     }));
 
@@ -1729,11 +1721,12 @@ describe('GameService', () => {
         prompt_bundle_snapshot: expect.objectContaining({
           bundle_id: 'runtime-v2-default',
           layers: expect.objectContaining({
-            profile_few_shot: 'casual_lane',
+            source: 'game-service',
           }),
         }),
         runtime_contract: expect.objectContaining({
-          runtime_profile: 'casual_lane',
+          runtime_profile: 'casual_arcade',
+          metadata: expect.objectContaining({ profile_selection: 'auto' }),
           canvas: expect.objectContaining({
             orientation: 'landscape_first',
           }),
@@ -4681,4 +4674,3 @@ describe('GameService', () => {
   });
 
 });
-

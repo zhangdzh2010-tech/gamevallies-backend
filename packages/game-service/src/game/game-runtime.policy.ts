@@ -24,39 +24,6 @@ export function resolvePipelineVersion(): PipelineVersion {
 }
 
 
-export function inferRuntimeProfileHint(...inputs: Array<string | null | undefined>): string | undefined {
-  const text = inputs
-    .map((value) => String(value || '').trim().toLowerCase())
-    .filter(Boolean)
-    .join(' ');
-
-  if (!text) {
-    return undefined;
-  }
-
-  if (/(quiz show|game show|trivia show|who wants to be a millionaire|主持人|答题秀|答题节目|节目答题|综艺答题|综艺节目|舞台秀|舞台答题|连击|连胜|节奏感|演出效果|buzzer|streak|combo|host)/.test(text)) {
-    return /(连击|连胜|streak|combo)/.test(text)
-      ? 'tap_challenge_combo'
-      : 'tap_challenge_timing';
-  }
-  if (/(classroom|teacher|lesson|quiz|worksheet|practice question|practice quiz|learning game|teaching|knowledge point|课堂|教学|老师|练习题|知识点|问答|测验|小测|学习游戏|教学游戏)/.test(text)) {
-    return 'puzzle_grid';
-  }
-  if (/(runner|race|racing|lane|endless runner|跑酷|赛道|lane runner)/.test(text)) {
-    return 'casual_lane';
-  }
-  if (/(puzzle|grid|tile|match|merge|circuit|wire|battery|bulb|switch|connect|drag|assemble|拼图|消除|方块|电路|导线|电池|灯泡|开关|连接|拖拽|组装)/.test(text)) {
-    return 'puzzle_grid';
-  }
-  if (/(shooter|shoot|top-down|top down|action|射击|飞船|弹幕|俯视|动作)/.test(text)) {
-    return 'casual_action';
-  }
-  if (/(rhythm|timing|beat|music|节奏|音游|点按)/.test(text)) {
-    return 'tap_challenge';
-  }
-  return undefined;
-}
-
 
 export function normalizeRuntimeContractSchema(
   profileId: string,
@@ -312,25 +279,6 @@ export function applyRequestedCreateOrientation(
   };
 }
 
-
-export function resolveRuntimeHintGameType(
-  sourceSpec?: Record<string, unknown> | null,
-  game?: { gameType?: string | null } | null,
-): string | null {
-  if (
-    sourceSpec
-    && typeof sourceSpec.game_type === 'string'
-    && sourceSpec.game_type.trim()
-  ) {
-    return sourceSpec.game_type.trim();
-  }
-
-  if (typeof game?.gameType === 'string' && game.gameType.trim()) {
-    return game.gameType.trim();
-  }
-
-  return null;
-}
 
 
 export function normalizeAiEngineBaseUrl(value?: string | null): string {

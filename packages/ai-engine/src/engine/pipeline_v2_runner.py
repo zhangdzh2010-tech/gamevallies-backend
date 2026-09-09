@@ -379,7 +379,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
         stage_context["stage"] = "runtime_profile_select"
         runtime_profile = self._select_runtime_profile(
             spec,
-            request.runtime_contract.runtime_profile,
+            self._requested_runtime_profile(request.runtime_contract),
             variation_seed=request.game_id,
         )
         await task_memory.append_decision(
@@ -854,7 +854,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
         stage_context["stage"] = "runtime_profile_select"
         runtime_profile = self._select_runtime_profile(
             spec,
-            request.runtime_contract.runtime_profile,
+            self._requested_runtime_profile(request.runtime_contract),
             variation_seed=request.game_id,
         )
         await task_memory.append_decision(
@@ -1212,6 +1212,16 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
             failure_family="spec_build",
             artifacts=getattr(last_exc, "artifacts", None),
         ) from last_exc
+
+    @staticmethod
+    def _requested_runtime_profile(contract: GameRuntimeContract) -> Optional[str]:
+        # Game-service contracts are automatically assembled defaults/hints,
+        # including snapshots from older queued tasks. They are not user pins.
+        # Only direct callers without that provenance can explicitly pin a profile.
+        if (contract.metadata.get("source") == "game-service"
+                or contract.metadata.get("profile_selection") == "auto"):
+            return None
+        return contract.runtime_profile
 
     def _select_runtime_profile(
         self,

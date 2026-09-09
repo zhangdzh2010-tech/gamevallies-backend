@@ -431,6 +431,8 @@ def test_invalid_patch_reference_gets_one_correction_and_full_qa():
     assert mocks.patch_text.await_count == 2
     assert "PATCH APPLICATION REJECTED" in mocks.patch_text.await_args.kwargs["prompt"]
     assert "ORIGINAL" in mocks.patch_text.await_args.kwargs["prompt"]
+    assert "The ONLY allowed operation is replace_section" in mocks.patch_text.await_args.kwargs["prompt"]
+    assert "Prefer surgical edits" not in mocks.patch_text.await_args.kwargs["prompt"]
     assert mocks.generate.await_count == 1
     assert mocks.runtime_loop.await_count == 1
     assert "PATCHED_QUALITY_FIX" in response.html_code
