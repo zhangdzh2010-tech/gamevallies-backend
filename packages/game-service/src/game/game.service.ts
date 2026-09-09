@@ -340,9 +340,6 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     return this.runtimeProfileService.resolveActivePromptBundleIdentity();
   }
 
-  private inferRuntimeProfileHint(...inputs: Array<string | null | undefined>): string | undefined {
-    return gameRuntimePolicy.inferRuntimeProfileHint(...inputs);
-  }
   private async resolveRuntimeProfile(profileHint?: string): Promise<{
     id: string;
     contractSchema?: Prisma.JsonValue | null;
@@ -394,6 +391,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         ...((normalizedContract.metadata as Record<string, unknown> | undefined) ?? {}),
         entrypoint,
         source: 'game-service',
+        profile_selection: 'auto',
         generation_tier: generationTier,
       },
     }, requestedOrientation);
@@ -509,12 +507,6 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   }
   private extractBundleGameSpec(bundleHistory: any[]): Record<string, unknown> | null {
     return gameGenerationPayload.extractBundleGameSpec(bundleHistory);
-  }
-  private resolveRuntimeHintGameType(
-    sourceSpec?: Record<string, unknown> | null,
-    game?: { gameType?: string | null } | null,
-  ): string | null {
-    return gameRuntimePolicy.resolveRuntimeHintGameType(sourceSpec, game);
   }
   private extractBundleOrientation(bundleHistory: any[]): CreateGameOrientation | undefined {
     return gameGenerationPayload.extractBundleOrientation(bundleHistory);
@@ -2758,15 +2750,10 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       const executionRegion = this.resolveExecutionRegion(dto.regionHint);
       const pipelineVersion = this.resolvePipelineVersion();
       const timeoutS = this.resolveTaskTimeoutForPipelineVersion(dto.timeoutS, pipelineVersion);
-        const runtimeProfileHint = this.inferRuntimeProfileHint(
-          this.resolveRuntimeHintGameType(sourceSpec, null),
-          description,
-          dto.title,
-        );
       // PR-02: parallelize independent bundle-snapshot and runtime-contract builds
       const [promptBundleSnapshot, runtimeContract] = await Promise.all([
-        this.buildPromptBundleSnapshot('create', runtimeProfileHint, requestedGenerationTier),
-        this.buildDefaultRuntimeContract('create', runtimeProfileHint, requestedOrientation, requestedGenerationTier),
+        this.buildPromptBundleSnapshot('create', undefined, requestedGenerationTier),
+        this.buildDefaultRuntimeContract('create', undefined, requestedOrientation, requestedGenerationTier),
       ]);
       const { access, task } = await this.prisma.$transaction(async (tx) => {
         await this.markExpiredSubscriptions(tx, userId);
@@ -4012,19 +3999,14 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       entryMode: options.entryMode,
       sourceSpec: options.sourceSpec,
     });
-    const runtimeProfileHint = this.inferRuntimeProfileHint(
-      this.resolveRuntimeHintGameType(resolvedSourceSpec, null),
-      description,
-      normalizedTitle,
-    );
     // PR-02: parallelize bundle-snapshot and runtime-contract builds for create-path launch
     const [promptBundleSnapshot, runtimeContract] = await Promise.all([
       options.promptBundleSnapshot
         ? Promise.resolve(options.promptBundleSnapshot)
-        : this.buildPromptBundleSnapshot('create', runtimeProfileHint, generationTier),
+        : this.buildPromptBundleSnapshot('create', undefined, generationTier),
       options.runtimeContract
         ? Promise.resolve(options.runtimeContract)
-        : this.buildDefaultRuntimeContract('create', runtimeProfileHint, options.orientation, generationTier),
+        : this.buildDefaultRuntimeContract('create', undefined, options.orientation, generationTier),
     ]);
 
     const handle = await this.requestUpstreamAsyncTask({
@@ -4084,18 +4066,14 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
     const resolvedTimeoutS = this.resolvePipelineTimeout(timeoutS);
     const aiEngineBaseUrls = await this.resolveAiEngineEndpointCandidates(executionRegion);
     const resolvedRegion = this.resolveExecutionRegion(executionRegion);
-    const runtimeProfileHint = this.inferRuntimeProfileHint(
-      this.resolveRuntimeHintGameType(options.sourceSpec, options.game),
-      feedback,
-    );
     // PR-02: parallelize bundle-snapshot and runtime-contract builds for iterate-path launch
     const [promptBundleSnapshot, runtimeContract] = await Promise.all([
       options.promptBundleSnapshot
         ? Promise.resolve(options.promptBundleSnapshot)
-        : this.buildPromptBundleSnapshot('iterate', runtimeProfileHint, generationTier),
+        : this.buildPromptBundleSnapshot('iterate', undefined, generationTier),
       options.runtimeContract
         ? Promise.resolve(options.runtimeContract)
-        : this.buildDefaultRuntimeContract('iterate', runtimeProfileHint, options.orientation, generationTier),
+        : this.buildDefaultRuntimeContract('iterate', undefined, options.orientation, generationTier),
     ]);
 
     if (taskId) {
@@ -5191,18 +5169,16 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       const executionRegion = this.resolveExecutionRegion(dto.regionHint || latestTask?.region);
       const pipelineVersion = this.resolvePipelineVersion();
       const timeoutS = this.resolveTaskTimeoutForPipelineVersion(dto.timeoutS, pipelineVersion);
-      const runtimeHintGameType = this.resolveRuntimeHintGameType(sourceSpec, game);
       // PR-02: parallelize bundle-snapshot and runtime-contract builds for iterate entrypoint
-      const iterateRuntimeProfileHint = this.inferRuntimeProfileHint(runtimeHintGameType, dto.feedback);
       const [promptBundleSnapshot, runtimeContract] = await Promise.all([
         this.buildPromptBundleSnapshot(
           'iterate',
-          iterateRuntimeProfileHint,
+          undefined,
           requestedGenerationTier,
         ),
         this.buildDefaultRuntimeContract(
           'iterate',
-          iterateRuntimeProfileHint,
+          undefined,
           requestedOrientation,
           requestedGenerationTier,
         ),

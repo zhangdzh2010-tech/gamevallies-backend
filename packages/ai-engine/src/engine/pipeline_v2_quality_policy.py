@@ -477,21 +477,20 @@ class PipelineV2QualityPolicyMixin:
         try:
             normalized_code = ensure_structured_section_markers(code)
             body_context = re.sub(r"<script\b[^>]*>[\s\S]*?</script>", "", extract_body_content(normalized_code) or "", flags=re.I)
-            prompt = "\n\n".join(
+            repair_context = "\n\n".join(
                 part
                 for part in [
-                    build_patch_protocol(allowed_sections, task_label="quality gate repair", strict=True),
                     self._build_review_quality_guidance(spec, review, quality, quality_gate_errors),
                     "ORIGINAL USER REQUIREMENTS (preserve):\n" + str(spec.source_description or ""),
                     "REPAIR DISCIPLINE: Preserve working behavior and composition. Fix concrete defects before optional polish. "
-                    "Prefer small replace_exact edits using a unique complete function or surrounding block. "
-                    "Do not rewrite the whole script merely to add feedback. Check every reported defect against the source; "
+                    "Preserve unrelated statements even when returning a complete section. Check every reported defect against the source; "
                     "retain fixes from previous rounds, including timing, pause, coordinates and restart.",
                     "UNCHANGED BODY STRUCTURE (read-only; reuse these element IDs, do not invent missing controls):\n" + body_context,
                     build_section_context(normalized_code, allowed_sections),
                 ]
                 if part
             )
+            prompt = build_patch_protocol(allowed_sections, task_label="quality gate repair", strict=True) + "\n\n" + repair_context
             failure_stage = "provider_request"
             text = await self._request_quality_gate_patch_text(
                 prompt=prompt,
@@ -517,17 +516,20 @@ class PipelineV2QualityPolicyMixin:
                     })
                     failure_stage = "patch_correction_request"
                     text = await self._request_quality_gate_patch_text(
-                        prompt=prompt + "\n\nPATCH APPLICATION REJECTED: " + str(patch_error)[:300]
+                        prompt=build_patch_protocol(allowed_sections, task_label="quality gate repair correction",
+                            strict=True, replace_sections_only=True)
+                        + "\n\n" + repair_context + "\n\nPATCH APPLICATION REJECTED: " + str(patch_error)[:300]
                         + "\nNo edits were applied. Return a corrected JSON batch against the ORIGINAL "
-                        "sections above. Prefer ONE complete replace_section per changed section "
-                        "if exact search cannot be guaranteed. Include all initialization, input "
+                        "sections above. Use ONE complete replace_section per changed section. "
+                        "Include all initialization, input "
                         "handlers and rendering; never replace the whole script with a fragment.",
                         spec=spec,
                         prompt_bundle_snapshot=request.prompt_bundle_snapshot.model_dump(),
                     )
                     response_chars = len(text or "")
                     failure_stage = "patch_correction_parse"
-                    patches, _ = parse_patch_response(text, allowed_sections=allowed_sections, strict=True)
+                    patches, _ = parse_patch_response(text, allowed_sections=allowed_sections, strict=True,
+                        replace_sections_only=True)
                     patch_count = len(patches or [])
                     if not patches:
                         raise RuntimeError("patch_parse_empty")

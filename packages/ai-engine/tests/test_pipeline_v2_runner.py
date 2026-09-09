@@ -3095,3 +3095,17 @@ def test_generic_feedback_words_do_not_route_to_quiz_show():
     spec = GameSpec(game_type="educational", source_description="A history quiz show with combo rewards")
     assert runner._looks_like_quiz_show_runtime_request(spec)
     assert runner._select_runtime_profile(spec, None) == "tap_challenge_combo"
+
+
+def test_legacy_service_hint_cannot_pin_the_wrong_runtime():
+    runner = V2PipelineRunner()
+    spec = GameSpec(game_type="casual", source_description="Move a boat to catch falling stars with combo glow")
+    for metadata in [{"source": "game-service"}, {"profile_selection": "auto"}]:
+        contract = GameRuntimeContract(runtime_profile="tap_challenge_combo", metadata=metadata)
+        hint = runner._requested_runtime_profile(contract)
+        assert hint is None
+        assert not runner._select_runtime_profile(spec, hint).startswith("tap_challenge")
+    explicit = GameRuntimeContract(runtime_profile="tap_challenge_combo")
+    assert runner._requested_runtime_profile(explicit) == "tap_challenge_combo"
+    with patch("src.engine.pipeline_v2_runner._default_runtime_profile_id", return_value="casual_arcade"):
+        assert runner._select_runtime_profile(spec, runner._requested_runtime_profile(explicit)) == "tap_challenge_combo"
