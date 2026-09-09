@@ -28,6 +28,7 @@ import { randomUUID } from "crypto";
 import * as bcrypt from "bcryptjs";
 import axios from "axios";
 import { GameService } from "../game/game.service";
+import { listGatewayModels, saveGatewayModel, listBusinessBindings, saveBusinessBindings } from './llm-business-config';
 import promptCatalog from "../game/catalogs/prompt-catalog.json";
 import promptBundleCatalog from "../game/catalogs/prompt-bundle-catalog.json";
 import runtimeProfileCatalog from "../game/catalogs/runtime-profile-catalog.json";
@@ -4998,7 +4999,7 @@ export class AdminService {
     if (!body?.baseUrl && body.providerType !== "anthropic") {
       throw new BadRequestException("baseUrl is required");
     }
-    if (!body?.model) {
+    if (!body?.model && !body?.connectionOnly) {
       throw new BadRequestException("model is required");
     }
     if (!body?.regionTargetId) {
@@ -5035,8 +5036,26 @@ export class AdminService {
     if (!apiKey) {
       throw new BadRequestException("apiKey is required");
     }
-    const model = String(body.model).trim();
-    const fastModel = body.fastModel ? String(body.fastModel).trim() : null;
+    const model = body.connectionOnly ? existing?.model || '' : String(body.model).trim();
+    const fastModel = body.connectionOnly ? existing?.fastModel || null : body.fastModel ? String(body.fastModel).trim() : null;
+    if (body.connectionOnly) {
+      // Provider editing cannot change legacy model limits/flags while old
+      // routes are still active. New model records own those settings.
+      const legacy = this.normalizeLlmProviderExtraConfig(existing?.extraConfig);
+      body = { ...body, availableModels: legacy.availableModels,
+        contextWindow: legacy.contextWindow, maxTokens: legacy.maxTokens,
+        vendorPreset: legacy.vendorPreset, catalogMode: legacy.modelCatalog.mode,
+        catalogAuthMode: legacy.modelCatalog.authMode, catalogApiUrl: legacy.modelCatalog.apiUrl,
+        priority: body.priority ?? existing?.priority ?? 100,
+        description: body.description ?? existing?.description,
+        capabilityFlags: this.normalizeLlmCapabilityFlags(legacy) };
+      if (existing && (body.enabled === false || regionTarget.executionRegion !== existing.region) &&
+          await this.prisma.llmBusinessBinding.count({ where: { OR: [
+            { primaryModel: { providerId: existing.id } }, { fallbackModel: { providerId: existing.id } },
+          ] } })) {
+        throw new BadRequestException('此服务的模型仍被业务环节使用，请先更换业务模型再停用或移动区域');
+      }
+    }
     let extraConfig = this.buildLlmProviderExtraConfig(body, existing);
     const availableModelSet = new Set(extraConfig.availableModels);
     const mergedAvailableModels = [...extraConfig.availableModels];
@@ -5094,13 +5113,15 @@ export class AdminService {
       },
     });
 
-    await this.refreshLlmGateway(regionTarget.id);
-    return this.presentLlmProvider({
+    let refreshWarning = false;
+    try { refreshWarning = !!(await this.refreshLlmGateway(regionTarget.id)).partialFailure; }
+    catch { refreshWarning = true; }
+    return { ...this.presentLlmProvider({
       ...provider,
       apiKey,
       regionTarget: regionTarget,
       testRecords: [],
-    });
+    }), refreshWarning };
   }
 
   async deleteLlmProvider(id: string) {
@@ -5261,7 +5282,7 @@ export class AdminService {
     );
   }
 
-  async upsertLlmRoute(id: string | undefined, body: any) {
+  async upsertLlmRoute(id: string | undefined, body: any, db: Prisma.TransactionClient | PrismaService = this.prisma, refresh = true) {
     if (!body?.stepKey) {
       throw new BadRequestException("stepKey is required");
     }
@@ -5270,10 +5291,10 @@ export class AdminService {
     }
 
     const [stepLookup, provider] = await Promise.all([
-      this.prisma.llmStepCatalog.findUnique({
+      db.llmStepCatalog.findUnique({
         where: { stepKey: body.stepKey },
       }),
-      this.prisma.llmGatewayProvider.findUnique({
+      db.llmGatewayProvider.findUnique({
         where: { id: body.providerId },
         select: {
           id: true,
@@ -5290,7 +5311,7 @@ export class AdminService {
     ]);
 
     let step = stepLookup;
-    if (!step || step.enabled === false) {
+    if ((!step || step.enabled === false) && refresh) {
       step = await this.ensureLlmStepCatalogEntry(body.stepKey);
     }
     if (!step || step.enabled === false) {
@@ -5316,7 +5337,7 @@ export class AdminService {
       body?.fallbackProviderIds,
     ).filter((providerId) => providerId !== body.providerId);
     const fallbackProviders = fallbackProviderIds.length
-      ? await this.prisma.llmGatewayProvider.findMany({
+      ? await db.llmGatewayProvider.findMany({
           where: { id: { in: fallbackProviderIds } },
           select: {
             id: true,
@@ -5371,7 +5392,7 @@ export class AdminService {
     }
     const routeId = id || randomUUID();
 
-    const route = await this.prisma.llmStepRoute.upsert({
+    const route = await db.llmStepRoute.upsert({
       where: id
         ? { id }
         : {
@@ -5418,7 +5439,7 @@ export class AdminService {
       },
     });
 
-    await this.refreshLlmGateway(route.provider?.regionTargetId || undefined);
+    if (refresh) await this.refreshLlmGateway(route.provider?.regionTargetId || undefined);
     return {
       ...route,
       stepMeta: step,
@@ -5508,6 +5529,46 @@ export class AdminService {
       "No reachable ai-engine endpoint found for the selected provider",
     );
     return response.data;
+  }
+
+  async listGatewayModels() { return listGatewayModels(this.prisma); }
+
+  async saveGatewayModel(id: string | undefined, body: any) {
+    const model = await saveGatewayModel(this.prisma, id, body);
+    let refreshWarning = false;
+    try { refreshWarning = !!(await this.refreshLlmGateway()).partialFailure; } catch { refreshWarning = true; }
+    return { model, refreshWarning };
+  }
+
+  async listBusinessBindings(region: string) {
+    return listBusinessBindings(this.prisma, region, await this.listLlmRoutes(region));
+  }
+
+  async saveBusinessBindings(body: any) {
+    const saved = await saveBusinessBindings(this.prisma, body);
+    let refreshWarning = false;
+    try { refreshWarning = !!(await this.refreshLlmGateway()).partialFailure; } catch { refreshWarning = true; }
+    return { ...saved, refreshWarning };
+  }
+
+  async testGatewayModel(id: string) {
+    const model = await this.prisma.llmGatewayModel.findUnique({ where: { id }, include: { provider: true } });
+    if (!model) throw new NotFoundException('模型不存在');
+    if (!model.enabled || !model.provider.enabled) throw new BadRequestException('模型或服务已停用');
+    const response = await this.postAiEngineAdminWithFailover<any>(
+      model.provider.regionTargetId || undefined, `/api/v1/ai/llm-gateway/models/${id}/test`, {},
+      75000, '所选区域的模型测试服务不可达',
+    );
+    const result = response.data;
+    const currentProvider = await this.prisma.llmGatewayProvider.findUnique({ where: { id: model.providerId }, select: { updatedAt: true } });
+    if (result.modelConfigVersion !== model.configurationVersion || currentProvider?.updatedAt.getTime() !== model.provider.updatedAt.getTime()) {
+      return { ...result, stale: true };
+    }
+    const latestTest = { ...result, providerUpdatedAt: model.provider.updatedAt.toISOString() };
+    const updated = await this.prisma.llmGatewayModel.updateMany({
+      where: { id, configurationVersion: model.configurationVersion }, data: { latestTest },
+    });
+    return { ...latestTest, stale: updated.count !== 1 };
   }
 
   async previewLlmProviderCatalog(body: any) {

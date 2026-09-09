@@ -251,6 +251,30 @@ describe('GenerationTaskService', () => {
       }),
     }));
   });
+  it('preserves upstream evidence in the author task timeline without raw bodies', async () => {
+    prisma.llmCallLog.create.mockResolvedValue({ id: 'log-http' });
+    prisma.generationTask.update.mockResolvedValue({});
+    prisma.generationTaskEvent.create.mockResolvedValue({});
+    const evidence = {
+      source: 'upstream_http_response', httpStatus: 504,
+      observedAt: '2026-09-09T15:45:00Z', bodySha256: 'abc',
+    };
+    await service.persistLlmCallLog({
+      taskId: 'task-1', gameId: 'game-1', userId: 'user-1',
+      stage: 'code_generating', stepKey: 'code_generate.full',
+      success: false, httpStatus: 504, errorCode: 'HTTPStatusError',
+      upstreamRequestId: 'req-123', requestTimeoutS: 1800, configVersion: 123,
+      routeSnapshot: { transportEvidence: evidence },
+      errorBodyExcerpt: 'must not be exposed in the timeline',
+    });
+    const details = prisma.generationTaskEvent.create.mock.calls[0][0].data.details;
+    expect(details).toMatchObject({
+      httpStatus: 504, upstreamRequestId: 'req-123', requestTimeoutS: 1800,
+      configVersion: 123, transportEvidence: evidence,
+    });
+    expect(details).not.toHaveProperty('errorBodyExcerpt');
+  });
+
   it('persists exact token usage on llm call logs', async () => {
     prisma.llmCallLog.create.mockResolvedValue({ id: 'log-usage-1' });
     prisma.generationTask.update.mockResolvedValue({});

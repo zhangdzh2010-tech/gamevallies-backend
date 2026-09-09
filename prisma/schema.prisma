@@ -476,6 +476,7 @@ model LlmGatewayProvider {
   updatedAt        DateTime        @updatedAt @map("updated_at") @db.DateTime(3)
 
   stepRoutes       LlmStepRoute[]
+  models           LlmGatewayModel[]
   llmCallLogs      LlmCallLog[]
   testRecords      LlmGatewayTestRecord[]
   regionTarget     AiEngineRegionTarget? @relation(fields: [regionTargetId], references: [id], onDelete: SetNull)
@@ -484,6 +485,42 @@ model LlmGatewayProvider {
   @@index([providerType, region])
   @@index([regionTargetId])
   @@map("llm_gateway_providers")
+}
+
+model LlmGatewayModel {
+  id                   String @id @default(uuid()) @db.VarChar(36)
+  providerId           String @map("provider_id") @db.VarChar(36)
+  modelId              String @map("model_id") @db.VarChar(128)
+  name                 String @db.VarChar(128)
+  enabled              Boolean @default(true)
+  contextWindow        Int? @map("context_window")
+  maxOutputTokens      Int? @map("max_output_tokens")
+  capabilityFlags      Json @map("capability_flags")
+  configurationVersion Int @default(1) @map("configuration_version")
+  latestTest           Json? @map("latest_test")
+  createdAt            DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt            DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+  provider             LlmGatewayProvider @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  primaryBindings      LlmBusinessBinding[] @relation("PrimaryModel")
+  fallbackBindings     LlmBusinessBinding[] @relation("FallbackModel")
+  @@unique([providerId, modelId], name: "llm_models_provider_model_key")
+  @@map("llm_gateway_models")
+}
+
+model LlmBusinessBinding {
+  id              String @id @default(uuid()) @db.VarChar(36)
+  region          String @db.VarChar(32)
+  stage           String @db.VarChar(32)
+  stepKeys        Json @map("step_keys")
+  primaryModelId  String @map("primary_model_id") @db.VarChar(36)
+  fallbackModelId String? @map("fallback_model_id") @db.VarChar(36)
+  revision        Int @default(1)
+  createdAt       DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+  primaryModel    LlmGatewayModel @relation("PrimaryModel", fields: [primaryModelId], references: [id], onDelete: Restrict)
+  fallbackModel   LlmGatewayModel? @relation("FallbackModel", fields: [fallbackModelId], references: [id], onDelete: Restrict)
+  @@unique([region, stage], name: "llm_business_region_stage_key")
+  @@map("llm_business_bindings")
 }
 
 model LlmStepRoute {

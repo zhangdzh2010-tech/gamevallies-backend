@@ -1460,6 +1460,29 @@
       .llm-advanced-block {
         padding: 0 18px 18px;
       }
+      .llm-simple-settings { padding: 8px 24px 24px; display: grid; gap: 22px; }
+      .llm-simple-settings select { width: 100%; padding: 12px; font-size: 15px; }
+      .llm-simple-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; }
+      .llm-status-bar.is-pending { background: #fffbeb; border-color: #fde68a; color: #92400e; }
+      .llm-config-tabs { display: flex; gap: 8px; margin: 20px 0; flex-wrap: wrap; }
+      .llm-config-tabs button { border: 1px solid #dbe4ee; border-radius: 10px; background: white; padding: 12px 18px; cursor: pointer; color: #475569; font-weight: 600; }
+      .llm-config-tabs button.active { background: #1d4ed8; color: white; border-color: #1d4ed8; }
+      .llm-config-content { min-height: 300px; }
+      .llm-config-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 18px; padding: 24px; }
+      .llm-config-card { padding: 20px; border: 1px solid #dbe4ee; border-radius: 14px; min-width: 0; display: grid; gap: 14px; align-content: start; background: white; }
+      .llm-config-card h4 { margin: 0; font-size: 17px; }
+      .llm-config-card p { margin: 0; }
+      .llm-config-card select { display: block; width: 100%; margin-top: 8px; padding: 10px; border: 1px solid #cbd5e1; border-radius: 8px; background: white; }
+      .llm-config-card summary { cursor: pointer; color: #64748b; font-size: 12px; }
+      .llm-business-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; padding: 24px; }
+      .llm-business-state { font-size: 12px; color: #475569; }
+      .llm-config-footer { padding: 0 24px 24px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+      .llm-config-empty { padding: 40px 24px; color: #64748b; }
+      .llm-endpoint, .llm-test-diagnostics { overflow-wrap: anywhere; white-space: pre-wrap; word-break: break-word; }
+      .llm-test-diagnostics { font-size: 12px; max-height: 280px; overflow: auto; }
+      .llm-test-ok { color: #15803d; } .llm-test-error { color: #b91c1c; }
+      #llm3Sheet input[type=checkbox] { width: auto; }
+      @media (max-width: 1050px) { .llm-business-cards { grid-template-columns: 1fr; } }
       .llm-advanced-block summary {
         cursor: pointer;
         font-size: 13px;
@@ -3317,4 +3340,3 @@
         opacity: 1;
         transition: opacity 0.15s;
       }
-

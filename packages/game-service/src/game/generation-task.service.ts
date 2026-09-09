@@ -1018,6 +1018,10 @@ export class GenerationTaskService {
           totalTokens,
           errorCode: params.errorCode ?? null,
           success: params.success ?? false,
+          upstreamRequestId: params.upstreamRequestId ?? null,
+          configVersion: params.configVersion ?? null,
+          requestTimeoutS: params.requestTimeoutS ?? null,
+          transportEvidence: params.routeSnapshot?.transportEvidence ?? null,
         },
       };
     }

@@ -121,6 +121,7 @@ describe("AdminService", () => {
         upsert: jest.fn(),
         delete: jest.fn(),
       },
+      llmBusinessBinding: { count: jest.fn() },
       llmGatewayTestRecord: {
         findMany: jest.fn(),
       },
@@ -1994,6 +1995,32 @@ describe("AdminService", () => {
       taskId: "task-terminate",
       status: "canceled",
     });
+  });
+
+  it('saves a connection without a model and distinguishes refresh failure from save failure', async () => {
+    prisma.aiEngineRegionTarget.findUnique.mockResolvedValue({ id: 'target', executionRegion: 'cn_shanghai', deployEnabled: true, deployStatus: 'deployed', aiEngineUrl: 'https://ai.test' });
+    prisma.llmGatewayProvider.upsert.mockImplementation(async ({ create }: any) => create);
+    jest.spyOn(service, 'refreshLlmGateway').mockRejectedValue(new Error('unreachable'));
+    const result = await service.upsertLlmProvider(undefined, { connectionOnly: true, name: 'Connection', providerType: 'openai_compatible', baseUrl: 'https://api.test/v1', apiKey: 'fixture-key', regionTargetId: 'target' });
+    expect(prisma.llmGatewayProvider.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ model: '', fastModel: null }) }));
+    expect(result.refreshWarning).toBe(true);
+  });
+
+  it('connection edits preserve legacy models and explicit model constraints', async () => {
+    prisma.aiEngineRegionTarget.findUnique.mockResolvedValue({ id: 'target', executionRegion: 'cn_shanghai', deployEnabled: true, deployStatus: 'deployed', aiEngineUrl: 'https://ai.test' });
+    prisma.llmGatewayProvider.findUnique.mockResolvedValue({ id: 'provider', region: 'cn_shanghai', apiKey: 'fixture-key', model: 'old-main', fastModel: 'old-fast', extraConfig: { contextWindow: 64000, maxTokens: 20000, capabilityFlags: { supports_dialogue: false } } });
+    prisma.llmGatewayProvider.upsert.mockImplementation(async ({ update }: any) => ({ id: 'provider', ...update }));
+    jest.spyOn(service, 'refreshLlmGateway').mockResolvedValue({ partialFailure: false } as any);
+    await service.upsertLlmProvider('provider', { connectionOnly: true, name: 'Renamed', providerType: 'openai_compatible', baseUrl: 'https://api.test/v1', regionTargetId: 'target', model: 'ignored', maxTokens: 1 });
+    expect(prisma.llmGatewayProvider.upsert).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({ model: 'old-main', fastModel: 'old-fast', extraConfig: expect.objectContaining({ contextWindow: 64000, maxTokens: 20000, capabilityFlags: expect.objectContaining({ supports_dialogue: false }) }) }) }));
+  });
+
+  it('refuses to disable a connection used by business bindings', async () => {
+    prisma.aiEngineRegionTarget.findUnique.mockResolvedValue({ id: 'target', executionRegion: 'cn_shanghai', deployEnabled: true, deployStatus: 'deployed', aiEngineUrl: 'https://ai.test' });
+    prisma.llmGatewayProvider.findUnique.mockResolvedValue({ id: 'provider', region: 'cn_shanghai', apiKey: 'fixture-key', model: 'old-main', extraConfig: {} });
+    prisma.llmBusinessBinding.count.mockResolvedValue(1);
+    await expect(service.upsertLlmProvider('provider', { connectionOnly: true, name: 'Connection', providerType: 'openai_compatible', baseUrl: 'https://api.test/v1', regionTargetId: 'target', enabled: false })).rejects.toThrow('仍被业务环节使用');
+    expect(prisma.llmGatewayProvider.upsert).not.toHaveBeenCalled();
   });
 
   it("derives provider region fields from the selected region target", async () => {

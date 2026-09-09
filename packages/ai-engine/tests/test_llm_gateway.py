@@ -1,11 +1,14 @@
 import asyncio
 import os
 import sys
+import httpx
+import pytest
 from unittest.mock import patch
+from unittest.mock import AsyncMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.services.llm_gateway import LLMGateway, ProviderRecord, RouteRecord, llm_request_context
+from src.services.llm_gateway import LLMGateway, ProviderRecord, RouteRecord, llm_request_context, LLMBusinessConfigurationError
 
 
 def _provider(
@@ -63,6 +66,142 @@ def _gateway(*, providers: list[ProviderRecord], routes: list[RouteRecord]) -> L
     gateway._config_version = 123
     gateway._loaded_at = 1e12
     return gateway
+
+
+def test_route_model_override_does_not_leak_to_backup_provider():
+    primary, backup = _provider("primary", "Primary"), _provider("backup", "Backup")
+    route = _route("route", "intent_parse", primary.id)
+    route.model_override = "primary-custom"
+    route.fast_model_override = "primary-custom"
+    gateway = _gateway(providers=[primary, backup], routes=[route])
+    first = gateway._build_resolved_route(provider=primary, route=route, step_key="intent_parse", prefer_fast=True)
+    second = gateway._build_resolved_route(provider=backup, route=route, step_key="intent_parse", prefer_fast=True)
+    assert first.model == "primary-custom"
+    assert second.model == backup.model
+
+
+def test_smoke_test_uses_saved_primary_not_fast_model():
+    provider = _provider("primary", "Primary")
+    gateway = _gateway(providers=[provider], routes=[])
+    with patch.object(gateway, "refresh"), patch.object(gateway, "_persist_test_record"), \
+         patch.object(gateway, "_invoke_test_completion", new=AsyncMock(return_value=("PONG", 200, provider.base_url))) as invoke:
+        result = asyncio.run(gateway.test_provider(provider.id))
+    assert result["model"] == provider.model
+    assert invoke.await_args.kwargs["route"].model != provider.fast_model
+
+
+def test_smoke_failure_keeps_real_http_status_in_record():
+    provider = _provider("primary", "Primary")
+    gateway = _gateway(providers=[provider], routes=[])
+    request = httpx.Request("POST", provider.base_url + "/chat/completions")
+    response = httpx.Response(504, request=request)
+    exc = httpx.HTTPStatusError("timeout", request=request, response=response)
+    with patch.object(gateway, "refresh"), patch.object(gateway, "_persist_test_record") as persist, \
+         patch.object(gateway, "_invoke_test_completion", new=AsyncMock(side_effect=exc)):
+        result = asyncio.run(gateway.test_provider(provider.id))
+    assert result["httpStatus"] == 504
+    assert result["success"] is False
+    assert result["transportEvidence"]["source"] == "upstream_http_response"
+    assert persist.call_args.kwargs["http_status"] == 504
+
+
+def test_smoke_empty_reply_is_not_success():
+    provider = _provider("primary", "Primary")
+    gateway = _gateway(providers=[provider], routes=[])
+    with patch.object(gateway, "refresh"), patch.object(gateway, "_persist_test_record"), \
+         patch.object(gateway, "_invoke_test_completion", new=AsyncMock(return_value=("", 200, provider.base_url))):
+        result = asyncio.run(gateway.test_provider(provider.id))
+    assert result["success"] is False
+
+
+def business_gateway():
+    provider = _provider('shared', 'Shared')
+    gateway = _gateway(providers=[provider], routes=[_route('legacy', 'code_generate.full', provider.id)])
+    gateway._models = {key: dict(id=key, provider_id=provider.id, model_id=name, enabled=True,
+                                configuration_version=3, capability_flags={}, max_output_tokens=20000)
+                       for key, name in [('model-a', 'large-model'), ('model-b', 'backup-model')]}
+    gateway._business_bindings = [dict(id='binding', region='cn_shanghai', stage='generate', revision=2,
+        step_keys=['code_generate.full', 'quality_gate.patch_fix', 'qa_fix.syntax_structural'],
+        primary_model_id='model-a', fallback_model_id='model-b')]
+    return gateway
+
+
+@patch('src.services.llm_gateway.settings.SERVICE_REGION', 'cn_shanghai')
+def test_business_binding_owns_model_and_supports_same_provider_backup():
+    gateway = business_gateway()
+    routes = gateway.resolve_candidates(step_key='code_generate.full', prefer_fast=True, model_override='stale-override')
+    assert [route.model for route in routes] == ['large-model', 'backup-model']
+    assert routes[0].provider_id == routes[1].provider_id == 'shared'
+    assert routes[0].route_snapshot['model_config_id'] == 'model-a'
+    assert routes[1].route_snapshot['is_primary_provider'] is False
+    assert routes[0].route_snapshot['business_binding_revision'] == 2
+
+
+@patch('src.services.llm_gateway.settings.SERVICE_REGION', 'cn_shanghai')
+def test_business_binding_includes_dynamic_children_and_keeps_legacy_for_other_steps():
+    gateway = business_gateway()
+    assert gateway.resolve_candidates(step_key='code_generate.full.retry')[0].model == 'large-model'
+    assert gateway.resolve_candidates(step_key='intent_parse')[0].model == 'model-shared'
+
+
+@patch('src.services.llm_gateway.settings.SERVICE_REGION', 'cn_shanghai')
+def test_configured_business_with_unavailable_models_fails_closed():
+    gateway = business_gateway()
+    gateway._models['model-a']['enabled'] = False
+    gateway._models['model-b']['enabled'] = False
+    with pytest.raises(LLMBusinessConfigurationError):
+        gateway.resolve_candidates(step_key='code_generate.full')
+
+
+@patch('src.services.llm_gateway.settings.SERVICE_REGION', 'cn_shanghai')
+def test_business_output_budget_uses_explicit_backup_not_unrelated_provider():
+    gateway = business_gateway()
+    gateway._models['model-a']['max_output_tokens'] = 1000
+    routes = gateway.resolve_candidates(step_key='code_generate.full', required_output_tokens=16384)
+    assert [route.model for route in routes] == ['backup-model']
+    assert routes[0].route_snapshot['model_rejections'][0]['reason'] == 'output_limit_insufficient'
+
+
+@patch('src.services.llm_gateway.settings.SERVICE_REGION', 'cn_shanghai')
+def test_business_keeps_explicit_legacy_capability_restrictions():
+    gateway = business_gateway()
+    gateway._models['model-a']['capability_flags'] = {'supports_full_html_rewrite': False}
+    assert [route.model for route in gateway.resolve_candidates(step_key='code_generate.full')] == ['backup-model']
+
+
+def test_model_test_uses_model_record_instead_of_provider_default():
+    gateway = business_gateway()
+    with patch.object(gateway, 'refresh'), patch.object(gateway, '_persist_test_record'), \
+         patch.object(gateway, '_invoke_test_completion', new=AsyncMock(return_value=('PONG', 200, 'https://shared.example'))) as call:
+        result = asyncio.run(gateway.test_model('model-b'))
+    assert result['model'] == 'backup-model'
+    assert result['modelConfigVersion'] == 3
+    assert result['modelConfigId'] == 'model-b'
+    assert call.await_args.kwargs['route'].request_timeout_s <= 65
+
+
+@patch('src.services.llm_gateway.settings.SERVICE_REGION', 'cn_shanghai')
+def test_explicit_business_backup_works_without_legacy_failover_flags():
+    from src.services.llm_client import LLMClient
+    gateway = business_gateway()
+    client = LLMClient()
+    called = []
+    async def complete(**kwargs):
+        called.append(kwargs['route'].model)
+        if len(called) == 1:
+            request = httpx.Request('POST', 'https://fixture.invalid/v1/chat/completions')
+            raise httpx.HTTPStatusError('timeout', request=request, response=httpx.Response(504, request=request))
+        return 'backup success'
+    with patch('src.services.llm_client.gateway', gateway), \
+         patch('src.services.llm_client.settings.LLM_PROVIDER_FAILOVER_ENABLED', False), \
+         patch.object(client, 'is_enabled', return_value=True), \
+         patch.object(gateway, 'emit_task_activity', new=AsyncMock()), \
+         patch.object(gateway, 'emit_llm_call_log', new=AsyncMock()), \
+         patch.object(client, '_complete_openai_compatible', new=complete):
+        result = asyncio.run(client.complete(messages=[{'role': 'user', 'content': 'fixture'}],
+            step_key='code_generate.full', max_tokens=100, allow_provider_fallback=False))
+    assert result == 'backup success'
+    assert called == ['large-model', 'backup-model']
 
 
 def test_resolve_candidates_falls_back_to_parent_route_for_dynamic_step():

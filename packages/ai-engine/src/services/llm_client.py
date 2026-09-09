@@ -21,6 +21,7 @@ import httpx
 from ..config.settings import settings
 from ..config.timeout_store import get_int as get_timeout_int
 from .llm_gateway import gateway, get_request_context
+from .llm_http_evidence import failure_transport_evidence, transport_error_message
 from .prompt_dedup import build_prompt_fingerprint, deep_dedupe_prompt
 from .task_memory import task_memory
 
@@ -1472,7 +1473,7 @@ class LLMClient:
                 required_output_tokens=required_output_tokens,
                 excluded_provider_ids=excluded_provider_ids,
             )
-            if allow_provider_fallback and settings.LLM_PROVIDER_FAILOVER_ENABLED
+            if gateway.has_business_binding(step_key) or (allow_provider_fallback and settings.LLM_PROVIDER_FAILOVER_ENABLED)
             else [gateway.resolve(
                 step_key=step_key,
                 prefer_fast=prefer_fast,
@@ -2101,11 +2102,21 @@ class LLMClient:
             input_tokens = None
             output_tokens = None
             total_tokens = None
+            transport_evidence = failure_transport_evidence(exc, api_key=route.api_key)
+            safe_error = transport_error_message(transport_evidence, str(exc))
+            if transport_evidence:
+                route.route_snapshot = {**dict(route.route_snapshot or {}), "transportEvidence": transport_evidence}
+                logger.warning("LLM transport failure: %s", json.dumps({
+                    **transport_evidence, "stepKey": step_key,
+                    "providerId": route.provider_id, "model": route.model,
+                    "taskId": get_request_context().get("task_id"),
+                }, ensure_ascii=False))
 
             if isinstance(exc, httpx.HTTPStatusError):
                 http_status = exc.response.status_code
-                upstream_request_id = _response_request_id(exc.response.headers)
-                error_body_excerpt = exc.response.text[:1000]
+                upstream_request_id = _response_request_id(httpx.Headers(transport_evidence.get("responseHeaders", {})))
+                # Response bodies can echo prompts or credentials. Retain only
+                # their size/hash in transportEvidence, not a raw excerpt.
             elif isinstance(exc, LLMResponseTruncatedError):
                 upstream_request_id = exc.upstream_request_id
                 error_body_excerpt = exc.response_excerpt
@@ -2119,7 +2130,7 @@ class LLMClient:
                 output_tokens = exc.output_tokens
                 total_tokens = exc.total_tokens
             elif isinstance(exc, httpx.RequestError):
-                error_body_excerpt = str(exc)
+                error_body_excerpt = safe_error
 
             latency_ms = int((time.time() - started_at) * 1000)
             if heartbeat_task is not None:
@@ -2130,7 +2141,7 @@ class LLMClient:
                 step_key=step_key,
                 state="failed",
                 elapsed_ms=latency_ms,
-                error_message=str(exc),
+                error_message=safe_error,
             )
 
             await gateway.emit_llm_call_log({
@@ -2148,7 +2159,7 @@ class LLMClient:
                 "success": False,
                 "upstreamRequestId": upstream_request_id,
                 "errorCode": exc.__class__.__name__,
-                "errorMessage": str(exc),
+                "errorMessage": safe_error,
                 "errorBodyExcerpt": error_body_excerpt,
                 "inputTokens": input_tokens,
                 "outputTokens": output_tokens,
@@ -2263,11 +2274,19 @@ class LLMClient:
             input_tokens = None
             output_tokens = None
             total_tokens = None
+            transport_evidence = failure_transport_evidence(exc, api_key=route.api_key)
+            safe_error = transport_error_message(transport_evidence, str(exc))
+            if transport_evidence:
+                route.route_snapshot = {**dict(route.route_snapshot or {}), "transportEvidence": transport_evidence}
+                logger.warning("LLM transport failure: %s", json.dumps({
+                    **transport_evidence, "stepKey": step_key,
+                    "providerId": route.provider_id, "model": route.model,
+                    "taskId": get_request_context().get("task_id"),
+                }, ensure_ascii=False))
 
             if isinstance(exc, httpx.HTTPStatusError):
                 http_status = exc.response.status_code
-                upstream_request_id = _response_request_id(exc.response.headers)
-                error_body_excerpt = exc.response.text[:1000]
+                upstream_request_id = _response_request_id(httpx.Headers(transport_evidence.get("responseHeaders", {})))
             elif isinstance(exc, LLMResponseTruncatedError):
                 upstream_request_id = exc.upstream_request_id
                 error_body_excerpt = exc.response_excerpt
@@ -2281,7 +2300,7 @@ class LLMClient:
                 output_tokens = exc.output_tokens
                 total_tokens = exc.total_tokens
             elif isinstance(exc, httpx.RequestError):
-                error_body_excerpt = str(exc)
+                error_body_excerpt = safe_error
 
             latency_ms = int((time.time() - started_at) * 1000)
             if heartbeat_task is not None:
@@ -2292,7 +2311,7 @@ class LLMClient:
                 step_key=step_key,
                 state="failed",
                 elapsed_ms=latency_ms,
-                error_message=str(exc),
+                error_message=safe_error,
             )
             await gateway.emit_llm_call_log({
                 "stage": stage,
@@ -2309,7 +2328,7 @@ class LLMClient:
                 "success": False,
                 "upstreamRequestId": upstream_request_id,
                 "errorCode": exc.__class__.__name__,
-                "errorMessage": str(exc),
+                "errorMessage": safe_error,
                 "errorBodyExcerpt": error_body_excerpt,
                 "inputTokens": input_tokens,
                 "outputTokens": output_tokens,

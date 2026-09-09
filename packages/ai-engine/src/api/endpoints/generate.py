@@ -1356,6 +1356,15 @@ async def test_llm_gateway_provider(
         raise HTTPException(status_code=500, detail=f"Provider test failed: {exc}") from exc
 
 
+@router.post("/llm-gateway/models/{model_config_id}/test")
+async def test_llm_gateway_model(model_config_id: str, x_admin_token: Optional[str] = Header(default=None, alias="x-admin-token")):
+    _require_admin_token(x_admin_token)
+    try:
+        return await gateway.test_model(model_config_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/llm-gateway/providers/catalog/preview", response_model=ProviderCatalogPreviewResponse)
 async def preview_llm_gateway_provider_catalog(
     request: ProviderCatalogPreviewRequest,

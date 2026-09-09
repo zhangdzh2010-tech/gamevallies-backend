@@ -128,7 +128,7 @@ async function api(path, options = {}) {
   if (opts.body && typeof opts.body === 'object') {
     opts.body = JSON.stringify(opts.body);
   }
-  const maxAttempts = 4;
+  const maxAttempts = options.retry === false ? 1 : 4;
   let lastError = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
@@ -520,4 +520,3 @@ function escHtml(s) {
 function escAttr(s) {
   return (s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
-

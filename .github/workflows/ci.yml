@@ -67,6 +67,9 @@ jobs:
           test/creation-session.service.spec.ts
           test/game-schema-bootstrap.service.spec.ts
           test/admin.service.spec.ts
+          test/llm-business-config.spec.ts
+          test/admin-assets.spec.ts
+          test/generation-task.service.spec.ts
           test/subscription-grant.service.spec.ts
           test/timeout-admin-catalog.spec.ts
           test/growth.service.spec.ts
@@ -99,6 +102,9 @@ jobs:
           tests/test_async_task_idempotency_and_store.py
           tests/test_async_task_api.py
           tests/test_model_transport.py
+          tests/test_llm_gateway.py
+          tests/test_llm_client.py
+          tests/test_llm_http_evidence.py
           tests/test_interactive_creation.py
           tests/test_artifact_quality.py
           tests/test_pipeline_v2_runner.py

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import json
 import logging
@@ -17,6 +17,7 @@ from urllib.parse import unquote
 import httpx
 import pymysql
 from .fc_runtime import internal_headers
+from .llm_http_evidence import failure_transport_evidence, transport_error_message
 
 from ..api.models import ProviderCatalogPreviewRequest, ProviderCatalogPreviewResponse, ProviderTestChatRequest, ProviderTestChatResponse
 from ..config.settings import settings
@@ -318,12 +319,18 @@ class ResolvedRoute:
     route_snapshot: dict[str, Any]
 
 
+class LLMBusinessConfigurationError(ValueError):
+    failure_family = "route_configuration"
+
+
 class LLMGateway:
     def __init__(self) -> None:
         self._providers: dict[str, ProviderRecord] = {}
         self._routes: list[RouteRecord] = []
         self._config_version = 0
         self._loaded_at = 0.0
+        self._models: dict[str, dict[str, Any]] = {}
+        self._business_bindings: list[dict[str, Any]] = []
 
     def _connect(self):
         params = _parse_database_url(settings.DATABASE_URL)
@@ -375,6 +382,18 @@ class LLMGateway:
                     """
                 )
                 route_rows = cur.fetchall()
+                # Additive rollout: before the migration, preserve old routing.
+                # Other DB failures remain errors rather than appearing empty.
+                try:
+                    cur.execute("SELECT * FROM llm_gateway_models")
+                    model_rows = cur.fetchall()
+                    cur.execute("SELECT * FROM llm_business_bindings")
+                    business_rows = cur.fetchall()
+                except pymysql.err.ProgrammingError as exc:
+                    if exc.args[0] != 1146:
+                        raise
+                    logger.warning("LLM model/business schema not installed; legacy routing remains active")
+                    model_rows, business_rows = [], []
         finally:
             conn.close()
 
@@ -439,7 +458,82 @@ class LLMGateway:
                 updated_at=float(updated_ts),
             ))
 
+        self._models = {row["id"]: row for row in model_rows}
+        self._business_bindings = business_rows
+        for row in [*model_rows, *business_rows]:
+            if row.get("updated_at"):
+                # Existing call/task configVersion columns are signed INTs.
+                # Exact model and binding revisions are recorded separately.
+                version_candidates.append(int(row["updated_at"].timestamp()))
         return providers, routes, max(version_candidates or [0])
+
+    def _business_model_route(self, model: dict[str, Any], *, step_key: str) -> ResolvedRoute:
+        provider = self._providers.get(model["provider_id"])
+        if not provider or not provider.enabled or not model.get("enabled"):
+            raise LLMBusinessConfigurationError("业务模型或服务已停用，请检查模型设置")
+        context_window = _coerce_optional_positive_int(model.get("context_window"))
+        max_tokens = _coerce_optional_positive_int(model.get("max_output_tokens"))
+        flags = _loads_json(model.get("capability_flags"), {})
+        effective = replace(provider, model=model["model_id"], fast_model=None,
+                            context_window=context_window, max_tokens=max_tokens,
+                            strict_admission=bool(context_window and max_tokens),
+                            capability_flags=flags if isinstance(flags, dict) else {})
+        result = self._build_resolved_route(provider=effective, route=None, step_key=step_key,
+                                            prefer_fast=False, model_override=model["model_id"])
+        result.route_snapshot.update(model_config_id=model["id"], model_config_version=model["configuration_version"],
+                                     provider_capability_flags=effective.capability_flags)
+        return result
+
+    def has_business_binding(self, step_key: str) -> bool:
+        region = (settings.SERVICE_REGION or "cn_shanghai").strip()
+        return any(binding["region"] == region and any(step_key == prefix or step_key.startswith(prefix + ".")
+                   for prefix in _loads_json(binding["step_keys"], [])) for binding in self._business_bindings)
+
+    def _resolve_business_candidates(self, *, step_key: str, region: str,
+                                     required_output_tokens: Optional[int] = None,
+                                     excluded_provider_ids: Optional[list[str]] = None) -> Optional[list[ResolvedRoute]]:
+        matches = [(len(prefix), binding) for binding in self._business_bindings
+                   if binding["region"] == region
+                   for prefix in _loads_json(binding["step_keys"], [])
+                   if step_key == prefix or step_key.startswith(prefix + ".")]
+        if not matches:
+            return None
+        binding = max(matches, key=lambda item: item[0])[1]
+        ids = [binding["primary_model_id"], binding.get("fallback_model_id")]
+        candidates = []
+        rejected = []
+        for index, model_id in enumerate(ids):
+            if not model_id:
+                continue
+            model = self._models.get(model_id)
+            provider = self._providers.get(model["provider_id"]) if model else None
+            if not model or not model.get("enabled") or not provider or provider.region != region:
+                rejected.append({"modelConfigId": model_id, "reason": "disabled_missing_or_wrong_region"})
+                continue
+            if provider.id in (excluded_provider_ids or []):
+                continue
+            resolved = self._business_model_route(model, step_key=step_key)
+            if required_output_tokens and resolved.max_tokens and resolved.max_tokens < required_output_tokens:
+                rejected.append({"modelConfigId": model_id, "reason": "output_limit_insufficient", "configured": resolved.max_tokens, "required": required_output_tokens})
+                continue
+            flags = resolved.route_snapshot.get("provider_capability_flags", {})
+            required = next((caps for prefix, caps in STEP_REQUIRED_CAPABILITIES.items()
+                             if step_key == prefix or step_key.startswith(prefix + ".")), ())
+            if any(flags.get(cap) is False or cap in flags.get("unsafe_for_steps", []) for cap in required):
+                rejected.append({"modelConfigId": model_id, "reason": "explicit_capability_restriction"})
+                continue
+            resolved.route_snapshot.update(business_stage=binding["stage"], business_binding_id=binding["id"],
+                business_binding_revision=binding["revision"], route_match_strategy="business_stage",
+                matched_step_key=binding["stage"], explicit_fallback_only=True,
+                implicit_provider_failover=False, is_primary_provider=index == 0)
+            candidates.append(resolved)
+        if not candidates:
+            error = LLMBusinessConfigurationError("业务环节没有可用模型；请检查主备模型、服务状态及明确能力限制")
+            error.route_snapshot = {"business_stage": binding["stage"], "model_rejections": rejected}
+            raise error
+        for candidate in candidates:
+            candidate.route_snapshot["model_rejections"] = rejected
+        return candidates
 
     def refresh(self, *, raise_on_error: bool = False) -> int:
         try:
@@ -567,7 +661,7 @@ class LLMGateway:
             if not provider_id or provider_id in seen or provider_id in excluded:
                 return
             provider = self._providers.get(provider_id)
-            if provider is None:
+            if provider is None or not provider.model:
                 return
             seen.add(provider_id)
             ordered.append(provider)
@@ -674,13 +768,14 @@ class LLMGateway:
         explicit_fallback_only: Optional[bool] = None,
         extra_route_snapshot: Optional[dict[str, Any]] = None,
     ) -> ResolvedRoute:
+        is_primary = route is None or provider.id == route.provider_id
         if model_override:
             resolved_model = model_override
-        elif prefer_fast and route and route.fast_model_override:
+        elif is_primary and prefer_fast and route and route.fast_model_override:
             resolved_model = route.fast_model_override
-        elif route and route.model_override:
+        elif is_primary and route and route.model_override:
             resolved_model = route.model_override
-        elif prefer_fast and provider.fast_model:
+        elif is_primary and prefer_fast and provider.fast_model:
             resolved_model = provider.fast_model
         else:
             resolved_model = provider.model
@@ -763,6 +858,16 @@ class LLMGateway:
         excluded_provider_ids: Optional[list[str]] = None,
     ) -> list[ResolvedRoute]:
         self._ensure_loaded()
+        service_region = (settings.SERVICE_REGION or "cn_shanghai").strip() or "cn_shanghai"
+        business = self._resolve_business_candidates(step_key=step_key, region=service_region,
+                                                     required_output_tokens=required_output_tokens,
+                                                     excluded_provider_ids=excluded_provider_ids)
+        if business is not None:
+            # A configured business stage owns model choice, including auxiliary
+            # prefer_fast requests. No hidden model switching or legacy override.
+            return business
+        if (self._providers or self._models) and not any(provider.model for provider in self._providers.values()):
+            raise LLMBusinessConfigurationError("业务环节尚未配置模型，请先完成模型与业务环节设置")
         if not self._providers:
             return [self._fallback_route(step_key=step_key, prefer_fast=prefer_fast, model_override=model_override)]
 
@@ -1263,18 +1368,29 @@ class LLMGateway:
             vendor_preset=vendor_preset,
         )
 
-    async def test_provider(self, provider_id: str) -> dict[str, Any]:
+    async def test_provider(self, provider_id: str, *, model_config_id: Optional[str] = None) -> dict[str, Any]:
         self.refresh(raise_on_error=True)
         provider = self._providers.get(provider_id)
         if not provider:
             raise ValueError("Provider not found")
 
-        route = self._resolved_route_for_provider(provider, prefer_fast=True)
+        route = self._resolved_route_for_provider(provider, prefer_fast=False)
+        model_config = None
+        if model_config_id:
+            model_config = self._models.get(model_config_id)
+            if not model_config or model_config["provider_id"] != provider_id:
+                raise ValueError("模型配置不存在或服务不匹配")
+            route = self._business_model_route(model_config, step_key="connectivity.test")
+        # Connectivity tests are explicitly bounded, independent of a long
+        # generation timeout. The admin relay waits longer than this budget.
+        route = replace(route, request_timeout_s=min(route.request_timeout_s, 65), connect_timeout_s=min(route.connect_timeout_s, 10))
         start = time.time()
         success = False
         http_status = None
         error_message = None
         output = ""
+        transport_evidence = {}
+        error_code = None
         resolved_endpoint = route.base_url
         try:
             output, http_status, resolved_endpoint = await self._invoke_test_completion(
@@ -1282,9 +1398,19 @@ class LLMGateway:
                 messages=[{"role": "user", "content": "Reply with PONG"}],
                 max_tokens=32,
             )
+            if not output.strip():
+                raise ValueError("服务返回空内容，连通验证未通过")
             success = True
         except Exception as exc:
-            error_message = str(exc)
+            error_code = exc.__class__.__name__
+            transport_evidence = failure_transport_evidence(exc, api_key=route.api_key)
+            http_status = transport_evidence.get("httpStatus", http_status)
+            error_message = transport_error_message(transport_evidence, str(exc))
+            if transport_evidence:
+                resolved_endpoint = transport_evidence.get("endpoint", resolved_endpoint)
+                logger.warning("LLM connectivity test failure: %s", json.dumps({
+                    **transport_evidence, "providerId": provider.id, "model": route.model,
+                }, ensure_ascii=False))
         latency_ms = int((time.time() - start) * 1000)
 
         self._persist_test_record(
@@ -1308,9 +1434,20 @@ class LLMGateway:
             "httpStatus": http_status,
             "success": success,
             "errorMessage": error_message,
+            "errorCode": error_code,
+            "transportEvidence": transport_evidence,
             "outputPreview": output[:200],
+            "modelConfigId": model_config_id,
+            "modelConfigVersion": model_config["configuration_version"] if model_config else None,
             "testedAt": _utc_now_iso(),
         }
+
+    async def test_model(self, model_config_id: str) -> dict[str, Any]:
+        self.refresh(raise_on_error=True)
+        model = self._models.get(model_config_id)
+        if not model:
+            raise ValueError("模型配置不存在")
+        return await self.test_provider(model["provider_id"], model_config_id=model_config_id)
 
     async def test_provider_chat(
         self,

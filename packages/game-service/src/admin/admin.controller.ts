@@ -578,6 +578,36 @@ export class AdminController {
     return ok(await this.adminService.listLlmRoutes(executionRegion));
   }
 
+  @Get('admin/llm/models')
+  async listGatewayModels(@Headers('x-admin-token') token: string) {
+    checkAdminToken(token); return ok(await this.adminService.listGatewayModels());
+  }
+
+  @Post('admin/llm/models')
+  async createGatewayModel(@Headers('x-admin-token') token: string, @Body() body: any) {
+    checkAdminToken(token); return ok(await this.adminService.saveGatewayModel(undefined, body));
+  }
+
+  @Put('admin/llm/models/:id')
+  async updateGatewayModel(@Headers('x-admin-token') token: string, @Param('id') id: string, @Body() body: any) {
+    checkAdminToken(token); return ok(await this.adminService.saveGatewayModel(id, body));
+  }
+
+  @Post('admin/llm/models/:id/test')
+  async testGatewayModel(@Headers('x-admin-token') token: string, @Param('id') id: string) {
+    checkAdminToken(token); return ok(await this.adminService.testGatewayModel(id));
+  }
+
+  @Get('admin/llm/business-bindings')
+  async listBusinessBindings(@Headers('x-admin-token') token: string, @Query('region') region = 'cn_shanghai') {
+    checkAdminToken(token); return ok(await this.adminService.listBusinessBindings(region));
+  }
+
+  @Put('admin/llm/business-bindings')
+  async saveBusinessBindings(@Headers('x-admin-token') token: string, @Body() body: any) {
+    checkAdminToken(token); return ok(await this.adminService.saveBusinessBindings(body));
+  }
+
   @Get("admin/llm/routes/:id")
   async getLlmRoute(
     @Headers("x-admin-token") token: string,
