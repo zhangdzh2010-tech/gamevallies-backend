@@ -3080,3 +3080,18 @@ def test_run_iterate_impl_skips_quality_assessment_when_flag_disabled():
     assert response.quality_breakdown is None
     assert mock_review.await_count == 0
     assert mock_compute.call_count == 0
+
+
+def test_generic_feedback_words_do_not_route_to_quiz_show():
+    runner = V2PipelineRunner()
+    for brief in [
+        "Move a boat to catch falling stars with combo glow and a 60 second timer",
+        "桌面小游戏，鼠标移动小船接星星，连击提示、远山舞台背景和节奏感",
+        "A ghost flies through three stages with a spotlight and streak rewards",
+    ]:
+        spec = GameSpec(game_type="casual", source_description=brief)
+        assert not runner._looks_like_quiz_show_runtime_request(spec)
+        assert not runner._select_runtime_profile(spec, None).startswith("tap_challenge")
+    spec = GameSpec(game_type="educational", source_description="A history quiz show with combo rewards")
+    assert runner._looks_like_quiz_show_runtime_request(spec)
+    assert runner._select_runtime_profile(spec, None) == "tap_challenge_combo"

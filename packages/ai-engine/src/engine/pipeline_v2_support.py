@@ -21,6 +21,10 @@ QUALITY_GATE_PATCH_MAX_FINAL_SCORE_GAP = 1.5
 
 QUALITY_GATE_PATCH_MAX_DIMENSION_GAP = 2.0
 
+# Continue repairing a validated candidate before discarding it. The create
+# orchestrator owns this budget; individual patch requests never recurse.
+QUALITY_GATE_PATCH_MAX_ATTEMPTS = 2
+
 
 GENERATION_PROGRESS_HEARTBEAT_INTERVAL_S = 15.0
 
@@ -45,15 +49,15 @@ ProgressCallback = Optional[Callable[[str, int, str, Optional[dict[str, Any]]], 
 
 @dataclass
 class _QualityGatePatchOutcome:
-    """Result of a successful quality-gate patch repair attempt."""
+    """Validated patch candidate and its current quality verdict."""
 
     code: str
     review: Any
     quality: Any
     runtime_qa: Any
-    runtime_qa_reran: bool
     runtime_retries: int
     qa_warnings: list[dict[str, Any]] = field(default_factory=list)
+    gate_errors: list[str] = field(default_factory=list)
 
 
 PROFILE_CANDIDATES_BY_GAME_TYPE: dict[str, tuple[str, ...]] = {
@@ -114,7 +118,6 @@ PROFILE_KEYWORD_FALLBACKS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("timing", ("tap_challenge_timing", "tap_challenge_combo")),
     ("rhythm", ("tap_challenge_timing", "tap_challenge_combo")),
     ("music", ("tap_challenge_timing", "tap_challenge_combo")),
-    ("combo", ("tap_challenge_combo", "casual_arcade_burst")),
     ("funny", ("tap_challenge_combo", "casual_arcade_burst", "casual_action_arena")),
     ("meme", ("tap_challenge_combo", "casual_arcade_burst")),
     ("comedy", ("tap_challenge_combo", "casual_action_arena")),

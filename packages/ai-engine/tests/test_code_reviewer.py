@@ -73,3 +73,15 @@ def test_review_receives_original_desktop_requirements_and_evidence_rules():
     assert 'Do not require touch gestures or haptics for desktop games' in call['system']
     assert 'concrete code-supported defect' in call['system']
     assert '<html>game</html>' in call['messages'][0]['content']
+
+
+def test_scoring_rubric_separates_required_behavior_from_optional_polish():
+    reviewer = CodeReviewer()
+    client = AsyncMock(return_value='{"is_complete_game":true,"issues":[]}')
+    with patch('src.engine.code_reviewer.require_prompt', side_effect=lambda key: '{code_preview}' if key.endswith('template') else 'premium mobile reviewer'), patch.object(reviewer._client, 'is_enabled', return_value=True), patch.object(reviewer._client, 'complete_with_truncation_retry', new=client):
+        asyncio.run(reviewer.review('<html>game</html>', user_requirements='桌面小船接星星，失焦暂停'))
+    system = client.await_args.kwargs['system']
+    assert 'supersedes generic premium-mobile' in system
+    assert 'elapsed-time movement' in system
+    assert 'is_complete_game=false' in system
+    assert 'Exclude optional enhancements from issues and score deductions' in system

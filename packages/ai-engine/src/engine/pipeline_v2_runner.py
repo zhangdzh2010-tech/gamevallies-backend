@@ -3,27 +3,21 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import re
 import time
-from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from ..api.models import (
     GDD,
-    GenerationTier,
-    GameEntity,
     GameRuntimeContract,
     GameSpec,
     IterationType,
     IterateResponse,
     IterateV2Request,
-    QACheckError,
     QAResult,
     RunPipelineResponse,
     RunPipelineV2Request,
-    SourceBundleContext,
 )
 from ..config.settings import settings
 from ..config.timeout_store import get_float as get_timeout_float, get_int as get_timeout_int
@@ -32,20 +26,14 @@ from ..services.task_memory import task_memory
 from .code_preflight import CodePreflightValidator
 from .code_generator import CodeGenerator
 from .code_reviewer import CodeReviewer
-from .dialogue_engine import (
-    DialogueEngine,
-    SlotExtractionFailure,
-    _looks_like_educational_request,
-)
+from .dialogue_engine import DialogueEngine, _looks_like_educational_request
 from .game_designer import GameDesigner
-from .mobile_layout import has_short_edge_scaling
 from .pipeline_errors import PipelineExecutionError
 from .pre_generation_validator import PreGenerationValidator
-from .prompt_store import get_default_runtime_profile, require_prompt
-from .qa_pipeline import QAPipeline, SYNTAX_REPAIR_FAMILY
+from .prompt_store import require_prompt
+from .qa_pipeline import QAPipeline
 from .quality_scorer import LLMReviewResult, QAStaticResult, QualityScorer, RuntimeQAResult
-from .restart_entry import has_restart_entry
-from .runtime_profile_ids import DEFAULT_RUNTIME_PROFILE_ID, normalize_runtime_profile_id
+from .runtime_profile_ids import normalize_runtime_profile_id
 from .interactive_creation import is_interactive_request, normalize_interactive_request, run_interactive
 from .runtime_qa import run_runtime_qa
 # P1.3 PR-11 wire-up: optional fire-and-forget scheduler for runtime_qa.
@@ -73,19 +61,6 @@ try:  # pragma: no cover
 except Exception:  # pragma: no cover
     def _p2_guard_commit(key, fun_score):  # type: ignore
         return {}
-from .section_patch import (
-    PATCH_SECTION_BODY,
-    PATCH_SECTION_SCRIPT,
-    PATCH_SECTION_STYLE,
-    apply_section_patches,
-    build_patch_protocol,
-    build_section_context,
-    ensure_structured_section_markers,
-    parse_patch_response,
-    validate_patch_candidate,
-)
-from .scoring_loop import has_visible_scoring_loop
-from .terminal_state import has_required_state_presence, has_terminal_state_transition
 from .visual_pack_catalog import apply_visual_pack_defaults
 
 logger = logging.getLogger(__name__)
@@ -96,10 +71,8 @@ from .pipeline_v2_specification import PipelineV2SpecificationMixin
 from .pipeline_v2_validation import PipelineV2ValidationMixin
 from .pipeline_v2_support import (
     DEFAULT_STAGE_TOTAL_ATTEMPTS,
-    DEFAULT_CREATE_FULL_GENERATION_ATTEMPTS,
     QUALITY_GATE_PATCH_STEP_KEY,
-    QUALITY_GATE_PATCH_MAX_FINAL_SCORE_GAP,
-    QUALITY_GATE_PATCH_MAX_DIMENSION_GAP,
+    QUALITY_GATE_PATCH_MAX_ATTEMPTS,
     GENERATION_PROGRESS_HEARTBEAT_INTERVAL_S,
     GENERATION_PROGRESS_HEARTBEAT_BASE_PCT,
     GENERATION_PROGRESS_HEARTBEAT_MAX_PCT,
@@ -110,16 +83,9 @@ from .pipeline_v2_support import (
     _QualityGatePatchOutcome,
     PROFILE_CANDIDATES_BY_GAME_TYPE,
     PROFILE_KEYWORD_FALLBACKS,
-    ACTION_RUNTIME_MARKERS,
-    PUZZLE_RUNTIME_MARKERS,
     ACTION_FOCUSED_RUNTIME_PROFILES,
     PROFILE_TO_GAME_TYPE_HINT,
-    BASELINE_RUNTIME_PROFILES,
-    ENTITY_BUDGET_EXPANSION_LIBRARY,
     _default_runtime_profile_id,
-    STATE_SYNONYMS,
-    INPUT_EVENT_PATTERNS,
-    FORBIDDEN_API_PATTERNS,
 )
 
 class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixin, PipelineV2ValidationMixin):
@@ -143,18 +109,14 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
     def _looks_like_quiz_show_runtime_request(spec: GameSpec) -> bool:
         searchable = V2PipelineRunner._profile_selection_text(spec)
         return any(
-            marker in searchable
+            (bool(re.search(r"\b" + re.escape(marker) + r"\b", searchable))
+             if marker.isascii() else marker in searchable)
             for marker in (
                 "quiz show",
                 "game show",
                 "trivia show",
                 "millionaire",
-                "host",
                 "buzzer",
-                "streak",
-                "combo",
-                "stage",
-                "spotlight",
                 "答题秀",
                 "答题节目",
                 "节目答题",
@@ -163,10 +125,6 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                 "舞台秀",
                 "舞台答题",
                 "主持人",
-                "连击",
-                "连胜",
-                "节奏感",
-                "演出效果",
             )
         )
 
@@ -230,6 +188,63 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
             spec.gameplay_fingerprint = gameplay_fingerprint(spec)
             spec.quality_policy_version = QUALITY_POLICY["version"]
         await task_memory.remember_spec(self._current_task_id(), spec)
+
+    async def _repair_create_quality(self, **kwargs: Any) -> _QualityGatePatchOutcome:
+        """Continue on validated code; only structural failures regenerate.
+
+        This orchestrator owns the bounded repair budget. Regressing candidates
+        never become the next base, and exhausted quality misses retain evidence.
+        """
+        spec = kwargs["spec"]
+        current_code = kwargs["code"]
+        current_review = kwargs["review"]
+        current_quality = kwargs["quality"]
+        current_errors = kwargs["quality_gate_errors"]
+        total_retries = 0
+        warnings: list[dict[str, Any]] = []
+        for attempt in range(1, QUALITY_GATE_PATCH_MAX_ATTEMPTS + 1):
+            outcome = await self._attempt_quality_gate_patch_repair(**{
+                **kwargs, "code": current_code, "review": current_review,
+                "quality": current_quality, "quality_gate_errors": current_errors,
+                "base_retries": kwargs["base_retries"] + total_retries,
+                "patch_attempt": attempt, "max_patch_attempts": QUALITY_GATE_PATCH_MAX_ATTEMPTS,
+            })
+            total_retries += outcome.runtime_retries
+            warnings.extend(outcome.qa_warnings)
+            regressed = self._quality_patch_regressed(spec, current_review, current_quality, outcome)
+            if not outcome.gate_errors and not regressed:
+                outcome.runtime_retries = total_retries
+                outcome.qa_warnings = warnings
+                return outcome
+            self._notify(kwargs["progress_cb"], "code_review", 95,
+                "Retaining previous candidate after repair regression" if regressed else "Continuing repair on validated candidate", {
+                    "gameId": kwargs["request"].game_id, "patchAttempt": attempt,
+                    "maxPatchAttempts": QUALITY_GATE_PATCH_MAX_ATTEMPTS,
+                    "candidateRetained": not regressed, "qualityGateErrors": outcome.gate_errors,
+                })
+            if not regressed:
+                current_code, current_review, current_quality = outcome.code, outcome.review, outcome.quality
+                current_errors = outcome.gate_errors
+            else:
+                current_errors = list(current_errors) + [
+                    "The last patch regressed quality and was discarded. Apply a smaller local correction to this retained source."
+                ]
+        await self._remember_code(current_code, label="retained_quality_candidate")
+        raise PipelineExecutionError(
+            "Quality repair budget exhausted: " + "; ".join(current_errors[:4])
+            + " Review issues: " + "; ".join(current_review.issues[:10]),
+            stage="code_review", failure_family="quality_repair_exhausted",
+            artifacts=[
+                self._build_text_artifact(artifact_type="failed_quality_candidate", payload=current_code,
+                    metadata={"stage": "code_review"}),
+                self._build_json_artifact(artifact_type="quality_review_report", payload={
+                    "issues": current_review.issues, "gateErrors": current_errors,
+                    "fun_score": current_review.fun_score, "visual_polish_score": current_review.visual_polish_score,
+                    "character_quality_score": current_review.character_quality_score,
+                    "final_score": current_quality.final_score, "patchAttempts": QUALITY_GATE_PATCH_MAX_ATTEMPTS,
+                }, metadata={"stage": "code_review"}),
+            ],
+        )
 
     async def _remember_runtime_contract(
         self,
@@ -589,7 +604,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                         getattr(settings, "QUALITY_GATE_PATCH_REPAIR_ENABLED", True)
                         and self._should_attempt_quality_patch_repair(spec, review, quality)
                     ):
-                        patch_outcome = await self._attempt_quality_gate_patch_repair(
+                        patch_outcome = await self._repair_create_quality(
                             request=request,
                             spec=spec,
                             runtime_contract=runtime_contract,
@@ -599,7 +614,6 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                             review=review,
                             quality=quality,
                             quality_gate_errors=quality_gate_errors,
-                            previous_runtime_qa=runtime_qa,
                             progress_cb=progress_cb,
                             allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
                         )
@@ -610,9 +624,8 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                         review = patch_outcome.review
                         quality = patch_outcome.quality
                         code_bytes = len(patch_outcome.code.encode("utf-8"))
-                        if patch_outcome.runtime_qa_reran:
-                            runtime_qa = patch_outcome.runtime_qa
-                            runtime_retries += patch_outcome.runtime_retries
+                        runtime_qa = patch_outcome.runtime_qa
+                        runtime_retries += patch_outcome.runtime_retries
                         qa_warnings.extend(patch_outcome.qa_warnings)
                         last_quality_exc = None
                         break
@@ -671,7 +684,9 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
             except PipelineExecutionError as exc:
                 last_quality_exc = exc
                 last_route_snapshot = getattr(exc, "route_snapshot", None) or last_route_snapshot
-                if quality_attempt >= len(attempt_plan) or exc.stage not in {"logic_generate", "contract_qa", "runtime_simulation_qa", "code_review"}:
+                if (getattr(exc, "failure_family", None) == "quality_repair_exhausted"
+                        or quality_attempt >= len(attempt_plan)
+                        or exc.stage not in {"logic_generate", "contract_qa", "runtime_simulation_qa", "code_review"}):
                     raise
                 generation_guidance = self._build_quality_regeneration_guidance(
                     stage=exc.stage,
