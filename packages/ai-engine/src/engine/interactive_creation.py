@@ -131,9 +131,21 @@ async def _validate_interactive_html(code: str) -> dict:
                         # immediate UI changes, then require continuing output.
                         await page.wait_for_timeout(100)
                         motion_before = await page.evaluate(signature)
-                        await page.wait_for_timeout(750)
-                        advances = motion_before != await page.evaluate(signature)
-                        motion_checks.append({'control':label,'advances':advances})
+                        # A valid countdown may render only once per second.
+                        # A fixed 750 ms snapshot wrongly rejects it and triggers
+                        # expensive full-document regeneration. Keep requiring
+                        # post-click progress, but sample over two timer ticks;
+                        # fast animations return as soon as progress is visible.
+                        advances = False
+                        observed_after_ms = 0
+                        for _ in range(22):
+                            await page.wait_for_timeout(100)
+                            observed_after_ms += 100
+                            if motion_before != await page.evaluate(signature):
+                                advances = True
+                                break
+                        motion_checks.append({'control':label,'advances':advances,
+                            'observationBudgetMs':2200,'observedAfterMs':observed_after_ms})
                         if not advances:
                             errors.append(f'点击启动控件「{label}」后，动画/模拟时间/作品内容未持续变化。检查 requestAnimationFrame 时间累加；不要对每帧小于固定步长的 elapsed 单独取整为零。')
                 exercised += 1
@@ -141,7 +153,7 @@ async def _validate_interactive_html(code: str) -> dict:
                 changed = changed or before != await page.evaluate(signature)
             if not exercised or not changed: errors.append('未检测到可操作且能改变作品内容的交互控件。')
             viewports=[]
-            for width,height in [(1366,768),(1920,1080)]:
+            for width,height in [(1000,460),(1000,600),(1366,768),(1920,1080)]:
                 await page.set_viewport_size({'width':width,'height':height})
                 overflow = await page.evaluate('() => document.documentElement.scrollWidth > innerWidth + 2')
                 viewports.append({'width':width,'height':height,'horizontalOverflow':overflow})
@@ -156,6 +168,7 @@ async def _validate_interactive_html(code: str) -> dict:
 SYSTEM_PROMPT = '''你是桌面交互作品工程师。根据用户的原始创意，输出单个可离线运行的完整 HTML，只有代码，不要 Markdown。
 用户的创意是最高内容约束；做模型、实验、讲解或可视化时，不要套用问答、关卡、积分、生命或输赢机制。
 优先桌面浏览器 1366×768 至 1920×1080，响应式布局，DOM/SVG/Canvas 均可。鼠标和键盘能操作所有核心功能。
+作品也会嵌入约1000×460的体验框，核心图形与主要操作须紧凑可见，说明可折叠。Canvas不要仅在脚本执行时测量一次尺寸：容器可能尚未布局或隐藏，应使用ResizeObserver配合requestAnimationFrame在可见尺寸变化时更新内在像素尺寸并重绘，避免观察循环；不能只依赖window resize。
 页面必须有标题、简明说明、可见且有标签的交互控件。暂停、重播、重置或参数调整必须真正改变作品状态。
 若使用固定步长推进动画或模型，必须累积帧间时间并保留余量，不能对小于步长的每帧 elapsed 单独向下取整而使模拟永不前进。
 科学作品必须说明模型、公式、单位、参数有效范围、简化假设和适用限制。不要把示意动画当成实验数据。
@@ -230,4 +243,14 @@ async def run_interactive(request, progress_cb=None):
         if progress_cb: progress_cb('logic_generate',66,'正在修复桌面交互检查发现的问题',{'attempt':attempt,'issues':issues})
     raise PipelineExecutionError('Desktop interaction validation failed: '+'; '.join(issues),
         stage='code_review' if assessment and not assessment['passed'] else 'runtime_simulation_qa',
-        retry_count=1,failure_family='artifact_quality' if assessment and not assessment['passed'] else 'interactive_validation')
+        retry_count=1,failure_family='artifact_quality' if assessment and not assessment['passed'] else 'interactive_validation',
+        # Use the existing author-scoped artifact channel, not progress messages.
+        # Without the rejected candidate a failed desktop run cannot be replayed
+        # locally, forcing another paid generation just to diagnose the failure.
+        artifacts=[
+            {'artifact_type':'failed_interactive_candidate','content_type':'text/html',
+             'payload':code,'metadata':{'attempt':attempt,'runtimeProfile':'interactive_experience'}},
+            {'artifact_type':'interactive_validation_report','content_type':'application/json',
+             'payload':{'runtime':report,'assessment':assessment,'attempt':attempt},
+             'metadata':{'runtimeProfile':'interactive_experience'}},
+        ])

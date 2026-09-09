@@ -43,13 +43,21 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.qa_passed)
         self.assertEqual(result.runtime_profile,'interactive_experience')
         self.assertTrue(result.runtime_qa_report['contentChanged'])
-        self.assertEqual(len(result.runtime_qa_report['viewports']),2)
+        self.assertEqual([(v['width'],v['height']) for v in result.runtime_qa_report['viewports']],
+                         [(1000,460),(1000,600),(1366,768),(1920,1080)])
 
     async def test_blank_noop_and_broken_script_fail(self):
         noop=GOOD.replace("document.getElementById('count').textContent='20'",'void 0')
         broken=GOOD.replace('let population=10;',"throw new Error('broken simulation')")
         for html in [noop,broken,'<html><body>incomplete']:
             self.assertFalse((await validate_interactive_html(html))['passed'])
+
+    async def test_compact_preview_overflow_is_not_hidden_by_large_desktop_checks(self):
+        html = GOOD.replace('body{margin:24px;', 'body{min-width:1100px;margin:24px;')
+        report = await validate_interactive_html(html)
+        self.assertFalse(report['passed'])
+        self.assertTrue(report['viewports'][0]['horizontalOverflow'])
+        self.assertFalse(report['viewports'][2]['horizontalOverflow'])
 
     async def test_numeric_input_updates_are_exercised_without_a_button(self):
         html = """<html><head></head><body><h1>电流</h1><input type="number" value="12" min="0" oninput="document.querySelector('output').textContent=this.value/6"><output>2</output><script>const R=6;</script></body></html>"""
@@ -105,10 +113,49 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(report['passed'],str(report['issues']))
         self.assertTrue(report['motionChecks'][0]['advances'])
 
+    async def test_second_resolution_countdown_is_not_a_stalled_animation(self):
+        countdown = '''<!doctype html><html><head></head><body><h1>一盏茶时</h1>
+        <button onclick="start()">开始</button><output>120</output>
+        <script>let timer;
+        function start(){clearInterval(timer);const deadline=Date.now()+120000;
+          timer=setInterval(()=>{document.querySelector('output').textContent=
+            Math.max(0,Math.ceil((deadline-Date.now())/1000));},1000);}
+        </script></body></html>'''
+        report=await validate_interactive_html(countdown)
+        self.assertTrue(report['passed'],str(report['issues']))
+        self.assertTrue(report['motionChecks'][0]['advances'])
+
+    async def test_button_label_change_does_not_count_as_countdown_progress(self):
+        stalled = '''<!doctype html><html><head></head><body><h1>一盏茶时</h1>
+        <button onclick="this.textContent='暂停';setInterval(()=>{},1000)">开始</button>
+        <output>120</output><script>const seconds=120;</script></body></html>'''
+        report=await validate_interactive_html(stalled)
+        self.assertFalse(report['passed'])
+        self.assertFalse(report['motionChecks'][0]['advances'])
+
     async def test_static_start_action_does_not_require_an_animation(self):
         report=await validate_interactive_html(GOOD.replace('调整种群','开始探索'))
         self.assertTrue(report['passed'])
         self.assertEqual(report['motionChecks'],[])
+
+    async def test_rejected_desktop_candidate_and_report_remain_replayable(self):
+        from src.engine.pipeline_errors import PipelineExecutionError
+        second = GOOD.replace('<h1>种群模型</h1>', '<h1>第二次候选</h1>')
+        failed = {'ran':True,'passed':False,'issues':['simulator stalled']}
+        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
+                   new=AsyncMock(side_effect=[GOOD, second])), patch(
+                   'src.engine.interactive_creation.validate_interactive_html',
+                   new=AsyncMock(return_value=failed)):
+            with self.assertRaises(PipelineExecutionError) as caught:
+                await run_interactive(normalize_interactive_request(self.request()))
+        self.assertEqual(caught.exception.retry_count, 1)
+        artifacts = {item['artifact_type']:item for item in caught.exception.artifacts}
+        self.assertEqual(artifacts['failed_interactive_candidate']['payload'], second)
+        report = artifacts['interactive_validation_report']['payload']
+        self.assertEqual(report['attempt'], 2)
+        self.assertFalse(report['runtime']['passed'])
+        self.assertIn('simulator stalled', report['runtime']['issues'])
+        self.assertIsNone(report['assessment'])
 
     async def test_async_submission_runs_desktop_pipeline_and_persists_browser_checked_result(self):
         from fakeredis.aioredis import FakeRedis

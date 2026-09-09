@@ -284,9 +284,18 @@ def list_safe_patch_anchors(html: str, allowed_sections: Sequence[str]) -> List[
             anchors.append(PATCH_SECTION_HUD)
     if PATCH_SECTION_SCRIPT in allowed_sections:
         for anchor in PATCHABLE_SCRIPT_ANCHORS:
-            if extract_script_anchor_content(html, anchor) is not None:
+            # Normalization may prepend empty markers outside the game's IIFE.
+            # They are metadata, not insertion points with access to game state.
+            if (extract_script_anchor_content(html, anchor) or "").strip():
                 anchors.append(anchor)
     return anchors
+
+
+def _populated_empty_script_anchors(previous: str, candidate: str) -> List[str]:
+    return [anchor for anchor in PATCHABLE_SCRIPT_ANCHORS
+            if extract_script_anchor_content(previous, anchor) is not None
+            and not (extract_script_anchor_content(previous, anchor) or "").strip()
+            and (extract_script_anchor_content(candidate, anchor) or "").strip()]
 
 
 def find_incomplete_structured_markers(html: str) -> List[str]:
@@ -332,6 +341,8 @@ def validate_patch_candidate(
     errors: List[str] = []
     if not candidate:
         return ["empty_candidate"]
+    errors.extend("synthetic_anchor_populated:" + anchor
+                  for anchor in _populated_empty_script_anchors(previous, candidate))
 
     incomplete_markers = find_incomplete_structured_markers(candidate)
     if incomplete_markers:
@@ -449,6 +460,8 @@ def build_patch_protocol(
         "- STYLE content must be raw CSS inside the existing <style> block, without <style> tags.",
         "- BODY content must be raw HTML inside the existing <body> block, without <body> tags.",
         "- SCRIPT content must be raw JavaScript inside the main inline <script> block, without <script> tags.",
+        "- Preserve lexical scope: keep functions and the state they use inside their existing closure/IIFE. Never hoist handlers outside that scope.",
+        "- Empty SCRIPT marker blocks are synthetic metadata, NOT insertion points. Leave them empty; edit the actual implementation in its original scope.",
     ]
     if replace_sections_only:
         # A rejected exact search cannot be repaired by reusing a protocol that
@@ -464,7 +477,7 @@ def build_patch_protocol(
         lines.append(f"- Preferred patch targets: {', '.join(normalized_preferred_targets)}.")
     if PATCH_SECTION_SCRIPT in allowed_sections:
         anchor_list = ", ".join(PATCHABLE_SCRIPT_ANCHORS)
-        lines.append(f"- Safe SCRIPT anchors for replace_block: {anchor_list}.")
+        lines.append(f"- Possible SCRIPT anchor names: {anchor_list}. Only nonempty anchors listed under CURRENT SAFE PATCH ANCHORS may be used for replace_block.")
         lines.append('- You may also target a script anchor directly with {"section":"INPUT","operation":"replace_block","content":"..."} style patches.')
     if PATCH_SECTION_BODY in allowed_sections:
         lines.append(f"- Safe BODY anchor for replace_block: {PATCH_SECTION_HUD}.")
@@ -501,6 +514,8 @@ def build_section_context(
         blocks.append(content if content is not None else "(section missing)")
         blocks.append(f"=== SECTION:{section} END ===")
     anchors = list_safe_patch_anchors(normalized_html, allowed_sections)
+    if PATCH_SECTION_SCRIPT in allowed_sections and not any(anchor in anchors for anchor in PATCHABLE_SCRIPT_ANCHORS):
+        blocks.append("No safe SCRIPT anchors exist. Use a unique exact edit or a complete SCRIPT replacement, preserving existing lexical scopes and leaving empty markers empty.")
     if anchors:
         blocks.append("CURRENT SAFE PATCH ANCHORS:")
         if PATCH_SECTION_BODY in allowed_sections and PATCH_SECTION_HUD in anchors:
@@ -708,6 +723,7 @@ def apply_section_patches(
     patches: Iterable[SectionPatch],
 ) -> str:
     updated = ensure_structured_section_markers(html)
+    original = updated
     whole_sections = set()
     for patch in patches:
         if patch.operation not in {"replace_section", "replace_block", "replace_exact"}:
@@ -732,6 +748,8 @@ def apply_section_patches(
             anchors = PATCHABLE_SCRIPT_ANCHORS if patch.section == PATCH_SECTION_SCRIPT else PATCHABLE_HTML_ANCHORS if patch.section == PATCH_SECTION_BODY else ()
             if patch.anchor not in anchors:
                 raise ValueError("patch_validation_failed:unsupported_anchor")
+            if patch.section == PATCH_SECTION_SCRIPT and patch.anchor not in list_safe_patch_anchors(updated, (PATCH_SECTION_SCRIPT,)):
+                raise ValueError("patch_validation_failed:empty_script_anchor:" + patch.anchor)
         if patch.section == PATCH_SECTION_STYLE:
             updated = replace_style_content(updated, patch.content)
         elif patch.section == PATCH_SECTION_BODY:
@@ -744,4 +762,7 @@ def apply_section_patches(
                 updated = replace_script_anchor_content(updated, patch.anchor, patch.content)
             else:
                 updated = replace_script_content(updated, patch.content)
+    populated = _populated_empty_script_anchors(original, updated)
+    if populated:
+        raise ValueError("patch_validation_failed:synthetic_anchor_populated:" + ",".join(populated))
     return updated

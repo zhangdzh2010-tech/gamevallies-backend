@@ -51,6 +51,8 @@ def review_prompt(kind: str, brief: str, code: str, runtime: dict) -> str:
         '每项0到10分，6分基本可用，8分完整可靠，10分优秀。缺少证据不得补高分。'
         '工具不要求游戏循环、趣味、角色、积分；科学演示不要求闯关或游戏化。'
         '科学演示必须检查公式/单位/参数对计算的作用/简化假设，不得将示意当实验数据。'
+        '还要逐项追踪计算结果到图形坐标的映射：坐标轴方向、矢量或光线箭头起终点、角度相对哪条基准线、Canvas角弧顺逆时针与最小夹角。'
+        '数值标签正确不代表图形正确；方向或角弧与所述物理模型矛盾必须进入critical_issues。'
         '完整性按用户明确要求判断；不能因代码短、画面简洁而认定作品不完整。\n'
         f'类型：{kind}\n评分规则：{json.dumps(rubric,ensure_ascii=False)}\n'
         '结构：{"artifact_kind":"类型","complete":true,"critical_issues":[],"scores":{"维度":8},'

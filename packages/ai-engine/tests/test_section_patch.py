@@ -98,7 +98,7 @@ def test_parse_patch_response_accepts_direct_script_anchor_target():
 
 
 def test_apply_section_patches_replaces_script_anchor_block_when_requested():
-    marked = ensure_structured_section_markers(HTML)
+    marked = ensure_structured_section_markers(HTML.replace("const score = 1;", "const score = 1; /* SECTION:INPUT START */ bindInput(); /* SECTION:INPUT END */"))
     updated = apply_section_patches(
         marked,
         [
@@ -112,6 +112,40 @@ def test_apply_section_patches_replaces_script_anchor_block_when_requested():
     )
     assert "canvas.addEventListener('pointerdown', startGame);" in updated
     assert "const score = 1;" in updated
+
+
+def test_synthetic_anchors_are_not_advertised_or_accepted_as_insertion_points():
+    import pytest
+    from src.engine.section_patch import list_safe_patch_anchors
+    html = HTML.replace("const score = 1;", "(() => { let inputBound = false; function boot(){ inputBound = true; } boot(); })();")
+    marked = ensure_structured_section_markers(html)
+    assert list_safe_patch_anchors(marked, (PATCH_SECTION_SCRIPT,)) == []
+    context = build_section_context(marked, (PATCH_SECTION_SCRIPT,))
+    assert "No safe SCRIPT anchors exist" in context
+    assert "=== ANCHOR:INPUT START ===" not in context
+    with pytest.raises(ValueError, match="empty_script_anchor:INPUT"):
+        apply_section_patches(marked, [SectionPatch(section="SCRIPT", operation="replace_block", anchor="INPUT", content="function bindInput(){ if(inputBound)return; }")])
+
+
+def test_all_patch_protocols_preserve_closure_scope_and_empty_markers():
+    for correction in (False, True):
+        protocol = build_patch_protocol((PATCH_SECTION_SCRIPT,), task_label="repair", replace_sections_only=correction)
+        assert "Preserve lexical scope" in protocol
+        assert "NOT insertion points" in protocol
+
+
+def test_complete_script_repair_cannot_move_helpers_into_synthetic_prefix():
+    import pytest
+    html = HTML.replace("const score = 1;", "(() => { let inputBound = false; function boot(){ inputBound = true; } boot(); })();")
+    marked = ensure_structured_section_markers(html)
+    script = extract_script_content(marked)
+    unsafe = script.replace("/* SECTION:INPUT START */", "/* SECTION:INPUT START */\nfunction bindInput(){ if(inputBound)return; }")
+    with pytest.raises(ValueError, match="synthetic_anchor_populated:INPUT"):
+        apply_section_patches(marked, [SectionPatch(section="SCRIPT", content=unsafe)])
+    candidate = marked.replace(script, unsafe)
+    assert "synthetic_anchor_populated:INPUT" in validate_patch_candidate(marked, candidate, allowed_sections=(PATCH_SECTION_SCRIPT,))
+    safe = script.replace("inputBound = true;", "inputBound = !inputBound;")
+    assert "inputBound = !inputBound;" in apply_section_patches(marked, [SectionPatch(section="SCRIPT", content=safe)])
 
 
 def test_validate_patch_candidate_rejects_missing_canvas_regression():
