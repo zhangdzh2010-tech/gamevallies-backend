@@ -1393,7 +1393,9 @@ class TestPromptIntegration(unittest.TestCase):
         generator = CodeGenerator(llm_mode="real")
         code = ensure_structured_section_markers(
             "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas>"
-            "<script>const coins = 1; function loop(){ return coins; }</script></body></html>"
+            "<script>const canvas = document.getElementById('gameCanvas'); let coins = 1; "
+            "/* SECTION:INPUT START */ canvas.addEventListener('pointerdown', () => {}); /* SECTION:INPUT END */ "
+            "function loop(){ return coins; }</script></body></html>"
         )
 
         with patch(
@@ -1633,4 +1635,3 @@ class TestPromptIntegration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
