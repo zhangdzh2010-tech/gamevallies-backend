@@ -10,6 +10,23 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+import httpx
+
+
+def is_provider_transport_failure(exc: BaseException) -> bool:
+    """Inspect wrapped transport errors without guessing from user-facing text.
+
+    The LLM client has already exhausted its bounded retries/fallbacks. A
+    quality-regeneration loop cannot repair an HTTP or network failure.
+    """
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if isinstance(exc, (httpx.HTTPStatusError, httpx.TransportError)):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
 
 class PipelineExecutionError(RuntimeError):
     """Runtime error carrying stage and retry metadata."""

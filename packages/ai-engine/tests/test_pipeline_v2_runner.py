@@ -30,6 +30,48 @@ from src.engine.pipeline_errors import PipelineExecutionError
 from src.engine.quality_scorer import LLMReviewResult, QualityScoreBreakdown
 
 
+@pytest.mark.parametrize("status", [400, 401, 429, 502, 503, 504])
+def test_provider_http_failure_does_not_enter_quality_regeneration(status):
+    import httpx
+    runner = V2PipelineRunner()
+    request = RunPipelineV2Request(game_id="transport-failure", user_id="user", raw_user_input="make a puzzle game")
+    spec = GameSpec(game_type="puzzle", generation_tier="standard")
+    contract = GameRuntimeContract(runtime_profile="puzzle_grid")
+    http_request = httpx.Request("POST", "https://provider.example/v1/chat/completions")
+    upstream = httpx.HTTPStatusError("upstream unavailable", request=http_request,
+                                   response=httpx.Response(status, request=http_request))
+    wrapped = RuntimeError("Full LLM generation failed")
+    wrapped.__cause__ = upstream
+    wrapped.route_snapshot = {"provider_id":"primary", "fallback_provider_ids":[]}
+    generate = AsyncMock(side_effect=wrapped)
+    with ExitStack() as stack:
+        for name, value in (("_build_create_spec",spec), ("_build_gdd",GDD()),
+                            ("_remember_spec",None), ("_remember_runtime_contract",None)):
+            stack.enter_context(patch.object(runner, name, new=AsyncMock(return_value=value)))
+        stack.enter_context(patch.object(runner, "_select_runtime_profile", return_value="puzzle_grid"))
+        stack.enter_context(patch.object(runner, "_compose_runtime_contract", return_value=contract))
+        stack.enter_context(patch.object(runner.pre_gen_validator, "validate", return_value=[]))
+        stack.enter_context(patch("src.engine.pipeline_v2_runner.task_memory.append_decision", new=AsyncMock()))
+        stack.enter_context(patch.object(runner.code_generator, "generate", new=generate))
+        with pytest.raises(PipelineExecutionError) as caught:
+            asyncio.run(runner._run_create_impl(request, None, {"stage":"spec_build"}))
+    assert generate.await_count == 1
+    assert caught.value.failure_family == "provider_transport"
+    assert caught.value.route_snapshot["provider_id"] == "primary"
+    assert caught.value.__cause__ is wrapped
+
+
+def test_provider_transport_detection_preserves_semantic_errors_and_handles_cycles():
+    import httpx
+    from src.engine.pipeline_errors import is_provider_transport_failure
+    assert is_provider_transport_failure(httpx.ReadTimeout("timeout"))
+    assert not is_provider_transport_failure(ValueError("HTML code says 504; not an HTTP exception"))
+    first, second = RuntimeError("first"), RuntimeError("second")
+    first.__cause__ = second
+    second.__cause__ = first
+    assert not is_provider_transport_failure(first)
+
+
 def test_function_keyword_is_not_flagged_as_function_constructor():
     code = """
     <!DOCTYPE html>

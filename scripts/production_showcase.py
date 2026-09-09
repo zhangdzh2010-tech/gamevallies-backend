@@ -84,6 +84,19 @@ class Showcase:
     def status(self, game_id):
         return self.record("status", work_id=game_id, data=self.get(f"games/{game_id}/generation-status"))
 
+    def cache_playable(self, game_id):
+        """Fetch author-accessible HTML for offline browser QA, never credentials."""
+        import uuid
+        uuid.UUID(game_id)
+        result = self.get(f"games/{game_id}/play")
+        code = result.get("htmlCode")
+        if not isinstance(code, str) or not code.strip():
+            raise ValueError("No playable HTML returned")
+        path = self.output / (game_id + ".html")
+        path.write_text(code, encoding="utf-8")
+        self.record("playable_cached", work_id=game_id, path=str(path), bytes=len(code.encode()))
+        return str(path)
+
     def evidence(self, game_id):
         status = self.get(f"games/{game_id}/generation-status")
         evidence = {"status": status}

@@ -28,7 +28,7 @@ from .code_generator import CodeGenerator
 from .code_reviewer import CodeReviewer
 from .dialogue_engine import DialogueEngine, _looks_like_educational_request
 from .game_designer import GameDesigner
-from .pipeline_errors import PipelineExecutionError
+from .pipeline_errors import PipelineExecutionError, is_provider_transport_failure
 from .pre_generation_validator import PreGenerationValidator
 from .prompt_store import require_prompt
 from .qa_pipeline import QAPipeline
@@ -684,7 +684,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
             except PipelineExecutionError as exc:
                 last_quality_exc = exc
                 last_route_snapshot = getattr(exc, "route_snapshot", None) or last_route_snapshot
-                if (getattr(exc, "failure_family", None) == "quality_repair_exhausted"
+                if (getattr(exc, "failure_family", None) in {"quality_repair_exhausted", "provider_transport"}
                         or quality_attempt >= len(attempt_plan)
                         or exc.stage not in {"logic_generate", "contract_qa", "runtime_simulation_qa", "code_review"}):
                     raise
@@ -1354,7 +1354,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
             wrapped = PipelineExecutionError(
                 f"Full LLM generation failed: {exc}",
                 stage="logic_generate",
-                failure_family="code_generation",
+                failure_family="provider_transport" if is_provider_transport_failure(exc) else "code_generation",
             )
             route_snapshot = getattr(exc, "route_snapshot", None)
             if route_snapshot is not None:
