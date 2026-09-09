@@ -95,9 +95,12 @@ jobs:
         # Playwright downloads its pinned Chromium itself. A stale Google apt
         # index must not break installation of Ubuntu system libraries.
         run: |
-          if [ -f /etc/apt/sources.list.d/google-chrome.list ]; then
-            sudo mv /etc/apt/sources.list.d/google-chrome.list "$RUNNER_TEMP/google-chrome.list.disabled"
-          fi
+          for source in /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+            if [ -f "$source" ] && grep -Eq 'https?://dl\.google\.com/linux/chrome(-stable)?/deb' "$source"; then
+              echo "Disabling optional Chrome repository: $(basename "$source")"
+              sudo mv "$source" "$RUNNER_TEMP/$(basename "$source").disabled"
+            fi
+          done
       - run: python -m playwright install --with-deps chromium
       - run: python ../../scripts/sync-quality-policy.py --check
       - name: Verify configured LLM repair timeouts
