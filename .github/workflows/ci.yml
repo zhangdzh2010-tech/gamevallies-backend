@@ -91,6 +91,13 @@ jobs:
           cache: pip
           cache-dependency-path: packages/ai-engine/requirements.txt
       - run: pip install -r requirements.txt pytest pytest-asyncio
+      - name: Isolate browser dependencies from the optional Chrome apt repository
+        # Playwright downloads its pinned Chromium itself. A stale Google apt
+        # index must not break installation of Ubuntu system libraries.
+        run: |
+          if [ -f /etc/apt/sources.list.d/google-chrome.list ]; then
+            sudo mv /etc/apt/sources.list.d/google-chrome.list "$RUNNER_TEMP/google-chrome.list.disabled"
+          fi
       - run: python -m playwright install --with-deps chromium
       - run: python ../../scripts/sync-quality-policy.py --check
       - name: Verify configured LLM repair timeouts
