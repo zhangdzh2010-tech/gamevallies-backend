@@ -47,11 +47,16 @@ class PipelineV2QualityPolicyMixin:
 
     @staticmethod
     def _validate_quality_patch_extent(code, patches):
+        from .source_references import locate_source_edit
         sections = extract_patchable_sections(code)
         for section in {p.section for p in patches}:
             source = sections.get(section) or ''
             edits = [p for p in patches if p.section == section]
-            if sum(len(p.search or '') for p in edits) > len(source) * .6:
+            try:
+                ranges = [locate_source_edit(source,search=p.search,source_ref=p.source_ref) for p in edits]
+            except ValueError as exc:
+                raise ValueError('patch_validation_failed:'+str(exc)) from exc
+            if sum(end-start for start,end in ranges) > len(source) * .6:
                 raise ValueError('patch_validation_failed:local_patch_replaces_too_much')
             if sum(len(p.content) for p in edits) > max(4096, len(source) * .6):
                 raise ValueError('patch_validation_failed:local_patch_output_too_large')
@@ -513,7 +518,7 @@ class PipelineV2QualityPolicyMixin:
                     "retain fixes from previous rounds, including timing, pause, coordinates and restart.",
                     "SOURCE-GROUNDED FINDINGS:\n" + json.dumps(review.findings, ensure_ascii=False),
                     "UNCHANGED BODY STRUCTURE (read-only; reuse these element IDs, do not invent missing controls):\n" + body_context,
-                    build_section_context(normalized_code, allowed_sections),
+                    build_section_context(normalized_code, allowed_sections, indexed=True),
                 ]
                 if part
             )

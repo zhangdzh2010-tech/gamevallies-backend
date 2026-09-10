@@ -1,5 +1,5 @@
 {
-  "version": "2026-09-07-artifact-v2",
+  "version": "2026-09-10-artifact-v3",
   "tiers": {
     "safe": {
       "fun_score": 6.0,

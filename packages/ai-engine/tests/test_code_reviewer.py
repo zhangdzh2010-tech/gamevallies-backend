@@ -14,6 +14,39 @@ PASSING = dict(is_complete_game=True, has_real_gameplay=True, difficulty_balance
                fun_score=8, visual_polish_score=8, character_quality_score=8, issues=[], findings=[])
 
 
+def test_server_source_references_resolve_duplicates_and_reject_stale_revisions():
+    from src.engine.review_evidence import source_reference_catalog, validate_review_evidence
+    source = ('const repeated=1; /* padding */\n' * 60) + 'const broken=0;'
+    reference, excerpt = list(source_reference_catalog(source).items())[1]
+    finding = dict(issue='incorrect state', dimension='is_complete_game', source_ref=reference,
+        reason='The state transition is missing', correction='Repair the transition', section='SCRIPT', repair_scope='local')
+    reviewer = CodeReviewer()
+    result = reviewer._parse_review(json.dumps(PASSING | {'is_complete_game':False,
+        'issues':['incorrect state'], 'findings':[finding]}))
+    assert validate_review_evidence(result, source) == []
+    assert result.findings[0]['code_excerpt'] == excerpt
+    assert any('stale source reference' in e for e in validate_review_evidence(result, source + 'changed'))
+
+
+def test_indexed_source_keeps_every_byte_once():
+    from src.engine.review_evidence import source_reference_catalog, indexed_review_source
+    source = '<script>' + 'const x="\\\\x";\n' * 200 + '</script>'
+    catalog = source_reference_catalog(source)
+    assert ''.join(catalog.values()) == source
+    assert all(len(part) <= 600 for part in catalog.values())
+    assert all(f'[{reference}]' in indexed_review_source(source) for reference in catalog)
+
+
+def test_reference_and_fabricated_excerpt_cannot_disagree():
+    from src.engine.review_evidence import source_reference_catalog, validate_review_evidence
+    source = '<script>const value=1;</script>'
+    reference = next(iter(source_reference_catalog(source)))
+    result = CodeReviewer()._parse_review(json.dumps(PASSING | {'issues':['broken'], 'findings':[
+        dict(issue='broken', dimension='fun_score', source_ref=reference, code_excerpt='invented',
+            reason='reason', correction='correction', section='SCRIPT', repair_scope='local')]}))
+    assert any('disagree' in e for e in validate_review_evidence(result, source))
+
+
 def test_build_code_preview_keeps_short_code_unchanged():
     html = "<html><body>Hello</body></html>"
     assert _build_code_preview(html, limit=100) == html

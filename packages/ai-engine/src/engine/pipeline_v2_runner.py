@@ -353,7 +353,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
         stage_context: dict[str, str],
     ) -> RunPipelineResponse:
         if is_interactive_request(request):
-            return await run_interactive(normalize_interactive_request(request), progress_cb)
+            return await self._run_interactive_with_stage(request, progress_cb, stage_context)
         start_ms = int(time.time() * 1000)
         # P1.2 GAP-3: reset per-request fun_score so PR-10's filter_fixable
         # starts from a clean slate instead of inheriting a prior request's
@@ -853,7 +853,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
         stage_context: dict[str, str],
     ) -> IterateResponse:
         if is_interactive_request(request):
-            return await run_interactive(normalize_interactive_request(request), progress_cb)
+            return await self._run_interactive_with_stage(request, progress_cb, stage_context)
         start_ms = int(time.time() * 1000)
         # P1.2 GAP-3: mirror the create-path reset so iterate runs also start
         # with a clean fun_score slate for PR-10 filter_fixable.
@@ -1009,6 +1009,12 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
             quality_score=quality_score,
             quality_breakdown=quality_breakdown,
         )
+
+    async def _run_interactive_with_stage(self, request, progress_cb, stage_context):
+        def progress(stage, percent, message, details=None):
+            stage_context['stage'] = stage
+            self._notify(progress_cb, stage, percent, message, details)
+        return await run_interactive(normalize_interactive_request(request), progress)
 
     async def _assess_iterate_quality(
         self,

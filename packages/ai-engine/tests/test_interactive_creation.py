@@ -4,6 +4,7 @@ import json
 from unittest.mock import patch, AsyncMock
 from src.api.models import RunPipelineV2Request, IterateV2Request, GameSpec
 from src.engine.interactive_creation import normalize_interactive_request, is_interactive_request, run_interactive, validate_interactive_html, extract_interactive_document
+from src.engine.source_references import indexed_review_source
 
 GOOD = '''<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{margin:24px;font:18px sans-serif}button{padding:12px}</style></head><body><h1>种群模型</h1><p>简化模型，不是实验数据</p><output id="count">10</output><button onclick="document.getElementById('count').textContent='20'">调整种群</button><script>let population=10;</script></body></html>'''
 
@@ -18,6 +19,71 @@ async def fake_llm(**kwargs):
     return GOOD
 
 class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
+    async def test_rendered_canvas_text_evidence_measures_overlap_and_clipping(self):
+        html = GOOD.replace('</body>', '''<canvas width="300" height="150"></canvas><script>
+        const c=document.querySelector('canvas').getContext('2d');c.font='20px sans-serif';
+        c.fillText('WIDTH',20,35);c.fillText('1920px',20,35);
+        c.fillText('CLIPPED',290,70);
+        c.fillText('Shadow',20,100);c.fillText('Shadow',21,101);
+        </script></body>''')
+        report = await validate_interactive_html(html)
+        evidence = report['canvasTextEvidence']
+        self.assertTrue(any(e['type']=='canvas_text_overlap' and 'WIDTH' in e['texts'] for e in evidence))
+        self.assertTrue(any(e['type']=='canvas_text_clipped' and e['text']=='CLIPPED' for e in evidence))
+        self.assertFalse(any(e['type']=='canvas_text_overlap' and e['texts']==['Shadow','Shadow'] for e in evidence))
+        # Evidence is measured; intentional art overlap still needs semantic judgement.
+        self.assertTrue(report['passed'], str(report['issues']))
+
+    async def test_cleared_text_is_not_reported_as_overlap_with_next_frame(self):
+        html = GOOD.replace('</body>', '''<canvas width="300" height="150"></canvas><script>
+        const c=document.querySelector('canvas').getContext('2d');c.font='20px sans-serif';
+        c.fillText('old',20,35);c.clearRect(0,0,300,150);c.fillText('new',20,35);
+        </script></body>''')
+        self.assertFalse((await validate_interactive_html(html))['canvasTextEvidence'])
+
+    async def test_invalid_review_corrects_assessment_without_touching_artifact(self):
+        valid = await fake_llm(step_key='code_review')
+        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
+            new=AsyncMock(side_effect=[GOOD,'not JSON',valid])) as llm, patch(
+            'src.engine.interactive_creation.validate_interactive_html',
+            new=AsyncMock(return_value={'ran':True,'passed':True,'issues':[]})) as qa:
+            result = await run_interactive(normalize_interactive_request(self.request()))
+        self.assertEqual(result.html_code, GOOD)
+        self.assertEqual(qa.await_count, 1)
+        self.assertEqual([c.kwargs['step_key'] for c in llm.call_args_list],
+            ['code_generate.full','code_review','code_review'])
+        self.assertIn('SAME complete source', llm.call_args_list[-1].kwargs['messages'][0]['content'])
+        self.assertEqual(result.quality_breakdown['reviewRequests'], 2)
+
+    async def test_invalid_review_exhaustion_never_spends_code_repair_budget(self):
+        from src.engine.pipeline_errors import PipelineExecutionError
+        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
+            new=AsyncMock(side_effect=[GOOD,'{}','{}'])) as llm, patch(
+            'src.engine.interactive_creation.validate_interactive_html',
+            new=AsyncMock(return_value={'ran':True,'passed':True,'issues':[]})):
+            with self.assertRaises(PipelineExecutionError) as caught:
+                await run_interactive(normalize_interactive_request(self.request()))
+        self.assertEqual(caught.exception.failure_family,'review_evidence')
+        self.assertEqual(llm.await_count,3)
+        self.assertEqual(next(a['payload'] for a in caught.exception.artifacts
+            if a['artifact_type']=='failed_interactive_candidate'),GOOD)
+
+    async def test_runtime_regression_retains_last_valid_candidate(self):
+        from src.engine.pipeline_errors import PipelineExecutionError
+        review = json.loads(await fake_llm(step_key='code_review'))
+        review['critical_issues'] = ['required control missing']
+        delta = json.dumps({'patches':[{'search':'let population=10;','replace':"throw new Error('regression');"}]})
+        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
+            new=AsyncMock(side_effect=[GOOD,json.dumps(review),delta])), patch(
+            'src.engine.interactive_creation.validate_interactive_html',new=AsyncMock(side_effect=[
+                {'ran':True,'passed':True,'issues':[]},
+                {'ran':True,'passed':False,'issues':['regression']}])):
+            with self.assertRaises(PipelineExecutionError) as caught:
+                await run_interactive(normalize_interactive_request(self.request()))
+        self.assertEqual(next(a['payload'] for a in caught.exception.artifacts
+            if a['artifact_type']=='failed_interactive_candidate'),GOOD)
+        self.assertTrue(any(a.get('metadata',{}).get('discardedRegression') for a in caught.exception.artifacts))
+
     async def test_optical_major_arc_is_not_accepted_as_its_labeled_minor_angle(self):
         html = '''<!doctype html><html><body><h1>平面镜</h1>
         <canvas width="300" height="220"></canvas><input type="range" min="15" max="80" value="30" oninput="draw(+this.value)">
@@ -138,7 +204,7 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.html_code,GOOD.replace('种群模型','生态观察'))
         self.assertEqual(qa.await_count,1)
         correction = json.loads(llm.call_args_list[1].kwargs['messages'][0]['content'].split('\n',1)[1])
-        self.assertEqual(correction['html'],GOOD)
+        self.assertEqual(correction['html'],indexed_review_source(GOOD))
         self.assertIn('只修改标题为生态观察',correction['brief'])
         self.assertEqual(result.runtime_qa_report['generationAttempts'],
                          {'fullGenerationCalls':0,'patchCalls':2,'qaAttempts':1})
@@ -171,7 +237,7 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
             result = await run_interactive(request)
         correction = json.loads(llm.call_args_list[1].kwargs['messages'][0]['content'].split('\n',1)[1])
         self.assertIn('修改标题为生态观察，修复布局',correction['brief'])
-        self.assertEqual(correction['html'],GOOD.replace('种群模型','生态观察'))
+        self.assertEqual(correction['html'],indexed_review_source(GOOD.replace('种群模型','生态观察')))
         self.assertIn('布局溢出',correction['issues'])
         self.assertEqual(result.html_code,GOOD.replace('种群模型','生态观察').replace('margin:24px','margin:16px'))
 

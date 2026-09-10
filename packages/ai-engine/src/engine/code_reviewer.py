@@ -25,7 +25,8 @@ from .prompt_format import safe_format_prompt
 from .prompt_store import require_prompt
 from .quality_scorer import LLMReviewResult
 from .pipeline_errors import PipelineExecutionError
-from .review_evidence import EVIDENCE_PROTOCOL, REVIEW_FLAGS, REVIEW_SCORES, validate_review_evidence
+from .review_evidence import EVIDENCE_PROTOCOL, REVIEW_FLAGS, REVIEW_SCORES, validate_review_evidence, indexed_review_source
+from .review_recovery import recover_review, InvalidReviewEvidence
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,7 @@ class CodeReviewer:
             logger.debug("LLM not enabled – skipping code review")
             return LLMReviewResult(ran=False)
 
-        code_preview = _build_code_preview(html_code)
+        code_preview = indexed_review_source(_build_code_preview(html_code))
         prompt = safe_format_prompt(require_prompt("prompt.code_review_template"), code_preview=code_preview)
         system = require_prompt("prompt.code_review_system")
         system += (
@@ -81,49 +82,25 @@ class CodeReviewer:
             prompt = "ORIGINAL USER REQUIREMENTS:\n" + user_requirements + "\n\n" + prompt
         system += EVIDENCE_PROTOCOL
 
-        try:
-            raw = await self._client.complete_with_truncation_retry(
-                max_tokens=2048,
-                system=system,
-                messages=[{"role": "user", "content": prompt}],
-                step_key="code_review",
-                stage="qa_checking",
-                prefer_fast=True,
-                response_size_hint="medium_structured",
-                context_scope="request",
-                compression_policy="code_review",
-                truncation_retry_attempts=1,
-                truncation_retry_increment=512,
-                truncation_retry_max_tokens=3072,
-                timeout_retry_attempts=1,
-                timeout_retry_increment_s=30,
-                timeout_retry_max_s=120,
+        async def request_review(correction):
+            return await self._client.complete_with_truncation_retry(
+                max_tokens=2048, system=system,
+                messages=[{"role": "user", "content": prompt + ("\n\n" + correction if correction else "")}],
+                step_key="code_review", stage="qa_checking", prefer_fast=True,
+                response_size_hint="medium_structured", context_scope="request", compression_policy="code_review",
+                truncation_retry_attempts=1, truncation_retry_increment=512, truncation_retry_max_tokens=3072,
+                timeout_retry_attempts=0 if correction else 1,
+                timeout_retry_increment_s=30, timeout_retry_max_s=120,
             )
-            result = self._parse_review(raw)
-            errors = validate_review_evidence(result, html_code) if result.ran else ['invalid review schema']
-            if errors:
-                # Correct the assessment, not the artifact. Never turn missing
-                # evidence into either an automatic pass or another full generation.
-                try:
-                    corrected = await self._client.complete_with_truncation_retry(
-                        max_tokens=2048, system=system,
-                        messages=[{'role':'user','content':prompt + '\n\nREASSESSMENT REQUIRED:\n'
-                            + json.dumps({'validation_errors':errors,'previous_assessment':raw}, ensure_ascii=False)
-                            + '\nCheck each previous claim against the complete source. Remove contradicted claims '
-                            'and rescore; retain actual defects with valid citations. Return the complete assessment JSON.'}],
-                        step_key='code_review', stage='qa_checking', prefer_fast=True,
-                        response_size_hint='medium_structured', context_scope='request', compression_policy='code_review',
-                        truncation_retry_attempts=1, truncation_retry_max_tokens=3072,
-                        timeout_retry_attempts=0,
-                    )
-                    result = self._parse_review(corrected)
-                    errors = validate_review_evidence(result, html_code) if result.ran else ['invalid review schema']
-                except Exception as exc:
-                    raise self._evidence_failure(html_code, ['assessment correction unavailable'], 'review_infrastructure') from exc
-            if errors:
-                raise self._evidence_failure(html_code, errors, 'review_evidence')
+
+        try:
+            verified = await recover_review(request_review, self._parse_review,
+                lambda result: validate_review_evidence(result, html_code) if result.ran else ['invalid review schema'])
+            result = verified.assessment
             result.evidence_verified = True
             return result
+        except InvalidReviewEvidence as exc:
+            raise self._evidence_failure(html_code, exc.errors, 'review_evidence') from exc
         except PipelineExecutionError:
             raise
         except Exception as exc:

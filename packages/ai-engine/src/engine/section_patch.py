@@ -62,6 +62,7 @@ class SectionPatch:
     operation: str = "replace_section"
     anchor: Optional[str] = None
     search: Optional[str] = None
+    source_ref: Optional[str] = None
 
 
 def _html_marker_start(name: str) -> str:
@@ -446,7 +447,9 @@ def build_patch_protocol(
             raise ValueError('conflicting patch operation policies')
         return '\n'.join([
             f'PATCH-FIRST {task_label.upper()} OUTPUT CONTRACT (NON-NEGOTIABLE):',
-            'Return JSON only: {"patches":[{"section":"SCRIPT","operation":"replace_exact","search":"unique existing source","content":"replacement source"}]}',
+            'Return JSON only: {"patches":[{"section":"SCRIPT","operation":"replace_exact","source_ref":"server-issued span reference","content":"replacement for that complete span"}]}',
+            'References in square brackets are NOT source. Keep unchanged prefix/suffix within the selected span, at most 600 characters. Never copy labels into code.',
+            'For smaller edits you may instead use search:"unique exact source"; supply exactly one of search/source_ref.',
             f'Allowed sections: {", ".join(allowed_sections)}. Only replace_exact is allowed; no anchors or complete section replacement.',
             'At most 12 small patches. Each search must occur exactly once in its original section; include enough unchanged context to make it unique.',
             'Do not replace more than 60% of any section across the batch. Preserve all unrelated code, initialization, lexical scope, state and element IDs.',
@@ -509,7 +512,9 @@ def build_section_context(
     html: str,
     allowed_sections: Sequence[str],
     preferred_targets: Optional[Sequence[str]] = None,
+    indexed: bool = False,
 ) -> str:
+    from .source_references import indexed_review_source
     normalized_html = ensure_structured_section_markers(html)
     sections = extract_patchable_sections(normalized_html)
     blocks: List[str] = ["CURRENT PATCHABLE SECTIONS:"]
@@ -524,7 +529,7 @@ def build_section_context(
     for section in allowed_sections:
         content = sections.get(section)
         blocks.append(f"=== SECTION:{section} START ===")
-        blocks.append(content if content is not None else "(section missing)")
+        blocks.append((indexed_review_source(content) if indexed else content) if content is not None else "(section missing)")
         blocks.append(f"=== SECTION:{section} END ===")
     anchors = list_safe_patch_anchors(normalized_html, allowed_sections)
     if PATCH_SECTION_SCRIPT in allowed_sections and not any(anchor in anchors for anchor in PATCHABLE_SCRIPT_ANCHORS):
@@ -661,10 +666,13 @@ def parse_patch_response(
             if not isinstance(item.get("content"), str):
                 raise ValueError("patch_validation_failed:invalid_content")
             search = item.get("search")
-            if operation == "replace_exact" and (not isinstance(search, str) or not search):
+            source_ref = item.get('source_ref')
+            if operation == "replace_exact" and ((search is None) == (source_ref is None)
+                or (source_ref is not None and (not isinstance(source_ref,str) or not source_ref))
+                or (search is not None and (not isinstance(search,str) or not search))):
                 raise ValueError("patch_validation_failed:invalid_search")
             patches.append(SectionPatch(section=section, operation=operation,
-                content=item["content"], search=search, anchor=item.get("anchor") or anchor))
+                content=item["content"], search=search, source_ref=source_ref, anchor=item.get("anchor") or anchor))
         return patches, None
 
     cleaned = _strip_code_fences(raw_text)
@@ -742,6 +750,38 @@ def apply_section_patches(
 ) -> str:
     updated = ensure_structured_section_markers(html)
     original = updated
+    patches = list(patches)
+    if patches and all(p.operation == 'replace_exact' for p in patches):
+        from .source_references import locate_source_edit, apply_source_edits
+        originals = extract_patchable_sections(original)
+        replacements = {}
+        try:
+            targets = {p.section for p in patches}
+            if PATCH_SECTION_BODY in targets and PATCH_SECTION_SCRIPT in targets:
+                raise ValueError('overlapping BODY/SCRIPT targets')
+            for section in targets:
+                source = originals.get(section)
+                if source is None:
+                    raise ValueError('missing section: '+section)
+                edits = []
+                for patch in (p for p in patches if p.section == section):
+                    start,end = locate_source_edit(source,search=patch.search,source_ref=patch.source_ref)
+                    edits.append((start,end,patch.content))
+                replacements[section] = apply_source_edits(source,edits)
+        except ValueError as exc:
+            raise ValueError('patch_validation_failed:'+str(exc)) from exc
+        # Resolve every range against the original before writing any section.
+        for section,replacement in replacements.items():
+            setter = {PATCH_SECTION_SCRIPT:replace_script_content, PATCH_SECTION_STYLE:replace_style_content,
+                PATCH_SECTION_BODY:replace_body_content}.get(section)
+            if setter is None:
+                raise ValueError('patch_validation_failed:invalid_section')
+            updated = setter(updated,replacement)
+        if _populated_empty_script_anchors(original,updated):
+            raise ValueError('patch_validation_failed:synthetic_anchor_populated')
+        return updated
+    if any(p.source_ref is not None for p in patches):
+        raise ValueError('patch_validation_failed:source_refs_require_atomic_exact_batch')
     whole_sections = set()
     for patch in patches:
         if patch.operation not in {"replace_section", "replace_block", "replace_exact"}:

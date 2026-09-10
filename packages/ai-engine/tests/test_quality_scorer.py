@@ -51,10 +51,15 @@ class TestQualityScorer:
         breakdown = scorer.compute(make_static(strategy="llm"))
         assert breakdown.strategy_bonus == 0.0
 
-    def test_retries_penalty(self):
+    def test_repair_history_does_not_change_final_artifact_quality(self):
         s_no_retry = make_static(retries=0)
         s_retry = make_static(retries=3)
-        assert scorer.compute(s_no_retry).final_score > scorer.compute(s_retry).final_score
+        original = scorer.compute(s_no_retry)
+        repaired = scorer.compute(s_retry)
+        assert original.final_score == repaired.final_score
+        assert repaired.retry_penalty == 1.5
+        assert repaired.details['qa_retries'] == 3
+        assert repaired.details['retry_penalty_applied'] is False
 
     def test_runtime_canvas_bonus(self):
         static = make_static()
