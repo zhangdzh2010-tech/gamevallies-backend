@@ -25,6 +25,9 @@ def review(kind, **updates):
     ('做一个电路教学小游戏，需要闯关','game'),('Make a memory matching game','game'),
     ('作品类型：工具。计数器','tool'),('artifact_kind: science\noscillation','science'),
     ('作品类型：游戏。科学主题闯关','game'),('做一个小游戏\n请生成桌面浏览器中的可交互创意作品','game'),
+    ('波源干涉与波纹演示。呈现方式：动态演示','science'),
+    ('日常换算器。呈现方式：交互实验','tool'),
+    ('科学主题闯关。呈现方式：自由创意','game'),
 ])
 def test_classification(description, kind):
     assert infer_artifact_kind(description) == kind
