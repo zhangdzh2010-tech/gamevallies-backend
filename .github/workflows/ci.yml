@@ -39,6 +39,8 @@ jobs:
       - run: node --test test/database-migration.test.cjs
       - name: Verify empty and repeated database initialization on MySQL 8
         run: node test/database-migration.integration.cjs
+      - name: Build shared user service for quota integration
+        run: npm run build --workspace=@gamevallies/user-service
       - name: Verify concurrent creation quota grants on MySQL 8
         run: node test/creation-quota-grant.integration.cjs
 
