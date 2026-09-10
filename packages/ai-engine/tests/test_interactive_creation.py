@@ -15,6 +15,27 @@ async def fake_llm(**kwargs):
     return GOOD
 
 class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
+    async def test_optical_major_arc_is_not_accepted_as_its_labeled_minor_angle(self):
+        html = '''<!doctype html><html><body><h1>平面镜</h1>
+        <canvas width="300" height="220"></canvas><input type="range" min="15" max="80" value="30" oninput="draw(+this.value)">
+        <script>const ctx=document.querySelector('canvas').getContext('2d');
+        function draw(a){ctx.clearRect(0,0,300,220);ctx.beginPath();
+        ctx.arc(150,100,50,-Math.PI/2-a*Math.PI/180,-Math.PI/2,true);ctx.stroke();
+        ctx.fillText('反射角 '+a+'°',10,20);}draw(30);</script></body></html>'''
+        bad = await validate_interactive_html(html)
+        self.assertFalse(bad['passed'])
+        self.assertTrue(any(x['actualSweepDegrees']==330 for x in bad['angleEvidence']))
+        good = await validate_interactive_html(html.replace('-Math.PI/2,true)', '-Math.PI/2,false)'))
+        self.assertTrue(good['passed'], str(good['issues']))
+        self.assertFalse(good['angleEvidence'])
+        unrelated = await validate_interactive_html(html.replace('反射角 ', '仪表值 '))
+        self.assertFalse(unrelated['angleEvidence'])
+
+    async def test_font_variance_cannot_hide_controls_at_the_bottom_edge(self):
+        html = GOOD.replace('body{margin:24px;', 'body{margin:0;').replace('<h1>', '<div style="height:33rem"></div><h1 style="margin:0;font-size:1rem">')
+        report = await validate_interactive_html(html)
+        self.assertTrue(any('字号容差' in issue for issue in report['issues']))
+
     def request(self):
         return RunPipelineV2Request(game_id='game',user_id='user',timeout_s=1800,
             raw_user_input='做一个捕食者与猎物的种群变化模型。\n请生成桌面浏览器中的可交互创意作品。',

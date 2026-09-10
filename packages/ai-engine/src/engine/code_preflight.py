@@ -39,6 +39,10 @@ _CANVAS_DIMENSION_RE = re.compile(
 )
 _TOUCH_ZERO_RE = re.compile(r"\b(?:touches|changedTouches)\s*\[\s*0\s*\]")
 _TOUCH_LENGTH_RE = re.compile(r"\b(?:touches|changedTouches)\s*\.\s*length\b")
+_TOUCH_FALLBACK_RE = re.compile(
+    rf"(?<![\w$.])(?P<event>{_IDENTIFIER_RE})\.(?P<list>touches|changedTouches)"
+    rf"\s*\?\s*(?P=event)\.(?P=list)\s*\[\s*0\s*\]\s*:\s*(?P=event)\b(?=\s*(?:[;,)\]}}]|$))"
+)
 _CTX_SET_TRANSFORM_RE = re.compile(r"\bctx\s*\.\s*setTransform\s*\(")
 _CANVAS_GET_CONTEXT_RE = re.compile(r"\bcanvas\s*\.\s*getContext\s*\(\s*['\"]2d['\"]")
 _CANVAS_PATH_CHAIN_RE = re.compile(
@@ -222,9 +226,49 @@ class CodePreflightValidator:
             return html_code
         seen_codes = {issue.code for issue in (issues or [])}
         repaired = self._repair_nested_grid_reads(html_code, runtime_contract)
+        if not seen_codes or "unsafe_touch_access" in seen_codes:
+            repaired = self._repair_touch_fallback(repaired)
         if not seen_codes or "unsafe_color_alpha_concat" in seen_codes:
             repaired = self._repair_unsafe_color_alpha_concat(repaired)
         return repaired or html_code
+
+    @staticmethod
+    def _repair_touch_fallback(html_code: str) -> str:
+        """Repair only the exact event-list ternary, preserving pointer behavior.
+
+        A missing/empty touches list falls through to changedTouches (touchend),
+        then the original pointer event. No synthetic coordinates or handlers.
+        """
+        def script_block(block):
+            if re.search(r'\btype\s*=\s*[\'\"](?!module[\'\"]|(?:text|application)/javascript[\'\"])', block[1], re.I):
+                return block[0]
+            script = block.group('body')
+            try:
+                import esprima
+                tokens = esprima.tokenize(script, {'range':True,'comment':True})
+                excluded = [token.range for token in tokens
+                    if token.type in {'String','Template','RegularExpression','LineComment','BlockComment'}]
+            except Exception:
+                # If lexical boundaries are unknown, do not risk editing data.
+                return block[0]
+            def is_code(match):
+                return not any(start < match.end() and end > match.start() for start, end in excluded)
+            replacements = [m for m in _TOUCH_FALLBACK_RE.finditer(script) if is_code(m)]
+            reads = [m for m in _TOUCH_ZERO_RE.finditer(script) if is_code(m)]
+            # The legacy validator recognizes a list-length guard globally.
+            # Do not introduce one while leaving an unfamiliar access behind;
+            # that would accidentally hide an unresolved preflight hazard.
+            if any(not any(r.start() <= m.start() and m.end() <= r.end() for r in replacements) for m in reads):
+                return block[0]
+            def replace(match):
+                if not is_code(match):
+                    return match[0]
+                event, kind = match['event'], match['list']
+                other = 'changedTouches' if kind == 'touches' else 'touches'
+                return (f'({event}.{kind} && {event}.{kind}.length ? {event}.{kind}[0] : '
+                        f'({event}.{other} && {event}.{other}.length ? {event}.{other}[0] : {event}))')
+            return block[1] + _TOUCH_FALLBACK_RE.sub(replace, script) + block[3]
+        return _SCRIPT_BLOCK_RE.sub(script_block, html_code)
 
     def render_guidance(self, issues: Iterable[CodePreflightIssue]) -> str:
         visible = []

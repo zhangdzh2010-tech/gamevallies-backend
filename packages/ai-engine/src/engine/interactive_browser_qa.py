@@ -24,6 +24,34 @@ Object.defineProperty(window,'localStorage',{value:storage(),configurable:false}
 Object.defineProperty(window,'sessionStorage',{value:storage(),configurable:false});
 })();</script>"""
 
+# Observe actual stroked optical angle arcs, not source comments or model claims.
+# Only flag a complementary major arc when its *minor* angle exactly matches a
+# rendered incident/reflection label. Full circles, gauges, unlabeled art and
+# unrelated angles are not treated as failed science.
+ANGLE_PROBE = r"""<script>(function(){
+const p=CanvasRenderingContext2D.prototype,frames=new Map(),paths=new WeakMap();
+const begin=p.beginPath,arc=p.arc,stroke=p.stroke,clear=p.clearRect,fillText=p.fillText,strokeText=p.strokeText;
+function frame(c){if(!frames.has(c)&&frames.size<20)frames.set(c,{arcs:[],labels:[]});return frames.get(c);}
+p.beginPath=function(){paths.set(this,[]);return begin.apply(this,arguments);};
+p.arc=function(x,y,r,start,end,ccw){const a=paths.get(this);if(a&&a.length<20)a.push({start,end,ccw:!!ccw});return arc.apply(this,arguments);};
+p.stroke=function(){const f=frame(this);if(f&&arguments.length===0)f.arcs.push(...(paths.get(this)||[]));if(f)f.arcs=f.arcs.slice(-40);return stroke.apply(this,arguments);};
+p.clearRect=function(x,y,w,h){if(x===0&&y===0){const f=frame(this);if(f){f.arcs=[];f.labels=[];}}return clear.apply(this,arguments);};
+function label(c,t){const f=frame(c),m=String(t).match(/(?:入射角|反射角)\s*[:：=]?\s*(\d+(?:\.\d+)?)\s*°/);
+ if(f&&m)f.labels.push({text:String(t).slice(0,80),degrees:Number(m[1])});if(f)f.labels=f.labels.slice(-20);}
+p.fillText=function(t){label(this,t);return fillText.apply(this,arguments);};
+p.strokeText=function(t){label(this,t);return strokeText.apply(this,arguments);};
+Object.defineProperty(window,'__workAngleEvidence',{value:()=>{
+ const evidence=[];for(const [c,f] of frames){for(const a of f.arcs){const tau=2*Math.PI;
+ const raw=a.ccw?a.start-a.end:a.end-a.start;
+ const sweep=raw>=tau?360:((raw%tau+tau)%tau)*180/Math.PI;
+ const minor=Math.min(sweep,360-sweep);
+ if(sweep<=180||sweep>=359.99)continue;
+ const text=f.labels.find(l=>l.degrees>0&&l.degrees<90&&Math.abs(l.degrees-minor)<.1);
+ if(text)evidence.push({type:'optical_angle_major_arc',canvas:c.canvas.id,label:text.text,
+   expectedDegrees:text.degrees,actualSweepDegrees:Math.round(sweep*1000)/1000,...a});
+ }}return evidence.slice(0,10);}});
+})();</script>"""
+
 CONTROLS = 'button,input[type=range],input[type=number],input[type=text],input:not([type]),textarea,select'
 DRAWING_PROBE = r"""<script>(function(){
 const reports=[],paths=new WeakMap(),moves=new WeakMap(),p=CanvasRenderingContext2D.prototype;
@@ -78,7 +106,7 @@ async def load_work(host, code: str, *, hidden: bool = False):
     if secured == code:
         secured = network_policy_meta() + code
     # Storage is installed before any candidate code, including pre-head scripts.
-    secured = re.sub(r'^(\s*<!doctype[^>]*>)?', lambda m: m[0] + STORAGE_BOOTSTRAP + DRAWING_PROBE, secured, count=1, flags=re.I)
+    secured = re.sub(r'^(\s*<!doctype[^>]*>)?', lambda m: m[0] + STORAGE_BOOTSTRAP + DRAWING_PROBE + ANGLE_PROBE, secured, count=1, flags=re.I)
     await host.set_content('<style>html,body{margin:0;width:100%;height:100%}iframe{border:0;width:100%;height:100%}</style><iframe sandbox="allow-scripts"></iframe>')
     frame_element = host.locator('iframe')
     await frame_element.evaluate('(el, hidden)=>{el.style.display=hidden?"none":"block"}', hidden)
@@ -111,13 +139,14 @@ async def browser_report(code: str) -> dict:
                 if re.search(r'Ignored call to.*(?:alert|prompt|confirm)|allow-modals', message.text, re.I):
                     sandbox_errors.append('正式沙箱禁止原生 alert/prompt/confirm，请使用页面内确认或编辑界面。')
             host.on('console', on_console)
-            viewports = []
+            viewports, angle_evidence = [], []
             for width, height in [(1000,460),(1000,600),(1366,768),(1920,1080)]:
                 await host.set_viewport_size({'width':width,'height':height})
                 frame = await load_work(host, code)
                 layout = await frame.evaluate(LAYOUT)
                 frame = await load_work(host, code, hidden=True)
                 layout['hiddenReveal'] = await frame.evaluate(LAYOUT)
+                angle_evidence.extend(await frame.evaluate('()=>window.__workAngleEvidence()'))
                 viewports.append(layout)
                 for mode, result in [('visible', layout), ('hidden-reveal', layout['hiddenReveal'])]:
                     if result['horizontalOverflow']:
@@ -128,6 +157,15 @@ async def browser_report(code: str) -> dict:
                         issues.append(f'1000×600 ({mode}) 核心图形/控件不完整：{labels}。压缩主布局；长列表可在有界容器内滚动，次要说明可折叠。')
                     if any(c['width'] <= 0 or c['height'] <= 0 for c in result['canvasSizes']):
                         issues.append(f'{width}×{height} ({mode}) 可见Canvas像素尺寸为零。')
+                if (width, height) == (1000, 600):
+                    # Linux production and macOS/Windows fallback fonts have
+                    # different metrics. A small root-font stress catches layouts
+                    # that only pass with controls on the viewport's last pixel.
+                    await frame.evaluate("()=>document.documentElement.style.setProperty('font-size',parseFloat(getComputedStyle(document.documentElement).fontSize)*1.125+'px','important')")
+                    await host.wait_for_timeout(150)
+                    layout['fontStress'] = await frame.evaluate(LAYOUT)
+                    if layout['fontStress']['coreOutsideCount'] or layout['fontStress']['horizontalOverflow']:
+                        issues.append('1000×600 字号容差检查（根字号+12.5%）核心图形/控件溢出。为字体差异留余量，缩小主图或使用响应式布局；不要缩小文字或隐藏核心控件。')
 
             await host.set_viewport_size({'width':1440,'height':900})
             frame = await load_work(host, code)
@@ -207,6 +245,7 @@ async def browser_report(code: str) -> dict:
                                 issues.append(f'点击启动控件「{text}」后，动画/模拟时间/作品内容未持续变化。检查时间累加与真实经过时间。')
                     exercised += 1
                     await host.wait_for_timeout(100)
+                    angle_evidence.extend(await frame.evaluate('()=>window.__workAngleEvidence()'))
                     effect = before != await frame.evaluate(SIGNATURE)
                     changed = changed or effect
                     control_checks.append({'control':label,'contentChanged':effect})
@@ -216,6 +255,10 @@ async def browser_report(code: str) -> dict:
             if await frame.locator('[data-work-qa-probe]').count():
                 issues.append('用户文本被解释为HTML；动态名称/内容必须用textContent或安全转义后渲染。')
             drawing_issues = await frame.evaluate('()=>window.__workDrawingIssues || []')
+            if angle_evidence:
+                first = angle_evidence[0]
+                issues.append(f'光学角弧与标签不一致：标注{first["expectedDegrees"]}°但存在{first["actualSweepDegrees"]}°大弧。'
+                    '检查Canvas arc的起止角与counterclockwise；入射角/反射角应画法线与光线之间的小夹角。')
             if drawing_issues:
                 issues.append('参数边界下存在连续曲线超出Canvas高度而被裁切；按最大合成值调整坐标范围或留出绘图边距。')
             if not exercised or not changed:
@@ -226,6 +269,7 @@ async def browser_report(code: str) -> dict:
                 'interaction_performed':bool(exercised),'dom_changed_after_input':changed,
                 'controlsExercised':exercised,'controlsDiscovered':total,'controlChecks':control_checks,
                 'controlCoverageTruncated':total>40,'contentChanged':changed,
-                'drawingIssues':drawing_issues,'motionChecks':motion_checks,'viewports':viewports}
+                'drawingIssues':drawing_issues,'angleEvidence':angle_evidence[:10],
+                'motionChecks':motion_checks,'viewports':viewports}
         finally:
             await browser.close()

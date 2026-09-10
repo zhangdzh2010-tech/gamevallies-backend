@@ -18,6 +18,7 @@ def run():
     parser.add_argument('--output', required=True)
     parser.add_argument('--count', type=int, default=15)
     parser.add_argument('--concurrency', type=int, choices=[1, 2], default=2)
+    parser.add_argument('--case-ids', nargs='+', help='Explicit distinct manifest cases; length must equal --count')
     args = parser.parse_args()
     if not 1 <= args.count <= 15:
         raise ValueError('This cohort is limited to 15 first-generation attempts')
@@ -28,6 +29,14 @@ def run():
     password = getpass.getpass('Password: ')
     client = Showcase('https://www.zlspace.ai', login('https://www.zlspace.ai', account, password), output)
     del password
+    indices = list(range(args.count))
+    if args.case_ids:
+        if len(args.case_ids) != args.count or len(set(args.case_ids)) != args.count:
+            raise ValueError('Explicit cases must be distinct and match --count; no tasks submitted')
+        case_index = {case['id']: index for index, case in enumerate(client.manifest['cases'])}
+        if any(case_id not in case_index for case_id in args.case_ids):
+            raise ValueError('Unknown case ID; no tasks submitted')
+        indices = [case_index[case_id] for case_id in args.case_ids]
     quota = client.get('users/quota')
     sub = quota.get('subscription') or {}
     remaining = int(quota.get('freeQuota') or 0) + (max(0, int(sub.get('quotaThisPeriod') or 0) - int(sub.get('usedThisPeriod') or 0)) if sub.get('active') else 0)
@@ -39,7 +48,7 @@ def run():
     stopped = False
     while active or (next_index < args.count and not stopped):
         while len(active) < args.concurrency and next_index < args.count and not stopped:
-            index = next_index
+            index = indices[next_index]
             next_index += 1
             try:
                 submitted = client.submit(index)

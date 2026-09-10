@@ -53,6 +53,8 @@ def review_prompt(kind: str, brief: str, code: str, runtime: dict) -> str:
         '科学演示必须检查公式/单位/参数对计算的作用/简化假设，不得将示意当实验数据。'
         '还要逐项追踪计算结果到图形坐标的映射：坐标轴方向、矢量或光线箭头起终点、角度相对哪条基准线、Canvas角弧顺逆时针与最小夹角。'
         '数值标签正确不代表图形正确；方向或角弧与所述物理模型矛盾必须进入critical_issues。'
+        '平面镜反射尤其要追踪箭头实际顶点与朝向：入射光从光源指向镜面交点，反射光从交点离开；两支箭头都离开镜面是错误。'
+        '对于Canvas角弧，应按start/end/counterclockwise计算实际扫过角度，不能仅因端点相差30°就断言画出了30°，反向可能实际为330°。'
         '完整性按用户明确要求判断；不能因代码短、画面简洁而认定作品不完整。\n'
         f'类型：{kind}\n评分规则：{json.dumps(rubric,ensure_ascii=False)}\n'
         '结构：{"artifact_kind":"类型","complete":true,"critical_issues":[],"scores":{"维度":8},'

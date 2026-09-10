@@ -7,6 +7,73 @@ from src.api.models import GameRuntimeContract
 from src.engine.code_preflight import CodePreflightIssue, CodePreflightValidator
 
 
+def test_touch_fallback_repair_is_local_idempotent_and_preserves_scopes():
+    validator = CodePreflightValidator()
+    html = '''<html><script>(()=>{function point(e){
+      return e.touches ? e.touches[0] : e;
+    }function ended(event){return event.changedTouches ? event.changedTouches[0] : event;}
+    })();</script></html>'''
+    repaired = validator.auto_repair(html)
+    assert 'e.touches && e.touches.length' in repaired
+    assert 'e.changedTouches && e.changedTouches.length' in repaired
+    assert 'event.changedTouches && event.changedTouches.length' in repaired
+    assert repaired.startswith('<html><script>(()=>{function point(e){')
+    assert validator.auto_repair(repaired) == repaired
+    assert not validator._check_touch_access(repaired)
+
+
+def test_touch_fallback_repair_does_not_edit_data_comments_or_nonmatching_expressions():
+    validator = CodePreflightValidator()
+    html = '''<html><p>e.touches ? e.touches[0] : e</p><script>
+    const message="e.touches ? e.touches[0] : e";
+    const literal=`e.touches ? e.touches[0] : e`;
+    const pattern=/e.touches ? e.touches[0] : e/;
+    // e.touches ? e.touches[0] : e
+    /* e.touches ? e.touches[0] : e */
+    const different = e.touches ? other.touches[0] : e;
+    const member = e.touches ? e.touches[0] : e.point;
+    const spacedMember = e.touches ? e.touches[0] : e .point;
+    const nestedFallback = e.touches ? e.touches[0] : e || other;
+    const direct = e.touches[0];
+    </script></html>'''
+    assert validator.auto_repair(html) == html
+
+
+def test_touch_fallback_repair_leaves_existing_guard_untouched():
+    html = '<script>function point(e){return e.touches && e.touches.length ? e.touches[0] : e;}</script>'
+    assert CodePreflightValidator().auto_repair(html) == html
+
+
+def test_partial_touch_repair_does_not_hide_another_unsafe_access():
+    html = '<script>const point = e.touches ? e.touches[0] : e; const unsafe = other.touches[0];</script>'
+    validator = CodePreflightValidator()
+    assert validator.auto_repair(html) == html
+    assert validator._check_touch_access(html)
+
+
+def test_touch_repair_executes_pointer_touchstart_touchend_and_empty_lists():
+    import asyncio
+    from playwright.async_api import async_playwright
+    html = '<script>function point(e){return e.touches ? e.touches[0] : e;}</script>'
+    repaired = CodePreflightValidator().auto_repair(html)
+    async def check():
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            try:
+                page = await browser.new_page()
+                await page.set_content(repaired)
+                actual = await page.evaluate('''()=>[
+                  point({clientX:1}).clientX,
+                  point({touches:[{clientX:2}],clientX:1}).clientX,
+                  point({touches:[],changedTouches:[{clientX:3}],clientX:1}).clientX,
+                  point({touches:[],changedTouches:[],clientX:4}).clientX
+                ]''')
+                assert actual == [1,2,3,4]
+            finally:
+                await browser.close()
+    asyncio.run(check())
+
+
 def test_code_preflight_flags_missing_canvas_dimensions_and_undefined_symbols():
     validator = CodePreflightValidator()
     html = """
