@@ -543,15 +543,64 @@ class CodePreflightValidator:
             return []
         if _TOUCH_LENGTH_RE.search(script):
             return []
+        if CodePreflightValidator._touch_reads_have_element_guards(script):
+            return []
         return [
             CodePreflightIssue(
                 code="unsafe_touch_access",
                 message=(
-                    "Guard touches[0]/changedTouches[0] with a length check and fall back to the event itself "
+                    "Guard touches[0]/changedTouches[0] with a length or element-existence check and fall back to the event itself "
                     "before reading clientX/clientY."
                 ),
             )
         ]
+
+    @staticmethod
+    def _touch_reads_have_element_guards(script: str) -> bool:
+        """Accept equivalent existence guards, without guessing boolean precedence.
+
+        Recognize e.touches && e.touches[0] ? e.touches[0].clientX : fallback
+        from the AST. Every touch read must be covered; an unrelated guarded
+        read must not hide an unsafe one. Unsupported syntax stays conservative.
+        """
+        try:
+            import esprima
+            tree = esprima.parseScript(script, {'range': True}).toDict()
+        except Exception:
+            return False
+
+        def touch_list(node):
+            return (isinstance(node, dict) and node.get('type') == 'MemberExpression'
+                    and not node.get('computed') and node.get('property', {}).get('name') in {'touches', 'changedTouches'})
+
+        def zero_read(node):
+            return (isinstance(node, dict) and node.get('type') == 'MemberExpression'
+                    and node.get('computed') and node.get('property', {}).get('type') == 'Literal'
+                    and node['property'].get('value') == 0 and touch_list(node.get('object')))
+
+        def owner(node):
+            if touch_list(node) and node.get('object', {}).get('type') == 'Identifier':
+                return (node['object']['name'], node['property']['name'])
+            return None
+
+        reads, guarded = set(), set()
+        def visit(node):
+            if isinstance(node, list):
+                for item in node: visit(item)
+            elif isinstance(node, dict):
+                if zero_read(node): reads.add(tuple(node['range']))
+                if node.get('type') == 'ConditionalExpression':
+                    test, value = node['test'], node['consequent']
+                    if (test.get('type') == 'LogicalExpression' and test.get('operator') == '&&'
+                            and owner(test.get('left')) and zero_read(test.get('right'))
+                            and value.get('type') == 'MemberExpression' and zero_read(value.get('object'))
+                            and not value.get('computed') and value.get('property', {}).get('name') in {'clientX', 'clientY'}
+                            and owner(test['left']) == owner(test['right']['object']) == owner(value['object']['object'])):
+                        guarded.update((tuple(test['right']['range']), tuple(value['object']['range'])))
+                for value in node.values():
+                    if isinstance(value, (dict, list)): visit(value)
+        visit(tree)
+        return reads <= guarded
 
     @staticmethod
     def _check_ready_state_input_gate(script: str) -> List[CodePreflightIssue]:

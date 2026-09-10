@@ -44,6 +44,29 @@ def test_touch_fallback_repair_leaves_existing_guard_untouched():
     assert CodePreflightValidator().auto_repair(html) == html
 
 
+def test_element_existence_guard_is_equivalent_to_length_check():
+    validator = CodePreflightValidator()
+    for kind in ('touches', 'changedTouches'):
+        script = f'''function coords(e) {{
+          const x=e.clientX !== undefined ? e.clientX : (e.{kind} && e.{kind}[0] ? e.{kind}[0].clientX : 0);
+          const y=e.clientY !== undefined ? e.clientY : (e.{kind} && e.{kind}[0] ? e.{kind}[0].clientY : 0);
+          return [x,y]; }}'''
+        assert validator._check_touch_access(script) == []
+        assert validator.auto_repair('<script>'+script+'</script>') == '<script>'+script+'</script>'
+
+
+def test_element_guard_does_not_hide_different_or_unprotected_touch_reads():
+    validator = CodePreflightValidator()
+    safe = 'e.touches && e.touches[0] ? e.touches[0].clientX : 0'
+    unsafe = [safe.replace('&&', '||'), '!'+safe, 'other || '+safe,
+        safe.replace('? e.touches', '? other.touches'),
+        safe.replace('e.touches &&', 'other.touches &&'),
+        safe+'; const y=e.touches[0].clientY;',
+        safe+'; const y=nested.event.touches[0].clientY;']
+    for expression in unsafe:
+        assert validator._check_touch_access('const x='+expression), expression
+
+
 def test_partial_touch_repair_does_not_hide_another_unsafe_access():
     html = '<script>const point = e.touches ? e.touches[0] : e; const unsafe = other.touches[0];</script>'
     validator = CodePreflightValidator()

@@ -381,6 +381,7 @@ def test_structural_defect_skips_patch_and_goes_straight_to_regeneration():
     generated_first = _generated(BASE_CODE, "provider-a")
     second_code = BASE_CODE.replace("background:#111", "background:#333")
     generated_second = _generated(second_code, "provider-b")
+    events = []
 
     response, mocks = _run_create_with_mocks(
         generate_side_effect=[(generated_first, []), (generated_second, [])],
@@ -390,12 +391,20 @@ def test_structural_defect_skips_patch_and_goes_straight_to_regeneration():
         ],
         review_side_effect=[_near_miss_review(is_complete_game=False), _passing_review()],
         compute_side_effect=[_quality(5.9), _quality(7.1)],
+        progress_cb=lambda stage, pct, message, details: events.append((message, details)),
     )
 
     assert mocks.patch_text.await_count == 0
     assert mocks.runtime_loop.await_count == 0
     assert mocks.generate.await_count == 2
     assert response.html_code == second_code
+    details = next(data for message, data in events if message == "Regenerating with gameplay and presentation quality guidance")
+    assert details["failureFamily"] == "quality_gate"
+    assert details["reviewRan"] is True
+    assert details["isCompleteGame"] is False
+    assert details["qualityGateErrors"]
+    assert details["scores"]["final"] == 5.9
+    assert "reviewIssues" in details
 
 
 def test_disabled_flag_keeps_existing_full_regeneration_behavior():

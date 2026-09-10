@@ -693,6 +693,14 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                             "maxAttempts": len(attempt_plan),
                             "failedStage": "code_review",
                             "failedProviderId": (last_route_snapshot or {}).get("provider_id"),
+                            "failureFamily": "quality_gate",
+                            "qualityGateErrors": quality_gate_errors,
+                            "reviewIssues": list(review.issues or [])[:10],
+                            "reviewRan": review.ran,
+                            "isCompleteGame": review.is_complete_game,
+                            "hasRealGameplay": review.has_real_gameplay,
+                            "scores": {"fun": review.fun_score, "visual": review.visual_polish_score,
+                                "character": review.character_quality_score, "final": quality.final_score},
                         },
                     )
                     await asyncio.sleep(min(quality_attempt, 2))
