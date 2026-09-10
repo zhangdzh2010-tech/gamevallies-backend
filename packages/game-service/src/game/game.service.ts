@@ -2665,12 +2665,13 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   private async resolveCreateForkSource(
     userId: string,
     dto: CreateGameCommand,
-  ): Promise<{ sourceSpec: Record<string, unknown> | null; sourceCode: string | null; forkedFrom: string | null; forkDepth: number }> {
+  ): Promise<{ sourceSpec: Record<string, unknown> | null; sourceCode: string | null; forkedFrom: string | null; forkDepth: number; publicDescription: string | null }> {
     const fallback = {
       sourceSpec: null as Record<string, unknown> | null,
       sourceCode: null as string | null,
       forkedFrom: null as string | null,
       forkDepth: 0,
+      publicDescription: null as string | null,
     };
     if (!['fork', 'iterate'].includes(dto.entryMode || '') || !dto.sourceGameId) {
       return fallback;
@@ -2687,6 +2688,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           allowFork: true,
           forkDepth: true,
           description: true,
+          userIdea: true,
         },
       });
       if (!sourceGame) {
@@ -2715,6 +2717,9 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         sourceCode,
         forkedFrom: ownIteration ? null : sourceGame.id,
         forkDepth: ownIteration ? Number(sourceGame.forkDepth ?? 0) : Number(sourceGame.forkDepth ?? 0) + 1,
+        publicDescription: ownIteration
+          ? (String(sourceGame.userIdea || '').trim() || sanitizeUserIdea(sourceGame.description))
+          : null,
       };
     } catch (error) {
       this.logger.warn(`Failed to resolve fork source ${dto.sourceGameId}: ${this.extractErrorMessage(error)}`);
@@ -2731,12 +2736,14 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       // dto.description IS the user's typed text. For creation-session,
       // dto.userIdea is set explicitly to session.initialPrompt while the
       // generation description carries the user's latest editable brief.
-      const userIdea = sanitizeUserIdea(dto.userIdea ?? description);
       const title = dto.title?.trim() || `Game ${gameId.substring(0, 8)}`;
       const requestedOrientation = this.normalizeRequestedOrientation(dto.orientation)
         ?? this.inferRequestedOrientationFromText(description, title);
       const requestedGenerationTier = this.normalizeRequestedGenerationTier(dto.generationTier) || 'standard';
       const forkSource = await this.resolveCreateForkSource(userId, dto);
+      // Iteration feedback belongs to execution context, not the public card.
+      // Preserve the author's existing copy until they edit it when publishing.
+      const userIdea = forkSource.publicDescription || sanitizeUserIdea(dto.userIdea ?? description);
       const sourceSpec = dto.sourceSpec && Object.keys(dto.sourceSpec).length > 0
         ? dto.sourceSpec
         : forkSource.sourceSpec;
@@ -5032,6 +5039,7 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         data: {
           title: dto.title || game.title,
           description: dto.description || game.description,
+          ...(dto.description !== undefined ? { userIdea: dto.description.trim() } : {}),
           tags: dto.tags ?? game.tags ?? [],
           gameType: publishGameType,
           version: liveVersion,

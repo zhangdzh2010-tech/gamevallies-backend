@@ -1254,12 +1254,12 @@ describe('GameService', () => {
 
     it('carries own private iteration code and category into the queued task', async () => {
       setupCreateQuota('owner', 'iteration');
-      prisma.game.findUnique.mockResolvedValue({id:'source',authorId:'owner',status:'generated',visibility:'private',allowFork:false,forkDepth:0});
+      prisma.game.findUnique.mockResolvedValue({id:'source',authorId:'owner',status:'generated',visibility:'private',allowFork:false,forkDepth:0,userIdea:'调整电压与电阻，探索电流如何变化。'});
       const html = '<html><script>const model=12/6;</script></html>';
       bundleService.getLatestBundle.mockResolvedValue({htmlCode:html,metadata:{gameSpec:{game_type:'interactive_experience',artifact_kind:'science',source_description:'欧姆定律'}}});
       await service.create('owner', {description:'只修改页脚',entryMode:'iterate',sourceGameId:'source'} as any);
       expect(generationTaskService.createTask).toHaveBeenCalledWith(expect.objectContaining({metadata:expect.objectContaining({sourceCode:html,sourceSpec:expect.objectContaining({artifact_kind:'science'})})}));
-      expect(prisma.game.create).toHaveBeenCalledWith({data:expect.objectContaining({forkedFrom:null})});
+      expect(prisma.game.create).toHaveBeenCalledWith({data:expect.objectContaining({forkedFrom:null,description:'只修改页脚',userIdea:'调整电压与电阻，探索电流如何变化。'})});
     });
 
     it('does not expose another author private work through iteration', async () => {
@@ -3634,13 +3634,14 @@ describe('GameService', () => {
       author: { id: 'user-publish', username: 'publisher', avatarUrl: '' },
     });
 
-    await service.publish('game-fork-publish', 'user-publish', {} as any);
+    await service.publish('game-fork-publish', 'user-publish', {description:'  在岩浆间跃动，寻找属于自己的路线。  '} as any);
 
     expect(prisma.game.update).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: 'game-fork-publish' },
       data: expect.objectContaining({
         status: 'published',
         visibility: 'public',
+        userIdea: '在岩浆间跃动，寻找属于自己的路线。',
       }),
     }));
   });
