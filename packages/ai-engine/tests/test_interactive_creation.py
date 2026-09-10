@@ -12,6 +12,9 @@ async def fake_llm(**kwargs):
         return json.dumps({'artifact_kind':'science','complete':True,'critical_issues':[],
             'scores':{k:8 for k in ['scientific_correctness','parameter_fidelity','explanation_integrity','visual_clarity']},
             'evidence':{k:'Fixture assertion for routing test' for k in ['scientific_correctness','parameter_fidelity','explanation_integrity','visual_clarity']},'issues':[]})
+    if kwargs.get('step_key') == 'iterate.element_change':
+        return json.dumps({'patches':[{'search':'</body>', 'replace':
+            '<button onclick="document.getElementById(\'count\').textContent=\'10\'">重置</button></body>'}]})
     return GOOD
 
 class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
@@ -106,6 +109,71 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
             result=await run_interactive(request)
         self.assertEqual(result.changes,['增加重置按钮'])
         self.assertEqual(call.call_args_list[0].kwargs['step_key'],'iterate.element_change')
+
+    async def test_title_iteration_preserves_every_unrelated_byte_and_runs_real_browser_qa(self):
+        source = normalize_interactive_request(self.request()).source_spec
+        request = normalize_interactive_request(IterateV2Request(game_id='game',user_id='user',
+            current_code=GOOD, source_spec=source, iteration_intent={'feedback':'只修改标题为生态观察'}))
+        delta = json.dumps({'patches':[{'search':'<h1>种群模型</h1>','replace':'<h1>生态观察</h1>'}]})
+        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
+            new=AsyncMock(side_effect=[delta, await fake_llm(step_key='code_review')])) as llm:
+            result = await run_interactive(request)
+        self.assertEqual(result.html_code, GOOD.replace('<h1>种群模型</h1>', '<h1>生态观察</h1>'))
+        self.assertEqual(result.runtime_qa_report['generationAttempts'],
+                         {'fullGenerationCalls':0,'patchCalls':1,'qaAttempts':1})
+        self.assertTrue(result.runtime_qa_report['contentChanged'])
+        self.assertEqual(llm.call_args_list[0].kwargs['max_tokens'],4096)
+        self.assertEqual(llm.call_args_list[0].kwargs['response_size_hint'],'large_patch')
+
+    async def test_iteration_protocol_correction_uses_unchanged_source_once(self):
+        source = normalize_interactive_request(self.request()).source_spec
+        request = normalize_interactive_request(IterateV2Request(game_id='game',user_id='user',
+            current_code=GOOD, source_spec=source, iteration_intent={'feedback':'只修改标题为生态观察'}))
+        delta = json.dumps({'patches':[{'search':'<h1>种群模型</h1>','replace':'<h1>生态观察</h1>'}]})
+        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
+            new=AsyncMock(side_effect=['not JSON',delta,await fake_llm(step_key='code_review')])) as llm, patch(
+            'src.engine.interactive_creation.validate_interactive_html',
+            new=AsyncMock(return_value={'ran':True,'passed':True,'issues':[]})) as qa:
+            result = await run_interactive(request)
+        self.assertEqual(result.html_code,GOOD.replace('种群模型','生态观察'))
+        self.assertEqual(qa.await_count,1)
+        correction = json.loads(llm.call_args_list[1].kwargs['messages'][0]['content'].split('\n',1)[1])
+        self.assertEqual(correction['html'],GOOD)
+        self.assertIn('只修改标题为生态观察',correction['brief'])
+        self.assertEqual(result.runtime_qa_report['generationAttempts'],
+                         {'fullGenerationCalls':0,'patchCalls':2,'qaAttempts':1})
+
+    async def test_repeated_invalid_iteration_never_rewrites_or_loses_the_source(self):
+        from src.engine.pipeline_errors import PipelineExecutionError
+        source = normalize_interactive_request(self.request()).source_spec
+        request = normalize_interactive_request(IterateV2Request(game_id='game',user_id='user',
+            current_code=GOOD, source_spec=source, iteration_intent={'feedback':'只修改标题为生态观察'}))
+        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
+            new=AsyncMock(side_effect=['not JSON','not JSON'])) as llm, patch(
+            'src.engine.interactive_creation.validate_interactive_html',new=AsyncMock()) as qa:
+            with self.assertRaises(PipelineExecutionError) as caught:
+                await run_interactive(request)
+        self.assertEqual(llm.await_count,2)
+        self.assertEqual(qa.await_count,0)
+        self.assertEqual(next(a['payload'] for a in caught.exception.artifacts
+                             if a['artifact_type']=='failed_interactive_candidate'),GOOD)
+
+    async def test_iteration_followup_repair_keeps_the_edit_request_and_current_candidate(self):
+        source = normalize_interactive_request(self.request()).source_spec
+        request = normalize_interactive_request(IterateV2Request(game_id='game',user_id='user',
+            current_code=GOOD, source_spec=source, iteration_intent={'feedback':'修改标题为生态观察，修复布局'}))
+        delta = json.dumps({'patches':[{'search':'<h1>种群模型</h1>','replace':'<h1>生态观察</h1>'}]})
+        repair = json.dumps({'patches':[{'search':'margin:24px','replace':'margin:16px'}]})
+        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
+            new=AsyncMock(side_effect=[delta,repair,await fake_llm(step_key='code_review')])) as llm, patch(
+            'src.engine.interactive_creation.validate_interactive_html',new=AsyncMock(side_effect=[
+                {'ran':True,'passed':False,'issues':['布局溢出']}, {'ran':True,'passed':True,'issues':[]}])):
+            result = await run_interactive(request)
+        correction = json.loads(llm.call_args_list[1].kwargs['messages'][0]['content'].split('\n',1)[1])
+        self.assertIn('修改标题为生态观察，修复布局',correction['brief'])
+        self.assertEqual(correction['html'],GOOD.replace('种群模型','生态观察'))
+        self.assertIn('布局溢出',correction['issues'])
+        self.assertEqual(result.html_code,GOOD.replace('种群模型','生态观察').replace('margin:24px','margin:16px'))
 
     async def test_changing_slider_does_not_hide_a_stalled_start_button(self):
         stalled = '''<!doctype html><html><head></head><body><h1>种群模型</h1>

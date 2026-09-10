@@ -57,6 +57,8 @@ class LLMReviewResult:
     visual_polish_score: float = 5.0
     character_quality_score: float = 5.0
     issues: List[str] = field(default_factory=list)
+    findings: List[dict] = field(default_factory=list)
+    evidence_verified: bool = False
 
 
 @dataclass
