@@ -6,6 +6,26 @@ from src.engine.interactive_repair import apply_interactive_patch
 SOURCE = '<html><body><h1>标题</h1><p>说明</p><button>重置</button></body></html>'
 
 
+def test_revision_bound_edits_handle_duplicate_spans_without_fuzzy_matching():
+    from src.engine.source_references import source_reference_catalog
+    source = 'a' * 1800
+    ref = list(source_reference_catalog(source))[1]
+    raw = json.dumps({'patches':[{'source_ref':ref,'replace':'b'*600}]})
+    assert apply_interactive_patch(source,raw) == 'a'*600+'b'*600+'a'*600
+    with pytest.raises(ValueError,match='stale'):
+        apply_interactive_patch(source+'changed',raw)
+
+
+def test_indexed_edits_cannot_overlap_or_replace_whole_document():
+    from src.engine.source_references import source_reference_catalog
+    source = 'a'*1800
+    refs = list(source_reference_catalog(source))
+    for chosen in ([refs[0],refs[0]],refs):
+        with pytest.raises(ValueError):
+            apply_interactive_patch(source,json.dumps({'patches':[
+                {'source_ref':ref,'replace':'b'} for ref in chosen]}))
+
+
 def test_exact_patch_changes_only_requested_fragment():
     result = apply_interactive_patch(SOURCE, json.dumps({'patches':[{'search':'<h1>标题</h1>','replace':'<h1>新标题</h1>'}]}))
     assert result == SOURCE.replace('标题','新标题')

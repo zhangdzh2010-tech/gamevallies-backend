@@ -4,12 +4,15 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+import hashlib
 from ..api.models import GameRuntimeContract, GameSpec, RunPipelineResponse, IterateResponse
 from ..services.llm_client import LLMClient
 from .code_generation_support import _extract_html
 from .pipeline_errors import PipelineExecutionError
 from .artifact_quality import request_artifact_kind, review_prompt, assess_review, preservation_errors, preserve_cosmetic_scripts
 from .interactive_repair import apply_interactive_patch, repair_prompt
+from .review_recovery import recover_review, InvalidReviewEvidence
+from .candidate_checkpoint import CandidateCheckpoint
 
 DESKTOP_BRIEF_MARKER = '请生成桌面浏览器中的可交互创意作品'
 
@@ -115,6 +118,7 @@ async def run_interactive(request, progress_cb=None):
     report={'passed':False,'issues':[]}
     assessment=None
     candidate_history=[]
+    checkpoint=None
     full_generations=0
     patch_calls=0
     qa_attempts=0
@@ -176,32 +180,53 @@ async def run_interactive(request, progress_cb=None):
         if report['passed']:
             if progress_cb: progress_cb('code_review',94,'正在按作品类型检查功能与内容',{'artifactKind':kind,'attempt':attempt})
             remaining = max(1, int(deadline-time.time()))
-            try:
-                raw_review = await client.complete_with_truncation_retry(
+            async def request_review(correction):
+                remaining = max(1, int(deadline-time.time()))
+                return await client.complete_with_truncation_retry(
                     max_tokens=2048, system='独立审核，严格遵循分类评分规则，只返回JSON。',
-                    messages=[{'role':'user','content':review_prompt(kind, original + ("\n修改要求：" + feedback if feedback else ""), code, report)}],
+                    messages=[{'role':'user','content':review_prompt(kind, original + ("\n修改要求：" + feedback if feedback else ""), code, report)
+                        + ('\n\n' + correction if correction else '')}],
                     step_key='code_review', stage='code_review', prefer_fast=True,
                     request_timeout_s=min(120,remaining), overall_timeout_s=min(120,remaining),
                     response_size_hint='medium_structured', allow_provider_fallback=True,
                     context_scope='request', compression_policy='code_review',
                     truncation_retry_attempts=1, truncation_retry_max_tokens=3072, timeout_retry_attempts=0,
                 )
-                assessment = assess_review(raw_review, kind)
+            try:
+                verified = await recover_review(request_review, lambda raw: assess_review(raw, kind),
+                    lambda parsed: [] if parsed['review_ran'] else parsed['issues'])
+                assessment = verified.assessment | {'reviewRequests':verified.requests,
+                    'sourceSha256':hashlib.sha256(code.encode()).hexdigest()}
             except Exception as exc:
-                raise PipelineExecutionError('Artifact review unavailable: '+type(exc).__name__,
-                    stage='code_review', failure_family='review_infrastructure',
+                family = 'review_evidence' if isinstance(exc, InvalidReviewEvidence) else 'review_infrastructure'
+                raise PipelineExecutionError('Artifact assessment failed: '+str(exc) if family == 'review_evidence'
+                    else 'Artifact review unavailable: '+type(exc).__name__,
+                    stage='code_review', failure_family=family,
                     artifacts=candidate_history + [
                         {'artifact_type':'failed_interactive_candidate','content_type':'text/html',
                          'payload':code,'metadata':{'attempt':attempt,'stage':'code_review'}},
                         {'artifact_type':'interactive_validation_report','content_type':'application/json',
-                         'payload':report,'metadata':{'attempt':attempt,'stage':'code_review'}},
+                         'payload':{'runtime':report,'reviewErrors':getattr(exc,'errors',[type(exc).__name__])},
+                         'metadata':{'attempt':attempt,'stage':'code_review'}},
                     ]) from exc
             if not assessment['passed']:
                 report['issues'] += assessment['issues']
         report['generationAttempts']={'fullGenerationCalls':full_generations,'patchCalls':patch_calls,'qaAttempts':qa_attempts}
         candidate_history.append({'artifact_type':'interactive_candidate','content_type':'text/html',
             'payload':code,'metadata':{'attempt':attempt,'operation':'patch' if local_repair else 'full_generation',
-                                     'runtimePassed':report['passed'],'reviewPassed':bool(assessment and assessment['passed'])}})
+                                     'runtimePassed':report['passed'],'reviewPassed':bool(assessment and assessment['passed']),
+                                     'sourceSha256':hashlib.sha256(code.encode()).hexdigest()}})
+        regressions = checkpoint.regression_errors(report, assessment, kind) if checkpoint else []
+        if regressions:
+            rejected_issues = list(report['issues'])
+            code, report, assessment = checkpoint.code, dict(checkpoint.runtime), checkpoint.assessment
+            issues = list(report['issues']) + regressions + rejected_issues
+            report['issues'] = issues
+            report['generationAttempts']={'fullGenerationCalls':full_generations,'patchCalls':patch_calls,'qaAttempts':qa_attempts}
+            candidate_history[-1]['metadata']['discardedRegression'] = True
+            if progress_cb: progress_cb('logic_generate',66,'正在保留已验证版本并修正回归',{'attempt':attempt,'issues':issues})
+            continue
+        checkpoint = CandidateCheckpoint.capture(code, report, assessment)
         if report['passed'] and assessment and assessment['passed']:
             common = dict(html_code=code,game_spec=request.source_spec,generation_time_ms=int((time.time()-started)*1000),
                 qa_retries=attempt-1,pipeline_version='v2',runtime_profile='interactive_experience',runtime_qa_report=report,

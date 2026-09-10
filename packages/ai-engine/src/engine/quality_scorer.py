@@ -4,7 +4,7 @@ Score components:
   - Static QA (L1-L6): penalties for errors and warnings
   - Generation strategy: current pipeline uses llm generation
   - Code size heuristic: very small = minimal, very large = feature-rich
-  - QA retries: each retry means first attempt was bad
+  - QA retries: operational diagnostic, excluded from final artifact quality
   - Runtime QA (optional): bonus for clean runtime
   - LLM review (optional): fun_score and gameplay richness
   - Gameplay depth (optional): bonus for levels, effects, multiple entities
@@ -157,7 +157,11 @@ class QualityScorer:
         # ── Gameplay depth bonus ──────────────────────────────────────
         gameplay_depth_bonus = self._compute_gameplay_depth_bonus(code) if code else 0.0
 
-        final = base - qa_penalty + strategy_bonus + size_bonus - retry_penalty + runtime_bonus + review_bonus + gameplay_depth_bonus
+        # A repaired artifact is judged on its final state. Deducting historical
+        # attempts makes identical code fail solely because it was repaired and
+        # can make recovery mathematically impossible. Keep the old process
+        # penalty visible for cost/first-pass diagnostics, outside the gate.
+        final = base - qa_penalty + strategy_bonus + size_bonus + runtime_bonus + review_bonus + gameplay_depth_bonus
         final = round(max(0.0, min(10.0, final)), 2)
 
         return QualityScoreBreakdown(
@@ -176,6 +180,8 @@ class QualityScorer:
                 "strategy": static.strategy,
                 "size_kb": round(size_kb, 1),
                 "qa_retries": static.retries,
+                "score_basis": "final_artifact_v2",
+                "retry_penalty_applied": False,
                 "runtime_ran": runtime.ran if runtime else False,
                 "review_ran": review.ran if review else False,
                 "review_fun_score": round(review.fun_score, 2) if review and review.ran else None,

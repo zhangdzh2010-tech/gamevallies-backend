@@ -236,6 +236,34 @@ def test_surgical_edits_preserve_unrelated_code_and_reject_ambiguous_search():
         apply_section_patches(code, [SectionPatch(section='SCRIPT', operation='replace_exact', search='const ', content='let ')])
 
 
+def test_exact_section_batches_use_original_offsets_and_reject_cascading_edits():
+    import pytest
+    code = HTML.replace('const score = 1;', 'const score = 1; const lives = 3;')
+    edits = [SectionPatch(section='SCRIPT',operation='replace_exact',search='const score = 1;',
+                content='const score = 2; const lives = 3;'),
+             SectionPatch(section='SCRIPT',operation='replace_exact',search='const lives = 3;',content='const lives = 4;')]
+    result = apply_section_patches(code,edits)
+    assert 'const score = 2; const lives = 3; const lives = 4;' in result
+    with pytest.raises(ValueError,match='search_not_unique'):
+        apply_section_patches(code,[edits[0],SectionPatch(section='SCRIPT',operation='replace_exact',
+            search='const score = 2;',content='const score = 5;')])
+
+
+def test_indexed_section_patch_resolves_the_current_section_revision():
+    import json
+    import pytest
+    from src.engine.source_references import source_reference_catalog
+    from src.engine.section_patch import extract_patchable_sections
+    source = extract_patchable_sections(ensure_structured_section_markers(HTML))['SCRIPT']
+    ref, span = next(iter(source_reference_catalog(source).items()))
+    patches,_ = parse_patch_response(json.dumps({'patches':[{'section':'SCRIPT','operation':'replace_exact',
+        'source_ref':ref,'content':span.replace('const score = 1;','const score = 2;')}]}),
+        allowed_sections=['SCRIPT'],strict=True,exact_only=True)
+    assert 'const score = 2;' in apply_section_patches(HTML,patches)
+    with pytest.raises(ValueError,match='stale'):
+        apply_section_patches(HTML.replace('const score = 1;','const score = 3;'),patches)
+
+
 def test_unknown_operations_and_duplicate_full_sections_never_overwrite_script():
     import pytest
     with pytest.raises(ValueError, match='unsupported_operation'):

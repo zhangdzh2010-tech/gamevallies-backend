@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 
 from .runtime_isolation import network_policy_meta, restrict_context_network
+from .rendered_text_evidence import CANVAS_TEXT_PROBE
 
 # Same per-work storage semantics as the player's workStorageBridge.js. Data is
 # ephemeral in QA; neither generated code nor the adapter can read host storage.
@@ -112,7 +113,7 @@ async def load_work(host, code: str, *, hidden: bool = False):
     if secured == code:
         secured = network_policy_meta() + code
     # Storage is installed before any candidate code, including pre-head scripts.
-    secured = re.sub(r'^(\s*<!doctype[^>]*>)?', lambda m: m[0] + STORAGE_BOOTSTRAP + DRAWING_PROBE + ANGLE_PROBE, secured, count=1, flags=re.I)
+    secured = re.sub(r'^(\s*<!doctype[^>]*>)?', lambda m: m[0] + STORAGE_BOOTSTRAP + DRAWING_PROBE + ANGLE_PROBE + CANVAS_TEXT_PROBE, secured, count=1, flags=re.I)
     await host.set_content('<style>html,body{margin:0;width:100%;height:100%}iframe{border:0;width:100%;height:100%}</style><iframe sandbox="allow-scripts"></iframe>')
     frame_element = host.locator('iframe')
     await frame_element.evaluate('(el, hidden)=>{el.style.display=hidden?"none":"block"}', hidden)
@@ -145,7 +146,7 @@ async def browser_report(code: str) -> dict:
                 if re.search(r'Ignored call to.*(?:alert|prompt|confirm)|allow-modals', message.text, re.I):
                     sandbox_errors.append('正式沙箱禁止原生 alert/prompt/confirm，请使用页面内确认或编辑界面。')
             host.on('console', on_console)
-            viewports, angle_evidence = [], []
+            viewports, angle_evidence, text_evidence = [], [], []
             for width, height in [(1000,460),(1000,600),(1366,768),(1920,1080)]:
                 await host.set_viewport_size({'width':width,'height':height})
                 frame = await load_work(host, code)
@@ -153,6 +154,8 @@ async def browser_report(code: str) -> dict:
                 frame = await load_work(host, code, hidden=True)
                 layout['hiddenReveal'] = await frame.evaluate(LAYOUT)
                 angle_evidence.extend(await frame.evaluate('()=>window.__workAngleEvidence()'))
+                if height >= 600:
+                    text_evidence.extend(await frame.evaluate('()=>window.__workTextEvidence()'))
                 viewports.append(layout)
                 for mode, result in [('visible', layout), ('hidden-reveal', layout['hiddenReveal'])]:
                     if result['horizontalOverflow']:
@@ -252,6 +255,7 @@ async def browser_report(code: str) -> dict:
                     exercised += 1
                     await host.wait_for_timeout(100)
                     angle_evidence.extend(await frame.evaluate('()=>window.__workAngleEvidence()'))
+                    text_evidence.extend(await frame.evaluate('()=>window.__workTextEvidence()'))
                     effect = before != await frame.evaluate(SIGNATURE)
                     changed = changed or effect
                     control_checks.append({'control':label,'contentChanged':effect})
@@ -261,6 +265,10 @@ async def browser_report(code: str) -> dict:
             if await frame.locator('[data-work-qa-probe]').count():
                 issues.append('用户文本被解释为HTML；动态名称/内容必须用textContent或安全转义后渲染。')
             drawing_issues = await frame.evaluate('()=>window.__workDrawingIssues || []')
+            # Rendered metrics are independent evidence for the semantic review.
+            # Overlap can be intentional artwork, so it is not auto-failed as a
+            # generic geometry rule; the reviewer checks purpose/readability.
+            text_evidence = list({str(item):item for item in text_evidence}.values())[:20]
             if angle_evidence:
                 first = angle_evidence[0]
                 issues.append(f'光学角弧与标签不一致：标注{first["expectedDegrees"]}°但存在{first["actualSweepDegrees"]}°大弧。'
@@ -276,6 +284,7 @@ async def browser_report(code: str) -> dict:
                 'controlsExercised':exercised,'controlsDiscovered':total,'controlChecks':control_checks,
                 'controlCoverageTruncated':total>40,'contentChanged':changed,
                 'drawingIssues':drawing_issues,'angleEvidence':angle_evidence[:10],
+                'canvasTextEvidence':text_evidence,
                 'motionChecks':motion_checks,'viewports':viewports}
         finally:
             await browser.close()

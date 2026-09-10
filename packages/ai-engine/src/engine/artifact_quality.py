@@ -56,6 +56,10 @@ def review_prompt(kind: str, brief: str, code: str, runtime: dict) -> str:
         '平面镜反射尤其要追踪箭头实际顶点与朝向：入射光从光源指向镜面交点，反射光从交点离开；两支箭头都离开镜面是错误。'
         '对于Canvas角弧，应按start/end/counterclockwise计算实际扫过角度，不能仅因端点相差30°就断言画出了30°，反向可能实际为330°。'
         '完整性按用户明确要求判断；不能因代码短、画面简洁而认定作品不完整。\n'
+        'runtime.canvasTextEvidence是浏览器对真实绘制文字的测量，包含文本、重叠比例和边界。'
+        '检查其中的必要标签是否相互覆盖或裁切；数值与单位因此不可读时必须进入critical_issues并指出具体文字。'
+        '同文字描边、阴影和用户明确要求的艺术叠字不能误判为功能缺陷。'
+        '运行中的contentChanged只证明某处内容改变，不证明按钮实现了所要求的语义：交换、撤销、重置等应追踪操作前后的真实状态。\n'
         f'类型：{kind}\n评分规则：{json.dumps(rubric,ensure_ascii=False)}\n'
         '结构：{"artifact_kind":"类型","complete":true,"critical_issues":[],"scores":{"维度":8},'
         '"evidence":{"维度":"具体代码或运行依据"},"issues":[]}。'
@@ -71,8 +75,12 @@ def assess_review(raw: str, kind: str) -> dict:
         data = json.loads(clean)
         if data.get('artifact_kind') != kind or type(data.get('complete')) is not bool:
             raise ValueError('type/completeness')
-        if not isinstance(data.get('critical_issues'), list) or not isinstance(data.get('issues'), list):
-            raise ValueError('issues')
+        for field in ('critical_issues', 'issues'):
+            values = data.get(field)
+            if not isinstance(values, list) or len(values) > 20 or any(
+                not isinstance(value, str) or not value.strip() for value in values
+            ):
+                raise ValueError(field)
         scores, evidence = data['scores'], data['evidence']
         for key in rubric['weights']:
             value = scores.get(key)
@@ -87,7 +95,7 @@ def assess_review(raw: str, kind: str) -> dict:
             if scores[key] < floor: failures.append(f'{key}={scores[key]}，低于{floor}')
         if final < rubric['pass_score']: failures.append(f'分类总分{final}，低于{rubric["pass_score"]}')
         return {'policy_version':QUALITY_POLICY['version'], 'artifact_kind':kind, 'review_ran':True,
-            'passed':not failures, 'score':final, 'scores':scores, 'evidence':evidence,
+            'passed':not failures, 'complete':data['complete'], 'score':final, 'scores':scores, 'evidence':evidence,
             'critical_issues':data['critical_issues'], 'issues':failures + [str(x) for x in data['issues']]}
     except (ValueError, TypeError, KeyError, AttributeError):
         return {'policy_version':QUALITY_POLICY['version'], 'artifact_kind':kind,
