@@ -12,6 +12,12 @@ DESKTOP_BRIEF_MARKER = '请生成桌面浏览器中的可交互创意作品'
 
 def infer_artifact_kind(description: str) -> str:
     full_text = str(description or '').lower()
+    # The creation UI appends the user's explicit mode to the prompt. Treat it
+    # as authoritative before removing shared UI guidance. Older clients do
+    # not send artifact_kind as a separate request field.
+    presentation = re.search(r'呈现方式\s*[：:]\s*(交互实验|动态演示|自由创意)', full_text)
+    if presentation:
+        return {'交互实验': 'tool', '动态演示': 'science', '自由创意': 'game'}[presentation[1]]
     # Desktop UI appends generic science-safety guidance to every type.
     # Classify the user's brief, not that shared suffix.
     text = re.split(r'创作领域[：:]|呈现方式[：:]|请生成桌面浏览器中的可交互创意作品', full_text, maxsplit=1)[0]
@@ -22,7 +28,7 @@ def infer_artifact_kind(description: str) -> str:
     positive = re.sub(r'(?:不要|不做|不制作|不添加|不加入|不需要|禁止|without|no)\s*[^。\n.;；]{0,60}(?:游戏|gameplay|game)[^。\n.;；]*', '', text)
     if re.search(r'小游戏|闯关|消除游戏|益智游戏|游戏玩法|做.{0,8}游戏|(?:make|build|create).{0,50}\bgame\b', positive):
         return 'game'
-    if re.search(r'种群|捕食者|双摆|单摆|科学|物理|化学|欧姆|电路|天体|波动|微分方程|lotka|pendulum|ohm|scientific|simulation|population model', text):
+    if re.search(r'种群|捕食者|双摆|单摆|科学|物理|化学|欧姆|电路|天体|波动|波源|波纹|干涉|微分方程|lotka|pendulum|ohm|scientific|simulation|population model', text):
         return 'science'
     if DESKTOP_BRIEF_MARKER in full_text or re.search(r'计数器|计算器|转换器|单位换算|待办|番茄钟|工具|可视化|counter|calculator|converter|todo|utility', text):
         return 'tool'

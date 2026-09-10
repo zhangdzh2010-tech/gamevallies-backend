@@ -174,7 +174,7 @@ def test_correction_can_confirm_a_real_defect_instead_of_inflating_scores():
 @pytest.mark.parametrize('update', [
     {'code_excerpt':'nonexistent handler()'}, {'code_excerpt':'state'},
     {'repair_scope':'anything'}, {'section':'unknown'}, {'correction':''},
-    {'dimension':False}, {'issue':'different issue'},
+    {'dimension':False},
 ])
 def test_invalid_evidence_is_bounded_and_preserves_candidate(update):
     source = SOURCE + '<!-- state -->'
@@ -194,11 +194,21 @@ def test_invalid_scores_and_flags_are_never_coerced_to_passing(update):
     assert not CodeReviewer()._parse_review(json.dumps(PASSING | update)).ran
 
 
-def test_unexplained_low_score_is_rejected_without_automatic_pass():
+def test_unexplained_low_score_remains_low_without_becoming_infrastructure_failure():
     unsupported = PASSING | dict(fun_score=4)
-    with pytest.raises(PipelineExecutionError) as caught:
-        run_review_responses([json.dumps(unsupported)] * 2)
-    assert 'missing deduction evidence for fun_score' in str(caught.value)
+    result, client = run_review_responses([json.dumps(unsupported)])
+    assert result.ran and result.evidence_verified
+    assert result.fun_score == 4
+    assert client.await_count == 1
+
+
+def test_findings_rebuild_redundant_issue_summary():
+    finding = FINDING | {'dimension': 'fun_score'}
+    result, client = run_review_responses([json.dumps(PASSING | dict(
+        fun_score=4, issues=['short summary'], findings=[finding]))])
+    assert result.issues == [finding['issue']]
+    assert result.findings == [finding]
+    assert client.await_count == 1
 
 
 @pytest.mark.parametrize('responses', [[RuntimeError('provider error')], ['invalid', RuntimeError('provider error')]])
