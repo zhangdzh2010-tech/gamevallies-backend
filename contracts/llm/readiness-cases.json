@@ -1,0 +1,127 @@
+[
+  {
+    "id": "legacy-unchecked",
+    "flags": {
+      "verified": false,
+      "supports_dialogue": false,
+      "supports_patch_generation": false,
+      "supports_full_html_rewrite": false
+    },
+    "step": "intent_parse",
+    "legacy": true,
+    "blocked": []
+  },
+  {
+    "id": "unknown",
+    "flags": {},
+    "step": "intent_parse",
+    "legacy": false,
+    "blocked": []
+  },
+  {
+    "id": "explicit-dialogue-deny",
+    "flags": {
+      "supports_dialogue": false
+    },
+    "step": "intent_parse",
+    "legacy": false,
+    "blocked": [
+      "supports_dialogue"
+    ]
+  },
+  {
+    "id": "verified-deny",
+    "flags": {
+      "verified": true,
+      "supports_dialogue": false,
+      "supports_patch_generation": false,
+      "supports_full_html_rewrite": false
+    },
+    "step": "code_generate.full",
+    "legacy": false,
+    "blocked": [
+      "supports_full_html_rewrite"
+    ]
+  },
+  {
+    "id": "explicit-deny-with-unknown-verification",
+    "flags": {
+      "verified": false,
+      "supports_dialogue": false
+    },
+    "step": "intent_parse",
+    "legacy": false,
+    "blocked": [
+      "supports_dialogue"
+    ]
+  },
+  {
+    "id": "explicit-extra-restriction",
+    "flags": {
+      "verified": false,
+      "supports_dialogue": false,
+      "supports_patch_generation": false,
+      "supports_full_html_rewrite": false,
+      "unsafe_for_steps": [
+        "intent_parse"
+      ]
+    },
+    "step": "intent_parse",
+    "legacy": false,
+    "blocked": [
+      "supports_dialogue",
+      "explicit_step_restriction"
+    ]
+  },
+  {
+    "id": "child-step-restriction",
+    "flags": {
+      "unsafe_for_steps": [
+        "code_generate.full"
+      ]
+    },
+    "step": "code_generate.full.retry",
+    "legacy": false,
+    "blocked": [
+      "explicit_step_restriction"
+    ]
+  },
+  {
+    "id": "capability-restriction",
+    "flags": {
+      "unsafe_for_steps": [
+        "supports_patch_generation"
+      ]
+    },
+    "step": "quality_gate.patch_fix",
+    "legacy": false,
+    "blocked": [
+      "supports_patch_generation"
+    ]
+  },
+  {
+    "id": "legacy-partially-annotated",
+    "flags": {
+      "verified": false,
+      "supports_dialogue": true,
+      "supports_patch_generation": false,
+      "supports_full_html_rewrite": false
+    },
+    "step": "code_generate.full",
+    "legacy": false,
+    "blocked": [
+      "supports_full_html_rewrite"
+    ]
+  },
+  {
+    "id": "creative-anchor-contract",
+    "flags": {
+      "supports_dialogue": false
+    },
+    "step": "creative_anchors",
+    "legacy": false,
+    "blocked": [
+      "supports_dialogue"
+    ]
+  }
+]

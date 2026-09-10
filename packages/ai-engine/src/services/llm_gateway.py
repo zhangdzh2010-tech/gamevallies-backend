@@ -18,6 +18,7 @@ import httpx
 import pymysql
 from .fc_runtime import internal_headers
 from .llm_http_evidence import failure_transport_evidence, transport_error_message
+from .llm_readiness import STEP_REQUIRED_CAPABILITIES, capability_state, capability_rejections, required_capabilities
 
 from ..api.models import ProviderCatalogPreviewRequest, ProviderCatalogPreviewResponse, ProviderTestChatRequest, ProviderTestChatResponse
 from ..config.settings import settings
@@ -260,7 +261,7 @@ def _provider_has_capability(provider: ProviderRecord, capability: str) -> bool:
     Empty or missing capability_flags means all capabilities are assumed present
     (backward compatible).
     """
-    flags = provider.capability_flags
+    flags, _ = capability_state(provider.capability_flags)
     if not flags:
         return True
     # Check unsafe_for_steps list
@@ -268,18 +269,6 @@ def _provider_has_capability(provider: ProviderRecord, capability: str) -> bool:
     if capability in unsafe_steps:
         return False
     return flags.get(capability, True)
-
-
-STEP_REQUIRED_CAPABILITIES: dict[str, tuple[str, ...]] = {
-    "code_generate.full": ("supports_full_html_rewrite",),
-    "iterate.mechanic_change": ("supports_patch_generation",),
-    "iterate.element_change": ("supports_patch_generation",),
-    "iterate.param_adjust": ("supports_patch_generation",),
-    "quality_gate.patch_fix": ("supports_patch_generation",),
-    "qa_fix.syntax_structural": ("supports_full_html_rewrite",),
-    "intent_parse": ("supports_dialogue",),
-    "iterate.classify": ("supports_dialogue",),
-}
 
 
 @dataclass
@@ -473,7 +462,8 @@ class LLMGateway:
             raise LLMBusinessConfigurationError("业务模型或服务已停用，请检查模型设置")
         context_window = _coerce_optional_positive_int(model.get("context_window"))
         max_tokens = _coerce_optional_positive_int(model.get("max_output_tokens"))
-        flags = _loads_json(model.get("capability_flags"), {})
+        raw_flags = _loads_json(model.get("capability_flags"), {})
+        flags, legacy_unchecked = capability_state(raw_flags)
         effective = replace(provider, model=model["model_id"], fast_model=None,
                             context_window=context_window, max_tokens=max_tokens,
                             strict_admission=bool(context_window and max_tokens),
@@ -481,7 +471,9 @@ class LLMGateway:
         result = self._build_resolved_route(provider=effective, route=None, step_key=step_key,
                                             prefer_fast=False, model_override=model["model_id"])
         result.route_snapshot.update(model_config_id=model["id"], model_config_version=model["configuration_version"],
-                                     provider_capability_flags=effective.capability_flags)
+                                     provider_capability_flags=effective.capability_flags,
+                                     raw_model_capability_flags=raw_flags,
+                                     capability_interpretation="legacy_unchecked_unknown" if legacy_unchecked else "explicit_or_unknown")
         return result
 
     def has_business_binding(self, step_key: str) -> bool:
@@ -517,10 +509,9 @@ class LLMGateway:
                 rejected.append({"modelConfigId": model_id, "reason": "output_limit_insufficient", "configured": resolved.max_tokens, "required": required_output_tokens})
                 continue
             flags = resolved.route_snapshot.get("provider_capability_flags", {})
-            required = next((caps for prefix, caps in STEP_REQUIRED_CAPABILITIES.items()
-                             if step_key == prefix or step_key.startswith(prefix + ".")), ())
-            if any(flags.get(cap) is False or cap in flags.get("unsafe_for_steps", []) for cap in required):
-                rejected.append({"modelConfigId": model_id, "reason": "explicit_capability_restriction"})
+            restrictions = capability_rejections(flags, step_key)
+            if restrictions:
+                rejected.append({"modelConfigId": model_id, "reason": "explicit_capability_restriction", "restrictions": restrictions})
                 continue
             resolved.route_snapshot.update(business_stage=binding["stage"], business_binding_id=binding["id"],
                 business_binding_revision=binding["revision"], route_match_strategy="business_stage",
@@ -528,8 +519,9 @@ class LLMGateway:
                 implicit_provider_failover=False, is_primary_provider=index == 0)
             candidates.append(resolved)
         if not candidates:
-            error = LLMBusinessConfigurationError("业务环节没有可用模型；请检查主备模型、服务状态及明确能力限制")
-            error.route_snapshot = {"business_stage": binding["stage"], "model_rejections": rejected}
+            codes = sorted({row["reason"] for row in rejected}) or ["all_candidates_excluded"]
+            error = LLMBusinessConfigurationError(f"业务环节 {binding['stage']} 的 {step_key} 没有可用模型：{', '.join(codes)}；请在模型设置查看业务可用性")
+            error.route_snapshot = {"business_stage": binding["stage"], "step_key": step_key, "model_rejections": rejected}
             raise error
         for candidate in candidates:
             candidate.route_snapshot["model_rejections"] = rejected
@@ -689,7 +681,7 @@ class LLMGateway:
             filtered: list[ProviderRecord] = []
             rejections: list[str] = []
             for provider in ordered:
-                missing = [cap for cap in required_caps if not _provider_has_capability(provider, cap)]
+                missing = capability_rejections(provider.capability_flags, step_key)
                 if missing:
                     rejections.append(f"{provider.name}:{','.join(missing)}")
                     logger.debug(
@@ -704,16 +696,7 @@ class LLMGateway:
     @staticmethod
     def _resolve_required_capabilities(step_key: str) -> tuple[str, ...]:
         """Look up required capabilities for a step, including parent fallback."""
-        caps = STEP_REQUIRED_CAPABILITIES.get(step_key)
-        if caps:
-            return caps
-        parent = step_key
-        while "." in parent:
-            parent = parent.rsplit(".", 1)[0]
-            caps = STEP_REQUIRED_CAPABILITIES.get(parent)
-            if caps:
-                return caps
-        return ()
+        return required_capabilities(step_key)
 
     @staticmethod
     def _provider_meets_output_floor(

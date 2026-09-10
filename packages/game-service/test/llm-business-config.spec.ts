@@ -60,6 +60,25 @@ describe('LLM provider/model/business separation', () => {
     expect(tx.llmGatewayModel.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ modelId: 'new-model', contextWindow: null, maxOutputTokens: null, capabilityFlags: {} }) }));
   });
 
+  it('validates all stages before any writes and rejects an unroutable primary/backup pair', async () => {
+    const { db, tx } = database();
+    tx.llmGatewayModel.findMany.mockResolvedValue(models.map(model => ({ ...model,
+      capabilityFlags: { supports_dialogue: false } })));
+    await expect(saveBusinessBindings(db, { region: provider.region, bindings: rows() })).rejects.toThrow('主备模型均无法执行');
+    expect(tx.llmBusinessBinding.create).not.toHaveBeenCalled();
+    expect(tx.llmBusinessBinding.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('keeps the historical unchecked defaults unknown without rewriting stored constraints', async () => {
+    const { db, tx } = database();
+    tx.llmGatewayModel.findMany.mockResolvedValue(models.map(model => ({ ...model, capabilityFlags: {
+      verified: false, supports_dialogue: false, supports_patch_generation: false, supports_full_html_rewrite: false,
+    } })));
+    await saveBusinessBindings(db, { region: provider.region, bindings: rows() });
+    expect(tx.llmBusinessBinding.create).toHaveBeenCalledTimes(3);
+    expect(tx.llmGatewayModel.updateMany).not.toHaveBeenCalled();
+  });
+
   it('preserves old model restrictions and invalidates old tests on edit', async () => {
     const { db, tx } = database();
     db.llmGatewayModel.findUnique.mockResolvedValue({ id: 'a', providerId: provider.id, configurationVersion: 4, capabilityFlags: { supports_dialogue: false } });

@@ -2,19 +2,18 @@ import { BadRequestException, ConflictException, NotFoundException } from '@nest
 import { randomUUID } from 'crypto';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { LLM_BUSINESS_STAGES, businessReadiness, capabilityState } from './llm-readiness';
+export { LLM_BUSINESS_STAGES } from './llm-readiness';
 
 // One mapping authority. Persisted stepKeys are consumed by the Python runtime;
 // the browser and runtime do not maintain separate business-step dictionaries.
-export const LLM_BUSINESS_STAGES = [
-  { id: 'generate', name: '作品生成', description: '首次生成与生成后的代码修复', stepKeys: ['code_generate.full', 'quality_gate.patch_fix', 'qa_fix.syntax_structural'] },
-  { id: 'modify', name: '作品修改', description: '修改分类、参数、内容和玩法调整', stepKeys: ['iterate.classify', 'iterate.param_adjust', 'iterate.element_change', 'iterate.mechanic_change'] },
-  { id: 'assist', name: '辅助处理', description: '需求解析、创意整理与质量评审', stepKeys: ['intent_parse', 'creative_anchors', 'code_review'] },
-];
-
 const providerView = { id: true, name: true, region: true, enabled: true, updatedAt: true };
 
 export async function listGatewayModels(db: PrismaService) {
-  return db.llmGatewayModel.findMany({ include: { provider: { select: providerView } }, orderBy: { createdAt: 'asc' } });
+  const models = await db.llmGatewayModel.findMany({ include: { provider: { select: providerView } }, orderBy: { createdAt: 'asc' } });
+  return models.map(model => ({ ...model, capabilityState: capabilityState(model.capabilityFlags),
+    businessReadiness: LLM_BUSINESS_STAGES.map(stage => ({ stage: stage.id, name: stage.name,
+      ...businessReadiness(stage, [model], model.provider.region) })) }));
 }
 
 function positiveLimit(value: unknown): number | null {
@@ -66,13 +65,17 @@ export async function saveGatewayModel(db: PrismaService, id: string | undefined
 
 export async function listBusinessBindings(db: PrismaService, region: string, legacyRoutes: any[]) {
   const bindings = await db.llmBusinessBinding.findMany({ where: { region } });
+  const ids = [...new Set(bindings.flatMap(binding => [binding.primaryModelId, binding.fallbackModelId].filter((id): id is string => Boolean(id))))];
+  const models = ids.length ? await db.llmGatewayModel.findMany({ where: { id: { in: ids } }, include: { provider: { select: providerView } } }) : [];
   return LLM_BUSINESS_STAGES.map(stage => {
     const binding = bindings.find(item => item.stage === stage.id);
     const legacy = stage.stepKeys.map(stepKey => {
       const route = legacyRoutes.find(item => item.stepKey === stepKey);
       return { stepKey, providerId: route?.providerId || null, model: route?.effectiveModelDefault || route?.modelDefault || null };
     });
+    const selected = binding ? [binding.primaryModelId, binding.fallbackModelId].filter(Boolean).map(id => models.find(model => model.id === id)) : [];
     return { ...stage, region, binding: binding || null, legacy: binding ? [] : legacy,
+      readiness: binding ? businessReadiness(stage, selected, region) : null,
       status: binding ? 'configured' : legacy.some(item => item.providerId) ? 'legacy' : 'missing' };
   });
 }
@@ -85,6 +88,7 @@ export async function saveBusinessBindings(db: PrismaService, body: any) {
   }
   return db.$transaction(async tx => {
     const saved = [];
+    // Validate the complete proposed graph before writing any binding.
     for (const row of rows) {
       const stage = LLM_BUSINESS_STAGES.find(item => item.id === row.stage);
       if (!stage || !row.primaryModelId) throw new BadRequestException('每个环节都需要主模型');
@@ -94,6 +98,14 @@ export async function saveBusinessBindings(db: PrismaService, body: any) {
       if (models.length !== ids.length || models.some(model => !model.enabled || !model.provider.enabled || model.provider.region !== region)) {
         throw new BadRequestException('所选模型或服务不可用，或不属于当前区域');
       }
+      const readiness = businessReadiness(stage, models, region);
+      if (!readiness.ready) {
+        const blocked = readiness.steps.filter(step => !step.ready).map(step => step.stepKey).join('、');
+        throw new BadRequestException(`${stage.name}的主备模型均无法执行：${blocked}；请检查模型能力限制`);
+      }
+    }
+    for (const row of rows) {
+      const stage = LLM_BUSINESS_STAGES.find(item => item.id === row.stage)!;
       const current = await tx.llmBusinessBinding.findUnique({ where: { llm_business_region_stage_key: { region, stage: stage.id } } });
       const data = { primaryModelId: row.primaryModelId, fallbackModelId: row.fallbackModelId || null, stepKeys: stage.stepKeys };
       if (current) {

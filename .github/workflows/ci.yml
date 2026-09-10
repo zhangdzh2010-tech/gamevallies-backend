@@ -72,6 +72,7 @@ jobs:
           test/game-schema-bootstrap.service.spec.ts
           test/admin.service.spec.ts
           test/llm-business-config.spec.ts
+          test/llm-readiness.spec.ts
           test/admin-assets.spec.ts
           test/generation-task.service.spec.ts
           test/subscription-grant.service.spec.ts
@@ -109,6 +110,7 @@ jobs:
           done
       - run: python -m playwright install --with-deps chromium
       - run: python ../../scripts/sync-quality-policy.py --check
+      - run: python ../../scripts/sync-llm-routing-policy.py --check
       - name: Verify configured LLM repair timeouts
         run: python -m pytest -q tests/test_qa_pipeline.py -k timeout
       - name: Verify pipeline, prompts and quality repairs
@@ -119,6 +121,7 @@ jobs:
           tests/test_async_task_api.py
           tests/test_model_transport.py
           tests/test_llm_gateway.py
+          tests/test_llm_readiness.py
           tests/test_llm_client.py
           tests/test_llm_http_evidence.py
           tests/test_interactive_creation.py

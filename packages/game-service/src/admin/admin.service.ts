@@ -29,6 +29,7 @@ import * as bcrypt from "bcryptjs";
 import axios from "axios";
 import { GameService } from "../game/game.service";
 import { listGatewayModels, saveGatewayModel, listBusinessBindings, saveBusinessBindings } from './llm-business-config';
+import { LLM_STEP_REQUIRED_CAPABILITIES, capabilityState } from './llm-readiness';
 import promptCatalog from "../game/catalogs/prompt-catalog.json";
 import promptBundleCatalog from "../game/catalogs/prompt-bundle-catalog.json";
 import runtimeProfileCatalog from "../game/catalogs/runtime-profile-catalog.json";
@@ -331,18 +332,6 @@ const LLM_STEP_OUTPUT_META: Record<string, LlmStepOutputMeta> = {
     maxOutputTokens: 16384,
     outputSummary: "Full-document syntax and structural repair",
   },
-};
-
-const LLM_STEP_REQUIRED_CAPABILITIES: Record<string, string[]> = {
-  creative_anchors: ["supports_dialogue"],
-  "code_generate.full": ["supports_full_html_rewrite"],
-  "quality_gate.patch_fix": ["supports_patch_generation"],
-  "iterate.mechanic_change": ["supports_patch_generation"],
-  "iterate.element_change": ["supports_patch_generation"],
-  "iterate.param_adjust": ["supports_patch_generation"],
-  "qa_fix.syntax_structural": ["supports_full_html_rewrite"],
-  intent_parse: ["supports_dialogue"],
-  "iterate.classify": ["supports_dialogue"],
 };
 
 @Injectable()
@@ -1542,7 +1531,7 @@ export class AdminService {
     const extraConfig = this.normalizeLlmProviderExtraConfig(
       provider?.extraConfig,
     );
-    const flags = this.normalizeLlmCapabilityFlags(extraConfig);
+    const flags = capabilityState(this.normalizeLlmCapabilityFlags(extraConfig)).flags;
     const capabilitySummary = this.buildLlmCapabilitySummary(flags);
     const requiredCapabilities = this.getLlmRequiredCapabilities(stepKey);
     const unsafeForSteps = capabilitySummary.unsafeForSteps;
