@@ -538,15 +538,30 @@ class PipelineV2QualityPolicyMixin:
                     failure_stage = 'patch_application'
                     self._validate_quality_patch_extent(normalized_code, patches)
                     candidate = apply_section_patches(normalized_code, patches)
+                    # A parseable batch is not yet a valid candidate. Validate
+                    # its boundaries and syntax before spending runtime/review
+                    # or the orchestrator's full-generation recovery budget.
+                    failure_stage = 'patch_validation'
+                    validation_errors = validate_patch_candidate(
+                        normalized_code, candidate, allowed_sections=allowed_sections)
+                    if validation_errors:
+                        raise ValueError('patch_validation_failed:' + ','.join(validation_errors))
+                    failure_stage = 'contract_qa'
+                    contract_errors = self._validate_contract_bundle(candidate, runtime_contract)
+                    if contract_errors:
+                        raise ValueError('patch_static_qa_failed:' + '; '.join(
+                            error.message for error in contract_errors[:3]))
                     break
                 except ValueError as patch_error:
                     # The failed batch is atomic: correct against the ORIGINAL source,
                     # never against a partially applied batch. One bounded format retry.
-                    if correction or not str(patch_error).startswith("patch_validation_failed:"):
+                    if correction or not str(patch_error).startswith((
+                        'patch_validation_failed:', 'patch_static_qa_failed:')):
                         raise
                     self._notify(progress_cb, "code_review", 95, "Correcting invalid patch references", {
                         "gameId": request.game_id, "userId": request.user_id,
                         "rejectionReason": str(patch_error)[:300], "correctionAttempt": 1,
+                        "failureStage": failure_stage, "candidateRetained": True,
                     })
                     failure_stage = "patch_correction_request"
                     text = await self._request_quality_gate_patch_text(
@@ -554,30 +569,13 @@ class PipelineV2QualityPolicyMixin:
                             strict=True, exact_only=True)
                         + "\n\n" + repair_context + "\n\nPATCH APPLICATION REJECTED: " + str(patch_error)[:300]
                         + "\nNo edits were applied. Return a corrected JSON batch against the ORIGINAL "
-                        "sections above. Expand the exact search context until unique. "
+                        "sections above. Expand the exact search context until unique; correct any reported syntax or contract errors. "
                         "Use only small replace_exact changes; do not fall back to rewriting complete sections.",
                         spec=spec,
                         prompt_bundle_snapshot=request.prompt_bundle_snapshot.model_dump(),
                     )
                     response_chars = len(text or "")
             touched_sections = {patch.section for patch in patches}
-
-            failure_stage = "patch_validation"
-            validation_errors = validate_patch_candidate(
-                normalized_code,
-                candidate,
-                allowed_sections=allowed_sections,
-            )
-            if validation_errors:
-                raise RuntimeError("patch_validation_failed:" + ",".join(validation_errors))
-
-            failure_stage = "contract_qa"
-            contract_errors = self._validate_contract_bundle(candidate, runtime_contract)
-            if contract_errors:
-                raise RuntimeError(
-                    "patch_static_qa_failed:"
-                    + "; ".join(error.message for error in contract_errors[:3])
-                )
 
             # CSS can hide controls or intercept clicks, so every changed
             # document needs runtime QA, including STYLE-only patches.

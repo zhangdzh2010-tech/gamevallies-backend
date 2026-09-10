@@ -535,6 +535,45 @@ def test_explicit_desktop_requirements_override_touch_only_defaults():
     assert CodeGenerator._build_requested_platform_contract(_spec()) == ""
 
 
+def test_patch_syntax_failure_corrects_original_before_runtime_or_regeneration():
+    bad = json.dumps({'patches':[{'section':'SCRIPT','operation':'replace_exact',
+        'search':'const canvas=', 'content':'const BROKEN_CANDIDATE = function; const canvas='}]})
+    syntax_error = SimpleNamespace(message='JavaScript syntax error: Unexpected token function')
+    response, mocks = _run_create_with_mocks(
+        generate_side_effect=[(_generated(BASE_CODE, 'provider-a'), [])],
+        flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])],
+        review_side_effect=[_near_miss_review(), _passing_review()],
+        compute_side_effect=[_quality(5.9), _quality(7.1)],
+        patch_text_side_effect=[bad, PATCH_RESPONSE_TEXT],
+        contract_side_effect=[[syntax_error], [], []],
+    )
+    assert mocks.patch_text.await_count == 2
+    correction = mocks.patch_text.await_args.kwargs['prompt']
+    assert 'Unexpected token function' in correction
+    assert 'BROKEN_CANDIDATE' not in correction
+    assert 'ORIGINAL' in correction
+    assert mocks.generate.await_count == 1
+    assert mocks.runtime_loop.await_count == 1
+    assert mocks.contract.call_count == 3
+    assert 'PATCHED_QUALITY_FIX' in response.html_code
+
+
+def test_repeated_patch_syntax_failure_is_bounded_and_never_runs_bad_code():
+    syntax_error = SimpleNamespace(message='JavaScript syntax error: Unexpected token function')
+    response, mocks = _run_create_with_mocks(
+        generate_side_effect=[(_generated(BASE_CODE, 'provider-a'), []),
+                              (_generated(BASE_CODE, 'provider-b'), [])],
+        flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])]*2,
+        review_side_effect=[_near_miss_review(), _passing_review()],
+        compute_side_effect=[_quality(5.9), _quality(7.1)],
+        contract_side_effect=[[syntax_error], [syntax_error]],
+    )
+    assert mocks.patch_text.await_count == 2
+    assert mocks.runtime_loop.await_count == 0
+    assert mocks.generate.await_count == 2
+    assert response.html_code == BASE_CODE
+
+
 def test_invalid_patch_correction_is_bounded_then_regenerates_from_source():
     bad = json.dumps({"patches": [{"section": "SCRIPT", "operation": "replace_exact",
         "search": "does not exist", "content": "unsafe fragment"}]})
