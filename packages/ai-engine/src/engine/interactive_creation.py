@@ -123,45 +123,76 @@ async def run_interactive(request, progress_cb=None):
     full_generations=0
     patch_calls=0
     qa_attempts=0
+    terminal_failure_family = None
+
+    async def generate_document():
+        nonlocal full_generations
+        full_generations += 1
+        remaining = max(1, int(deadline-time.time()))
+        text = await client.complete_with_truncation_retry(
+            max_tokens=8192, system=SYSTEM_PROMPT,
+            messages=[{'role':'user','content':prompt + ('\n\n请修复以下运行检查问题，返回完整作品：\n'+'\n'.join(issues) if issues else '')}],
+            step_key='iterate.element_change' if iterate else 'code_generate.full', stage='logic_generate',
+            request_timeout_s=remaining, overall_timeout_s=remaining, response_size_hint='full_document',
+            allow_provider_fallback=True,
+            context_scope='request', compression_policy='code_generation',
+            truncation_retry_attempts=1, truncation_retry_max_tokens=16384,
+            timeout_retry_attempts=0, provider_retry_on_timeout_errors=False,
+        )
+        return extract_interactive_document(text)
+
     for attempt in range(1, 3):
         if progress_cb: progress_cb('logic_generate',60,'正在实现桌面互动作品',{'attempt':attempt,'maxAttempts':2,'runtimeProfile':'interactive_experience'})
         remaining = max(1, int(deadline-time.time()))
         local_repair = bool(code and re.search(r'</html\s*>\s*$', code, re.I))
         if local_repair:
-            patch_calls += 1
-            text = await client.complete_with_truncation_retry(
-                max_tokens=4096, system='修复现有交互作品，只输出精确替换补丁JSON，不重写整个作品。',
-                messages=[{'role':'user','content':repair_prompt(
-                    original + ('\n修改要求：' + feedback if feedback else ''),code,issues)}],
-                step_key='iterate.element_change' if source_code and attempt == 1 else 'quality_gate.patch_fix', stage='logic_generate',
-                request_timeout_s=remaining, overall_timeout_s=remaining,
-                response_size_hint='large_patch', allow_provider_fallback=True,
-                context_scope='request', compression_policy='iteration_rewrite',
-                truncation_retry_attempts=1, truncation_retry_max_tokens=8192,
-                timeout_retry_attempts=0, provider_retry_on_timeout_errors=False,
-            )
-            try:
-                candidate = apply_interactive_patch(code, text)
-            except ValueError as exc:
-                issues = [feedback, str(exc)] if feedback else [str(exc)]
-                report = dict(report, passed=False, issues=issues, generationAttempts={
-                    'fullGenerationCalls':full_generations,'patchCalls':patch_calls,'qaAttempts':qa_attempts})
-                if attempt < 2:
-                    continue  # Correct once against the retained, unchanged source.
-                break
+            # Protocol correction does not consume a semantic repair attempt.
+            # Every batch is applied atomically to this same retained source.
+            candidate = None
+            repair_issues = list(issues)
+            for correction in range(2):
+                patch_calls += 1
+                remaining = max(1, int(deadline-time.time()))
+                text = await client.complete_with_truncation_retry(
+                    max_tokens=4096, system='修复现有交互作品，只输出精确替换补丁JSON，不重写整个作品。',
+                    messages=[{'role':'user','content':repair_prompt(
+                        original + ('\n修改要求：' + feedback if feedback else ''),code,repair_issues)}],
+                    step_key='iterate.element_change' if source_code and attempt == 1 else 'quality_gate.patch_fix', stage='logic_generate',
+                    request_timeout_s=remaining, overall_timeout_s=remaining,
+                    response_size_hint='large_patch', allow_provider_fallback=True,
+                    context_scope='request', compression_policy='iteration_rewrite',
+                    truncation_retry_attempts=1, truncation_retry_max_tokens=8192,
+                    timeout_retry_attempts=0, provider_retry_on_timeout_errors=False,
+                )
+                try:
+                    candidate = apply_interactive_patch(code, text)
+                    break
+                except ValueError as exc:
+                    repair_issues = list(issues) + [str(exc)]
+                    candidate_history.append({'artifact_type':'interactive_repair_protocol_report',
+                        'content_type':'application/json','payload':{
+                            'reason':str(exc),'originalIssues':list(issues),
+                            'sourceSha256':hashlib.sha256(code.encode()).hexdigest()},
+                        'metadata':{'attempt':attempt,'correctionAttempt':correction+1}})
+                    if progress_cb: progress_cb('logic_generate',66,'正在纠正补丁协议，原候选保持不变',
+                        {'attempt':attempt,'correctionAttempt':correction+1,'failureFamily':'repair_protocol'})
+            if candidate is None:
+                if source_code:
+                    # An edit request never authorizes rewriting the user's work.
+                    issues = repair_issues
+                    terminal_failure_family = 'repair_protocol'
+                    report = dict(report, passed=False, issues=issues, generationAttempts={
+                        'fullGenerationCalls':full_generations,'patchCalls':patch_calls,'qaAttempts':qa_attempts})
+                    break
+                # Creation has no user-owned source to preserve. Reuse its
+                # existing second candidate budget for one full regeneration,
+                # guided by the actual QA issues, not just the patch error.
+                if progress_cb: progress_cb('logic_generate',66,'补丁协议未恢复，正在重新生成并重新验收',
+                    {'attempt':attempt,'failureFamily':'repair_protocol','fullGenerationCalls':full_generations})
+                candidate = await generate_document()
+                local_repair = False
         else:
-            full_generations += 1
-            text = await client.complete_with_truncation_retry(
-                max_tokens=8192, system=SYSTEM_PROMPT,
-                messages=[{'role':'user','content':prompt + ('\n\n请修复以下运行检查问题，返回完整作品：\n'+'\n'.join(issues) if issues else '')}],
-                step_key='iterate.element_change' if iterate else 'code_generate.full', stage='logic_generate',
-                request_timeout_s=remaining, overall_timeout_s=remaining, response_size_hint='full_document',
-                allow_provider_fallback=True,
-                context_scope='request', compression_policy='code_generation',
-                truncation_retry_attempts=1, truncation_retry_max_tokens=16384,
-                timeout_retry_attempts=0, provider_retry_on_timeout_errors=False,
-            )
-            candidate = extract_interactive_document(text)
+            candidate = await generate_document()
         code = preserve_cosmetic_scripts(source_code, candidate, feedback)
         if progress_cb: progress_cb('runtime_simulation_qa',90,'正在检查桌面显示与交互',{'attempt':attempt})
         qa_attempts += 1
@@ -248,7 +279,7 @@ async def run_interactive(request, progress_cb=None):
         if progress_cb: progress_cb('logic_generate',66,'正在修复桌面交互检查发现的问题',{'attempt':attempt,'issues':issues})
     raise PipelineExecutionError('Desktop interaction validation failed: '+'; '.join(issues),
         stage='code_review' if assessment and not assessment['passed'] else 'runtime_simulation_qa',
-        retry_count=1,failure_family='artifact_quality' if assessment and not assessment['passed'] else 'interactive_validation',
+        retry_count=1,failure_family=terminal_failure_family or ('artifact_quality' if assessment and not assessment['passed'] else 'interactive_validation'),
         # Use the existing author-scoped artifact channel, not progress messages.
         # Without the rejected candidate a failed desktop run cannot be replayed
         # locally, forcing another paid generation just to diagnose the failure.
