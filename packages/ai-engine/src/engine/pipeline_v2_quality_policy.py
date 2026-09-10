@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import logging
+import json
 import re
 from typing import Any, Optional
 from ..api.models import GameRuntimeContract, GameSpec, QACheckError, RunPipelineV2Request
@@ -320,6 +321,11 @@ class PipelineV2QualityPolicyMixin:
         ]
         for error in errors[:6]:
             lines.append(f"- Fix this explicitly: {error}")
+        if review.evidence_verified and review.findings:
+            for finding in review.findings:
+                lines.append(f"- {finding['issue']}: {finding['reason']} Correction: {finding['correction']}")
+            lines.append('- Preserve all unrelated behavior and visual design; do not add optional features to chase a score.')
+            return "\n".join(lines)
         if review.fun_score < thresholds["fun_score"]:
             lines.append(
                 "- Strengthen the first 5-10 seconds with a clearer hook, faster reward loop, visible escalation, and a more satisfying payoff."
@@ -367,17 +373,22 @@ class PipelineV2QualityPolicyMixin:
         review: LLMReviewResult,
         quality: Any,
     ) -> bool:
-        """Conservative near-miss detector for quality-gate patch repair.
+        """Repair source-grounded local defects before replacing working code.
 
-        Only candidates without structural defects (complete game with real
-        gameplay) whose scores sit close to the tier thresholds qualify;
-        anything else keeps the existing full-regeneration behavior.
+        Call only after contract/runtime QA. Evidence can establish a local
+        repair even when missing pause/reset behavior lowers completeness and
+        aggregate scores. A missing playable loop still needs regeneration.
+        Existing near-miss eligibility is retained for older review callers.
         """
         if not getattr(review, "ran", False):
             return False
-        if not getattr(review, "is_complete_game", False):
-            return False
         if not getattr(review, "has_real_gameplay", False):
+            return False
+        if review.evidence_verified and review.findings:
+            return all(finding['repair_scope'] == 'local'
+                       and finding['section'] in (PATCH_SECTION_SCRIPT, PATCH_SECTION_STYLE)
+                       for finding in review.findings)
+        if not getattr(review, "is_complete_game", False):
             return False
 
         thresholds = cls._quality_gate_thresholds(spec)
@@ -427,6 +438,9 @@ class PipelineV2QualityPolicyMixin:
         only the aggregate final_score missed, allow STYLE + SCRIPT so the
         patch can lift presentation and gameplay payoff together.
         """
+        if review.evidence_verified and review.findings:
+            sections = {finding['section'] for finding in review.findings}
+            return tuple(section for section in (PATCH_SECTION_STYLE, PATCH_SECTION_SCRIPT) if section in sections)
         thresholds = cls._quality_gate_thresholds(spec)
         fun_failed = float(getattr(review, "fun_score", 0.0) or 0.0) < thresholds["fun_score"]
         visual_failed = (
@@ -497,6 +511,7 @@ class PipelineV2QualityPolicyMixin:
                     "REPAIR DISCIPLINE: Preserve working behavior and composition. Fix concrete defects before optional polish. "
                     "Use only local exact replacements, never rewrite a complete section. Check every reported defect against the source; "
                     "retain fixes from previous rounds, including timing, pause, coordinates and restart.",
+                    "SOURCE-GROUNDED FINDINGS:\n" + json.dumps(review.findings, ensure_ascii=False),
                     "UNCHANGED BODY STRUCTURE (read-only; reuse these element IDs, do not invent missing controls):\n" + body_context,
                     build_section_context(normalized_code, allowed_sections),
                 ]

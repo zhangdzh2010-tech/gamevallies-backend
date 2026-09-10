@@ -110,8 +110,10 @@ async def run_interactive(request, progress_cb=None):
     kind = request_artifact_kind(request)
     prompt = original + (f'\n\n修改要求：{feedback}\n仅修改明确要求的部分，保留未要求改变的行为、模型和参数。\n当前作品：\n{source_code}' if source_code else '')
     client = LLMClient()
-    issues=[]
-    code=''
+    issues=[feedback] if source_code else []
+    code=source_code
+    report={'passed':False,'issues':[]}
+    assessment=None
     candidate_history=[]
     full_generations=0
     patch_calls=0
@@ -124,8 +126,9 @@ async def run_interactive(request, progress_cb=None):
             patch_calls += 1
             text = await client.complete_with_truncation_retry(
                 max_tokens=4096, system='修复现有交互作品，只输出精确替换补丁JSON，不重写整个作品。',
-                messages=[{'role':'user','content':repair_prompt(original,code,issues)}],
-                step_key='quality_gate.patch_fix', stage='logic_generate',
+                messages=[{'role':'user','content':repair_prompt(
+                    original + ('\n修改要求：' + feedback if feedback else ''),code,issues)}],
+                step_key='iterate.element_change' if source_code and attempt == 1 else 'quality_gate.patch_fix', stage='logic_generate',
                 request_timeout_s=remaining, overall_timeout_s=remaining,
                 response_size_hint='large_patch', allow_provider_fallback=True,
                 context_scope='request', compression_policy='iteration_rewrite',
@@ -135,9 +138,11 @@ async def run_interactive(request, progress_cb=None):
             try:
                 candidate = apply_interactive_patch(code, text)
             except ValueError as exc:
-                issues = [str(exc)]
+                issues = [feedback, str(exc)] if feedback else [str(exc)]
                 report = dict(report, passed=False, issues=issues, generationAttempts={
                     'fullGenerationCalls':full_generations,'patchCalls':patch_calls,'qaAttempts':qa_attempts})
+                if attempt < 2:
+                    continue  # Correct once against the retained, unchanged source.
                 break
         else:
             full_generations += 1
@@ -163,6 +168,8 @@ async def run_interactive(request, progress_cb=None):
                 artifacts=candidate_history + [{'artifact_type':'failed_interactive_candidate',
                     'content_type':'text/html','payload':code,'metadata':{'attempt':attempt,'stage':'runtime_simulation_qa'}}]) from exc
         preserved = preservation_errors(source_code, code, feedback)
+        if source_code and code == source_code:
+            preserved.append('修改没有产生有效变更，请在保留约束内落实用户要求。')
         report['issues'] = list(report.get('issues', [])) + preserved
         report['passed'] = bool(report['passed'] and not preserved)
         assessment = None

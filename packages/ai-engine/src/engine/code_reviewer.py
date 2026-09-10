@@ -10,20 +10,22 @@ structured JSON assessment:
   - character_quality_score: 1-10
   - issues: list[str]
 
-Returns LLMReviewResult(ran=False) if LLM is unavailable or review fails.
+Returns ran=False only when review is disabled; failed assessments retain evidence.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import math
 import re
-from typing import Optional
 
 from ..services.llm_client import LLMClient
 from .prompt_format import safe_format_prompt
 from .prompt_store import require_prompt
 from .quality_scorer import LLMReviewResult
+from .pipeline_errors import PipelineExecutionError
+from .review_evidence import EVIDENCE_PROTOCOL, REVIEW_FLAGS, REVIEW_SCORES, validate_review_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +45,7 @@ class CodeReviewer:
         self._client = LLMClient()
 
     async def review(self, html_code: str, *, user_requirements: str = "") -> LLMReviewResult:
-        """Run LLM review. Returns LLMReviewResult(ran=False) on any failure."""
+        """Run a bounded, source-cited review and fail closed on invalid evidence."""
         if not self._client.is_enabled():
             logger.debug("LLM not enabled – skipping code review")
             return LLMReviewResult(ran=False)
@@ -77,10 +79,11 @@ class CodeReviewer:
                 "distinguish missing required behavior from optional aesthetic suggestions."
             )
             prompt = "ORIGINAL USER REQUIREMENTS:\n" + user_requirements + "\n\n" + prompt
+        system += EVIDENCE_PROTOCOL
 
         try:
             raw = await self._client.complete_with_truncation_retry(
-                max_tokens=1024,
+                max_tokens=2048,
                 system=system,
                 messages=[{"role": "user", "content": prompt}],
                 step_key="code_review",
@@ -91,15 +94,51 @@ class CodeReviewer:
                 compression_policy="code_review",
                 truncation_retry_attempts=1,
                 truncation_retry_increment=512,
-                truncation_retry_max_tokens=2048,
+                truncation_retry_max_tokens=3072,
                 timeout_retry_attempts=1,
                 timeout_retry_increment_s=30,
                 timeout_retry_max_s=120,
             )
-            return self._parse_review(raw)
+            result = self._parse_review(raw)
+            errors = validate_review_evidence(result, html_code) if result.ran else ['invalid review schema']
+            if errors:
+                # Correct the assessment, not the artifact. Never turn missing
+                # evidence into either an automatic pass or another full generation.
+                try:
+                    corrected = await self._client.complete_with_truncation_retry(
+                        max_tokens=2048, system=system,
+                        messages=[{'role':'user','content':prompt + '\n\nREASSESSMENT REQUIRED:\n'
+                            + json.dumps({'validation_errors':errors,'previous_assessment':raw}, ensure_ascii=False)
+                            + '\nCheck each previous claim against the complete source. Remove contradicted claims '
+                            'and rescore; retain actual defects with valid citations. Return the complete assessment JSON.'}],
+                        step_key='code_review', stage='qa_checking', prefer_fast=True,
+                        response_size_hint='medium_structured', context_scope='request', compression_policy='code_review',
+                        truncation_retry_attempts=1, truncation_retry_max_tokens=3072,
+                        timeout_retry_attempts=0,
+                    )
+                    result = self._parse_review(corrected)
+                    errors = validate_review_evidence(result, html_code) if result.ran else ['invalid review schema']
+                except Exception as exc:
+                    raise self._evidence_failure(html_code, ['assessment correction unavailable'], 'review_infrastructure') from exc
+            if errors:
+                raise self._evidence_failure(html_code, errors, 'review_evidence')
+            result.evidence_verified = True
+            return result
+        except PipelineExecutionError:
+            raise
         except Exception as exc:
-            logger.warning(f"Code review LLM call failed: {exc}")
-            return LLMReviewResult(ran=False)
+            logger.warning('Code review unavailable: %s', type(exc).__name__)
+            raise self._evidence_failure(html_code, ['assessment unavailable'], 'review_infrastructure') from exc
+
+    @staticmethod
+    def _evidence_failure(code: str, errors: list[str], family: str) -> PipelineExecutionError:
+        return PipelineExecutionError('Code review evidence could not be validated: ' + '; '.join(errors),
+            stage='code_review', failure_family=family, artifacts=[
+                {'artifact_type':'failed_quality_candidate','content_type':'text/html','payload':code,
+                 'metadata':{'stage':'code_review','retained':True}},
+                {'artifact_type':'review_evidence_report','content_type':'application/json',
+                 'payload':{'errors':errors},'metadata':{'stage':'code_review'}},
+            ])
 
     def _parse_review(self, raw: str) -> LLMReviewResult:
         """Parse LLM JSON output, with fallback for malformed responses."""
@@ -122,34 +161,29 @@ class CodeReviewer:
                     except json.JSONDecodeError as exc:
                         logger.warning(f"JSON parse error in review: {exc} | raw: {raw[:200]}")
 
-        if data is None:
+        if not isinstance(data, dict):
             logger.warning(f"No JSON found in review response: {raw[:200]}")
             return LLMReviewResult(ran=False)
 
-        def _clamp_score(field: str, default: float = 5.0) -> float:
-            try:
-                value = float(data.get(field, default))
-            except (TypeError, ValueError):
-                value = default
-            return max(1.0, min(10.0, value))
-
-        fun_score = _clamp_score("fun_score")
-        visual_polish_score = _clamp_score("visual_polish_score")
-        character_quality_score = _clamp_score("character_quality_score")
-
-        issues = data.get("issues", [])
-        if not isinstance(issues, list):
-            issues = [str(issues)] if issues else []
+        if any(type(data.get(key)) is not bool for key in REVIEW_FLAGS):
+            return LLMReviewResult(ran=False)
+        if any(type(data.get(key)) not in (int, float) or not math.isfinite(data[key])
+               or not 1 <= data[key] <= 10 for key in REVIEW_SCORES):
+            return LLMReviewResult(ran=False)
+        issues = data.get('issues')
+        if not isinstance(issues, list) or len(issues) > 10 or any(not isinstance(x, str) or not x.strip() for x in issues):
+            return LLMReviewResult(ran=False)
 
         result = LLMReviewResult(
             ran=True,
             is_complete_game=bool(data.get("is_complete_game", False)),
             has_real_gameplay=bool(data.get("has_real_gameplay", False)),
             difficulty_balanced=bool(data.get("difficulty_balanced", False)),
-            fun_score=fun_score,
-            visual_polish_score=visual_polish_score,
-            character_quality_score=character_quality_score,
-            issues=issues[:10],
+            fun_score=float(data['fun_score']),
+            visual_polish_score=float(data['visual_polish_score']),
+            character_quality_score=float(data['character_quality_score']),
+            issues=issues,
+            findings=data.get('findings', []),
         )
         logger.info(
             f"Code review: complete={result.is_complete_game}, "

@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sys
+import pytest
 from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -288,6 +289,68 @@ def test_should_attempt_quality_patch_repair_rejects_large_gaps():
         _near_miss_review(fun_score=4.0),
         _quality(5.9),
     )
+
+
+def _local_incomplete_review():
+    return _near_miss_review(is_complete_game=False, fun_score=4,
+        issues=['pause does not stop elapsed time'], evidence_verified=True,
+        findings=[dict(issue='pause does not stop elapsed time', dimension='is_complete_game',
+            code_excerpt='const canvas=', reason='pause leaves the loop active',
+            correction='pause the existing elapsed clock', section='SCRIPT', repair_scope='local')])
+
+
+def test_verified_local_incompleteness_can_be_repaired_despite_large_score_gap():
+    review = _local_incomplete_review()
+    assert V2PipelineRunner._should_attempt_quality_patch_repair(_spec(), review, _quality(3))
+    assert V2PipelineRunner._quality_patch_allowed_sections(_spec(), review) == ('SCRIPT',)
+    # Eligibility is not acceptance: the same candidate still fails all gates.
+    assert V2PipelineRunner._quality_gate_errors(_spec(), review, _quality(3))
+
+
+@pytest.mark.parametrize('field,value', [('repair_scope','redesign'), ('section','BODY')])
+def test_evidence_for_redesign_or_unpatchable_body_does_not_use_local_repair(field, value):
+    review = _local_incomplete_review()
+    review.findings[0][field] = value
+    assert not V2PipelineRunner._should_attempt_quality_patch_repair(_spec(), review, _quality(6.5))
+
+
+def test_missing_playable_loop_still_requires_regeneration():
+    review = _local_incomplete_review()
+    review.has_real_gameplay = False
+    assert not V2PipelineRunner._should_attempt_quality_patch_repair(_spec(), review, _quality(3))
+
+
+def test_verified_pause_defect_enters_patch_branch_without_full_regeneration():
+    review = _local_incomplete_review()
+    response, mocks = _run_create_with_mocks(
+        generate_side_effect=[(_generated(BASE_CODE, 'provider-a'), [])],
+        flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])],
+        review_side_effect=[review, _passing_review()],
+        compute_side_effect=[_quality(3), _quality(7.1)])
+    assert mocks.generate.await_count == 1
+    assert mocks.patch_text.await_count == 1
+    assert mocks.runtime_loop.await_count == 1
+    assert mocks.contract.call_count == 2
+    assert response.qa_passed
+    prompt = mocks.patch_text.await_args.kwargs['prompt']
+    assert 'pause the existing elapsed clock' in prompt
+    assert 'layered backgrounds/foregrounds' not in prompt
+
+
+@pytest.mark.parametrize('family', ['review_evidence', 'review_infrastructure'])
+def test_invalid_assessment_does_not_trigger_full_regeneration(family):
+    from src.engine.pipeline_errors import PipelineExecutionError
+    generated = []
+    def generate(*args, **kwargs):
+        generated.append(True)
+        return _generated(BASE_CODE, 'provider-a'), []
+    failure = PipelineExecutionError('review evidence unavailable', stage='code_review', failure_family=family)
+    with pytest.raises(PipelineExecutionError) as caught:
+        _run_create_with_mocks(generate_side_effect=generate,
+            flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])],
+            review_side_effect=[failure], compute_side_effect=[])
+    assert caught.value is failure
+    assert len(generated) == 1
 
 
 def test_quality_patch_allowed_sections_maps_failing_dimensions():

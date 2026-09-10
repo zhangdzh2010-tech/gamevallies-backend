@@ -243,6 +243,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                     "issues": current_review.issues, "gateErrors": current_errors,
                     "fun_score": current_review.fun_score, "visual_polish_score": current_review.visual_polish_score,
                     "character_quality_score": current_review.character_quality_score,
+                    "findings": current_review.findings, "evidenceVerified": current_review.evidence_verified,
                     "final_score": current_quality.final_score, "patchAttempts": QUALITY_GATE_PATCH_MAX_ATTEMPTS,
                 }, metadata={"stage": "code_review"}),
             ],
@@ -614,6 +615,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                             self._build_json_artifact(artifact_type="quality_review_report", payload={
                                 "attempt":quality_attempt,"issues":review.issues,
                                 "gateErrors":quality_gate_errors,"final_score":quality.final_score,
+                                "findings":review.findings,"evidenceVerified":review.evidence_verified,
                             }, metadata={"stage":"code_review"}),
                         ],
                     )
@@ -709,7 +711,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
             except PipelineExecutionError as exc:
                 last_quality_exc = exc
                 last_route_snapshot = getattr(exc, "route_snapshot", None) or last_route_snapshot
-                if (getattr(exc, "failure_family", None) in {"quality_repair_exhausted", "repair_protocol", "provider_transport", "route_configuration"}
+                if (getattr(exc, "failure_family", None) in {"quality_repair_exhausted", "repair_protocol", "provider_transport", "route_configuration", "review_evidence", "review_infrastructure"}
                         or quality_attempt >= len(attempt_plan)
                         or exc.stage not in {"logic_generate", "contract_qa", "runtime_simulation_qa", "code_review"}):
                     raise
@@ -1034,9 +1036,8 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
         try:
             code = qa_result.code
             try:
-                # code_reviewer.review already prefers the fast model
-                # (prefer_fast=True) and returns LLMReviewResult(ran=False)
-                # on its own internal failures.
+                # Review uses the fast route; this legacy game-iteration
+                # assessment remains non-blocking under its existing policy.
                 review = await asyncio.wait_for(
                     self.code_reviewer.review(code, user_requirements=spec.source_description or ""),
                     timeout=timeout_s,
