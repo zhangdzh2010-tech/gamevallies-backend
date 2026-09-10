@@ -11,7 +11,7 @@ describe('admin release assets', () => {
 
   beforeEach(() => {
     version = 'release-one';
-    controller = new AdminController({} as any, {} as any);
+    controller = new AdminController({} as any, {} as any, {} as any);
     jest.spyOn(controller as any, 'readAdminAsset').mockImplementation((name: string) => ({
       body: name.endsWith('.html') ? html : 'asset',
       etag: name.endsWith('.html') ? '"unchanged-html"' : `"${version}"`,
