@@ -11,7 +11,12 @@ describe('Desktop interaction quality gate', () => {
   it('accepts runtime checks and a valid tool score without requiring gameplay', () => {
     expect(() => assertCreateResultMeetsQualityGate({...result,runtimeQaReport:passing})).not.toThrow();
   });
-  it.each([undefined,{...passing,ran:false},{...passing,contentChanged:false},{...passing,issues:['JS error']},
+  it('accepts an explicit optional infrastructure soft failure after structured review', () => {
+    const deferred = {ran:false,passed:true,softFailed:true,unavailableReason:'TimeoutError',issues:[]};
+    expect(() => assertCreateResultMeetsQualityGate({...result,generationTier:'standard',runtimeQaReport:deferred})).not.toThrow();
+    expect(() => assertCreateResultMeetsQualityGate({...result,generationTier:'showcase',runtimeQaReport:deferred})).toThrow('Desktop interaction checks');
+  });
+  it.each([undefined,{...passing,ran:false},{ran:false,passed:true,softFailed:true,issues:[]},{...passing,contentChanged:false},{...passing,issues:['JS error']},
     {...passing,viewports:[{horizontalOverflow:true}]}])('rejects missing or failed browser checks', runtimeQaReport => {
     expect(() => assertCreateResultMeetsQualityGate({...result,runtimeQaReport})).toThrow('Desktop interaction checks');
   });
