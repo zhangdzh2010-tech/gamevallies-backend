@@ -191,6 +191,7 @@ async def browser_report(code: str) -> dict:
                 control = controls.nth(index)
                 if not await control.is_visible() or not await control.is_enabled():
                     continue
+                clicked_button = False
                 try:
                     before = await frame.evaluate(SIGNATURE)
                     tag = await control.evaluate('e=>e.tagName')
@@ -225,6 +226,7 @@ async def browser_report(code: str) -> dict:
                             continue
                         await control.select_option(index=1, timeout=2000)
                     else:
+                        clicked_button = True
                         text = (await control.inner_text()).strip()
                         motion = bool(re.search(r'开始|启动|运行|播放|演示|继续|\b(?:start|play|run|resume)\b', text, re.I)
                             and re.search(r'\b(?:requestAnimationFrame|setInterval)\s*\(', code))
@@ -259,9 +261,19 @@ async def browser_report(code: str) -> dict:
                     effect = before != await frame.evaluate(SIGNATURE)
                     changed = changed or effect
                     control_checks.append({'control':label,'contentChanged':effect})
+                    # Buttons commonly open editors, delete rows or replace
+                    # controls. Test the next control from a clean document so
+                    # one stateful action cannot obscure or detach another.
+                    if clicked_button and index + 1 < min(total, 40):
+                        frame = await load_work(host, code)
+                        controls = frame.locator(CONTROLS)
                 except Exception as exc:
                     # A broken candidate control is not QA infrastructure failure.
                     issues.append(f'第{index+1}个控件执行失败：{type(exc).__name__}。')
+                    # Recover the harness after a modal/DOM mutation so one
+                    # failure cannot cascade into every remaining control.
+                    frame = await load_work(host, code)
+                    controls = frame.locator(CONTROLS)
             if await frame.locator('[data-work-qa-probe]').count():
                 issues.append('用户文本被解释为HTML；动态名称/内容必须用textContent或安全转义后渲染。')
             drawing_issues = await frame.evaluate('()=>window.__workDrawingIssues || []')
