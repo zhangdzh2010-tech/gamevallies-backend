@@ -229,6 +229,30 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(report['drawingIssues'])
         self.assertTrue((await validate_interactive_html(html.replace('20*a*Math.sin','10*a*Math.sin')))['passed'])
 
+    async def test_plot_stroke_at_boundary_is_checked_with_canvas_transform(self):
+        html = '''<html><body><h1>波形</h1><canvas width="400" height="100"></canvas>
+        <input type="range" min="1" max="2" value="1" oninput="draw(+this.value)"><script>
+        const ctx=document.querySelector('canvas').getContext('2d');ctx.scale(2,2);ctx.lineWidth=3;
+        function draw(a){ctx.clearRect(0,0,200,50);ctx.beginPath();
+          for(let x=0;x<200;x++)ctx.lineTo(x,25+12.5*a*Math.sin(x/10));ctx.stroke();}draw(1);
+        </script></body></html>'''
+        report = await validate_interactive_html(html)
+        self.assertFalse(report['passed'])
+        self.assertTrue(any(x['strokeClipped'] and x['strokeRadiusY']==3 for x in report['drawingIssues']))
+        fixed = await validate_interactive_html(html.replace('12.5*a*Math.sin','10*a*Math.sin'))
+        self.assertTrue(fixed['passed'], str(fixed['issues']))
+
+    async def test_dense_axes_and_path2d_are_not_misread_as_clipped_plot(self):
+        script = '''<canvas width="400" height="100"></canvas><script>
+        const ctx=document.querySelector('canvas').getContext('2d');ctx.lineWidth=4;
+        ctx.beginPath();for(let x=0;x<400;x++)ctx.lineTo(x,x/4);ctx.stroke();
+        ctx.beginPath();for(let x=0;x<400;x++){ctx.moveTo(x,-10);ctx.lineTo(x,110);}ctx.stroke();
+        ctx.beginPath();for(let x=0;x<400;x++)ctx.lineTo(x,50+70*Math.sin(x/20));
+        const separate=new Path2D();separate.rect(20,20,40,40);ctx.stroke(separate);
+        </script>'''
+        report = await validate_interactive_html(GOOD.replace('</body>',script+'</body>'))
+        self.assertFalse(report['drawingIssues'])
+
     async def test_local_patch_is_used_instead_of_second_full_generation(self):
         failed = {'ran':True,'passed':False,'issues':['修正标题']}
         passed = {'ran':True,'passed':True,'issues':[]}

@@ -65,8 +65,14 @@ p.lineTo=function(x,y){record(this,x,y);return line.apply(this,arguments)};
 p.stroke=function(){const a=paths.get(this)||[],w=this.canvas.width,h=this.canvas.height;
  if(arguments.length===0&&(moves.get(this)||0)<=1&&a.length>=32&&w>0&&h>0){const xs=a.map(v=>v[0]),ys=a.map(v=>v[1]);
   const minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys);
-  if(minX>=-4&&maxX<=w+4&&maxX-minX>w*.5&&(minY < -4||maxY>h+4)&&reports.length<10)
-   reports.push({type:'plot_curve_clipped',canvas:this.canvas.id,minY,maxY,height:h});
+  // A sampled curve can have every center point in bounds while its stroke
+  // is still cut off at an interior peak. Exclude monotonic axes and borders.
+  const t=this.getTransform(),strokeRadiusY=this.lineWidth*Math.hypot(t.b,t.d)/2;
+  const interiorPeak=ys.slice(1,-1).some((y,i)=>(y<ys[i]&&y<ys[i+2]&&y-strokeRadiusY<-.25)
+    ||(y>ys[i]&&y>ys[i+2]&&y+strokeRadiusY>h+.25));
+  const strokeClipped=interiorPeak&&maxY-minY>h*.5;
+  if(minX>=-4&&maxX<=w+4&&maxX-minX>w*.5&&(minY < -4||maxY>h+4||strokeClipped)&&reports.length<10)
+   reports.push({type:'plot_curve_clipped',canvas:this.canvas.id,minY,maxY,height:h,strokeRadiusY,strokeClipped});
  }return stroke.apply(this,arguments);};
 })();</script>"""
 OUTPUTS = """() => Array.from(document.querySelectorAll('output,[data-work-output],[id*="display" i],[id*="result" i]'))
