@@ -125,6 +125,7 @@ jobs:
           tests/test_llm_client.py
           tests/test_llm_http_evidence.py
           tests/test_interactive_creation.py
+          tests/test_interactive_contract_probes.py
           tests/test_interactive_repair.py
           tests/test_generation_failure_evidence.py
           tests/test_artifact_quality.py
