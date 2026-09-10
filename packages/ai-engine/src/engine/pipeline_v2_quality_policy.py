@@ -24,6 +24,7 @@ from .section_patch import (
     build_patch_protocol,
     build_section_context,
     extract_body_content,
+    extract_patchable_sections,
     ensure_structured_section_markers,
     parse_patch_response,
     validate_patch_candidate,
@@ -42,6 +43,17 @@ logger = logging.getLogger(__name__)
 
 class PipelineV2QualityPolicyMixin:
     """Quality policy behavior; state remains owned by V2PipelineRunner."""
+
+    @staticmethod
+    def _validate_quality_patch_extent(code, patches):
+        sections = extract_patchable_sections(code)
+        for section in {p.section for p in patches}:
+            source = sections.get(section) or ''
+            edits = [p for p in patches if p.section == section]
+            if sum(len(p.search or '') for p in edits) > len(source) * .6:
+                raise ValueError('patch_validation_failed:local_patch_replaces_too_much')
+            if sum(len(p.content) for p in edits) > max(4096, len(source) * .6):
+                raise ValueError('patch_validation_failed:local_patch_output_too_large')
 
     @staticmethod
     def _generation_tier_rank(tier: str) -> int:
@@ -483,14 +495,14 @@ class PipelineV2QualityPolicyMixin:
                     self._build_review_quality_guidance(spec, review, quality, quality_gate_errors),
                     "ORIGINAL USER REQUIREMENTS (preserve):\n" + str(spec.source_description or ""),
                     "REPAIR DISCIPLINE: Preserve working behavior and composition. Fix concrete defects before optional polish. "
-                    "Preserve unrelated statements even when returning a complete section. Check every reported defect against the source; "
+                    "Use only local exact replacements, never rewrite a complete section. Check every reported defect against the source; "
                     "retain fixes from previous rounds, including timing, pause, coordinates and restart.",
                     "UNCHANGED BODY STRUCTURE (read-only; reuse these element IDs, do not invent missing controls):\n" + body_context,
                     build_section_context(normalized_code, allowed_sections),
                 ]
                 if part
             )
-            prompt = build_patch_protocol(allowed_sections, task_label="quality gate repair", strict=True) + "\n\n" + repair_context
+            prompt = build_patch_protocol(allowed_sections, task_label="quality gate repair", strict=True, exact_only=True) + "\n\n" + repair_context
             failure_stage = "provider_request"
             text = await self._request_quality_gate_patch_text(
                 prompt=prompt,
@@ -498,17 +510,19 @@ class PipelineV2QualityPolicyMixin:
                 prompt_bundle_snapshot=request.prompt_bundle_snapshot.model_dump(),
             )
             response_chars = len(text or "")
-            failure_stage = "patch_parse"
-            patches, _ = parse_patch_response(text, allowed_sections=allowed_sections, strict=True)
-            patch_count = len(patches or [])
-            if patches:
-                failure_stage = "patch_application"
+            for correction in range(2):
                 try:
+                    failure_stage = 'patch_correction_parse' if correction else 'patch_parse'
+                    patches, _ = parse_patch_response(text, allowed_sections=allowed_sections, strict=True, exact_only=True)
+                    patch_count = len(patches or [])
+                    failure_stage = 'patch_application'
+                    self._validate_quality_patch_extent(normalized_code, patches)
                     candidate = apply_section_patches(normalized_code, patches)
+                    break
                 except ValueError as patch_error:
                     # The failed batch is atomic: correct against the ORIGINAL source,
                     # never against a partially applied batch. One bounded format retry.
-                    if not str(patch_error).startswith("patch_validation_failed:"):
+                    if correction or not str(patch_error).startswith("patch_validation_failed:"):
                         raise
                     self._notify(progress_cb, "code_review", 95, "Correcting invalid patch references", {
                         "gameId": request.game_id, "userId": request.user_id,
@@ -517,27 +531,16 @@ class PipelineV2QualityPolicyMixin:
                     failure_stage = "patch_correction_request"
                     text = await self._request_quality_gate_patch_text(
                         prompt=build_patch_protocol(allowed_sections, task_label="quality gate repair correction",
-                            strict=True, replace_sections_only=True)
+                            strict=True, exact_only=True)
                         + "\n\n" + repair_context + "\n\nPATCH APPLICATION REJECTED: " + str(patch_error)[:300]
                         + "\nNo edits were applied. Return a corrected JSON batch against the ORIGINAL "
-                        "sections above. Use ONE complete replace_section per changed section. "
-                        "Include all initialization, input "
-                        "handlers and rendering; never replace the whole script with a fragment.",
+                        "sections above. Expand the exact search context until unique. "
+                        "Use only small replace_exact changes; do not fall back to rewriting complete sections.",
                         spec=spec,
                         prompt_bundle_snapshot=request.prompt_bundle_snapshot.model_dump(),
                     )
                     response_chars = len(text or "")
-                    failure_stage = "patch_correction_parse"
-                    patches, _ = parse_patch_response(text, allowed_sections=allowed_sections, strict=True,
-                        replace_sections_only=True)
-                    patch_count = len(patches or [])
-                    if not patches:
-                        raise RuntimeError("patch_parse_empty")
-                    failure_stage = "patch_application"
-                    candidate = apply_section_patches(normalized_code, patches)
-                touched_sections = {patch.section for patch in patches}
-            else:
-                raise RuntimeError("patch_parse_empty")
+            touched_sections = {patch.section for patch in patches}
 
             failure_stage = "patch_validation"
             validation_errors = validate_patch_candidate(
@@ -636,7 +639,16 @@ class PipelineV2QualityPolicyMixin:
                 raise
             raise PipelineExecutionError(
                 "Quality repair failed during " + failure_stage + ": " + reason,
-                stage="code_review", failure_family="repair_contract",
+                stage="code_review", failure_family=('repair_protocol' if failure_stage in {
+                    'patch_parse','patch_correction_parse','patch_application'} else 'repair_contract'),
+                artifacts=[
+                    self._build_text_artifact(artifact_type='failed_quality_candidate', payload=code,
+                        metadata={'stage':'code_review','retained':True}),
+                    self._build_json_artifact(artifact_type='quality_repair_report', payload={
+                        'failureStage':failure_stage,'reason':reason,'patchAttempt':patch_attempt,
+                        'responseChars':response_chars,'patchCount':patch_count,
+                    }, metadata={'stage':'code_review'}),
+                ],
             ) from exc
 
         logger.info(

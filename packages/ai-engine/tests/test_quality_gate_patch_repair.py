@@ -40,8 +40,9 @@ PATCH_RESPONSE_TEXT = json.dumps(
         "patches": [
             {
                 "section": "SCRIPT",
-                "operation": "replace_section",
-                "content": PATCHED_SCRIPT,
+                "operation": "replace_exact",
+                "search": "const canvas=",
+                "content": "// PATCHED_QUALITY_FIX\nconst canvas=",
             }
         ]
     }
@@ -332,34 +333,48 @@ def test_near_miss_uses_patch_repair_and_skips_full_regeneration():
     assert response.quality_score == 7.1
 
 
-def test_patch_validation_failure_falls_back_to_full_regeneration():
+def test_patch_format_failure_gets_one_correction_without_full_regeneration():
+    import pytest
+    from src.engine.pipeline_errors import PipelineExecutionError
     events = []
     generated_first = _generated(BASE_CODE, "provider-a")
-    second_code = BASE_CODE.replace("background:#111", "background:#222")
-    generated_second = _generated(second_code, "provider-b")
-
-    response, mocks = _run_create_with_mocks(
-        generate_side_effect=[(generated_first, []), (generated_second, [])],
-        flow_side_effect=[
-            (_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, []),
-            (_qa_success(second_code), SimpleNamespace(ran=True, js_errors=[]), 0, []),
-        ],
-        review_side_effect=[_near_miss_review(), _passing_review()],
-        compute_side_effect=[_quality(5.9), _quality(7.1)],
-        # Full document without canvas/script fails validate_patch_candidate.
-        patch_text_return="<!DOCTYPE html><html><body>tiny</body></html>",
-        progress_cb=lambda *event: events.append(event),
-    )
+    with pytest.raises(PipelineExecutionError) as caught:
+        _run_create_with_mocks(
+            generate_side_effect=[(generated_first, [])],
+            flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])],
+            review_side_effect=[_near_miss_review()], compute_side_effect=[_quality(5.9)],
+            patch_text_return="<!DOCTYPE html><html><body>tiny</body></html>",
+            progress_cb=lambda *event: events.append(event),
+        )
     rejection = next(event[3] for event in events if event[2] == "Targeted quality repair rejected")
-    assert rejection["failureStage"] == "patch_parse"
+    assert rejection["failureStage"] == "patch_correction_parse"
     assert "invalid_json" in rejection["rejectionReason"]
     assert rejection["responseChars"] > 0
+    assert len([event for event in events if event[2]=='Correcting invalid patch references']) == 1
+    assert caught.value.failure_family == 'repair_protocol'
+    assert caught.value.artifacts[0]['payload'] == BASE_CODE
 
-    assert mocks.patch_text.await_count == 1
-    assert mocks.generate.await_count == 2
-    second_call = mocks.generate.await_args_list[1].kwargs
-    assert "invalid_json" in second_call["generation_guidance"]
-    assert response.html_code == second_code
+
+def test_large_script_cannot_be_smuggled_as_a_local_patch():
+    import pytest
+    from src.engine.section_patch import SectionPatch
+    with pytest.raises(ValueError,match='replaces_too_much'):
+        V2PipelineRunner._validate_quality_patch_extent(BASE_CODE,[
+            SectionPatch(section='SCRIPT',operation='replace_exact',search=BASE_SCRIPT,content=PATCHED_SCRIPT)])
+
+
+def test_local_protocol_rejects_whole_sections_and_excessive_batches():
+    import pytest
+    from src.engine.section_patch import parse_patch_response, build_patch_protocol
+    whole=json.dumps({'patches':[{'section':'SCRIPT','operation':'replace_section','content':BASE_SCRIPT}]})
+    with pytest.raises(ValueError,match='local_exact_patch_required'):
+        parse_patch_response(whole,allowed_sections=['SCRIPT'],strict=True,exact_only=True)
+    many=json.dumps({'patches':[{'section':'SCRIPT','operation':'replace_exact','search':'x','content':'y'}]*13})
+    with pytest.raises(ValueError,match='too_many_local_patches'):
+        parse_patch_response(many,allowed_sections=['SCRIPT'],strict=True,exact_only=True)
+    prompt=build_patch_protocol(['SCRIPT'],task_label='repair',strict=True,exact_only=True)
+    assert 'Only replace_exact is allowed' in prompt
+    assert '"operation":"replace_section"' not in prompt
 
 
 def test_structural_defect_skips_patch_and_goes_straight_to_regeneration():
@@ -416,6 +431,9 @@ def test_patch_request_overrides_full_document_system_output_contract():
     assert system.index('CURRENT REPAIR OUTPUT OVERRIDE') > system.index('Return ONLY one complete HTML')
     assert 'Return only a valid JSON object' in system
     assert 'All safety, gameplay, language and quality requirements' in system
+    assert client.await_args.kwargs['max_tokens'] == 4096
+    assert client.await_args.kwargs['truncation_retry_max_tokens'] == 8192
+    assert client.await_args.kwargs['response_size_hint'] == 'large_patch'
 
 
 def test_invalid_patch_reference_gets_one_correction_and_full_qa():
@@ -431,7 +449,7 @@ def test_invalid_patch_reference_gets_one_correction_and_full_qa():
     assert mocks.patch_text.await_count == 2
     assert "PATCH APPLICATION REJECTED" in mocks.patch_text.await_args.kwargs["prompt"]
     assert "ORIGINAL" in mocks.patch_text.await_args.kwargs["prompt"]
-    assert "The ONLY allowed operation is replace_section" in mocks.patch_text.await_args.kwargs["prompt"]
+    assert "Only replace_exact is allowed" in mocks.patch_text.await_args.kwargs["prompt"]
     assert "Prefer surgical edits" not in mocks.patch_text.await_args.kwargs["prompt"]
     assert mocks.generate.await_count == 1
     assert mocks.runtime_loop.await_count == 1
@@ -447,19 +465,20 @@ def test_explicit_desktop_requirements_override_touch_only_defaults():
     assert CodeGenerator._build_requested_platform_contract(_spec()) == ""
 
 
-def test_invalid_patch_correction_is_bounded_and_falls_back():
+def test_invalid_patch_correction_is_bounded_and_preserves_source_without_regeneration():
+    import pytest
+    from src.engine.pipeline_errors import PipelineExecutionError
     bad = json.dumps({"patches": [{"section": "SCRIPT", "operation": "replace_exact",
         "search": "does not exist", "content": "unsafe fragment"}]})
-    response, mocks = _run_create_with_mocks(
-        generate_side_effect=[(_generated(BASE_CODE, "provider-a"), []), (_generated(BASE_CODE, "provider-b"), [])],
-        flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])] * 2,
-        review_side_effect=[_near_miss_review(), _passing_review()],
-        compute_side_effect=[_quality(5.9), _quality(7.1)],
-        patch_text_side_effect=[bad, bad],
-    )
-    assert mocks.patch_text.await_count == 2
-    assert mocks.generate.await_count == 2
-    assert mocks.runtime_loop.await_count == 0
+    with pytest.raises(PipelineExecutionError) as caught:
+        _run_create_with_mocks(
+            generate_side_effect=[(_generated(BASE_CODE, "provider-a"), [])],
+            flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])],
+            review_side_effect=[_near_miss_review()], compute_side_effect=[_quality(5.9)],
+            patch_text_side_effect=[bad, bad],
+        )
+    assert caught.value.failure_family == 'repair_protocol'
+    assert caught.value.artifacts[0]['payload'] == BASE_CODE
 
 
 def test_repair_runtime_failure_reaches_regeneration_with_actual_reason():
@@ -548,8 +567,8 @@ def test_second_repair_keeps_first_fix_and_uses_fresh_review():
 
 
 def test_regressing_patch_never_replaces_the_next_repair_base():
-    rejected = json.dumps({"patches": [{"section": "SCRIPT", "operation": "replace_section",
-        "content": "// REGRESSED_CANDIDATE\n" + BASE_SCRIPT}]})
+    rejected = json.dumps({"patches": [{"section": "SCRIPT", "operation": "replace_exact",
+        "search":"const canvas=", "content": "// REGRESSED_CANDIDATE\nconst canvas="}]})
     response, mocks = _run_create_with_mocks(
         generate_side_effect=[(_generated(BASE_CODE, "provider-a"), [])],
         flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])],
@@ -581,8 +600,8 @@ def test_exhausted_quality_repairs_preserve_candidate_without_full_regeneration(
 
 
 def test_style_patch_also_runs_runtime_validation():
-    style_patch = json.dumps({"patches": [{"section": "STYLE", "operation": "replace_section",
-        "content": "body{margin:0;background:linear-gradient(#111,#445);}"}]})
+    style_patch = json.dumps({"patches": [{"section": "STYLE", "operation": "replace_exact",
+        "search":"background:#111", "content": "background:linear-gradient(#111,#445)"}]})
     response, mocks = _run_create_with_mocks(
         generate_side_effect=[(_generated(BASE_CODE, "provider-a"), [])],
         flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])],

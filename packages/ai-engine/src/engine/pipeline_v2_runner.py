@@ -150,7 +150,9 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
             request_timeout_s=request_timeout_s,
             default_timeout_s=CodeGenerator._generation_overall_timeout_budget_s(spec),
         )
-        token_budget = CodeGenerator._select_token_budget(spec)
+        # A local repair is not another full script generation. Keep both the
+        # first response and truncation recovery bounded independently of tier.
+        token_budget = 4096
         # prefer_fast intentionally left off: quality repair needs the
         # primary model, not the fast lane.
         return await generator._client.complete_with_truncation_retry(
@@ -167,12 +169,12 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
             request_timeout_s=request_timeout_s,
             overall_timeout_s=overall_timeout_s,
             allow_provider_fallback=True,
-            response_size_hint=CodeGenerator._response_size_hint_from_budget(token_budget),
+            response_size_hint='large_patch',
             context_scope="request",
             compression_policy="iteration_rewrite",
             truncation_retry_attempts=1,
             truncation_retry_increment=2048,
-            truncation_retry_max_tokens=CodeGenerator._select_truncation_retry_cap(spec),
+            truncation_retry_max_tokens=8192,
             timeout_retry_attempts=0,
             provider_retry_attempts=1,
             provider_retry_on_timeout_errors=False,
@@ -699,7 +701,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
             except PipelineExecutionError as exc:
                 last_quality_exc = exc
                 last_route_snapshot = getattr(exc, "route_snapshot", None) or last_route_snapshot
-                if (getattr(exc, "failure_family", None) in {"quality_repair_exhausted", "provider_transport", "route_configuration"}
+                if (getattr(exc, "failure_family", None) in {"quality_repair_exhausted", "repair_protocol", "provider_transport", "route_configuration"}
                         or quality_attempt >= len(attempt_plan)
                         or exc.stage not in {"logic_generate", "contract_qa", "runtime_simulation_qa", "code_review"}):
                     raise

@@ -439,7 +439,20 @@ def build_patch_protocol(
     preferred_targets: Optional[Sequence[str]] = None,
     strict: bool = False,
     replace_sections_only: bool = False,
+    exact_only: bool = False,
 ) -> str:
+    if exact_only:
+        if replace_sections_only:
+            raise ValueError('conflicting patch operation policies')
+        return '\n'.join([
+            f'PATCH-FIRST {task_label.upper()} OUTPUT CONTRACT (NON-NEGOTIABLE):',
+            'Return JSON only: {"patches":[{"section":"SCRIPT","operation":"replace_exact","search":"unique existing source","content":"replacement source"}]}',
+            f'Allowed sections: {", ".join(allowed_sections)}. Only replace_exact is allowed; no anchors or complete section replacement.',
+            'At most 12 small patches. Each search must occur exactly once in its original section; include enough unchanged context to make it unique.',
+            'Do not replace more than 60% of any section across the batch. Preserve all unrelated code, initialization, lexical scope, state and element IDs.',
+            'Search and content are literal source, without HTML wrapper tags, ellipses or invented markers. Do not edit empty synthetic marker blocks.',
+            'Correct rejected references against the ORIGINAL source shown below; no partial changes have been applied.',
+        ])
     section_list = ", ".join(allowed_sections)
     normalized_preferred_targets: List[str] = []
     for target in preferred_targets or ():
@@ -616,6 +629,7 @@ def parse_patch_response(
     allowed_sections: Sequence[str],
     strict: bool = False,
     replace_sections_only: bool = False,
+    exact_only: bool = False,
 ) -> tuple[Optional[List[SectionPatch]], Optional[str]]:
     if strict:
         # Production quality repair has one wire format. Never reinterpret
@@ -630,12 +644,16 @@ def parse_patch_response(
         items = payload.get("patches") if isinstance(payload, dict) else None
         if not isinstance(items, list) or not items:
             raise ValueError("patch_validation_failed:missing_patches")
+        if exact_only and len(items) > 12:
+            raise ValueError('patch_validation_failed:too_many_local_patches')
         patches = []
         for item in items:
             if not isinstance(item, dict):
                 raise ValueError("patch_validation_failed:invalid_patch")
             section, anchor = _normalize_patch_target(item.get("section"))
             operation = item.get("operation")
+            if exact_only and (operation != 'replace_exact' or anchor or item.get('anchor')):
+                raise ValueError('patch_validation_failed:local_exact_patch_required')
             if section not in allowed_sections or operation not in {"replace_section", "replace_exact", "replace_block"}:
                 raise ValueError("patch_validation_failed:invalid_target_or_operation")
             if replace_sections_only and (operation != "replace_section" or anchor or item.get("anchor") or item.get("search")):
