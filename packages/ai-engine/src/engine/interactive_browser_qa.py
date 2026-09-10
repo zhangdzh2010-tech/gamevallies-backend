@@ -9,6 +9,7 @@ import re
 
 from .runtime_isolation import network_policy_meta, restrict_context_network
 from .rendered_text_evidence import CANVAS_TEXT_PROBE
+from .interactive_contract_probes import run_input_contract_probes
 
 # Same per-work storage semantics as the player's workStorageBridge.js. Data is
 # ephemeral in QA; neither generated code nor the adapter can read host storage.
@@ -289,12 +290,21 @@ async def browser_report(code: str) -> dict:
                 issues.append('参数边界下存在连续曲线超出Canvas高度而被裁切；按最大合成值调整坐标范围或留出绘图边距。')
             if not exercised or not changed:
                 issues.append('未检测到可操作且能改变作品内容的交互控件。')
+            # Smoke coverage and semantic assertions have separate evidence.
+            # Start from clean state so previous edits cannot mask a dead input.
+            frame = await load_work(host, code)
+            contract_checks = await run_input_contract_probes(frame, host)
+            for check in contract_checks:
+                if check['status'] == 'failed':
+                    issues.append(f'输入输出契约失败 {check["contract"]}「{check["control"]}」：'
+                        f'输入{check["input"]}，预期{check["expected"]}，实际{check["observed"]}。')
             issues = list(dict.fromkeys(issues + js_errors + sandbox_errors))
             return {'ran':True,'passed':not issues,'issues':issues,'js_errors':list(dict.fromkeys(js_errors)),
                 'sandbox':'allow-scripts','sandboxViolations':list(dict.fromkeys(sandbox_errors)),
                 'interaction_performed':bool(exercised),'dom_changed_after_input':changed,
                 'controlsExercised':exercised,'controlsDiscovered':total,'controlChecks':control_checks,
                 'controlCoverageTruncated':total>40,'contentChanged':changed,
+                'contractChecks':contract_checks,
                 'drawingIssues':drawing_issues,'angleEvidence':angle_evidence[:10],
                 'canvasTextEvidence':text_evidence,
                 'motionChecks':motion_checks,'viewports':viewports}
