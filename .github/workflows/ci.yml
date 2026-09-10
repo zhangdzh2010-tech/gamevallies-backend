@@ -130,6 +130,7 @@ jobs:
           tests/test_code_preflight.py
           tests/test_code_generator.py
           tests/test_code_reviewer.py
+          tests/test_quality_scorer.py
           tests/test_section_patch.py
           tests/test_runtime_qa.py
           tests/test_creative_design.py

@@ -151,7 +151,7 @@ class TestCodeReviewerParsing:
         assert result.issues == ["too easy"]
 
     def test_json_with_markdown_fences_parsed(self):
-        raw = "```json\n{\"is_complete_game\": true, \"has_real_gameplay\": false, \"difficulty_balanced\": true, \"fun_score\": 3, \"issues\": []}\n```"
+        raw = "```json\n{\"is_complete_game\": true, \"has_real_gameplay\": false, \"difficulty_balanced\": true, \"fun_score\": 3, \"visual_polish_score\": 7, \"character_quality_score\": 7, \"issues\": []}\n```"
         result = self.reviewer._parse_review(raw)
         assert result.ran is True
         assert result.has_real_gameplay is False
@@ -160,18 +160,17 @@ class TestCodeReviewerParsing:
         result = self.reviewer._parse_review("this is not json at all")
         assert result.ran is False
 
-    def test_fun_score_clamped(self):
-        raw = '{"is_complete_game": true, "has_real_gameplay": true, "difficulty_balanced": true, "fun_score": 15, "issues": []}'
+    def test_out_of_range_fun_score_rejected(self):
+        raw = '{"is_complete_game": true, "has_real_gameplay": true, "difficulty_balanced": true, "fun_score": 15, "visual_polish_score": 7, "character_quality_score": 7, "issues": []}'
         result = self.reviewer._parse_review(raw)
-        assert result.fun_score == 10.0
+        assert result.ran is False
 
-    def test_fun_score_min_clamped(self):
-        raw = '{"is_complete_game": true, "has_real_gameplay": true, "difficulty_balanced": true, "fun_score": -5, "issues": []}'
+    def test_negative_fun_score_rejected(self):
+        raw = '{"is_complete_game": true, "has_real_gameplay": true, "difficulty_balanced": true, "fun_score": -5, "visual_polish_score": 7, "character_quality_score": 7, "issues": []}'
         result = self.reviewer._parse_review(raw)
-        assert result.fun_score == 1.0
+        assert result.ran is False
 
-    def test_visual_and_character_scores_are_clamped(self):
+    def test_invalid_visual_and_character_scores_are_rejected(self):
         raw = '{"is_complete_game": true, "has_real_gameplay": true, "difficulty_balanced": true, "fun_score": 8, "visual_polish_score": 12, "character_quality_score": 0, "issues": []}'
         result = self.reviewer._parse_review(raw)
-        assert result.visual_polish_score == 10.0
-        assert result.character_quality_score == 1.0
+        assert result.ran is False
