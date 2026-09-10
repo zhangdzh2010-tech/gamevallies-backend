@@ -7,6 +7,7 @@ import time
 import hashlib
 from ..api.models import GameRuntimeContract, GameSpec, RunPipelineResponse, IterateResponse
 from ..services.llm_client import LLMClient
+from ..config.settings import settings
 from .code_generation_support import _extract_html
 from .pipeline_errors import PipelineExecutionError
 from .artifact_quality import request_artifact_kind, review_prompt, assess_review, preservation_errors, preserve_cosmetic_scripts
@@ -167,10 +168,18 @@ async def run_interactive(request, progress_cb=None):
         try:
             report = await asyncio.wait_for(validate_interactive_html(code), timeout=min(60,max(1,deadline-time.time())))
         except Exception as exc:
-            raise PipelineExecutionError(f'Desktop runtime QA unavailable: {type(exc).__name__}',
-                stage='runtime_simulation_qa',failure_family='runtime_infrastructure',
-                artifacts=candidate_history + [{'artifact_type':'failed_interactive_candidate',
-                    'content_type':'text/html','payload':code,'metadata':{'attempt':attempt,'stage':'runtime_simulation_qa'}}]) from exc
+            tier = str(getattr(request, 'generation_tier', '') or 'standard').lower()
+            if not settings.RUNTIME_QA_REQUIRED and tier != 'showcase':
+                report = {'ran':False, 'passed':True, 'issues':[], 'softFailed':True,
+                    'unavailableReason':type(exc).__name__}
+                if progress_cb: progress_cb('runtime_simulation_qa',92,
+                    '桌面运行检查暂不可用，保留候选并继续内容审核',
+                    {'attempt':attempt,'softFailed':True,'unavailableReason':type(exc).__name__})
+            else:
+                raise PipelineExecutionError(f'Desktop runtime QA unavailable: {type(exc).__name__}',
+                    stage='runtime_simulation_qa',failure_family='runtime_infrastructure',
+                    artifacts=candidate_history + [{'artifact_type':'failed_interactive_candidate',
+                        'content_type':'text/html','payload':code,'metadata':{'attempt':attempt,'stage':'runtime_simulation_qa'}}]) from exc
         preserved = preservation_errors(source_code, code, feedback)
         if source_code and code == source_code:
             preserved.append('修改没有产生有效变更，请在保留约束内落实用户要求。')

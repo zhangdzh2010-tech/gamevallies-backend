@@ -396,26 +396,24 @@ def test_near_miss_uses_patch_repair_and_skips_full_regeneration():
     assert response.quality_score == 7.1
 
 
-def test_patch_format_failure_gets_one_correction_without_full_regeneration():
-    import pytest
-    from src.engine.pipeline_errors import PipelineExecutionError
+def test_patch_format_failure_gets_one_correction_then_full_regeneration():
     events = []
     generated_first = _generated(BASE_CODE, "provider-a")
-    with pytest.raises(PipelineExecutionError) as caught:
-        _run_create_with_mocks(
-            generate_side_effect=[(generated_first, [])],
-            flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])],
-            review_side_effect=[_near_miss_review()], compute_side_effect=[_quality(5.9)],
-            patch_text_return="<!DOCTYPE html><html><body>tiny</body></html>",
-            progress_cb=lambda *event: events.append(event),
-        )
+    response, mocks = _run_create_with_mocks(
+        generate_side_effect=[(generated_first, []), (_generated(BASE_CODE, "provider-b"), [])],
+        flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])] * 2,
+        review_side_effect=[_near_miss_review(), _passing_review()],
+        compute_side_effect=[_quality(5.9), _quality(7.1)],
+        patch_text_return="<!DOCTYPE html><html><body>tiny</body></html>",
+        progress_cb=lambda *event: events.append(event),
+    )
     rejection = next(event[3] for event in events if event[2] == "Targeted quality repair rejected")
     assert rejection["failureStage"] == "patch_correction_parse"
     assert "invalid_json" in rejection["rejectionReason"]
     assert rejection["responseChars"] > 0
     assert len([event for event in events if event[2]=='Correcting invalid patch references']) == 1
-    assert caught.value.failure_family == 'repair_protocol'
-    assert caught.value.artifacts[0]['payload'] == BASE_CODE
+    assert mocks.generate.await_count == 2
+    assert response.quality_score == 7.1
 
 
 def test_large_script_cannot_be_smuggled_as_a_local_patch():
@@ -537,20 +535,18 @@ def test_explicit_desktop_requirements_override_touch_only_defaults():
     assert CodeGenerator._build_requested_platform_contract(_spec()) == ""
 
 
-def test_invalid_patch_correction_is_bounded_and_preserves_source_without_regeneration():
-    import pytest
-    from src.engine.pipeline_errors import PipelineExecutionError
+def test_invalid_patch_correction_is_bounded_then_regenerates_from_source():
     bad = json.dumps({"patches": [{"section": "SCRIPT", "operation": "replace_exact",
         "search": "does not exist", "content": "unsafe fragment"}]})
-    with pytest.raises(PipelineExecutionError) as caught:
-        _run_create_with_mocks(
-            generate_side_effect=[(_generated(BASE_CODE, "provider-a"), [])],
-            flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])],
-            review_side_effect=[_near_miss_review()], compute_side_effect=[_quality(5.9)],
-            patch_text_side_effect=[bad, bad],
-        )
-    assert caught.value.failure_family == 'repair_protocol'
-    assert caught.value.artifacts[0]['payload'] == BASE_CODE
+    response, mocks = _run_create_with_mocks(
+        generate_side_effect=[(_generated(BASE_CODE, "provider-a"), []), (_generated(BASE_CODE, "provider-b"), [])],
+        flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])] * 2,
+        review_side_effect=[_near_miss_review(), _passing_review()],
+        compute_side_effect=[_quality(5.9), _quality(7.1)],
+        patch_text_side_effect=[bad, bad],
+    )
+    assert mocks.generate.await_count == 2
+    assert response.quality_score == 7.1
 
 
 def test_repair_runtime_failure_reaches_regeneration_with_actual_reason():
