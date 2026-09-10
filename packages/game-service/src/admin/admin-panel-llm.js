@@ -73,10 +73,21 @@ function llmModelTestMarkup(model) {
   return `<div class="${stale ? 'sheet-muted' : test.success ? 'llm-test-ok' : 'llm-test-error'}">${escHtml(label)}</div><div class="sheet-muted">${escHtml(String(test.latencyMs ?? '-'))} ms · ${escHtml(test.testedAt || '')}</div><details><summary>诊断记录</summary><pre class="llm-test-diagnostics">${escHtml(JSON.stringify(diagnostic, null, 2))}</pre></details>`;
 }
 
+function llmReadinessMarkup(model) {
+  const stages = model.businessReadiness || [];
+  const legacy = model.capabilityState?.legacyUnchecked;
+  const rows = stages.map(stage => `${stage.name}：${stage.ready ? '可路由' : '受限'}`);
+  const reasons = [...new Set(stages.flatMap(stage => stage.steps.filter(step => !step.ready)
+    .flatMap(step => step.candidates.flatMap(candidate => candidate.reasons))))];
+  return `<div class="sheet-muted">${escHtml(rows.join(' · '))}</div>
+    ${legacy ? '<p class="sheet-muted">旧表单未验证标记按未知能力处理，实际能力以生成验收为准。</p>' : ''}
+    ${reasons.length ? `<p class="llm-test-error">${escHtml(reasons.join('；'))}</p>` : ''}`;
+}
+
 function renderLlmModels() {
   const models = llmConfigModels.filter(model => model.provider?.region === currentExecutionRegion);
   return `<div class="llm-panel-header"><div><h3>Model 配置与测试</h3><p class="sheet-muted">每个模型独立配置、独立测试；连通成功不等于作品生成通过。</p></div><button class="btn btn-primary" onclick="openLlmModel()">添加 Model</button></div>
-    ${models.length ? `<div class="llm-config-cards">${models.map(model => `<article class="llm-config-card"><h4>${escHtml(model.name)}</h4><p class="sheet-muted">${escHtml(model.modelId)} · ${escHtml(model.provider.name)}</p><p class="sheet-muted">${model.enabled && model.provider.enabled ? '已启用' : '模型或服务已停用'}</p><div id="llm3Test-${escAttr(model.id)}">${llmModelTestMarkup(model)}</div><div class="llm-simple-actions"><button class="btn btn-secondary btn-sm" onclick="openLlmModel('${escAttr(model.id)}')">编辑模型</button><button id="llm3TestButton-${escAttr(model.id)}" class="btn btn-primary btn-sm" onclick="testLlmModel('${escAttr(model.id)}')" ${llmModelTestsPending.has(model.id) || !model.enabled || !model.provider.enabled ? 'disabled' : ''}>测试此模型</button></div></article>`).join('')}</div>` : '<div class="llm-config-empty">添加模型时选择已有 Provider，填写服务商提供的模型 ID。</div>'}`;
+    ${models.length ? `<div class="llm-config-cards">${models.map(model => `<article class="llm-config-card"><h4>${escHtml(model.name)}</h4><p class="sheet-muted">${escHtml(model.modelId)} · ${escHtml(model.provider.name)}</p><p class="sheet-muted">${model.enabled && model.provider.enabled ? '已启用' : '模型或服务已停用'}</p>${llmReadinessMarkup(model)}<div id="llm3Test-${escAttr(model.id)}">${llmModelTestMarkup(model)}</div><div class="llm-simple-actions"><button class="btn btn-secondary btn-sm" onclick="openLlmModel('${escAttr(model.id)}')">编辑模型</button><button id="llm3TestButton-${escAttr(model.id)}" class="btn btn-primary btn-sm" onclick="testLlmModel('${escAttr(model.id)}')" ${llmModelTestsPending.has(model.id) || !model.enabled || !model.provider.enabled ? 'disabled' : ''}>测试此模型</button></div></article>`).join('')}</div>` : '<div class="llm-config-empty">添加模型时选择已有 Provider，填写服务商提供的模型 ID。</div>'}`;
 }
 
 function businessModelOptions(selected, optional = false) {
@@ -86,7 +97,8 @@ function businessModelOptions(selected, optional = false) {
 
 function renderLlmBusiness() {
   return `<div class="llm-panel-header"><div><h3>业务环节配置</h3><p class="sheet-muted">只配置三个业务环节，内部步骤自动归属。主备可来自同一个 Provider。</p></div></div>
-    <div class="llm-business-cards">${llmConfigStages.map(stage => `<article class="llm-config-card"><h4>${escHtml(stage.name)}</h4><p class="sheet-muted">${escHtml(stage.description)}</p><div class="llm-business-state">${stage.status === 'configured' ? '使用业务配置' : stage.status === 'legacy' ? '保留旧路由，尚未接管' : '尚未配置'}</div>
+    <div class="llm-business-cards">${llmConfigStages.map(stage => `<article class="llm-config-card"><h4>${escHtml(stage.name)}</h4><p class="sheet-muted">${escHtml(stage.description)}</p><div class="llm-business-state">${stage.status === 'configured' ? stage.readiness?.ready === false ? '业务配置被阻断' : '使用业务配置 · 可路由' : stage.status === 'legacy' ? '保留旧路由，尚未接管' : '尚未配置'}</div>
+      ${stage.readiness?.ready === false ? `<p class="llm-test-error">${escHtml([...new Set(stage.readiness.steps.filter(step => !step.ready).flatMap(step => step.candidates.flatMap(candidate => candidate.reasons)))].join('；'))}</p>` : ''}
       <label>主模型<select id="llm3Primary-${escAttr(stage.id)}" onchange="llmBusinessDirty=true">${businessModelOptions(stage.binding?.primaryModelId)}</select></label>
       <label>备用模型 <span class="sheet-muted">可选</span><select id="llm3Fallback-${escAttr(stage.id)}" onchange="llmBusinessDirty=true">${businessModelOptions(stage.binding?.fallbackModelId, true)}</select></label>
       ${stage.legacy?.length ? `<details><summary>旧配置（只读）</summary><ul>${stage.legacy.map(row => `<li>${escHtml(row.stepKey)}：${escHtml(row.model || '未绑定')}</li>`).join('')}</ul></details>` : ''}</article>`).join('')}</div>
@@ -121,7 +133,8 @@ function openLlmModel(id) {
     ${llmInput('llm3ModelId', '模型 ID', model?.modelId)}${llmInput('llm3Name', '显示名称（可选）', model?.name)}
     <label class="llm-toggle-line"><input id="llm3Enabled" type="checkbox" ${model?.enabled !== false ? 'checked' : ''} />启用模型</label></div>
     <details class="llm-advanced-block"><summary>模型限制（可选）</summary><p class="sheet-muted">按服务商实际限制填写；留空表示未知，不会判为“不支持”。</p>${llmInput('llm3Context', '上下文 Token 上限', model?.contextWindow, 'number')}${llmInput('llm3Output', '输出 Token 上限', model?.maxOutputTokens, 'number')}
-    ${Object.keys(model?.capabilityFlags || {}).length ? `<p class="sheet-muted">旧配置能力约束已保留：${escHtml(JSON.stringify(model.capabilityFlags))}</p>` : ''}</details>`;
+    ${llmReadinessMarkup(model || {})}
+    ${Object.keys(model?.capabilityFlags || {}).length ? `<details><summary>原始能力标记</summary><p class="sheet-muted">${escHtml(JSON.stringify(model.capabilityFlags))}</p></details>` : ''}</details>`;
   document.getElementById('llm3Sheet').classList.add('active');
 }
 

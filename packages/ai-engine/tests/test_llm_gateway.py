@@ -169,6 +169,31 @@ def test_business_keeps_explicit_legacy_capability_restrictions():
     assert [route.model for route in gateway.resolve_candidates(step_key='code_generate.full')] == ['backup-model']
 
 
+@patch('src.services.llm_gateway.settings.SERVICE_REGION', 'cn_shanghai')
+def test_business_recovers_old_unchecked_flags_without_claiming_verified_support():
+    gateway = business_gateway()
+    flags = {'verified': False, 'supports_dialogue': False, 'supports_patch_generation': False, 'supports_full_html_rewrite': False}
+    for model in gateway._models.values():
+        model['capability_flags'] = dict(flags)
+    routes = gateway.resolve_candidates(step_key='code_generate.full')
+    assert len(routes) == 2
+    assert routes[0].route_snapshot['provider_capability_flags'] == {'verified': False}
+    assert routes[0].route_snapshot['raw_model_capability_flags'] == flags
+    assert routes[0].route_snapshot['capability_interpretation'] == 'legacy_unchecked_unknown'
+    assert gateway._models['model-a']['capability_flags'] == flags
+
+
+@patch('src.services.llm_gateway.settings.SERVICE_REGION', 'cn_shanghai')
+def test_business_error_reports_the_stage_step_and_concrete_rejection():
+    gateway = business_gateway()
+    for model in gateway._models.values():
+        model['capability_flags'] = {'supports_full_html_rewrite': False}
+    with pytest.raises(LLMBusinessConfigurationError, match='code_generate.full.*explicit_capability_restriction') as error:
+        gateway.resolve_candidates(step_key='code_generate.full')
+    assert error.value.route_snapshot['step_key'] == 'code_generate.full'
+    assert len(error.value.route_snapshot['model_rejections']) == 2
+
+
 def test_model_test_uses_model_record_instead_of_provider_default():
     gateway = business_gateway()
     with patch.object(gateway, 'refresh'), patch.object(gateway, '_persist_test_record'), \
