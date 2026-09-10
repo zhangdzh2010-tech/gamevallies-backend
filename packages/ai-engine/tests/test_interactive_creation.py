@@ -401,18 +401,47 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.runtime_qa_report['generationAttempts'],
                          {'fullGenerationCalls':1,'patchCalls':1,'qaAttempts':2})
 
-    async def test_invalid_patch_keeps_original_candidate_and_does_not_regenerate(self):
+    async def test_invalid_create_patch_corrects_against_retained_source(self):
+        delta = json.dumps({'patches':[{'search':'<h1>种群模型</h1>','replace':'<h1>生态观察</h1>'}]})
+        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
+            new=AsyncMock(side_effect=[GOOD,'not json',delta,await fake_llm(step_key='code_review')])) as llm, patch(
+            'src.engine.interactive_creation.validate_interactive_html',
+            new=AsyncMock(side_effect=[{'ran':True,'passed':False,'issues':['original defect']},
+                                     {'ran':True,'passed':True,'issues':[]}])):
+            result = await run_interactive(normalize_interactive_request(self.request()))
+        self.assertIn('生态观察', result.html_code)
+        correction = json.loads(llm.call_args_list[2].kwargs['messages'][0]['content'].split('\n',1)[1])
+        self.assertEqual(correction['html'], indexed_review_source(GOOD))
+        self.assertIn('original defect', correction['issues'])
+        self.assertEqual(result.runtime_qa_report['generationAttempts'],
+                         {'fullGenerationCalls':1,'patchCalls':2,'qaAttempts':2})
+
+    async def test_exhausted_create_patch_protocol_regenerates_and_revalidates(self):
+        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
+            new=AsyncMock(side_effect=[GOOD,'not json','not json',GOOD,await fake_llm(step_key='code_review')])) as llm, patch(
+            'src.engine.interactive_creation.validate_interactive_html',
+            new=AsyncMock(side_effect=[{'ran':True,'passed':False,'issues':['original defect']},
+                                     {'ran':True,'passed':True,'issues':[]}])) as qa:
+            result = await run_interactive(normalize_interactive_request(self.request()))
+        self.assertEqual([c.kwargs['step_key'] for c in llm.call_args_list],
+                         ['code_generate.full','quality_gate.patch_fix','quality_gate.patch_fix','code_generate.full','code_review'])
+        self.assertIn('original defect',llm.call_args_list[3].kwargs['messages'][0]['content'])
+        self.assertEqual(qa.await_count, 2)
+        self.assertEqual(result.runtime_qa_report['generationAttempts'],
+                         {'fullGenerationCalls':2,'patchCalls':2,'qaAttempts':2})
+
+    async def test_failed_regeneration_does_not_restart_the_budget_or_lose_evidence(self):
         from src.engine.pipeline_errors import PipelineExecutionError
         with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
-            new=AsyncMock(side_effect=[GOOD,'not json'])) as llm, patch(
+            new=AsyncMock(side_effect=[GOOD,'not json','not json',GOOD])) as llm, patch(
             'src.engine.interactive_creation.validate_interactive_html',
-            new=AsyncMock(return_value={'ran':True,'passed':False,'issues':['problem']})):
+            new=AsyncMock(return_value={'ran':True,'passed':False,'issues':['original defect']})):
             with self.assertRaises(PipelineExecutionError) as caught:
                 await run_interactive(normalize_interactive_request(self.request()))
-        self.assertEqual(llm.call_count, 2)
-        self.assertEqual(next(a['payload']['runtime']['generationAttempts'] for a in caught.exception.artifacts
-                             if a['artifact_type']=='interactive_validation_report'),
-                         {'fullGenerationCalls':1,'patchCalls':1,'qaAttempts':1})
+        self.assertEqual(llm.call_count, 4)
+        self.assertIn('original defect', str(caught.exception))
+        self.assertEqual(len([a for a in caught.exception.artifacts
+                             if a['artifact_type']=='interactive_repair_protocol_report']),2)
         self.assertEqual(next(a['payload'] for a in caught.exception.artifacts
                              if a['artifact_type']=='failed_interactive_candidate'),GOOD)
 
