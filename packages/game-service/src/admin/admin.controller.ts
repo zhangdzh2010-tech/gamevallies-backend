@@ -1,4 +1,5 @@
 import { SubscriptionGrantService } from './subscription-grant.service';
+import { CreationQuotaGrantService } from './creation-quota-grant.service';
 import {
   Controller,
   Get,
@@ -30,7 +31,8 @@ const adminAssetCache = new Map<string, AdminAssetCacheEntry>();
 
 @Controller()
 export class AdminController {
-  constructor(private readonly adminService: AdminService, private readonly grants: SubscriptionGrantService) {}
+  constructor(private readonly adminService: AdminService, private readonly grants: SubscriptionGrantService,
+    private readonly quotaGrants: CreationQuotaGrantService) {}
 
   private readAdminAsset(relativePath: string): AdminAssetCacheEntry | null {
     const filePath = path.join(__dirname, relativePath);
@@ -288,6 +290,18 @@ export class AdminController {
   async grantSubscription(@Headers("x-admin-token") token: string, @Body() body: any) {
     checkAdminToken(token);
     return ok(await this.grants.grant(body), "套餐授予成功");
+  }
+
+  @Get("admin/quota/grants")
+  async quotaGrantOptions(@Headers("x-admin-token") token: string, @Query("userId") userId?: string) {
+    checkAdminToken(token);
+    return ok(await this.quotaGrants.options(userId));
+  }
+
+  @Post("admin/quota/grants")
+  async grantCreationQuota(@Headers("x-admin-token") token: string, @Body() body: any) {
+    checkAdminToken(token);
+    return ok(await this.quotaGrants.grant(body), "创作额度授予成功");
   }
 
   @Get("admin/subscription/plans")

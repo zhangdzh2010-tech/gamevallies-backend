@@ -998,3 +998,19 @@ model AdminSubscriptionGrant {
   @@index([userId, createdAt])
   @@map("admin_subscription_grants")
 }
+
+// Append-only quota grants preserve paid subscriptions and the existing usage/refund ledger.
+model AdminCreationQuotaGrant {
+  id String @id @db.VarChar(36)
+  userId String @map("user_id") @db.VarChar(36)
+  userLabel String @map("user_label") @db.VarChar(255)
+  amount Int
+  totalBefore Int @map("total_before")
+  totalAfter Int @map("total_after")
+  usedAtGrant Int @map("used_at_grant")
+  reason String @db.VarChar(255)
+  operator String @db.VarChar(128)
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  @@index([userId, createdAt])
+  @@map("admin_creation_quota_grants")
+}
