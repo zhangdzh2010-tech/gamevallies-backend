@@ -429,6 +429,28 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(next(a['payload'] for a in caught.exception.artifacts
                              if a['artifact_type']=='failed_interactive_candidate'),GOOD)
 
+    async def test_standard_create_soft_fails_runtime_infrastructure_when_optional(self):
+        with patch('src.engine.interactive_creation.settings.RUNTIME_QA_REQUIRED', False), patch(
+            'src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
+            new=AsyncMock(side_effect=[GOOD, await fake_llm(step_key='code_review')])), patch(
+            'src.engine.interactive_creation.validate_interactive_html',
+            new=AsyncMock(side_effect=TimeoutError())):
+            result = await run_interactive(normalize_interactive_request(self.request()))
+        self.assertTrue(result.qa_passed)
+        self.assertTrue(result.runtime_qa_report['softFailed'])
+        self.assertEqual(result.runtime_qa_report['unavailableReason'], 'TimeoutError')
+
+    async def test_required_runtime_qa_still_fails_closed_on_infrastructure_timeout(self):
+        from src.engine.pipeline_errors import PipelineExecutionError
+        with patch('src.engine.interactive_creation.settings.RUNTIME_QA_REQUIRED', True), patch(
+            'src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
+            new=AsyncMock(return_value=GOOD)), patch(
+            'src.engine.interactive_creation.validate_interactive_html',
+            new=AsyncMock(side_effect=TimeoutError())):
+            with self.assertRaises(PipelineExecutionError) as caught:
+                await run_interactive(normalize_interactive_request(self.request()))
+        self.assertEqual(caught.exception.failure_family, 'runtime_infrastructure')
+
     async def test_async_submission_runs_desktop_pipeline_and_persists_browser_checked_result(self):
         from fakeredis.aioredis import FakeRedis
         from src.services.async_task_store import AsyncTaskRedisStore
