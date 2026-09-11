@@ -189,6 +189,7 @@ async def browser_report(code: str, *, brief: str = '') -> dict:
             total = await controls.count()
             changed, exercised = False, 0
             motion_checks, control_checks = [], []
+            motion_stimuli_remaining = 3
             navigation_path = []
             navigation_states = [[]]
             navigation_replays = 0
@@ -279,6 +280,13 @@ async def browser_report(code: str, *, brief: str = '') -> dict:
                         stops_or_resets = bool(re.search(r'^\W*(?:重置|暂停|停止|清空|取消|reset\b|pause\b|stop\b|clear\b|cancel\b)', text, re.I))
                         motion = bool(not navigation and not stops_or_resets and re.search(r'开始|启动|运行|播放|演示|继续|\b(?:start|play|run|resume)\b', text, re.I)
                             and re.search(r'\b(?:requestAnimationFrame|setInterval)\s*\(', code))
+                        if motion:
+                            # Boundary stress can produce a legitimate steady
+                            # state (e.g. both heat boundaries at 100 degrees).
+                            # Start observations use an independent scenario.
+                            frame, controls = await restore_controls()
+                            control = controls.nth(index)
+                            before = await frame.evaluate(SIGNATURE)
                         await control.click(timeout=2000)
                         if navigation:
                             navigation_path.append((index, identity))
@@ -295,16 +303,49 @@ async def browser_report(code: str, *, brief: str = '') -> dict:
                             if emptied:
                                 issues.append('重置未恢复初始计算结果，输出变空：'+', '.join(emptied[:6])+'。重置后重新计算并渲染。')
                         if motion:
-                            await host.wait_for_timeout(100)
-                            motion_before = await frame.evaluate(SIGNATURE)
-                            advances, elapsed = False, 0
-                            for _ in range(22):
+                            async def observe_motion():
+                                # Exclude the one-off click/input label update.
                                 await host.wait_for_timeout(100)
-                                elapsed += 100
-                                if motion_before != await frame.evaluate(SIGNATURE):
-                                    advances = True
+                                motion_before = await frame.evaluate(SIGNATURE)
+                                for elapsed_ms in range(100, 2201, 100):
+                                    await host.wait_for_timeout(100)
+                                    if motion_before != await frame.evaluate(SIGNATURE):
+                                        return True, elapsed_ms
+                                return False, 2200
+
+                            advances, elapsed = await observe_motion()
+                            scenarios = [{'setup':'clean_initial', 'advances':advances,
+                                          'observedAfterMs':elapsed}]
+                            # Initial conditions may also be at equilibrium.
+                            # Probe at most three real, small parameter edits
+                            # across the entire report. Each starts afresh, then
+                            # clicks Start once: edits may pause a running model
+                            # and a second click may toggle an active model off.
+                            ranges_count = await frame.locator('input[type=range]').count()
+                            for range_index in range(min(ranges_count, 3)):
+                                if advances or motion_stimuli_remaining <= 0:
                                     break
-                            motion_checks.append({'control':text,'advances':advances,'observedAfterMs':elapsed,'observationBudgetMs':2200})
+                                frame, controls = await restore_controls()
+                                parameter = frame.locator('input[type=range]').nth(range_index)
+                                if not await parameter.is_visible() or not await parameter.is_enabled():
+                                    continue
+                                if not await parameter.evaluate('e=>Number(e.max||100)>Number(e.min||0)'):
+                                    continue
+                                motion_stimuli_remaining -= 1
+                                parameter_name = await parameter.get_attribute('aria-label') or await parameter.get_attribute('id') or str(range_index)
+                                old_value = await parameter.input_value()
+                                direction = await parameter.evaluate("e=>Number(e.value)<Number(e.max||100)?'ArrowRight':'ArrowLeft'")
+                                await parameter.press(direction, timeout=2000)
+                                new_value = await parameter.input_value()
+                                if old_value == new_value:
+                                    continue
+                                await controls.nth(index).click(timeout=2000)
+                                advances, elapsed = await observe_motion()
+                                scenarios.append({'setup':'single_parameter_edit', 'parameter':parameter_name,
+                                                  'before':old_value, 'after':new_value,
+                                                  'advances':advances, 'observedAfterMs':elapsed})
+                            motion_checks.append({'control':text,'advances':advances,'observedAfterMs':elapsed,
+                                                  'observationBudgetMs':2200,'scenarios':scenarios})
                             if not advances:
                                 issues.append(f'点击启动控件「{text}」后，动画/模拟时间/作品内容未持续变化。检查时间累加与真实经过时间。')
                     exercised += 1
