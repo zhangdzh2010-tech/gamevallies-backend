@@ -1,4 +1,40 @@
 import { AdminController } from '../src/admin/admin.controller';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as vm from 'vm';
+
+describe('admin candidate evidence', () => {
+  const context: any = vm.createContext({ document: {
+    getElementById: () => ({ addEventListener() {} }),
+  } });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/admin/admin-panel-core.js'), 'utf8'), context);
+  // Browser textContent escapes text; keep that platform boundary in the test.
+  context.escHtml = (s: unknown) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  it('renders rejected HTML and metadata as inert escaped text', () => {
+    const html = context.renderTaskCandidateEvidence({ candidateArtifacts: [{
+      id: 'artifact-1', artifactType: 'failed_runtime_candidate', storageType: 'inline_text',
+      payloadText: '</pre><script>alert(1)</script>', metadata: { reason: '<img src=x onerror=alert(1)>' },
+      sha256: 'source-hash', sizeBytes: 42,
+    }] });
+    expect(html).toContain('&lt;script&gt;');
+    expect(html).toContain('&lt;img');
+    expect(html).not.toContain('<script>');
+    expect(html).not.toContain('<img');
+    expect(html).toContain('完整快照');
+    expect(html).toContain('source-hash');
+    expect(html).not.toContain('<iframe');
+  });
+
+  it('does not label truncated or unavailable content as a complete reproduction', () => {
+    const html = context.renderTaskCandidateEvidence({ candidateArtifacts: [{
+      storageType: 'omitted', payloadText: '<html>', metadata: { truncated: true },
+    }] });
+    expect(html).toContain('内容不完整或不可用');
+    expect(context.renderTaskCandidateEvidence({ candidateArtifactsUnavailable: true })).toContain('读取失败');
+    expect(context.renderTaskCandidateEvidence({ candidateArtifacts: [] })).toContain('未保存');
+  });
+});
 
 describe('admin release assets', () => {
   const html = '<link href="/admin/assets/admin-panel.css"><script src="/admin/assets/admin-panel-ops.js"></script>';

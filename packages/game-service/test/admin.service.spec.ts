@@ -1871,7 +1871,7 @@ describe("AdminService", () => {
       where: {
         taskId: "task-1",
         artifactType: {
-          in: ["contract_qa_report", "runtime_qa_report"],
+          in: ["contract_qa_report", "runtime_qa_report", "preflight_report", "quality_review_report", "quality_repair_report"],
         },
       },
       select: {
@@ -1943,6 +1943,42 @@ describe("AdminService", () => {
         }),
       }),
     );
+  });
+
+  it.each([false, true])("keeps task candidate evidence separate from delivered source (reconciled=%s)", async (stale) => {
+    const task = { id: "task-1", gameId: "game-1", userId: "user-1",
+      status: stale ? "running" : "failed", progressStage: "code_review",
+      game: { id: "game-1", bundles: [] }, events: [], llmCallLogs: [] };
+    const terminal = { ...task, status: "failed" };
+    prisma.generationTask.findUnique.mockResolvedValueOnce(task).mockResolvedValue(terminal);
+    gameService.reconcileGenerationTask.mockResolvedValue(terminal);
+    const candidate = { id: "candidate-1", artifactType: "failed_quality_candidate",
+      payloadText: "<html><script>broken()</script></html>", sha256: "retained-hash",
+      storageType: "inline_text", metadata: { candidate: 2 } };
+    prisma.generationArtifact.findMany.mockImplementation(async (query: any) =>
+      query.where.artifactType.in.includes("failed_quality_candidate") ? [candidate] : []);
+
+    const result = await service.getGenerationTask("task-1");
+
+    expect(result.status).toBe("failed");
+    expect(result.sourceBundle).toBeNull();
+    expect(result.game.bundles).toEqual([]);
+    expect(result.candidateArtifacts).toEqual([candidate]);
+    expect(result.candidateArtifactsUnavailable).toBe(false);
+    expect(prisma.generationArtifact.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ taskId: "task-1", gameId: "game-1", userId: "user-1" }),
+      take: 4,
+    }));
+  });
+
+  it("distinguishes unavailable candidate evidence from an empty history", async () => {
+    prisma.generationTask.findUnique.mockResolvedValue({ id: "task-1", gameId: "game-1", userId: "user-1",
+      status: "failed", game: { bundles: [] }, events: [], llmCallLogs: [] });
+    prisma.generationArtifact.findMany.mockRejectedValue(new Error("read unavailable"));
+    const result = await service.getGenerationTask("task-1");
+    expect(result.candidateArtifactsUnavailable).toBe(true);
+    expect(result.candidateArtifacts).toEqual([]);
+    expect(result.sourceBundle).toBeNull();
   });
 
   it("reconciles stale generation tasks before returning the admin list", async () => {

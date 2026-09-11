@@ -320,6 +320,24 @@ function renderTaskSourceSection(task, sourceCacheKey) {
   `;
 }
 
+function renderTaskCandidateEvidence(task) {
+  if (task.candidateArtifactsUnavailable) {
+    return '<div class="log-empty">候选证据读取失败，请刷新重试。</div>';
+  }
+  const artifacts = task.candidateArtifacts || [];
+  if (!artifacts.length) return '<div class="log-empty">当前任务未保存候选源码证据。</div>';
+  return '<div class="log-source-summary">最近 4 份候选快照，用于复现生成失败；这些快照未作为作品版本交付。</div>' + artifacts.map(artifact => {
+    const complete = artifact.storageType === 'inline_text' && !artifact.metadata?.truncated && typeof artifact.payloadText === 'string';
+    const availability = complete ? '完整快照' : '内容不完整或不可用，不能据此完整复现';
+    return `<details class="log-source-block" data-candidate-evidence="true">
+      <summary>${escHtml(artifact.artifactType || 'candidate')} · ${escHtml(artifact.id || '')} · ${escHtml(availability)}</summary>
+      <div class="log-source-meta">${escHtml(fmtDateTime(artifact.createdAt))} · SHA-256 ${escHtml(artifact.sha256 || '未记录')} · ${escHtml(String(artifact.sizeBytes ?? '-'))} bytes</div>
+      <pre class="log-code">${escHtml(JSON.stringify(artifact.metadata || {}, null, 2))}</pre>
+      <pre class="log-code">${escHtml(artifact.payloadText || '无内联源码')}</pre>
+    </details>`;
+  }).join('');
+}
+
 function buildTaskDetailMarkup(task, options = {}) {
   const sourceCacheKey = options.sourceCacheKey || ('task:' + task.id);
   const sourceSection = renderTaskSourceSection(task, sourceCacheKey);
@@ -399,6 +417,8 @@ function buildTaskDetailMarkup(task, options = {}) {
       ${resultSummary}
       <div class="section-title">最新源码</div>
       ${sourceSection}
+      <div class="section-title">候选源码证据</div>
+      ${renderTaskCandidateEvidence(task)}
       <div class="section-title">最近路由快照</div>
       ${routeSnapshot}
       <div class="section-title">阶段时间线</div>

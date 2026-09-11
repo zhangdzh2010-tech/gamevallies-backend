@@ -4144,14 +4144,14 @@ export class AdminService {
       throw new NotFoundException("Generation task not found");
     }
 
-    const [reconciled, qaArtifacts] = await Promise.all([
+    const [reconciled, qaArtifacts, candidateEvidence] = await Promise.all([
       this.gameService.reconcileGenerationTask(task),
       this.prisma.generationArtifact
         .findMany({
           where: {
             taskId,
             artifactType: {
-              in: ["contract_qa_report", "runtime_qa_report"],
+              in: ["contract_qa_report", "runtime_qa_report", "preflight_report", "quality_review_report", "quality_repair_report"],
             },
           },
           select: {
@@ -4164,6 +4164,26 @@ export class AdminService {
           take: 8,
         })
         .catch(() => []),
+      this.prisma.generationArtifact.findMany({
+        where: {
+          taskId,
+          gameId: task.gameId,
+          userId: task.userId,
+          artifactType: { in: [
+            "failed_preflight_candidate", "failed_contract_candidate",
+            "failed_runtime_candidate", "failed_quality_candidate",
+            "failed_interactive_candidate", "interactive_candidate",
+          ] },
+        },
+        select: {
+          id: true, artifactType: true, contentType: true, storageType: true,
+          payloadText: true, sha256: true, sizeBytes: true, metadata: true,
+          createdAt: true,
+        },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: 4,
+      }).then(items => ({ candidateArtifacts: items, candidateArtifactsUnavailable: false }))
+        .catch(() => ({ candidateArtifacts: [], candidateArtifactsUnavailable: true })),
     ]);
     if (
       reconciled &&
@@ -4224,6 +4244,7 @@ export class AdminService {
           ...refreshed,
           inputPrompt: mergedGame?.description || null,
           sourceBundle: mergedGame?.bundles?.[0] || null,
+          ...candidateEvidence,
           ...diagnostics,
           ...this.gameService.buildAdminPreviewUrls(refreshed.gameId),
         };
@@ -4250,6 +4271,7 @@ export class AdminService {
       llmCallLogs: task.llmCallLogs,
       inputPrompt: mergedGame?.description || null,
       sourceBundle: mergedGame?.bundles?.[0] || null,
+      ...candidateEvidence,
       ...diagnostics,
       ...(gameId ? this.gameService.buildAdminPreviewUrls(gameId) : {}),
     };
