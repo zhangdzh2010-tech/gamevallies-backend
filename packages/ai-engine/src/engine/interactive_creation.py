@@ -220,11 +220,12 @@ async def run_interactive(request, progress_cb=None):
         if report['passed']:
             if progress_cb: progress_cb('code_review',94,'正在按作品类型检查功能与内容',{'artifactKind':kind,'attempt':attempt})
             remaining = max(1, int(deadline-time.time()))
+            assessment_brief = original + ("\n修改要求：" + feedback if feedback else "")
             async def request_review(correction):
                 remaining = max(1, int(deadline-time.time()))
                 return await client.complete_with_truncation_retry(
                     max_tokens=2048, system='独立审核，严格遵循分类评分规则，只返回JSON。',
-                    messages=[{'role':'user','content':review_prompt(kind, original + ("\n修改要求：" + feedback if feedback else ""), code, report)
+                    messages=[{'role':'user','content':review_prompt(kind, assessment_brief, code, report)
                         + ('\n\n' + correction if correction else '')}],
                     step_key='code_review', stage='code_review', prefer_fast=True,
                     request_timeout_s=min(120,remaining), overall_timeout_s=min(120,remaining),
@@ -233,7 +234,7 @@ async def run_interactive(request, progress_cb=None):
                     truncation_retry_attempts=1, truncation_retry_max_tokens=3072, timeout_retry_attempts=0,
                 )
             try:
-                verified = await recover_review(request_review, lambda raw: assess_review(raw, kind),
+                verified = await recover_review(request_review, lambda raw: assess_review(raw, kind, brief=assessment_brief, code=code),
                     lambda parsed: [] if parsed['review_ran'] else parsed['issues'])
                 assessment = verified.assessment | {'reviewRequests':verified.requests,
                     'sourceSha256':hashlib.sha256(code.encode()).hexdigest()}

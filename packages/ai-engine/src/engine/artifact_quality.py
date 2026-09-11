@@ -5,6 +5,7 @@ import json
 import math
 import re
 from .generated_quality_policy import QUALITY_POLICY
+from .source_references import canonical_source_reference, source_reference_catalog, indexed_review_source
 
 KINDS = ('game', 'tool', 'science')
 DESKTOP_BRIEF_MARKER = '请生成桌面浏览器中的可交互创意作品'
@@ -61,19 +62,76 @@ def review_prompt(kind: str, brief: str, code: str, runtime: dict) -> str:
         '数值标签正确不代表图形正确；方向或角弧与所述物理模型矛盾必须进入critical_issues。'
         '平面镜反射尤其要追踪箭头实际顶点与朝向：入射光从光源指向镜面交点，反射光从交点离开；两支箭头都离开镜面是错误。'
         '对于Canvas角弧，应按start/end/counterclockwise计算实际扫过角度，不能仅因端点相差30°就断言画出了30°，反向可能实际为330°。'
-        '完整性按用户明确要求判断；不能因代码短、画面简洁而认定作品不完整。\n'
+        '完整性按用户明确要求判断；不能因代码短、画面简洁而认定作品不完整。'
+        '不得把你偏好的产品设计、额外历史记录、额外模式或未要求的持久化当作必须实现的需求。'
+        '存在多种合理实现时，只判断是否满足原要求，不得自行收紧其含义。'
+        '重置已经处于初始状态的控件可以没有状态变化；潜在问题、未观察到的错误和“可考虑”的改进只属于建议。\n'
         'runtime.canvasTextEvidence是浏览器对真实绘制文字的测量，包含文本、重叠比例和边界。'
         '检查其中的必要标签是否相互覆盖或裁切；数值与单位因此不可读时必须进入critical_issues并指出具体文字。'
         '同文字描边、阴影和用户明确要求的艺术叠字不能误判为功能缺陷。'
         '运行中的contentChanged只证明某处内容改变，不证明按钮实现了所要求的语义：交换、撤销、重置等应追踪操作前后的真实状态。\n'
         f'类型：{kind}\n评分规则：{json.dumps(rubric,ensure_ascii=False)}\n'
         '结构：{"artifact_kind":"类型","complete":true,"critical_issues":[],"scores":{"维度":8},'
-        '"evidence":{"维度":"具体代码或运行依据"},"issues":[]}。'
+        '"evidence":{"维度":"具体代码或运行依据"},"issues":[],"findings":[],"suggestions":[]}。'
         '功能错误、虚假科学结论、公式错误、未满足必须保留的要求必须进入critical_issues。\n'
-        f'<brief>{brief}</brief>\n<runtime>{json.dumps(runtime,ensure_ascii=False)}</runtime>\n<html>{code}</html>')
+        'findings只包含已证实的缺陷，每项结构：'
+        '{"issue":"缺陷","dimension":"complete或critical_issue或评分维度",'
+        '"basis":"requirement或rubric","requirement_quote":"原需求的逐字引文（requirement时必填）",'
+        '"rubric_dimension":"评分维度（rubric时必填）","source_ref":"服务器显示的源码引用",'
+        '"reason":"追踪实际执行路径，解释如何违反所引需求或评分规则",'
+        '"correction":"满足原要求所需的最小修正"}。'
+        '每条critical_issues和issues必须有同文的finding；complete=false必须有complete finding，且依据只能是原需求。'
+        '每个低于7的评分必须有对应维度的finding；不要为了低分捏造缺陷，应重新依据证据评分。'
+        'source_ref必须来自下方当前源码的方括号标签，标签本身不是HTML。'
+        '有引用不代表结论正确：必须检查完整源码、委托函数和状态重置，排除其他实现路径。'
+        'suggestions单独存放可选建议，不得影响complete、critical_issues、分数或触发代码修复。\n'
+        f'<brief>{brief}</brief>\n<runtime>{json.dumps(runtime,ensure_ascii=False)}</runtime>\n<html>{indexed_review_source(code)}</html>')
 
 
-def assess_review(raw: str, kind: str) -> dict:
+def _validate_findings(data: dict, kind: str, brief: str, code: str) -> None:
+    """Bind defect claims to this brief/source, without pretending to prove semantics."""
+    rubric = QUALITY_POLICY['artifact_rubrics'][kind]
+    findings = data.get('findings', [])
+    if not isinstance(findings, list) or len(findings) > 20:
+        raise ValueError('findings must contain at most 20 entries')
+    catalog = source_reference_catalog(code)
+    dimensions, supported_issues = set(), set()
+    for finding in findings:
+        if not isinstance(finding, dict):
+            raise ValueError('finding must be an object')
+        dimension = finding.get('dimension')
+        if dimension not in {'complete', 'critical_issue', *rubric['weights']}:
+            raise ValueError('unknown finding dimension')
+        for key in ('issue', 'reason', 'correction'):
+            if not isinstance(finding.get(key), str) or not finding[key].strip():
+                raise ValueError('finding missing '+key)
+        reference = canonical_source_reference(finding.get('source_ref'))
+        if reference not in catalog:
+            raise ValueError('unknown or stale finding source_ref')
+        finding['source_ref'] = reference
+        basis = finding.get('basis')
+        if basis == 'requirement':
+            quote = finding.get('requirement_quote')
+            if not isinstance(quote, str) or not quote.strip() or quote not in brief:
+                raise ValueError('finding requirement_quote must occur in the original brief')
+        elif basis == 'rubric' and dimension != 'complete':
+            if finding.get('rubric_dimension') not in rubric['weights']:
+                raise ValueError('finding must identify an existing rubric dimension')
+        else:
+            raise ValueError('completeness requires an explicit requirement; other defects require requirement or rubric basis')
+        dimensions.add(dimension)
+        supported_issues.add(finding['issue'])
+    for issue in data['critical_issues'] + data['issues']:
+        if issue not in supported_issues:
+            raise ValueError('defect lacks a source-bound finding: '+issue[:160])
+    if not data['complete'] and 'complete' not in dimensions:
+        raise ValueError('incomplete assessment lacks an explicit requirement finding')
+    for key in rubric['weights']:
+        if data['scores'][key] < 7 and key not in dimensions:
+            raise ValueError('low score lacks a source-bound finding: '+key)
+
+
+def assess_review(raw: str, kind: str, *, brief: str = '', code: str = '') -> dict:
     """Fail closed on missing, wrong-type, nonfinite or unsupported assessments."""
     rubric = QUALITY_POLICY['artifact_rubrics'][kind]
     try:
@@ -81,8 +139,8 @@ def assess_review(raw: str, kind: str) -> dict:
         data = json.loads(clean)
         if data.get('artifact_kind') != kind or type(data.get('complete')) is not bool:
             raise ValueError('type/completeness')
-        for field in ('critical_issues', 'issues'):
-            values = data.get(field)
+        for field in ('critical_issues', 'issues', 'suggestions'):
+            values = data.get(field, [] if field == 'suggestions' else None)
             if not isinstance(values, list) or len(values) > 20 or any(
                 not isinstance(value, str) or not value.strip() for value in values
             ):
@@ -94,6 +152,7 @@ def assess_review(raw: str, kind: str) -> dict:
                 raise ValueError(key)
             if not isinstance(evidence.get(key), str) or not evidence[key].strip():
                 raise ValueError('missing evidence: '+key)
+        _validate_findings(data, kind, brief, code)
         final = round(sum(scores[k]*weight for k,weight in rubric['weights'].items()), 2)
         failures = [str(x) for x in data['critical_issues']]
         if not data['complete']: failures.append('未完整实现用户要求')
@@ -102,10 +161,13 @@ def assess_review(raw: str, kind: str) -> dict:
         if final < rubric['pass_score']: failures.append(f'分类总分{final}，低于{rubric["pass_score"]}')
         return {'policy_version':QUALITY_POLICY['version'], 'artifact_kind':kind, 'review_ran':True,
             'passed':not failures, 'complete':data['complete'], 'score':final, 'scores':scores, 'evidence':evidence,
-            'critical_issues':data['critical_issues'], 'issues':failures + [str(x) for x in data['issues']]}
-    except (ValueError, TypeError, KeyError, AttributeError):
+            'critical_issues':data['critical_issues'], 'findings':data.get('findings', []),
+            'suggestions':data.get('suggestions', []),
+            'issues':list(dict.fromkeys(failures + data['issues']))}
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
         return {'policy_version':QUALITY_POLICY['version'], 'artifact_kind':kind,
-            'review_ran':False,'passed':False,'score':0,'issues':['分类审核未返回完整、有效且有依据的评分。']}
+            'review_ran':False,'passed':False,'score':0,
+            'issues':['分类审核未返回完整、有效且有依据的评分。', str(exc)[:400]]}
 
 
 def cosmetic_only_edit(feedback: str) -> bool:

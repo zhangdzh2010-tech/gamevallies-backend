@@ -1871,7 +1871,7 @@ describe("AdminService", () => {
       where: {
         taskId: "task-1",
         artifactType: {
-          in: ["contract_qa_report", "runtime_qa_report", "preflight_report", "quality_review_report", "quality_repair_report", "review_evidence_report"],
+          in: ["contract_qa_report", "runtime_qa_report", "preflight_report", "quality_review_report", "quality_repair_report", "review_evidence_report", "interactive_validation_report", "interactive_repair_protocol_report"],
         },
       },
       select: {
@@ -1945,7 +1945,12 @@ describe("AdminService", () => {
     );
   });
 
-  it.each([false, true])("keeps task candidate evidence separate from delivered source (reconciled=%s)", async (stale) => {
+  it.each([
+    { stale: false, artifactType: "review_evidence_report" },
+    { stale: true, artifactType: "review_evidence_report" },
+    { stale: false, artifactType: "interactive_validation_report" },
+    { stale: false, artifactType: "interactive_repair_protocol_report" },
+  ])("keeps $artifactType evidence separate from delivered source (reconciled=$stale)", async ({ stale, artifactType }) => {
     const task = { id: "task-1", gameId: "game-1", userId: "user-1",
       status: stale ? "running" : "failed", progressStage: "code_review",
       game: { id: "game-1", bundles: [] }, events: [], llmCallLogs: [] };
@@ -1955,13 +1960,13 @@ describe("AdminService", () => {
     const candidate = { id: "candidate-1", artifactType: "failed_quality_candidate",
       payloadText: "<html><script>broken()</script></html>", sha256: "retained-hash",
       storageType: "inline_text", metadata: { candidate: 2 } };
-    const reviewEvidence = { id: "review-1", artifactType: "review_evidence_report",
+    const reviewEvidence = { id: "review-1", artifactType,
       payloadJson: { errors: ["unexplained_score:character_quality_score=5"],
         source_sha256: "retained-hash", assessments: [{ attempt: 1,
           assessment: { ran: true, character_quality_score: 5, findings: [] } }] } };
     prisma.generationArtifact.findMany.mockImplementation(async (query: any) =>
       query.where.artifactType.in.includes("failed_quality_candidate") ? [candidate] :
-      query.where.artifactType.in.includes("review_evidence_report") ? [reviewEvidence] : []);
+      query.where.artifactType.in.includes(artifactType) ? [reviewEvidence] : []);
 
     const result = await service.getGenerationTask("task-1");
 
@@ -1971,7 +1976,7 @@ describe("AdminService", () => {
     expect(result.candidateArtifacts).toEqual([candidate]);
     expect(result.candidateArtifactsUnavailable).toBe(false);
     expect(result.qaArtifacts).toEqual([expect.objectContaining({
-      id: "review-1", artifactType: "review_evidence_report", report: reviewEvidence.payloadJson,
+      id: "review-1", artifactType, report: reviewEvidence.payloadJson,
     })]);
     expect(prisma.generationArtifact.findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({ taskId: "task-1", gameId: "game-1", userId: "user-1" }),
