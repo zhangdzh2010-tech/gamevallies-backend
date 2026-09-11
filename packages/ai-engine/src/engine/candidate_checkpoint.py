@@ -20,12 +20,20 @@ class CandidateCheckpoint:
     def regression_errors(self, runtime, assessment, kind):
         if self.runtime.get('passed') and not runtime.get('passed'):
             return ['修复引入运行或保留约束回归，已恢复此前通过运行检查的候选。']
-        if not self.assessment or not self.assessment.get('review_ran'):
-            return []
-        if not assessment or not assessment.get('review_ran'):
-            return ['修复候选缺少有效审核，保留此前已审核候选。']
-        policy = QUALITY_POLICY['artifact_rubrics'][kind]
         errors = []
+        if self.runtime.get('ran'):
+            if not runtime.get('ran'):
+                errors.append('修复候选缺少真实运行证据，保留此前候选。')
+            for field in ('js_errors', 'sandboxViolations'):
+                if self.runtime.get(field) == [] and runtime.get(field):
+                    errors.append(f'修复引入新的{field}，已恢复此前候选。')
+            if self.runtime.get('contentChanged') and not runtime.get('contentChanged'):
+                errors.append('修复破坏了已验证的交互响应，已恢复此前候选。')
+        if not self.assessment or not self.assessment.get('review_ran'):
+            return errors
+        if not assessment or not assessment.get('review_ran'):
+            return errors + ['修复候选缺少有效审核，保留此前已审核候选。']
+        policy = QUALITY_POLICY['artifact_rubrics'][kind]
         if self.assessment.get('complete') and not assessment.get('complete'):
             errors.append('修复破坏了已完整实现的要求，保留此前候选。')
         if not self.assessment.get('critical_issues') and assessment.get('critical_issues'):
