@@ -14,7 +14,7 @@ from .pipeline_errors import (
     is_provider_transport_failure,
     is_retryable_provider_transport_failure,
 )
-from .artifact_quality import request_artifact_kind, review_prompt, assess_review, preservation_errors, preserve_cosmetic_scripts
+from .artifact_quality import request_artifact_kind, review_prompt, assess_review, preservation_errors, preserve_cosmetic_scripts, interactive_outcome_labels
 from .interactive_repair import apply_interactive_patch, repair_prompt
 from .review_recovery import recover_review, InvalidReviewEvidence
 from .candidate_checkpoint import CandidateCheckpoint
@@ -377,9 +377,10 @@ async def run_interactive(request, progress_cb=None):
             continue
         checkpoint = CandidateCheckpoint.capture(code, report, assessment)
         if report['passed'] and assessment and assessment['passed']:
+            labels = interactive_outcome_labels(assessment, report)
             common = dict(html_code=code,game_spec=request.source_spec,generation_time_ms=int((time.time()-started)*1000),
                 qa_retries=attempt-1,pipeline_version='v2',runtime_profile='interactive_experience',runtime_qa_report=report,
-                quality_score=assessment['score'],quality_breakdown=assessment | {'runtime_checks':report})
+                quality_score=assessment['score'],quality_breakdown=assessment | {'runtime_checks':report} | labels)
             if iterate: return IterateResponse(**common, changes=[feedback],iteration_type='element_change')
             return RunPipelineResponse(**common, game_id=request.game_id, strategy='llm_interactive',qa_passed=True,code_size_bytes=len(code.encode()))
         issues=report['issues']

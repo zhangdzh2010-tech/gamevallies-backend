@@ -2146,6 +2146,16 @@ def test_run_create_impl_retries_truncated_generation_with_compactness_and_safe_
     assert "XMLHttpRequest" in mock_generate.await_args_list[2].kwargs["generation_guidance"]
 
 
+def test_quality_regeneration_guidance_adds_hex_adjacency_recipe():
+    guidance = V2PipelineRunner._build_quality_regeneration_guidance(
+        stage="code_review",
+        message="Raise gameplay excitement: fun_score 6.0 is below the required 6.8. Hex adjacency never groups same-color bubbles.",
+    )
+    assert "fun_score 6.0 is below the required 6.8" in guidance
+    assert "six neighbors" in guidance
+    assert "Flood-fill" in guidance
+
+
 def test_quality_regeneration_guidance_adds_coordinate_guard_recipe_for_undefined_x_runtime_failures():
     guidance = V2PipelineRunner._build_quality_regeneration_guidance(
         stage="runtime_simulation_qa",

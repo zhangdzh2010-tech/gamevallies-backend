@@ -379,6 +379,18 @@ class PipelineV2QualityPolicyMixin:
         if review.evidence_verified and review.findings:
             for finding in review.findings:
                 lines.append(f"- {finding['issue']}: {finding['reason']} Correction: {finding['correction']}")
+            finding_blob = " ".join(
+                str(finding.get(key) or "")
+                for finding in review.findings
+                for key in ("issue", "reason", "correction")
+            ).lower()
+            if any(token in finding_blob for token in (
+                "hex", "adjacen", "neighbor", "bubble", "same color", "同色", "相邻", "六边", "泡泡",
+            )):
+                lines.append(
+                    "- Keep the fun_score gate at its current threshold. Implement real hex/same-color "
+                    "adjacency with six-neighbor flood fill (>=3) instead of square neighbors or visual-only pops."
+                )
             lines.append('- Preserve all unrelated behavior and visual design; do not add optional features to chase a score.')
             return "\n".join(lines)
         if review.fun_score < thresholds["fun_score"]:
@@ -643,7 +655,10 @@ class PipelineV2QualityPolicyMixin:
                             strict=True, exact_only=True)
                         + "\n\n" + repair_context + "\n\nPATCH APPLICATION REJECTED: " + str(patch_error)[:300]
                         + "\nNo edits were applied. Return a corrected JSON batch against the ORIGINAL "
-                        "sections above. Expand the exact search context until unique; correct any reported syntax or contract errors. "
+                        "sections above. If search_not_unique, expand the exact search until it occurs once, "
+                        "or send both search and the printed source_ref so the server can disambiguate. "
+                        "If search_not_found, copy the exact current characters including whitespace. "
+                        "Correct any reported syntax or contract errors. "
                         "Use only small replace_exact changes; do not fall back to rewriting complete sections.",
                         spec=spec,
                         prompt_bundle_snapshot=request.prompt_bundle_snapshot.model_dump(),
@@ -992,6 +1007,16 @@ class PipelineV2QualityPolicyMixin:
                 "- Define `function getCell(grid, row, col) { const rowBucket = grid[row]; return rowBucket ? rowBucket[col] : null; }` "
                 "before any match, gravity, hint, or render logic, and route every `cell.type`, `cell.fruit`, `cell.anim`, `cell.animProgress`, or neighbor read through "
                 "`const cell = getCell(grid, row, col); if (!cell) continue;`."
+            )
+        if any(token in normalized_issue_blob for token in (
+            "hex", "adjacency", "adjacent", "neighbor", "bubble", "same color",
+            "同色", "相邻", "六边", "泡泡", "连通",
+        )):
+            _append_recipe(
+                "- For hex or bubble matching, compute six neighbors with axial/cube offsets "
+                "(even-r: odd rows shift x by +1). A cell matches only same-color neighbors "
+                "connected through those six offsets, never a square 4-neighborhood on a hex grid. "
+                "Flood-fill connected groups of size >= 3 and clear only that group, then apply gravity/refill."
             )
         lines.extend(extra_recipes)
         lines.append(

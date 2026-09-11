@@ -5,7 +5,7 @@ import json
 import math
 import re
 from .generated_quality_policy import QUALITY_POLICY
-from .source_references import canonical_source_reference, source_reference_catalog, indexed_review_source
+from .source_references import resolve_source_reference, source_reference_catalog, indexed_review_source
 
 KINDS = ('game', 'tool', 'science')
 DESKTOP_BRIEF_MARKER = '请生成桌面浏览器中的可交互创意作品'
@@ -105,8 +105,8 @@ def _validate_findings(data: dict, kind: str, brief: str, code: str) -> None:
         for key in ('issue', 'reason', 'correction'):
             if not isinstance(finding.get(key), str) or not finding[key].strip():
                 raise ValueError('finding missing '+key)
-        reference = canonical_source_reference(finding.get('source_ref'))
-        if reference not in catalog:
+        reference = resolve_source_reference(finding.get('source_ref'), code, catalog)
+        if reference is None:
             raise ValueError('unknown or stale finding source_ref')
         finding['source_ref'] = reference
         basis = finding.get('basis')
@@ -131,12 +131,29 @@ def _validate_findings(data: dict, kind: str, brief: str, code: str) -> None:
             raise ValueError('low score lacks a source-bound finding: '+key)
 
 
+def _parse_assessment_json(raw: str) -> dict:
+    """Recover a JSON object from a review payload without inventing fields."""
+    cleaned = re.sub(r'^```(?:json)?\s*|\s*```$', '', str(raw or '').strip(), flags=re.I | re.M)
+    start = cleaned.find('{')
+    if start < 0:
+        raise ValueError('json')
+    try:
+        data, _ = json.JSONDecoder().raw_decode(cleaned, start)
+    except json.JSONDecodeError:
+        end = cleaned.rfind('}')
+        if end <= start:
+            raise ValueError('json')
+        data = json.loads(cleaned[start:end + 1])
+    if not isinstance(data, dict):
+        raise ValueError('json')
+    return data
+
+
 def assess_review(raw: str, kind: str, *, brief: str = '', code: str = '') -> dict:
     """Fail closed on missing, wrong-type, nonfinite or unsupported assessments."""
     rubric = QUALITY_POLICY['artifact_rubrics'][kind]
     try:
-        clean = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw.strip())
-        data = json.loads(clean)
+        data = _parse_assessment_json(raw)
         if data.get('artifact_kind') != kind or type(data.get('complete')) is not bool:
             raise ValueError('type/completeness')
         for field in ('critical_issues', 'issues', 'suggestions'):
@@ -168,6 +185,32 @@ def assess_review(raw: str, kind: str, *, brief: str = '', code: str = '') -> di
         return {'policy_version':QUALITY_POLICY['version'], 'artifact_kind':kind,
             'review_ran':False,'passed':False,'score':0,
             'issues':['分类审核未返回完整、有效且有依据的评分。', str(exc)[:400]]}
+
+
+def interactive_outcome_labels(assessment: dict | None, report: dict | None) -> dict:
+    """Label tool/science terminals the same way game create labels seed_worthy."""
+    assessment = assessment or {}
+    report = report or {}
+    review_ran = bool(assessment.get('review_ran'))
+    review_passed = bool(assessment.get('passed'))
+    runtime_passed = bool(report.get('passed'))
+    pipeline_success = runtime_passed and review_passed
+    seed_worthy = pipeline_success and review_ran
+    if seed_worthy:
+        reason = 'structured_review_passed'
+    elif not runtime_passed:
+        reason = 'contract_or_runtime_failed'
+    elif not review_ran:
+        reason = 'structured_review_missing'
+    else:
+        reason = 'quality_gate_unresolved'
+    return {
+        'pipeline_success': pipeline_success,
+        'seed_worthy': seed_worthy,
+        'seed_worthy_reason': reason,
+        'review_ran': review_ran,
+        'reviewRan': review_ran,
+    }
 
 
 def cosmetic_only_edit(feedback: str) -> bool:

@@ -456,6 +456,21 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
   private didStructuredReviewRun(qualityBreakdown: unknown): boolean {
     return gameQualityPolicy.didStructuredReviewRun(qualityBreakdown);
   }
+  private buildPersistedOutcomeLabels(params: {
+    qualityBreakdown: unknown;
+    runtimeProfile?: string;
+    resultSummary?: Record<string, unknown>;
+  }): Record<string, boolean | string> {
+    const labels = gameQualityPolicy.extractOutcomeLabels(params.qualityBreakdown, {
+      runtimeProfile: params.runtimeProfile,
+      ...(params.resultSummary || {}),
+    });
+    return {
+      ...(labels.pipelineSuccess !== null ? { pipelineSuccess: labels.pipelineSuccess } : {}),
+      ...(labels.seedWorthy !== null ? { seedWorthy: labels.seedWorthy } : {}),
+      ...(labels.seedWorthyReason ? { seedWorthyReason: labels.seedWorthyReason } : {}),
+    };
+  }
   private buildCreateQualityGateError(params: {
     generationTier: GenerationTier;
     message: string;
@@ -3357,12 +3372,10 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           codeSizeBytes,
           qualityScore,
           qualityBreakdown,
-          pipelineSuccess: (qualityBreakdown as Record<string, unknown> | undefined)?.pipeline_success
-            ?? (qualityBreakdown as Record<string, unknown> | undefined)?.pipelineSuccess,
-          seedWorthy: (qualityBreakdown as Record<string, unknown> | undefined)?.seed_worthy
-            ?? (qualityBreakdown as Record<string, unknown> | undefined)?.seedWorthy,
-          seedWorthyReason: (qualityBreakdown as Record<string, unknown> | undefined)?.seed_worthy_reason
-            ?? (qualityBreakdown as Record<string, unknown> | undefined)?.seedWorthyReason,
+          ...this.buildPersistedOutcomeLabels({
+            qualityBreakdown,
+            runtimeProfile: responseData?.runtime_profile,
+          }),
             ...(coverUrl ? { coverGenerated: true } : {}),
             ...runtimeQaSummary,
           },
@@ -3866,10 +3879,15 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           qaRetries,
           iterationRetries,
           ...(qualityScore !== null && qualityScore !== undefined ? { qualityScore } : {}),
+          ...(qualityBreakdown !== null && qualityBreakdown !== undefined ? { qualityBreakdown } : {}),
           generationTier: this.normalizeRequestedGenerationTier(generationTier) || 'standard',
           version: nextVersion,
           ...(normalizedGameType ? { gameType: normalizedGameType } : {}),
           ...(coverUrl ? { coverGenerated: true } : {}),
+          ...this.buildPersistedOutcomeLabels({
+            qualityBreakdown,
+            runtimeProfile: responseData?.runtime_profile,
+          }),
           ...runtimeQaSummary,
         },
       });

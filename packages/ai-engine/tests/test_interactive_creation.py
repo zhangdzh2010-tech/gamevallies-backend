@@ -189,6 +189,9 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
             result=await run_interactive(request)
         self.assertTrue(result.qa_passed)
         self.assertEqual(result.runtime_profile,'interactive_experience')
+        self.assertTrue(result.quality_breakdown['seed_worthy'])
+        self.assertEqual(result.quality_breakdown['seed_worthy_reason'], 'structured_review_passed')
+        self.assertTrue(result.quality_breakdown['pipeline_success'])
         self.assertTrue(result.runtime_qa_report['contentChanged'])
         self.assertEqual([(v['width'],v['height']) for v in result.runtime_qa_report['viewports']],
                          [(1000,460),(1000,600),(1366,768),(1920,1080)])

@@ -2,7 +2,10 @@ import json
 from types import SimpleNamespace
 import pytest
 from src.api.models import GameSpec, RunPipelineV2Request
-from src.engine.artifact_quality import infer_artifact_kind, request_artifact_kind, assess_review, preservation_errors
+from src.engine.artifact_quality import (
+    infer_artifact_kind, request_artifact_kind, assess_review, preservation_errors,
+    interactive_outcome_labels,
+)
 from src.engine.generated_quality_policy import QUALITY_POLICY
 from src.engine.source_references import source_reference_catalog
 
@@ -141,3 +144,35 @@ def test_free_text_defect_is_not_an_actionable_repair_request():
     result = assess_review(review('tool', critical_issues=['应保留未要求的历史记录'],
         issues=['未观察到实际错误，可考虑优化']), 'tool')
     assert not result['review_ran']
+
+
+def test_science_review_recovers_json_wrapped_in_prose():
+    payload = review('science')
+    raw = '审核如下：\n' + payload + '\n以上为完整评分。'
+    result = assess_review(raw, 'science')
+    assert result['review_ran'] and result['passed']
+    assert result['score'] == 8
+
+
+def test_science_in_span_source_ref_is_accepted():
+    code, brief, raw = grounded_review()
+    data = json.loads(raw)
+    reference = data['findings'][0]['source_ref']
+    revision = reference.split(':')[0]
+    data['findings'][0]['source_ref'] = f'[{revision}:3]'
+    result = assess_review(json.dumps(data), 'tool', brief=brief, code=code)
+    assert result['review_ran']
+    assert result['findings'][0]['source_ref'] == reference
+
+
+def test_interactive_outcome_labels_mark_tool_and_science_seed_worthy():
+    assessment = assess_review(review('science'), 'science')
+    labels = interactive_outcome_labels(assessment, {'passed': True})
+    assert labels['pipeline_success'] is True
+    assert labels['seed_worthy'] is True
+    assert labels['seed_worthy_reason'] == 'structured_review_passed'
+    missing = interactive_outcome_labels(
+        {'review_ran': False, 'passed': False}, {'passed': True})
+    assert missing['pipeline_success'] is False
+    assert missing['seed_worthy'] is False
+    assert missing['seed_worthy_reason'] == 'structured_review_missing'
