@@ -4151,7 +4151,7 @@ export class AdminService {
           where: {
             taskId,
             artifactType: {
-              in: ["contract_qa_report", "runtime_qa_report", "preflight_report", "quality_review_report", "quality_repair_report", "review_evidence_report"],
+              in: ["contract_qa_report", "runtime_qa_report", "preflight_report", "quality_review_report", "quality_repair_report", "review_evidence_report", "interactive_validation_report", "interactive_repair_protocol_report"],
             },
           },
           select: {
