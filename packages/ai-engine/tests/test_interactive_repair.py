@@ -62,3 +62,38 @@ def test_all_edits_reference_original_offsets_even_if_replacements_contain_later
 def test_overlapping_dependent_and_disguised_full_rewrites_fail_atomically(patches):
     with pytest.raises(ValueError):
         apply_interactive_patch(SOURCE, json.dumps({'patches':patches}))
+
+
+LAYOUT_SOURCE = '''<html><head><style>body{margin:24px}button{padding:8px}</style></head>
+<body><output id="value">0</output><button onclick="increment()">加一</button>
+<script>const sample='<style>fake</style>';function increment(){document.getElementById('value').textContent='1';}</script>
+<!-- <style>also fake</style> --></body></html>'''
+
+
+def test_layout_patch_changes_only_actual_style_contents():
+    patch = json.dumps({'patches':[{'search':'margin:24px','replace':'margin:12px'}]})
+    assert apply_interactive_patch(LAYOUT_SOURCE, patch, layout_only=True) == LAYOUT_SOURCE.replace('margin:24px','margin:12px')
+
+
+@pytest.mark.parametrize('search,replacement', [
+    ('id="value"',''), ('increment()">','other()">'),
+    ('fake','changed'), ('also fake','changed'),
+    ('margin:24px','margin:12px}</style><script>breakApp()</script><style>body{color:red'),
+])
+def test_layout_scope_rejects_dom_script_comment_and_style_escape_changes(search,replacement):
+    # The fake style inside JavaScript has unique enclosing text for exact matching.
+    if search == 'fake': search, replacement = "'<style>fake</style>'", "'<style>changed</style>'"
+    patch = json.dumps({'patches':[{'search':search,'replace':replacement}]})
+    with pytest.raises(ValueError, match='layout_scope'):
+        apply_interactive_patch(LAYOUT_SOURCE, patch, layout_only=True)
+
+
+def test_failed_layout_does_not_erase_prior_runtime_invariants():
+    from src.engine.candidate_checkpoint import CandidateCheckpoint
+    baseline = {'ran':True,'passed':False,'issues':['layout overflow'],
+        'js_errors':[],'sandboxViolations':[],'contentChanged':True}
+    checkpoint = CandidateCheckpoint.capture(LAYOUT_SOURCE, baseline, None)
+    for changes in [{'js_errors':['null.textContent']}, {'sandboxViolations':['native dialog']},
+                    {'contentChanged':False}, {'ran':False}]:
+        assert checkpoint.regression_errors(baseline | changes, None, 'tool')
+    assert checkpoint.regression_errors(baseline | {'passed':True,'issues':[]}, None, 'tool') == []
