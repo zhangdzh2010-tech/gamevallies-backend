@@ -7,7 +7,7 @@ import pytest
 from unittest.mock import AsyncMock, patch
 from src.engine.qa_pipeline import QAPipeline
 from src.engine.section_patch import ensure_structured_section_markers
-from src.api.models import GameRuntimeContract, GameSpec, GameplayContract, InputContract, QACheckError, StateContract
+from src.api.models import GameRuntimeContract, GameSpec, GameplayContract, InputContract, QACheckError, QAIssueList, StateContract
 from src.services.llm_client import LLMResponseTruncatedError
 
 qa = QAPipeline()
@@ -969,6 +969,22 @@ def test_fix_with_llm_repairs_script_window_before_whole_script_fallback():
     assert mock_full_repair.await_count == 0
 
 
+def test_script_repair_window_clamps_out_of_range_line_numbers():
+    pipeline = QAPipeline()
+    script = "function boot(){ const value = ; }"
+    start, end, snippet = pipeline._extract_script_repair_window(script, line_numbers=[82])
+    assert (start, end) == (1, 1)
+    assert "const value = ;" in snippet
+    repaired = pipeline._replace_script_repair_window(
+        script,
+        start_line=start,
+        end_line=end,
+        replacement="function boot(){ const value = 1; }",
+    )
+    assert repaired == "function boot(){ const value = 1; }"
+    assert pipeline._script_has_valid_syntax(repaired)
+
+
 def test_fix_with_llm_skips_full_document_fallback_when_script_repair_fails():
     pipeline = QAPipeline()
     errors = [
@@ -1084,8 +1100,11 @@ def test_run_with_retries_signals_regeneration_when_repair_returns_unchanged_cod
     from types import SimpleNamespace
 
     pipeline = QAPipeline()
-    broken = """<!DOCTYPE html><html><head><meta charset='UTF-8'></head><body>
-<script>const broken = ;</script></body></html>"""
+    broken = (
+        "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1.0'></head><body>\n"
+        "<script>const broken = ;</script></body></html>"
+    )
     syntax_errors = [
         QACheckError(
             type="L1_syntax",
@@ -1093,7 +1112,7 @@ def test_run_with_retries_signals_regeneration_when_repair_returns_unchanged_cod
             severity="error",
         )
     ]
-    failed_check = SimpleNamespace(passed=False, errors=syntax_errors, issue_list=[])
+    failed_check = SimpleNamespace(passed=False, errors=syntax_errors, issue_list=QAIssueList())
 
     with patch.object(pipeline, "check", side_effect=[failed_check, failed_check]), patch.object(
         pipeline,
@@ -1138,7 +1157,7 @@ def test_run_with_retries_signals_regeneration_when_syntax_repair_truncates():
             severity="error",
         )
     ]
-    failed_check = SimpleNamespace(passed=False, errors=syntax_errors, issue_list=[])
+    failed_check = SimpleNamespace(passed=False, errors=syntax_errors, issue_list=QAIssueList())
 
     with patch.object(pipeline, "check", return_value=failed_check), patch.object(
         pipeline,

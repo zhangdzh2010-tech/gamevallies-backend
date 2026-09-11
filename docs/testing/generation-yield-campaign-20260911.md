@@ -69,6 +69,7 @@ python3 scripts/analyze_yield_batch.py tmp/yield-batch-20260911/summary.json \
 - 非 showcase `review_infrastructure` 继续降级到静态/runtime QA，create 集成测试与该行为对齐。
 - `repair_contract` / `repair_protocol` 回退整页重生成时，`generation_guidance` 同时保留质量门槛与合同失败信号（如 `keyboard handler removed`、`search_not_unique`）。
 - 窗口化 `qa_fix.syntax_structural` 截断后先回退整段 script 修复，再升整页重生成。
+- 脚本行号越界（例如 HTML 行号 82 落在 1 行 script 上）会钳制到真实源码窗口，避免空窗口拼接把本可局部修复的语法错误做成无效候选。
 
 ### 1. qa_fix 截断 / 无效修复 → 整页重生成
 
