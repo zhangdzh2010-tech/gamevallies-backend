@@ -145,18 +145,24 @@ async def run_interactive(request, progress_cb=None):
         if progress_cb: progress_cb('logic_generate',60,'正在实现桌面互动作品',{'attempt':attempt,'maxAttempts':2,'runtimeProfile':'interactive_experience'})
         remaining = max(1, int(deadline-time.time()))
         local_repair = bool(code and re.search(r'</html\s*>\s*$', code, re.I))
+        layout_only = False
         if local_repair:
             # Protocol correction does not consume a semantic repair attempt.
             # Every batch is applied atomically to this same retained source.
             candidate = None
             repair_issues = list(issues)
+            # Only browser-classified layout defects authorize a style-only edit.
+            # Any additional semantic/runtime defect retains the general repair path.
+            layout_only = bool(report.get('ran') and report.get('layoutIssues')
+                and set(issues) == set(report['layoutIssues']))
             for correction in range(2):
                 patch_calls += 1
                 remaining = max(1, int(deadline-time.time()))
                 text = await client.complete_with_truncation_retry(
                     max_tokens=4096, system='修复现有交互作品，只输出精确替换补丁JSON，不重写整个作品。',
                     messages=[{'role':'user','content':repair_prompt(
-                        original + ('\n修改要求：' + feedback if feedback else ''),code,repair_issues)}],
+                        original + ('\n修改要求：' + feedback if feedback else ''),code,repair_issues,
+                        layout_only=layout_only)}],
                     step_key='iterate.element_change' if source_code and attempt == 1 else 'quality_gate.patch_fix', stage='logic_generate',
                     request_timeout_s=remaining, overall_timeout_s=remaining,
                     response_size_hint='large_patch', allow_provider_fallback=True,
@@ -165,7 +171,7 @@ async def run_interactive(request, progress_cb=None):
                     timeout_retry_attempts=0, provider_retry_on_timeout_errors=False,
                 )
                 try:
-                    candidate = apply_interactive_patch(code, text)
+                    candidate = apply_interactive_patch(code, text, layout_only=layout_only)
                     break
                 except ValueError as exc:
                     repair_issues = list(issues) + [str(exc)]
@@ -177,8 +183,9 @@ async def run_interactive(request, progress_cb=None):
                     if progress_cb: progress_cb('logic_generate',66,'正在纠正补丁协议，原候选保持不变',
                         {'attempt':attempt,'correctionAttempt':correction+1,'failureFamily':'repair_protocol'})
             if candidate is None:
-                if source_code:
-                    # An edit request never authorizes rewriting the user's work.
+                if source_code or layout_only:
+                    # Neither an edit request nor a layout-only repair authorizes
+                    # a full rewrite when its bounded patch protocol is exhausted.
                     issues = repair_issues
                     terminal_failure_family = 'repair_protocol'
                     report = dict(report, passed=False, issues=issues, generationAttempts={
@@ -255,6 +262,7 @@ async def run_interactive(request, progress_cb=None):
         report['generationAttempts']={'fullGenerationCalls':full_generations,'patchCalls':patch_calls,'qaAttempts':qa_attempts}
         candidate_history.append({'artifact_type':'interactive_candidate','content_type':'text/html',
             'payload':code,'metadata':{'attempt':attempt,'operation':'patch' if local_repair else 'full_generation',
+                                     'repairScope':'style' if layout_only else 'document',
                                      'runtimePassed':report['passed'],'reviewPassed':bool(assessment and assessment['passed']),
                                      'sourceSha256':hashlib.sha256(code.encode()).hexdigest()}})
         regressions = checkpoint.regression_errors(report, assessment, kind) if checkpoint else []
