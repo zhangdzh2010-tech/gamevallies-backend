@@ -93,14 +93,31 @@ class CodeReviewer:
                 timeout_retry_increment_s=30, timeout_retry_max_s=120,
             )
 
+        def assessment_errors(result):
+            if not result.ran:
+                return ['invalid review schema']
+            errors = validate_review_evidence(result, html_code)
+            if errors:
+                return errors
+            # The declared rubric requires a finding for every score below 7.
+            # A conservative number without a defect cannot guide code edits.
+            # Correct the assessment against the SAME source before returning
+            # it to the generation/repair orchestrator; never inflate the score.
+            dimensions = {finding['dimension'] for finding in result.findings}
+            return [f'unexplained_score:{key}={getattr(result,key)} requires a source-grounded '
+                    'defect and correction under the existing rubric; reassess without inventing defects'
+                    for key in REVIEW_SCORES if getattr(result,key) < 7 and key not in dimensions]
+
         try:
             verified = await recover_review(request_review, self._parse_review,
-                lambda result: validate_review_evidence(result, html_code) if result.ran else ['invalid review schema'])
+                assessment_errors)
             result = verified.assessment
             result.evidence_verified = True
             return result
         except InvalidReviewEvidence as exc:
-            raise self._evidence_failure(html_code, exc.errors, 'review_evidence') from exc
+            family = 'review_actionability' if any(
+                error.startswith('unexplained_score:') for error in exc.errors) else 'review_evidence'
+            raise self._evidence_failure(html_code, exc.errors, family) from exc
         except PipelineExecutionError:
             raise
         except Exception as exc:

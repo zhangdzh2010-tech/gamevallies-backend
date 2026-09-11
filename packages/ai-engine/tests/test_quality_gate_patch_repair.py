@@ -337,7 +337,7 @@ def test_verified_pause_defect_enters_patch_branch_without_full_regeneration():
     assert 'layered backgrounds/foregrounds' not in prompt
 
 
-@pytest.mark.parametrize('family', ['review_evidence', 'review_infrastructure'])
+@pytest.mark.parametrize('family', ['review_evidence', 'review_actionability', 'review_infrastructure'])
 def test_invalid_assessment_does_not_trigger_full_regeneration(family):
     from src.engine.pipeline_errors import PipelineExecutionError
     generated = []

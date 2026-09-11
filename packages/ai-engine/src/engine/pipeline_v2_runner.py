@@ -711,7 +711,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
             except PipelineExecutionError as exc:
                 last_quality_exc = exc
                 last_route_snapshot = getattr(exc, "route_snapshot", None) or last_route_snapshot
-                if (getattr(exc, "failure_family", None) in {"quality_repair_exhausted", "provider_transport", "route_configuration", "review_evidence", "review_infrastructure"}
+                if (getattr(exc, "failure_family", None) in {"quality_repair_exhausted", "provider_transport", "route_configuration", "review_evidence", "review_actionability", "review_infrastructure"}
                         or quality_attempt >= len(attempt_plan)
                         or exc.stage not in {"logic_generate", "contract_qa", "runtime_simulation_qa", "code_review"}):
                     raise
