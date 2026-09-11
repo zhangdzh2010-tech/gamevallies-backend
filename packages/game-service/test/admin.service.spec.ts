@@ -1871,7 +1871,7 @@ describe("AdminService", () => {
       where: {
         taskId: "task-1",
         artifactType: {
-          in: ["contract_qa_report", "runtime_qa_report", "preflight_report", "quality_review_report", "quality_repair_report"],
+          in: ["contract_qa_report", "runtime_qa_report", "preflight_report", "quality_review_report", "quality_repair_report", "review_evidence_report"],
         },
       },
       select: {
@@ -1955,8 +1955,13 @@ describe("AdminService", () => {
     const candidate = { id: "candidate-1", artifactType: "failed_quality_candidate",
       payloadText: "<html><script>broken()</script></html>", sha256: "retained-hash",
       storageType: "inline_text", metadata: { candidate: 2 } };
+    const reviewEvidence = { id: "review-1", artifactType: "review_evidence_report",
+      payloadJson: { errors: ["unexplained_score:character_quality_score=5"],
+        source_sha256: "retained-hash", assessments: [{ attempt: 1,
+          assessment: { ran: true, character_quality_score: 5, findings: [] } }] } };
     prisma.generationArtifact.findMany.mockImplementation(async (query: any) =>
-      query.where.artifactType.in.includes("failed_quality_candidate") ? [candidate] : []);
+      query.where.artifactType.in.includes("failed_quality_candidate") ? [candidate] :
+      query.where.artifactType.in.includes("review_evidence_report") ? [reviewEvidence] : []);
 
     const result = await service.getGenerationTask("task-1");
 
@@ -1965,6 +1970,9 @@ describe("AdminService", () => {
     expect(result.game.bundles).toEqual([]);
     expect(result.candidateArtifacts).toEqual([candidate]);
     expect(result.candidateArtifactsUnavailable).toBe(false);
+    expect(result.qaArtifacts).toEqual([expect.objectContaining({
+      id: "review-1", artifactType: "review_evidence_report", report: reviewEvidence.payloadJson,
+    })]);
     expect(prisma.generationArtifact.findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({ taskId: "task-1", gameId: "game-1", userId: "user-1" }),
       take: 4,

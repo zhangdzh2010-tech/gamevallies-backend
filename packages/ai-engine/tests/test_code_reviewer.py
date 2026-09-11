@@ -218,10 +218,18 @@ def test_score_without_defect_can_be_reassessed_without_changing_source():
 
 def test_unexplained_score_exhaustion_is_bounded_and_retains_the_candidate():
     unsupported = PASSING | dict(character_quality_score=6)
+    still_unsupported = PASSING | dict(character_quality_score=5)
     with pytest.raises(PipelineExecutionError) as caught:
-        run_review_responses([json.dumps(unsupported)]*2)
+        run_review_responses([json.dumps(unsupported), json.dumps(still_unsupported)])
     assert caught.value.failure_family == 'review_actionability'
     assert caught.value.artifacts[0]['payload'] == SOURCE
+    import hashlib
+    report = caught.value.artifacts[1]['payload']
+    assert report['source_sha256'] == hashlib.sha256(SOURCE.encode('utf-8')).hexdigest()
+    assert report['failure_family'] == 'review_actionability'
+    assert [a['attempt'] for a in report['assessments']] == [1, 2]
+    assert [a['assessment']['character_quality_score'] for a in report['assessments']] == [6, 5]
+    assert all(a['validation_errors'][0].startswith('unexplained_score:') for a in report['assessments'])
 
 
 def test_findings_rebuild_redundant_issue_summary():
@@ -239,3 +247,8 @@ def test_review_outage_is_not_an_optional_review_success(responses):
         run_review_responses(responses)
     assert caught.value.failure_family == 'review_infrastructure'
     assert caught.value.artifacts[0]['payload'] == SOURCE
+    report = caught.value.artifacts[1]['payload']
+    assert len(report['assessments']) == len(responses) - 1
+    if report['assessments']:
+        assert report['assessments'][0]['assessment']['ran'] is False
+        assert report['assessments'][0]['validation_errors'] == ['invalid review schema']
