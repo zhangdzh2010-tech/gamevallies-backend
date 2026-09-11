@@ -42,6 +42,7 @@ class CodeGenerationPromptsMixin:
             "- Keep a deep copy of the initial board for restart; restart must restore it, not run the random level generator again. For alternating local multiplayer, store the round's starting player separately from the current turn.",
             "- Losing window focus must preserve the board and score (pause if needed); never call restartGame() from a blur handler. Do not add an unrequested hint button; if requested, compute a valid hint rather than selecting the first empty cell.",
             "- Do not build translucent gradient or fill colors by concatenating alpha suffixes onto dynamic color strings such as `light.color + '80'`; use explicit `rgba(...)` / `hsla(...)` values or full `#RRGGBBAA` literals.",
+            "- Never emit forbidden browser APIs: eval, Function, import, require, fetch, XMLHttpRequest, WebSocket, localStorage, sessionStorage, or document.write. Keep all data, assets, and logic inline with in-memory variables.",
         ]
 
         profile = str(runtime_profile or "").strip().lower()

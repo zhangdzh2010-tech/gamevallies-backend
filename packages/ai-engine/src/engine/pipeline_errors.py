@@ -12,6 +12,8 @@ from typing import Any, Optional
 
 import httpx
 
+from ..services.llm_client import LLMResponseTruncatedError
+
 
 def is_provider_transport_failure(exc: BaseException) -> bool:
     """Inspect wrapped transport errors without guessing from user-facing text.
@@ -23,6 +25,20 @@ def is_provider_transport_failure(exc: BaseException) -> bool:
     while exc is not None and id(exc) not in seen:
         seen.add(id(exc))
         if isinstance(exc, (httpx.HTTPStatusError, httpx.TransportError)):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def is_truncation_failure(exc: BaseException) -> bool:
+    """True when a provider response was cut off by an output-token limit."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if isinstance(exc, LLMResponseTruncatedError):
+            return True
+        message = str(exc or "").lower()
+        if "output length limit" in message or "hit max_tokens and may be truncated" in message:
             return True
         exc = exc.__cause__ or exc.__context__
     return False

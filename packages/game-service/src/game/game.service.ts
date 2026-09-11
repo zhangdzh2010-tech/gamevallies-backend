@@ -3356,6 +3356,13 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           generationTimeMs: genTimeMs,
           codeSizeBytes,
           qualityScore,
+          qualityBreakdown,
+          pipelineSuccess: (qualityBreakdown as Record<string, unknown> | undefined)?.pipeline_success
+            ?? (qualityBreakdown as Record<string, unknown> | undefined)?.pipelineSuccess,
+          seedWorthy: (qualityBreakdown as Record<string, unknown> | undefined)?.seed_worthy
+            ?? (qualityBreakdown as Record<string, unknown> | undefined)?.seedWorthy,
+          seedWorthyReason: (qualityBreakdown as Record<string, unknown> | undefined)?.seed_worthy_reason
+            ?? (qualityBreakdown as Record<string, unknown> | undefined)?.seedWorthyReason,
             ...(coverUrl ? { coverGenerated: true } : {}),
             ...runtimeQaSummary,
           },

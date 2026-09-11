@@ -116,6 +116,8 @@ class TestPromptIntegration(unittest.TestCase):
         self.assertIn("zero raw `grid[row][col].*` reads", block)
         self.assertIn("const cell = getCell(grid, row, col); if (!cell) continue;", block)
         self.assertIn("`cell.fruit`", block)
+        self.assertIn("XMLHttpRequest", block)
+        self.assertIn("WebSocket", block)
 
     def test_full_generation_keeps_provider_failover_disabled_but_allows_single_cancel_retry(self):
         generator = CodeGenerator(llm_mode="real")
@@ -168,6 +170,70 @@ class TestPromptIntegration(unittest.TestCase):
         self.assertEqual(kwargs["timeout_retry_attempts"], 0)
         self.assertEqual(kwargs["provider_retry_attempts"], 1)
         self.assertIs(kwargs["provider_retry_on_timeout_errors"], False)
+        self.assertEqual(kwargs["truncation_retry_attempts"], 2)
+        self.assertIn("OUTPUT SIZE CONSTRAINT", kwargs["truncation_retry_guidance"])
+        self.assertIn("XMLHttpRequest", kwargs["truncation_retry_guidance"])
+
+    def test_truncated_full_generation_continues_partial_html_instead_of_hard_fail(self):
+        from src.services.llm_client import LLMResponseTruncatedError
+
+        generator = CodeGenerator(llm_mode="real")
+        spec = GameSpec(
+            game_type="casual",
+            source_description="make a simple dodge game",
+            core_mechanics=[CoreMechanic(type="tap_dodge", input="tap")],
+            rules=GameRules(win_condition="survive", lose_condition="hit", lives=3),
+            visual_style=VisualStyle(theme="arcade", art_style="flat"),
+        )
+        gdd = GDD()
+        runtime_contract = GameRuntimeContract(runtime_profile="casual_arcade")
+        prefix = "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas><script>const x=1;"
+        suffix = "</script></body></html>"
+
+        def fake_get_prompt(key: str, default=None):
+            if key == "prompt.code_gen_system":
+                return "CODE_GEN_SYSTEM_FROM_DB"
+            if key == "prompt.game_design_template":
+                return "GAME DESIGN DOCUMENT:\n- Core mechanic: {core_mechanic}\n- Theme: {theme}"
+            if key == "prompt.logic_generate_policy":
+                return "LOGIC GENERATE POLICY"
+            if key == "prompt.implementation_budget":
+                return "IMPLEMENTATION BUDGET"
+            if key == "prompt.critical_intent_block":
+                return "CRITICAL INTENT DETAILS:\n- Core mechanic: {core_mechanic}"
+            return COMMON_CODEGEN_PROMPTS.get(key, default)
+
+        with patch(
+            "src.engine.code_generator.require_prompt",
+            side_effect=fake_get_prompt,
+        ), patch.object(
+            generator._client,
+            "complete_with_truncation_retry",
+            new=AsyncMock(side_effect=[
+                LLMResponseTruncatedError(
+                    "OpenAI-compatible response hit the output length limit and may be truncated",
+                    partial_text=prefix,
+                    stop_reason="length",
+                ),
+                suffix,
+            ]),
+        ) as mock_complete:
+            html, _ = asyncio.run(
+                generator._llm_generate(
+                    spec,
+                    gdd,
+                    description="make a simple dodge game",
+                    runtime_contract=runtime_contract,
+                    runtime_profile="casual_arcade",
+                    prompt_bundle_snapshot={},
+                    budget_override="simple",
+                )
+            )
+
+        self.assertIn("</html>", html)
+        self.assertIn("gameCanvas", html)
+        self.assertEqual(mock_complete.await_count, 2)
+        self.assertEqual(mock_complete.await_args_list[1].kwargs["step_key"], "code_generate.continue")
 
     def test_generation_timeout_budget_follows_single_admin_budget(self):
         simple_spec = GameSpec(

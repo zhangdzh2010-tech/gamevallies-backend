@@ -292,7 +292,10 @@ class PipelineV2QualityPolicyMixin:
         """
         pipeline_success = bool(getattr(qa_result, "success", False))
         warning_types = {str(warning.get("type") or "") for warning in qa_warnings or []}
-        degraded_review = "review_infrastructure_degraded" in warning_types
+        degraded_review = bool(warning_types & {
+            "review_infrastructure_degraded",
+            "review_actionability_degraded",
+        })
         near_miss = "quality_gate_near_miss" in warning_types
         review_ran = bool(getattr(review, "ran", False))
         remaining_errors = [str(error) for error in (quality_gate_errors or []) if str(error or "").strip()]
@@ -306,7 +309,9 @@ class PipelineV2QualityPolicyMixin:
             reason = "structured_review_passed"
         elif not pipeline_success:
             reason = "contract_or_runtime_failed"
-        elif degraded_review:
+        elif "review_actionability_degraded" in warning_types:
+            reason = "review_actionability_degraded"
+        elif "review_infrastructure_degraded" in warning_types:
             reason = "review_infrastructure_degraded"
         elif not review_ran:
             reason = "structured_review_missing"
@@ -478,6 +483,11 @@ class PipelineV2QualityPolicyMixin:
     def _quality_patch_regressed(cls, spec: GameSpec, review: LLMReviewResult,
                                  quality: Any, outcome: _QualityGatePatchOutcome) -> bool:
         if not outcome.review.ran:
+            if any(
+                str(warning.get("type") or "") == "review_actionability_degraded"
+                for warning in (outcome.qa_warnings or [])
+            ):
+                return False
             return True
         for field in ("is_complete_game", "has_real_gameplay", "difficulty_balanced"):
             if getattr(review, field) and not getattr(outcome.review, field):
@@ -662,7 +672,29 @@ class PipelineV2QualityPolicyMixin:
             static_check = self.qa_pipeline.check(candidate)
 
             failure_stage = "review"
-            patched_review = await self.code_reviewer.review(candidate, user_requirements=spec.source_description or "")
+            try:
+                patched_review = await self.code_reviewer.review(
+                    candidate, user_requirements=spec.source_description or ""
+                )
+            except PipelineExecutionError as review_exc:
+                if (
+                    getattr(review_exc, "failure_family", None) != "review_actionability"
+                    or self._is_structured_review_required(spec)
+                ):
+                    raise
+                qa_warnings.append({
+                    "type": "review_actionability_degraded",
+                    "message": (
+                        "Structured review stayed inconsistent after bounded reassessments; "
+                        "proceeding with static and runtime QA only."
+                    ),
+                    "details": {
+                        "failureFamily": review_exc.failure_family,
+                        "stage": review_exc.stage,
+                        "error": str(review_exc)[:500],
+                    },
+                })
+                patched_review = LLMReviewResult(ran=False)
             patched_quality = self.quality_scorer.compute(
                 static=QAStaticResult(
                     passed=static_check.passed,
@@ -683,7 +715,10 @@ class PipelineV2QualityPolicyMixin:
                 patched_quality,
                 review_required=self._is_structured_review_required(spec),
             )
-            if not patched_review.ran:
+            if not patched_review.ran and not any(
+                str(warning.get("type") or "") == "review_actionability_degraded"
+                for warning in qa_warnings
+            ):
                 remaining_errors.append("Repair must receive a structured review before it can replace the previous candidate.")
             await self._remember_code(candidate, label=f"quality_patch_candidate_{patch_attempt}")
         except Exception as exc:  # noqa: BLE001 - any failure falls back to regeneration
@@ -937,6 +972,21 @@ class PipelineV2QualityPolicyMixin:
                 "- Replace raw nested grid reads with a guarded helper such as `const rowBucket = grid[row]; const cell = "
                 "rowBucket && rowBucket[col]; if (!cell) return;` before reading cell properties."
             )
+        if any(
+            token in normalized_issue_blob
+            for token in (
+                "forbidden api",
+                "xmlhttprequest",
+                "websocket",
+                "localstorage",
+                "sessionstorage",
+            )
+        ):
+            _append_recipe(
+                "- Remove every Forbidden API (eval, Function, import, require, fetch, XMLHttpRequest, "
+                "WebSocket, localStorage, sessionStorage, document.write). Keep all data, assets, and "
+                "logic inline in this HTML file; use in-memory variables instead of network or storage APIs."
+            )
         if "grid[row][col]" in normalized_issue_blob or "unsafe_nested_grid_read" in normalized_issue_blob:
             _append_recipe(
                 "- Define `function getCell(grid, row, col) { const rowBucket = grid[row]; return rowBucket ? rowBucket[col] : null; }` "
@@ -948,3 +998,17 @@ class PipelineV2QualityPolicyMixin:
             "- Regenerate the full HTML so these issues are resolved in executable code, not comments, placeholders, or implied behavior."
         )
         return "\n".join(lines)
+
+    @staticmethod
+    def _build_truncation_compactness_guidance() -> str:
+        return (
+            "OUTPUT LENGTH RECOVERY (MUST FIT THIS ATTEMPT):\n"
+            "- The previous full generation hit the output-token cap and was truncated.\n"
+            "- Emit one complete single-file HTML5 game that finishes before the token cap.\n"
+            "- Keep one canvas, one requestAnimationFrame loop, compact helpers, procedural art, "
+            "no comments, and no unused systems or extra screens.\n"
+            "- Forbidden APIs remain banned: eval, Function, import, require, fetch, "
+            "XMLHttpRequest, WebSocket, localStorage, sessionStorage, document.write.\n"
+            "- Still satisfy the runtime contract and original brief. Do not drop required "
+            "start/pause/restart behavior or the playable loop."
+        )

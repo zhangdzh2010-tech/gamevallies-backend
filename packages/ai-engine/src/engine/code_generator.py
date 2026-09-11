@@ -18,7 +18,7 @@ from ..api.models import (
 )
 from ..config.settings import settings
 from ..config.timeout_store import get_int as get_timeout_int
-from ..services.llm_client import LLMClient
+from ..services.llm_client import LLMClient, LLMResponseTruncatedError, _looks_like_complete_html_document
 from .code_template_cache import CodeTemplateCache
 from .prompt_store import get_runtime_profile, require_prompt
 from .runtime_profile_ids import normalize_runtime_profile_id
@@ -380,6 +380,92 @@ class CodeGenerator(CodeGenerationPromptsMixin):
     @staticmethod
     def _create_response_size_hint() -> str:
         return "full_document"
+
+    @staticmethod
+    def _truncation_compactness_guidance(*, token_budget: Optional[int] = None) -> str:
+        budget_note = (
+            f" Stay well under {int(token_budget)} output tokens."
+            if token_budget
+            else ""
+        )
+        return (
+            "OUTPUT SIZE CONSTRAINT (HARD): Return one complete valid HTML5 document before "
+            f"the output-token cap.{budget_note} Use one canvas, one requestAnimationFrame loop, "
+            "compact helpers, short identifiers, and procedural drawing. No markdown, comments, "
+            "unused systems, extra screens, or network/storage APIs. Close every tag including "
+            "</html>. Forbidden APIs remain banned: eval, Function, import, require, fetch, "
+            "XMLHttpRequest, WebSocket, localStorage, sessionStorage, document.write."
+        )
+
+    @staticmethod
+    def _looks_like_partial_html_document(text: str) -> bool:
+        rendered = str(text or "").strip()
+        if not rendered or _looks_like_complete_html_document(rendered):
+            return False
+        lower = rendered.lower()
+        return "<html" in lower or "<!doctype html" in lower
+
+    async def _continue_truncated_html(
+        self,
+        partial_text: str,
+        *,
+        system: str,
+        request_timeout_s: int,
+        overall_timeout_s: int,
+        token_budget: int,
+        excluded_provider_ids: Optional[List[str]] = None,
+        sampling_profile: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """Finish a truncated HTML prefix instead of discarding a near-complete document."""
+        prefix = str(partial_text or "").strip()
+        if not self._looks_like_partial_html_document(prefix):
+            return None
+        tail = prefix[-4000:] if len(prefix) > 4000 else prefix
+        try:
+            continuation = await self._client.complete_with_truncation_retry(
+                max_tokens=min(max(1024, token_budget // 2), 4096),
+                system=system,
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        "The previous HTML5 game document was cut off by the output length limit. "
+                        "Continue EXACTLY from the unfinished suffix below. Output only the remaining "
+                        "characters needed to finish a valid document. Do not restart the file, do not "
+                        "repeat the prefix, and do not wrap the answer in markdown.\n\n"
+                        f"UNFINISHED SUFFIX:\n{tail}"
+                    ),
+                }],
+                step_key="code_generate.continue",
+                stage="code_generating",
+                request_timeout_s=min(int(request_timeout_s), 90),
+                overall_timeout_s=min(int(overall_timeout_s), 90),
+                allow_provider_fallback=True,
+                response_size_hint="large",
+                context_scope="request",
+                compression_policy="code_generation",
+                truncation_retry_attempts=1,
+                truncation_retry_increment=512,
+                truncation_retry_max_tokens=4096,
+                truncation_retry_guidance=self._truncation_compactness_guidance(token_budget=2048),
+                timeout_retry_attempts=0,
+                provider_retry_attempts=1,
+                provider_retry_on_timeout_errors=False,
+                excluded_provider_ids=excluded_provider_ids,
+                sampling_profile=sampling_profile,
+            )
+        except Exception:
+            logger.warning("Truncated HTML continuation failed", exc_info=True)
+            return None
+        suffix = str(continuation or "").strip()
+        if suffix.startswith("```"):
+            suffix = _extract_html(suffix)
+        combined = prefix + suffix
+        if _looks_like_complete_html_document(combined):
+            return combined
+        extracted = _extract_html(combined)
+        if _looks_like_complete_html_document(extracted):
+            return extracted
+        return None
 
     @staticmethod
     def _is_prompt_bullet_line(line: str) -> bool:
@@ -855,31 +941,49 @@ class CodeGenerator(CodeGenerationPromptsMixin):
             if inspiration_block:
                 _parts.append(inspiration_block)
             effective_system = "\n\n".join(_parts) if len(_parts) > 1 else base_system
-            completion_result = await self._client.complete_with_truncation_retry(
-                max_tokens=token_budget,
-                system=effective_system,
-                messages=[{"role": "user", "content": full_prompt}],
-                step_key="code_generate.full",
-                stage="code_generating",
-                request_timeout_s=request_timeout_s,
-                overall_timeout_s=overall_timeout_s,
-                allow_provider_fallback=True,
-                response_size_hint=self._create_response_size_hint(),
-                context_scope="request",
-                compression_policy="code_generation",
-                truncation_retry_attempts=1,
-                truncation_retry_increment=2048,
-                truncation_retry_max_tokens=truncation_retry_cap,
-                timeout_retry_attempts=0,
-                provider_retry_attempts=1,
-                provider_retry_on_timeout_errors=False,
-                provider_retry_base_delay_s=1,
-                provider_retry_max_delay_s=2,
-                excluded_provider_ids=excluded_provider_ids,
-                return_route_snapshot=True,
-                hedge_provider_fallback_after_s=hedge_after_s,
-                sampling_profile=sampling_profile,  # P1.1 GAP-1b
-            )
+            try:
+                completion_result = await self._client.complete_with_truncation_retry(
+                    max_tokens=token_budget,
+                    system=effective_system,
+                    messages=[{"role": "user", "content": full_prompt}],
+                    step_key="code_generate.full",
+                    stage="code_generating",
+                    request_timeout_s=request_timeout_s,
+                    overall_timeout_s=overall_timeout_s,
+                    allow_provider_fallback=True,
+                    response_size_hint=self._create_response_size_hint(),
+                    context_scope="request",
+                    compression_policy="code_generation",
+                    truncation_retry_attempts=2,
+                    truncation_retry_increment=2048,
+                    truncation_retry_max_tokens=truncation_retry_cap,
+                    truncation_retry_guidance=self._truncation_compactness_guidance(
+                        token_budget=token_budget,
+                    ),
+                    timeout_retry_attempts=0,
+                    provider_retry_attempts=1,
+                    provider_retry_on_timeout_errors=False,
+                    provider_retry_base_delay_s=1,
+                    provider_retry_max_delay_s=2,
+                    excluded_provider_ids=excluded_provider_ids,
+                    return_route_snapshot=True,
+                    hedge_provider_fallback_after_s=hedge_after_s,
+                    sampling_profile=sampling_profile,  # P1.1 GAP-1b
+                )
+            except LLMResponseTruncatedError as trunc_exc:
+                continued = await self._continue_truncated_html(
+                    getattr(trunc_exc, "partial_text", None) or getattr(trunc_exc, "response_excerpt", "") or "",
+                    system=effective_system,
+                    request_timeout_s=request_timeout_s,
+                    overall_timeout_s=overall_timeout_s,
+                    token_budget=token_budget,
+                    excluded_provider_ids=excluded_provider_ids,
+                    sampling_profile=sampling_profile,
+                )
+                if not continued:
+                    raise
+                route_snapshot = getattr(trunc_exc, "route_snapshot", None)
+                return _extract_html(continued), route_snapshot
             if isinstance(completion_result, tuple):
                 text, route_snapshot = completion_result
             else:

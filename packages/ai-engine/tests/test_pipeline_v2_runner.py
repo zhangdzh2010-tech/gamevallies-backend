@@ -1939,6 +1939,132 @@ def test_contract_qa_loop_repairs_syntax_only_errors_before_contract_regeneratio
     assert mock_repair.await_count == 1
 
 
+def test_quality_regeneration_guidance_adds_forbidden_api_recipe_without_removing_bans():
+    guidance = V2PipelineRunner._build_quality_regeneration_guidance(
+        stage="contract_qa",
+        message="Generated code failed contract QA: Forbidden API detected: XMLHttpRequest",
+        errors=[QACheckError(type="L2_security", message="Forbidden API detected: WebSocket", severity="error")],
+    )
+
+    assert "XMLHttpRequest" in guidance
+    assert "WebSocket" in guidance
+    assert "Forbidden API" in guidance
+    assert "in-memory variables" in guidance
+
+
+def test_truncation_compactness_guidance_keeps_forbidden_api_bans():
+    guidance = V2PipelineRunner._build_truncation_compactness_guidance()
+    assert "OUTPUT LENGTH RECOVERY" in guidance
+    assert "XMLHttpRequest" in guidance
+    assert "WebSocket" in guidance
+    assert "playable loop" in guidance
+
+
+def test_run_create_impl_retries_truncated_generation_with_compactness_and_safe_budget():
+    from src.services.llm_client import LLMResponseTruncatedError
+
+    runner = V2PipelineRunner()
+    request = RunPipelineV2Request(
+        game_id="game-truncation",
+        user_id="user-truncation",
+        raw_user_input="做一个太空躲避手机小游戏",
+    )
+    spec = GameSpec(
+        game_type="casual",
+        generation_tier="standard",
+        source_description="做一个太空躲避手机小游戏",
+        entities=[],
+        special_rules=[],
+        core_mechanics=[{"type": "dodge"}],
+    )
+    runtime_contract = GameRuntimeContract(runtime_profile="casual_arcade")
+    generated_valid = GenerateCodeResult(
+        html_code="<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas><script>const canvas=document.getElementById('gameCanvas'); canvas.width = 360; canvas.height = 640; const ctx = canvas.getContext('2d'); function render() { ctx.clearRect(0,0,canvas.width,canvas.height); }</script></body></html>",
+        strategy="llm",
+        generation_time_ms=10,
+        code_size_bytes=100,
+        route_snapshot={"provider_id": "provider-b"},
+    )
+    qa_success = SimpleNamespace(
+        success=True,
+        code=generated_valid.html_code,
+        retries=0,
+        needs_regeneration=False,
+        issue_list=None,
+    )
+    quality_result = SimpleNamespace(
+        final_score=7.1,
+        details={},
+        qa_penalty=0.0,
+        strategy_bonus=0.0,
+        size_bonus=0.0,
+        retry_penalty=0.0,
+        runtime_bonus=0.0,
+        review_bonus=0.0,
+        gameplay_depth_bonus=0.0,
+    )
+
+    def _truncation_error():
+        inner = LLMResponseTruncatedError(
+            "OpenAI-compatible response hit the output length limit and may be truncated",
+            stop_reason="length",
+        )
+        wrapped = PipelineExecutionError(
+            f"Full LLM generation failed: {inner}",
+            stage="logic_generate",
+            failure_family="code_generation",
+        )
+        wrapped.__cause__ = inner
+        return wrapped
+
+    with patch.object(runner, "_build_create_spec", new=AsyncMock(return_value=spec)), patch.object(
+        runner, "_select_runtime_profile", return_value="casual_arcade",
+    ), patch.object(
+        runner, "_compose_runtime_contract", return_value=runtime_contract,
+    ), patch.object(
+        runner, "_build_gdd", new=AsyncMock(return_value=GDD()),
+    ), patch.object(
+        runner, "_remember_spec", new=AsyncMock(),
+    ), patch.object(
+        runner, "_remember_runtime_contract", new=AsyncMock(),
+    ), patch.object(
+        runner, "_remember_code", new=AsyncMock(),
+    ), patch(
+        "src.engine.pipeline_v2_runner.task_memory.append_decision", new=AsyncMock(),
+    ), patch.object(
+        runner.pre_gen_validator, "validate", return_value=[],
+    ), patch.object(
+        runner, "_build_create_generation_attempt_plan", return_value=("simple", "standard"),
+    ), patch.object(
+        runner, "_generate_create_code",
+        new=AsyncMock(side_effect=[_truncation_error(), _truncation_error(), (generated_valid, [])]),
+    ) as mock_generate, patch.object(
+        runner, "_run_contract_and_runtime_flow",
+        new=AsyncMock(return_value=(qa_success, SimpleNamespace(ran=True), 0, [])),
+    ), patch.object(
+        runner.qa_pipeline, "check", return_value=SimpleNamespace(passed=True, errors=[], warnings=[]),
+    ), patch.object(
+        runner, "_should_run_code_review", return_value=False,
+    ), patch.object(
+        runner.quality_scorer, "compute", return_value=quality_result,
+    ), patch.object(
+        runner, "_serialize_runtime_qa", return_value={},
+    ), patch(
+        "src.engine.pipeline_v2_runner.asyncio.sleep", new=AsyncMock(),
+    ):
+        response = asyncio.run(
+            runner._run_create_impl(request, progress_cb=None, stage_context={"stage": "spec_build"})
+        )
+
+    assert response.html_code == generated_valid.html_code
+    assert mock_generate.await_count == 3
+    assert mock_generate.await_args_list[0].kwargs["budget_override"] == "simple"
+    assert mock_generate.await_args_list[1].kwargs["budget_override"] == "standard"
+    assert mock_generate.await_args_list[2].kwargs["budget_override"] == "safe"
+    assert "OUTPUT LENGTH RECOVERY" in mock_generate.await_args_list[1].kwargs["generation_guidance"]
+    assert "XMLHttpRequest" in mock_generate.await_args_list[2].kwargs["generation_guidance"]
+
+
 def test_quality_regeneration_guidance_adds_coordinate_guard_recipe_for_undefined_x_runtime_failures():
     guidance = V2PipelineRunner._build_quality_regeneration_guidance(
         stage="runtime_simulation_qa",
@@ -2720,6 +2846,16 @@ def test_create_outcome_labels_distinguish_pipeline_success_from_seed_worthy():
     assert missing_review["seed_worthy"] is False
     assert missing_review["seed_worthy_reason"] == "structured_review_missing"
 
+    actionability = V2PipelineRunner._create_outcome_labels(
+        review=LLMReviewResult(ran=False),
+        qa_result=qa_ok,
+        qa_warnings=[{"type": "review_actionability_degraded"}],
+        quality_gate_errors=[],
+    )
+    assert actionability["pipeline_success"] is True
+    assert actionability["seed_worthy"] is False
+    assert actionability["seed_worthy_reason"] == "review_actionability_degraded"
+
 
 def test_repair_fallback_guidance_keeps_quality_and_contract_signals():
     from src.engine.pipeline_errors import PipelineExecutionError
@@ -2821,6 +2957,77 @@ async def test_resolve_create_review_keeps_showcase_fail_closed_on_infrastructur
             )
 
     assert caught.value.failure_family == "review_infrastructure"
+
+
+@pytest.mark.asyncio
+async def test_resolve_create_review_degrades_actionability_failure_for_standard_tier():
+    runner = V2PipelineRunner()
+    spec = GameSpec(
+        game_type="casual",
+        generation_tier="standard",
+        source_description="A polished delivery runner.",
+        entities=[],
+    )
+    qa_warnings: list[dict] = []
+    actionability_error = PipelineExecutionError(
+        "Code review evidence could not be validated: unexplained_score:fun_score=6.0 requires a source-grounded defect",
+        stage="code_review",
+        failure_family="review_actionability",
+    )
+
+    with patch.object(
+        runner,
+        "_resolve_concurrent_review",
+        new=AsyncMock(side_effect=actionability_error),
+    ):
+        review = await runner._resolve_create_review(
+            None,
+            "<html></html>",
+            spec=spec,
+            review_requested=True,
+            qa_warnings=qa_warnings,
+            progress_cb=None,
+            game_id="game-1",
+            user_id="user-1",
+        )
+
+    assert review.ran is False
+    assert qa_warnings[0]["type"] == "review_actionability_degraded"
+
+
+@pytest.mark.asyncio
+async def test_resolve_create_review_keeps_showcase_fail_closed_on_actionability_failure():
+    runner = V2PipelineRunner()
+    spec = GameSpec(
+        game_type="casual",
+        generation_tier="showcase",
+        source_description="A premium showcase runner.",
+        entities=[],
+    )
+    actionability_error = PipelineExecutionError(
+        "Code review evidence could not be validated: unexplained_score:fun_score=6.0",
+        stage="code_review",
+        failure_family="review_actionability",
+    )
+
+    with patch.object(
+        runner,
+        "_resolve_concurrent_review",
+        new=AsyncMock(side_effect=actionability_error),
+    ):
+        with pytest.raises(PipelineExecutionError) as caught:
+            await runner._resolve_create_review(
+                None,
+                "<html></html>",
+                spec=spec,
+                review_requested=True,
+                qa_warnings=[],
+                progress_cb=None,
+                game_id="game-1",
+                user_id="user-1",
+            )
+
+    assert caught.value.failure_family == "review_actionability"
 
 
 def test_quality_gate_blocks_showcase_results_with_heavy_review_penalty():

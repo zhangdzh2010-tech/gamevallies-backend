@@ -1711,6 +1711,43 @@ def test_complete_logs_failed_call_when_outer_wait_cancels_it():
         settings.LLM_MODE = old_mode
 
 
+def test_complete_with_truncation_retry_appends_size_guidance_even_when_budget_cannot_grow():
+    client = LLMClient()
+
+    with patch.object(
+        client,
+        "complete",
+        new=AsyncMock(side_effect=[
+            LLMResponseTruncatedError(
+                "OpenAI-compatible response hit the output length limit and may be truncated",
+                stop_reason="length",
+                output_tokens=4096,
+                partial_text="<!DOCTYPE html><html><body><script>const x=1;",
+            ),
+            "<!DOCTYPE html><html><body>ok</body></html>",
+        ]),
+    ) as mock_complete:
+        result = asyncio.run(
+            client.complete_with_truncation_retry(
+                messages=[{"role": "user", "content": "generate"}],
+                max_tokens=4096,
+                step_key="code_generate.full",
+                stage="code_generating",
+                truncation_retry_attempts=1,
+                truncation_retry_increment=2048,
+                truncation_retry_max_tokens=4096,
+                truncation_retry_guidance="OUTPUT SIZE CONSTRAINT (HARD): finish a compact HTML document.",
+            )
+        )
+
+    assert result == "<!DOCTYPE html><html><body>ok</body></html>"
+    assert mock_complete.await_count == 2
+    assert mock_complete.await_args_list[0].kwargs["max_tokens"] == 4096
+    assert mock_complete.await_args_list[1].kwargs["max_tokens"] == 4096
+    second_messages = mock_complete.await_args_list[1].kwargs["messages"]
+    assert second_messages[-1]["content"].startswith("OUTPUT SIZE CONSTRAINT")
+
+
 def test_complete_with_truncation_retry_retries_with_larger_budget():
     client = LLMClient()
 
