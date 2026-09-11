@@ -30,6 +30,51 @@ from src.engine.pipeline_errors import PipelineExecutionError
 from src.engine.quality_scorer import LLMReviewResult, QualityScoreBreakdown
 
 
+@pytest.mark.parametrize('handler', [
+    "canvas.addEventListener('click', handleClick);",
+    'canvas.addEventListener("mousedown", function(e) { startGame(); });',
+    "canvas.onclick = handleClick;",
+    "canvas.addEventListener /* comment */ ('click', () => startGame());",
+])
+def test_desktop_contract_honors_registered_mouse_fallback(handler):
+    runner = V2PipelineRunner()
+    spec = GameSpec(game_type='puzzle', source_description='桌面横屏，鼠标点击拼块，重新开始')
+    contract = runner._compose_runtime_contract(base_contract=GameRuntimeContract(),
+        spec=spec, runtime_profile='puzzle_grid', entrypoint='create')
+    assert contract.input.required_modes == ['pointer']
+    assert contract.input.allow_mouse_fallback
+    code = '<html><script>' + handler + '</script></html>'
+    assert not any(e.type == 'contract_input' for e in runner._validate_runtime_contract(code, contract))
+
+
+@pytest.mark.parametrize('code', [
+    '<html><!-- canvas.addEventListener("click", handler); --></html>',
+    '<html><script>// canvas.addEventListener("click", handler);\n</script></html>',
+    '<html><script>const example = "canvas.onclick = handler";</script></html>',
+    '<html><script type="application/json">{"sample": "canvas.onclick = handler"}</script></html>',
+    '<html><script>canvas.addEventListener("click", null);</script></html>',
+    '<html><script>canvas.onclick = null;</script></html>',
+    '<html><button onclick="">Start</button></html>',
+])
+def test_mouse_fallback_requires_registration_not_prose_or_null(code):
+    runner = V2PipelineRunner()
+    contract = GameRuntimeContract(input={'required_modes': ['pointer'], 'allow_mouse_fallback': True})
+    assert any(e.type == 'contract_input' for e in runner._validate_runtime_contract(code, contract))
+
+
+@pytest.mark.parametrize('modes,allow', [(['touch'], True), (['touch','pointer'], True), (['pointer'], False)])
+def test_mouse_fallback_preserves_strict_input_contracts(modes, allow):
+    runner = V2PipelineRunner()
+    contract = GameRuntimeContract(input={'required_modes': modes, 'allow_mouse_fallback': allow})
+    code = '<html><script>canvas.addEventListener("click", handleClick);</script></html>'
+    assert any(e.type == 'contract_input' for e in runner._validate_runtime_contract(code, contract))
+
+
+def test_mouse_fallback_accepts_an_explicit_inline_handler():
+    from src.engine.mouse_input_detection import has_registered_mouse_handler
+    assert has_registered_mouse_handler('<button onclick="startGame()">Start</button>')
+
+
 @pytest.mark.parametrize("status", [400, 401, 429, 502, 503, 504])
 def test_provider_http_failure_does_not_enter_quality_regeneration(status):
     import httpx

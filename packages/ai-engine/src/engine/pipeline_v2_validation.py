@@ -10,6 +10,7 @@ from .qa_pipeline import QAPipeline, SYNTAX_REPAIR_FAMILY
 from .restart_entry import has_restart_entry
 from .terminal_state import has_required_state_presence
 from .storage_api_detection import contains_storage_api_usage
+from .mouse_input_detection import has_registered_mouse_handler
 from .pipeline_v2_support import ProgressCallback, INPUT_EVENT_PATTERNS, FORBIDDEN_API_PATTERNS
 
 logger = logging.getLogger(__name__)
@@ -154,6 +155,14 @@ class PipelineV2ValidationMixin:
                 for mode in runtime_contract.input.required_modes
                 if mode in ("touch", "pointer")
             )
+            # "pointer" describes the requested desktop input capability; it
+            # need not be implemented with the PointerEvent API. Honor the
+            # mouse fallback produced by requested_contract_overrides without
+            # relaxing contracts that also require touch support.
+            if (not has_primary_input and "pointer" in runtime_contract.input.required_modes
+                    and "touch" not in runtime_contract.input.required_modes
+                    and runtime_contract.input.allow_mouse_fallback):
+                has_primary_input = has_registered_mouse_handler(code)
             if not has_primary_input:
                 errors.append(QACheckError(
                     type="contract_input",
