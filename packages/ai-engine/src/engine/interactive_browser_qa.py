@@ -186,13 +186,55 @@ async def browser_report(code: str) -> dict:
             total = await controls.count()
             changed, exercised = False, 0
             motion_checks, control_checks = [], []
+            navigation_path = []
+            navigation_states = [[]]
+            navigation_replays = 0
+            coverage_truncated = total > 40
+
+            async def restore_controls():
+                restored = await load_work(host, code)
+                for saved_index, saved_label in navigation_path:
+                    try:
+                        tab = restored.locator(CONTROLS).nth(saved_index)
+                        identity = await tab.get_attribute('id') or (await tab.inner_text()).strip()
+                        if await tab.get_attribute('role') != 'tab' or identity != saved_label:
+                            raise ValueError('navigation identity changed')
+                        await tab.click(timeout=2000)
+                    except Exception:
+                        issues.append('无法重放标签页导航，后续控件覆盖不完整。')
+                        navigation_path.clear()
+                        restored = await load_work(host, code)
+                        break
+                return restored, restored.locator(CONTROLS)
+
             for index in range(min(total, 40)):
                 if index >= await controls.count():
                     break
                 control = controls.nth(index)
+                if not await control.is_visible():
+                    previous_path = list(navigation_path)
+                    for alternative in navigation_states:
+                        if alternative == previous_path:
+                            continue
+                        if navigation_replays >= 40:
+                            coverage_truncated = True
+                            issues.append('标签页导航重放达到预算，控件覆盖未完成。')
+                            break
+                        navigation_replays += 1
+                        navigation_path[:] = alternative
+                        frame, controls = await restore_controls()
+                        if index >= await controls.count():
+                            continue
+                        control = controls.nth(index)
+                        if await control.is_visible():
+                            break
+                    if index >= await controls.count():
+                        continue
+                    control = controls.nth(index)
                 if not await control.is_visible() or not await control.is_enabled():
                     continue
                 clicked_button = False
+                navigation = False
                 try:
                     before = await frame.evaluate(SIGNATURE)
                     tag = await control.evaluate('e=>e.tagName')
@@ -229,9 +271,16 @@ async def browser_report(code: str) -> dict:
                     else:
                         clicked_button = True
                         text = (await control.inner_text()).strip()
-                        motion = bool(re.search(r'开始|启动|运行|播放|演示|继续|\b(?:start|play|run|resume)\b', text, re.I)
+                        navigation = await control.get_attribute('role') == 'tab'
+                        identity = await control.get_attribute('id') or text
+                        stops_or_resets = bool(re.search(r'^\W*(?:重置|暂停|停止|清空|取消|reset\b|pause\b|stop\b|clear\b|cancel\b)', text, re.I))
+                        motion = bool(not navigation and not stops_or_resets and re.search(r'开始|启动|运行|播放|演示|继续|\b(?:start|play|run|resume)\b', text, re.I)
                             and re.search(r'\b(?:requestAnimationFrame|setInterval)\s*\(', code))
                         await control.click(timeout=2000)
+                        if navigation:
+                            navigation_path.append((index, identity))
+                            if navigation_path not in navigation_states:
+                                navigation_states.append(list(navigation_path))
                         if re.fullmatch(r'重置(?:初态)?|恢复初始|reset', text, re.I):
                             await host.wait_for_timeout(100)
                             reset_outputs = {x['key']:x['text'] for x in await frame.evaluate(OUTPUTS)}
@@ -265,16 +314,14 @@ async def browser_report(code: str) -> dict:
                     # Buttons commonly open editors, delete rows or replace
                     # controls. Test the next control from a clean document so
                     # one stateful action cannot obscure or detach another.
-                    if clicked_button and index + 1 < min(total, 40):
-                        frame = await load_work(host, code)
-                        controls = frame.locator(CONTROLS)
+                    if clicked_button and not navigation and index + 1 < min(total, 40):
+                        frame, controls = await restore_controls()
                 except Exception as exc:
                     # A broken candidate control is not QA infrastructure failure.
                     issues.append(f'第{index+1}个控件执行失败：{type(exc).__name__}。')
                     # Recover the harness after a modal/DOM mutation so one
                     # failure cannot cascade into every remaining control.
-                    frame = await load_work(host, code)
-                    controls = frame.locator(CONTROLS)
+                    frame, controls = await restore_controls()
             if await frame.locator('[data-work-qa-probe]').count():
                 issues.append('用户文本被解释为HTML；动态名称/内容必须用textContent或安全转义后渲染。')
             drawing_issues = await frame.evaluate('()=>window.__workDrawingIssues || []')
@@ -303,7 +350,8 @@ async def browser_report(code: str) -> dict:
                 'sandbox':'allow-scripts','sandboxViolations':list(dict.fromkeys(sandbox_errors)),
                 'interaction_performed':bool(exercised),'dom_changed_after_input':changed,
                 'controlsExercised':exercised,'controlsDiscovered':total,'controlChecks':control_checks,
-                'controlCoverageTruncated':total>40,'contentChanged':changed,
+                'controlCoverageTruncated':coverage_truncated,'contentChanged':changed,
+                'navigationStates':len(navigation_states),'navigationReplays':navigation_replays,
                 'contractChecks':contract_checks,
                 'drawingIssues':drawing_issues,'angleEvidence':angle_evidence[:10],
                 'canvasTextEvidence':text_evidence,
