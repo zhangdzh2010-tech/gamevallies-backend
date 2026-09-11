@@ -4,13 +4,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from src.api.models import GDD, GameRuntimeContract, GameSpec, GenerateCodeResult, RunPipelineV2Request
+from src.api.models import GDD, GameRuntimeContract, GameSpec, GenerateCodeResult, RunPipelineV2Request, QACheckError
 from src.engine.pipeline_errors import PipelineExecutionError
 from src.engine.pipeline_v2_runner import V2PipelineRunner
 from src.engine.quality_scorer import LLMReviewResult
 
 
-@pytest.mark.parametrize('stage', ['preflight', 'quality'])
+@pytest.mark.parametrize('stage', ['preflight', 'quality', 'contract'])
 def test_failed_game_retains_source_and_diagnostics(stage):
     runner = V2PipelineRunner()
     request = RunPipelineV2Request(game_id='evidence',user_id='author',raw_user_input='益智游戏')
@@ -33,7 +33,9 @@ def test_failed_game_retains_source_and_diagnostics(stage):
         generate = stack.enter_context(patch.object(runner,'_generate_create_code',new=AsyncMock(
             return_value=(generated,[issue] if stage=='preflight' else []))))
         stack.enter_context(patch.object(runner,'_run_contract_and_runtime_flow',new=AsyncMock(return_value=(
-            SimpleNamespace(success=True,code=html,retries=0,needs_regeneration=False),SimpleNamespace(ran=True),0,[]))))
+            SimpleNamespace(success=stage!='contract',code=html,retries=0,needs_regeneration=stage=='contract',
+                last_errors=[QACheckError(type='contract_safety',message='forbidden storage access',severity='error')]),
+            SimpleNamespace(ran=True),0,[]))))
         stack.enter_context(patch.object(runner.qa_pipeline,'check',return_value=SimpleNamespace(passed=True,errors=[],warnings=[])))
         stack.enter_context(patch.object(runner.code_reviewer,'review',new=AsyncMock(return_value=LLMReviewResult(ran=True))))
         stack.enter_context(patch.object(runner.quality_scorer,'compute',return_value=SimpleNamespace(final_score=1)))
@@ -42,4 +44,8 @@ def test_failed_game_retains_source_and_diagnostics(stage):
     assert generate.call_count == 3
     artifacts = {a['artifact_type']:a for a in caught.value.artifacts}
     assert artifacts['failed_'+stage+'_candidate']['payload'] == html
-    assert artifacts['preflight_report' if stage=='preflight' else 'quality_review_report']['payload']['attempt'] == 3
+    report_type = {'preflight':'preflight_report','quality':'quality_review_report','contract':'contract_qa_report'}[stage]
+    assert artifacts[report_type]['payload']['attempt'] == 3
+    if stage == 'contract':
+        assert caught.value.failure_family == 'contract_qa'
+        assert artifacts[report_type]['payload']['errors'][0]['message'] == 'forbidden storage access'
