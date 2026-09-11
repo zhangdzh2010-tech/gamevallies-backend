@@ -88,6 +88,37 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.quality_breakdown['suggestions'], ['可选增加历史记录'])
         self.assertEqual(result.quality_breakdown['issues'], [])
 
+    async def test_layout_repair_rejects_dom_deletion_then_corrects_same_source(self):
+        bad = json.dumps({'patches':[{'search':'id="count"','replace':''}]})
+        good = json.dumps({'patches':[{'search':'margin:24px','replace':'margin:12px'}]})
+        runtime = {'ran':True,'passed':False,'issues':['layout overflow'],
+            'layoutIssues':['layout overflow'],'js_errors':[],'contentChanged':True}
+        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
+            new=AsyncMock(side_effect=[GOOD,bad,good,await fake_llm(step_key='code_review')])) as llm, patch(
+            'src.engine.interactive_creation.validate_interactive_html', new=AsyncMock(side_effect=[
+                runtime,dict(runtime,passed=True,issues=[],layoutIssues=[])])) as qa:
+            result = await run_interactive(normalize_interactive_request(self.request()))
+        self.assertEqual(result.html_code, GOOD.replace('margin:24px','margin:12px'))
+        self.assertEqual(qa.await_count,2)
+        self.assertEqual([c.kwargs['step_key'] for c in llm.call_args_list],
+            ['code_generate.full','quality_gate.patch_fix','quality_gate.patch_fix','code_review'])
+        self.assertIn('layout_scope',llm.call_args_list[2].kwargs['messages'][0]['content'])
+
+    async def test_layout_scope_exhaustion_cannot_fall_back_to_full_rewrite(self):
+        from src.engine.pipeline_errors import PipelineExecutionError
+        bad = json.dumps({'patches':[{'search':'id="count"','replace':''}]})
+        runtime = {'ran':True,'passed':False,'issues':['layout overflow'],'layoutIssues':['layout overflow']}
+        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
+            new=AsyncMock(side_effect=[GOOD,bad,bad])) as llm, patch(
+            'src.engine.interactive_creation.validate_interactive_html', new=AsyncMock(return_value=runtime)) as qa:
+            with self.assertRaises(PipelineExecutionError) as caught:
+                await run_interactive(normalize_interactive_request(self.request()))
+        self.assertEqual(caught.exception.failure_family,'repair_protocol')
+        self.assertEqual(llm.await_count,3)
+        self.assertEqual(qa.await_count,1)
+        self.assertEqual(next(a['payload'] for a in caught.exception.artifacts
+            if a['artifact_type']=='failed_interactive_candidate'),GOOD)
+
     async def test_runtime_regression_retains_last_valid_candidate(self):
         from src.engine.pipeline_errors import PipelineExecutionError
         review = json.loads(await fake_llm(step_key='code_review'))
@@ -129,6 +160,7 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         html = GOOD.replace('body{margin:24px;', 'body{margin:0;').replace('<h1>', '<div style="height:33rem"></div><h1 style="margin:0;font-size:1rem">')
         report = await validate_interactive_html(html)
         self.assertTrue(any('字号容差' in issue for issue in report['issues']))
+        self.assertTrue(any('字号容差' in issue for issue in report['layoutIssues']))
 
     def request(self):
         return RunPipelineV2Request(game_id='game',user_id='user',timeout_s=1800,
