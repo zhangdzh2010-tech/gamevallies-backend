@@ -2132,7 +2132,7 @@ def test_run_create_impl_grants_one_final_retry_when_last_attempt_hits_preflight
         retries=0,
         needs_regeneration=True,
         issue_list=None,
-        last_errors=[SimpleNamespace(message="Missing deterministic merge cleanup helper")],
+        last_errors=[QACheckError(type="contract_gameplay", message="Missing deterministic merge cleanup helper", severity="error")],
     )
     qa_success = SimpleNamespace(
         success=True,

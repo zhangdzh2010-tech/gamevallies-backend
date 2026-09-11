@@ -544,6 +544,19 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                         stage="contract_qa",
                         retry_count=qa_result.retries,
                         failure_family="contract_qa",
+                        artifacts=[
+                            self._build_text_artifact(
+                                artifact_type="failed_contract_candidate", payload=qa_result.code,
+                                metadata={"stage": "contract_qa", "attempt": quality_attempt},
+                            ),
+                            self._build_json_artifact(
+                                artifact_type="contract_qa_report",
+                                payload={"passed": False, "attempt": quality_attempt,
+                                         "retryCount": qa_result.retries,
+                                         "errors": self._serialize_errors(qa_result.last_errors)},
+                                metadata={"stage": "contract_qa"},
+                            ),
+                        ],
                     )
                     next_provider_exclusions = self._advance_generation_provider_exclusions(
                         last_route_snapshot,
