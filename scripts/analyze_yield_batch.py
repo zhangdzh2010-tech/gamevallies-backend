@@ -77,15 +77,49 @@ def analyze(summary_path: Path) -> dict:
         )
 
     completed = len(terminal)
+
+    def _seed_worthy(row: dict) -> bool | None:
+        if "seedWorthy" in row:
+            return bool(row.get("seedWorthy"))
+        breakdown = row.get("qualityBreakdown") or {}
+        if not isinstance(breakdown, dict):
+            breakdown = {}
+        if "seed_worthy" in breakdown:
+            return bool(breakdown.get("seed_worthy"))
+        diagnostics = row.get("diagnostics") or {}
+        nested = diagnostics.get("qualityBreakdown") or {}
+        if isinstance(nested, dict) and "seed_worthy" in nested:
+            return bool(nested.get("seed_worthy"))
+        return None
+
+    labeled = [row for row in terminal if _seed_worthy(row) is not None]
+    seed_worthy = sum(1 for row in labeled if _seed_worthy(row))
+    seed_rate_n = len(labeled)
+    seed_bound = round(lower_bound(seed_worthy, seed_rate_n), 4) if seed_rate_n else None
     return {
         "source": str(summary_path),
         "completed": completed,
         "targetCount": summary.get("targetCount"),
         "succeeded": succeeded,
         "failed": completed - succeeded,
+        "observedPipelineSuccessRate": round(succeeded / completed, 4) if completed else None,
         "observedSuccessRate": round(succeeded / completed, 4) if completed else None,
         "oneSided95LowerBound": round(lower_bound(succeeded, completed), 4) if completed else None,
-        "target99Supported": completed >= 50 and lower_bound(succeeded, completed) >= 0.99,
+        "seedWorthyLabeled": seed_rate_n,
+        "seedWorthy": seed_worthy,
+        "observedSeedWorthyRate": round(seed_worthy / seed_rate_n, 4) if seed_rate_n else None,
+        "oneSided95LowerBoundSeedWorthy": seed_bound,
+        "target99UsesSeedWorthyBar": True,
+        "target99Supported": (
+            seed_rate_n >= 50 and seed_bound is not None and seed_bound >= 0.99
+            if seed_rate_n
+            else False
+        ),
+        "note": (
+            "99% target is seed_worthy (structured review + quality/creativity + "
+            "contract/runtime), not pipeline_success or HTTP 200. Degraded review "
+            "completions may count as pipeline_success but are not catalog seeds."
+        ),
         "statusBreakdown": dict(Counter(str(r.get("finalStatus") or "unknown") for r in terminal)),
         "failureFamilyBreakdown": dict(families),
         "failedStageBreakdown": dict(stages),

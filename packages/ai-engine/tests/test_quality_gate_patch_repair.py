@@ -337,7 +337,7 @@ def test_verified_pause_defect_enters_patch_branch_without_full_regeneration():
     assert 'layered backgrounds/foregrounds' not in prompt
 
 
-@pytest.mark.parametrize('family', ['review_evidence', 'review_actionability', 'review_infrastructure'])
+@pytest.mark.parametrize('family', ['review_evidence', 'review_actionability'])
 def test_invalid_assessment_does_not_trigger_full_regeneration(family):
     from src.engine.pipeline_errors import PipelineExecutionError
     generated = []
@@ -351,6 +351,35 @@ def test_invalid_assessment_does_not_trigger_full_regeneration(family):
             review_side_effect=[failure], compute_side_effect=[])
     assert caught.value is failure
     assert len(generated) == 1
+
+
+def test_review_infrastructure_degrades_for_standard_tier_without_regeneration():
+    from src.engine.pipeline_errors import PipelineExecutionError
+    generated = []
+    def generate(*args, **kwargs):
+        generated.append(True)
+        return _generated(BASE_CODE, 'provider-a'), []
+    failure = PipelineExecutionError(
+        'review evidence unavailable',
+        stage='code_review',
+        failure_family='review_infrastructure',
+    )
+    response, mocks = _run_create_with_mocks(
+        generate_side_effect=generate,
+        flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])],
+        review_side_effect=[failure],
+        compute_side_effect=[_quality(7.1)],
+    )
+    assert mocks.generate.await_count == 1
+    assert mocks.patch_text.await_count == 0
+    assert len(generated) == 1
+    assert response.qa_passed
+    assert response.quality_score == 7.1
+    assert any(warning.get('type') == 'review_infrastructure_degraded' for warning in response.qa_warnings)
+    assert response.quality_breakdown["pipeline_success"] is True
+    assert response.quality_breakdown["seed_worthy"] is False
+    assert response.quality_breakdown["seed_worthy_reason"] == "review_infrastructure_degraded"
+    assert response.quality_breakdown["reviewRan"] is False
 
 
 def test_quality_patch_allowed_sections_maps_failing_dimensions():
@@ -394,6 +423,9 @@ def test_near_miss_uses_patch_repair_and_skips_full_regeneration():
     assert _spec().source_description in prompt
     assert "PATCHED_QUALITY_FIX" in response.html_code
     assert response.quality_score == 7.1
+    assert response.quality_breakdown["pipeline_success"] is True
+    assert response.quality_breakdown["seed_worthy"] is True
+    assert response.quality_breakdown["reviewRan"] is True
 
 
 def test_patch_format_failure_gets_one_correction_then_full_regeneration():
@@ -731,4 +763,30 @@ def test_contract_regression_after_runtime_repair_cannot_pass():
     )
     assert mocks.runtime_loop.await_count == 1
     assert mocks.generate.await_count == 2
-    assert "keyboard handler removed" in mocks.generate.await_args.kwargs["generation_guidance"]
+    guidance = mocks.generate.await_args.kwargs["generation_guidance"]
+    assert "QUALITY AND PRESENTATION CORRECTIONS" in guidance
+    assert "keyboard handler removed" in guidance
+    assert "LOCAL REPAIR FAILED" in guidance
+    assert response.quality_score == 7.1
+
+
+def test_non_unique_patch_falls_back_to_full_regeneration():
+    non_unique = json.dumps({"patches": [{"section": "SCRIPT", "operation": "replace_exact",
+        "search": "ctx.fillRect", "content": "ctx.fillRect"}]})
+    events = []
+    response, mocks = _run_create_with_mocks(
+        generate_side_effect=[(_generated(BASE_CODE, "provider-a"), []), (_generated(BASE_CODE, "provider-b"), [])],
+        flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])] * 2,
+        review_side_effect=[_near_miss_review(), _passing_review()],
+        compute_side_effect=[_quality(5.9), _quality(7.1)],
+        patch_text_side_effect=[non_unique, non_unique],
+        progress_cb=lambda *event: events.append(event),
+    )
+    assert mocks.generate.await_count == 2
+    assert mocks.patch_text.await_count == 2
+    assert response.quality_score == 7.1
+    rejection = next(event[3] for event in events if event[2] == "Targeted quality repair rejected")
+    assert "search_not_unique" in rejection["rejectionReason"]
+    guidance = mocks.generate.await_args.kwargs["generation_guidance"]
+    assert "QUALITY AND PRESENTATION CORRECTIONS" in guidance
+    assert "search_not_unique" in guidance

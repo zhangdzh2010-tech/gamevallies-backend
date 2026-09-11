@@ -443,10 +443,18 @@ class QAPipeline:
         script_lines = (script or "").splitlines()
         if not script_lines:
             return 1, 1, script or ""
+        last_line = len(script_lines)
         if not line_numbers:
-            return 1, len(script_lines), script or ""
-        start_line = max(1, min(line_numbers) - context_lines)
-        end_line = min(len(script_lines), max(line_numbers) + context_lines)
+            return 1, last_line, script or ""
+        # Reviewers and parsers often report HTML-document line numbers.
+        # Clamp to the actual script so a stale Line 82 on a 3-line script
+        # still repairs the real source instead of splicing an empty window.
+        raw_start = min(max(1, min(line_numbers)), last_line)
+        raw_end = min(max(1, max(line_numbers)), last_line)
+        start_line = max(1, raw_start - context_lines)
+        end_line = min(last_line, raw_end + context_lines)
+        if start_line > end_line:
+            start_line, end_line = 1, last_line
         snippet = "\n".join(script_lines[start_line - 1:end_line])
         return start_line, end_line, snippet
 
@@ -460,7 +468,10 @@ class QAPipeline:
     ) -> str:
         original_lines = (script or "").splitlines()
         replacement_lines = (replacement or "").splitlines()
-        merged = original_lines[: max(0, start_line - 1)] + replacement_lines + original_lines[end_line:]
+        last_line = len(original_lines)
+        start = min(max(1, start_line), last_line or 1)
+        end = min(max(start, end_line), last_line or 1)
+        merged = original_lines[: start - 1] + replacement_lines + original_lines[end:]
         return "\n".join(merged)
 
     @staticmethod
@@ -1581,7 +1592,7 @@ class QAPipeline:
             response_size_hint="medium",
             context_scope="request",
             compression_policy="qa_fix",
-            truncation_retry_attempts=1,
+            truncation_retry_attempts=2,
             truncation_retry_increment=1024,
             truncation_retry_max_tokens=retry_ceiling,
             truncation_retry_min_tokens=max_tokens,
@@ -1792,8 +1803,11 @@ class QAPipeline:
                             logger.warning(
                                 "Windowed script syntax repair returned invalid JavaScript; falling back to whole-script repair"
                             )
-                    except LLMResponseTruncatedError:
-                        raise
+                    except LLMResponseTruncatedError as trunc_exc:
+                        logger.warning(
+                            "Windowed script syntax repair truncated; falling back to whole-script repair: %s",
+                            trunc_exc,
+                        )
                     except Exception as window_exc:
                         logger.warning(
                             "Windowed script syntax repair failed, falling back to whole-script repair: %s",
