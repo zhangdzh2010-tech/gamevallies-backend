@@ -361,6 +361,25 @@ class PipelineV2QualityPolicyMixin:
         return "\n".join(lines)
 
 
+    @staticmethod
+    def _append_repair_fallback_guidance(base_guidance: str, exc: PipelineExecutionError) -> str:
+        """Keep quality/presentation guidance and retain the repair/contract signal.
+
+        Targeted repair can fail after a local patch regresses a contract (for
+        example a removed keyboard handler). Full regeneration must still see
+        that concrete failure instead of only the earlier quality-gate miss.
+        """
+        message = str(exc or "").strip()
+        if not message:
+            return str(base_guidance or "").strip()
+        family = str(getattr(exc, "failure_family", "") or "repair_failure").strip()
+        extra = [
+            "LOCAL REPAIR FAILED; FULL REGENERATION MUST PRESERVE THESE CONTRACT SIGNALS:",
+            f"- Targeted repair ended with {family}: {message}",
+        ]
+        return "\n".join(part for part in (str(base_guidance or "").rstrip(), *extra) if part)
+
+
     @classmethod
     def _quality_patch_character_threshold(cls, spec: GameSpec) -> float:
         thresholds = cls._quality_gate_thresholds(spec)

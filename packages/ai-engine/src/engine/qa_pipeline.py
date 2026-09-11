@@ -1581,7 +1581,7 @@ class QAPipeline:
             response_size_hint="medium",
             context_scope="request",
             compression_policy="qa_fix",
-            truncation_retry_attempts=1,
+            truncation_retry_attempts=2,
             truncation_retry_increment=1024,
             truncation_retry_max_tokens=retry_ceiling,
             truncation_retry_min_tokens=max_tokens,
@@ -1792,8 +1792,11 @@ class QAPipeline:
                             logger.warning(
                                 "Windowed script syntax repair returned invalid JavaScript; falling back to whole-script repair"
                             )
-                    except LLMResponseTruncatedError:
-                        raise
+                    except LLMResponseTruncatedError as trunc_exc:
+                        logger.warning(
+                            "Windowed script syntax repair truncated; falling back to whole-script repair: %s",
+                            trunc_exc,
+                        )
                     except Exception as window_exc:
                         logger.warning(
                             "Windowed script syntax repair failed, falling back to whole-script repair: %s",

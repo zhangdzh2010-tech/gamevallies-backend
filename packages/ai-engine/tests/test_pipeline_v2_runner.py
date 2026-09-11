@@ -2680,6 +2680,37 @@ def test_quality_gate_allows_standard_tier_when_structured_review_is_missing():
     assert errors == []
 
 
+def test_repair_fallback_guidance_keeps_quality_and_contract_signals():
+    from src.engine.pipeline_errors import PipelineExecutionError
+
+    base = V2PipelineRunner._build_review_quality_guidance(
+        GameSpec(game_type="casual", generation_tier="standard", source_description="neon dodge"),
+        LLMReviewResult(
+            ran=True,
+            is_complete_game=True,
+            has_real_gameplay=True,
+            fun_score=6.0,
+            visual_polish_score=5.8,
+            character_quality_score=5.5,
+            issues=["Visual feedback feels flat"],
+        ),
+        SimpleNamespace(final_score=5.9),
+        ["Raise gameplay excitement and payoff: fun_score 6.0 is below the required 6.8."],
+    )
+    guidance = V2PipelineRunner._append_repair_fallback_guidance(
+        base,
+        PipelineExecutionError(
+            "Quality repair failed during contract_qa: patch_static_qa_failed:keyboard handler removed",
+            stage="code_review",
+            failure_family="repair_contract",
+        ),
+    )
+
+    assert "QUALITY AND PRESENTATION CORRECTIONS" in guidance
+    assert "keyboard handler removed" in guidance
+    assert "LOCAL REPAIR FAILED" in guidance
+
+
 @pytest.mark.asyncio
 async def test_resolve_create_review_degrades_infrastructure_failure_for_standard_tier():
     runner = V2PipelineRunner()

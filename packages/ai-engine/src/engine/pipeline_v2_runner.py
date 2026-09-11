@@ -714,6 +714,12 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                         quality,
                         quality_gate_errors,
                     )
+                    repair_family = getattr(last_quality_exc, "failure_family", None)
+                    if repair_family in {"repair_protocol", "repair_contract"}:
+                        generation_guidance = self._append_repair_fallback_guidance(
+                            generation_guidance,
+                            last_quality_exc,
+                        )
                     self._notify(
                         progress_cb,
                         "logic_generate",
@@ -727,12 +733,13 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                             "maxAttempts": len(attempt_plan),
                             "failedStage": "code_review",
                             "failedProviderId": (last_route_snapshot or {}).get("provider_id"),
-                            "failureFamily": "quality_gate",
+                            "failureFamily": repair_family or "quality_gate",
                             "qualityGateErrors": quality_gate_errors,
                             "reviewIssues": list(review.issues or [])[:10],
                             "reviewRan": review.ran,
                             "isCompleteGame": review.is_complete_game,
                             "hasRealGameplay": review.has_real_gameplay,
+                            "repairFallbackReason": str(last_quality_exc)[:500] if repair_family in {"repair_protocol", "repair_contract"} else None,
                             "scores": {"fun": review.fun_score, "visual": review.visual_polish_score,
                                 "character": review.character_quality_score, "final": quality.final_score},
                         },

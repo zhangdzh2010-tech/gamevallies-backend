@@ -1123,3 +1123,106 @@ def test_run_with_retries_signals_regeneration_when_repair_returns_unchanged_cod
     assert result.success is False
     assert result.needs_regeneration is True
     assert result.retries == 1
+
+
+def test_run_with_retries_signals_regeneration_when_syntax_repair_truncates():
+    from types import SimpleNamespace
+
+    pipeline = QAPipeline()
+    broken = """<!DOCTYPE html><html><head><meta charset='UTF-8'></head><body>
+<script>const broken = ;</script></body></html>"""
+    syntax_errors = [
+        QACheckError(
+            type="L1_syntax",
+            message="JavaScript syntax error in <script>: Line 2: Unexpected token ;",
+            severity="error",
+        )
+    ]
+    failed_check = SimpleNamespace(passed=False, errors=syntax_errors, issue_list=[])
+
+    with patch.object(pipeline, "check", return_value=failed_check), patch.object(
+        pipeline,
+        "_syntax_repair_errors",
+        return_value=syntax_errors,
+    ), patch.object(
+        pipeline,
+        "_should_attempt_syntax_only_repair",
+        return_value=True,
+    ), patch.object(
+        pipeline,
+        "repair_code",
+        new=AsyncMock(side_effect=LLMResponseTruncatedError("truncated during qa_fix.syntax_structural")),
+    ), patch.object(
+        pipeline._client,
+        "is_enabled",
+        return_value=True,
+    ):
+        result = asyncio.run(
+            pipeline.run_with_auto_fix(
+                broken,
+                GameSpec(game_type="casual"),
+                max_retries=2,
+            )
+        )
+
+    assert result.success is False
+    assert result.needs_regeneration is True
+
+
+def test_windowed_syntax_truncation_falls_back_to_whole_script_repair():
+    pipeline = QAPipeline()
+    errors = [
+        QACheckError(
+            type="L1_syntax",
+            message="JavaScript syntax error in <script>: Line 2: Unexpected token ;",
+            severity="error",
+        ),
+    ]
+    code = (
+        "<!DOCTYPE html><html><body><script>"
+        "const score = 0;\n"
+        "const value = ;\n"
+        "console.log(score + value);"
+        "</script></body></html>"
+    )
+
+    class _FakeEsprima:
+        @staticmethod
+        def parseScript(script_content, tolerant=False):
+            assert tolerant is False
+            if "const value = ;" in script_content:
+                raise Exception("Unexpected token ;")
+
+    with patch(
+        "src.engine.qa_pipeline.require_prompt",
+        return_value="FULL::{code}",
+    ), patch(
+        "src.engine.qa_pipeline.esprima",
+        _FakeEsprima(),
+    ), patch.object(
+        pipeline,
+        "_complete_script_repair_prompt_with_retry",
+        new=AsyncMock(side_effect=[
+            LLMResponseTruncatedError("window truncated"),
+            "const score = 0;\nconst value = 1;\nconsole.log(score + value);",
+        ]),
+    ) as mock_script_repair, patch.object(
+        pipeline,
+        "_complete_repair_prompt_with_retry",
+        new=AsyncMock(return_value="<html>should not run</html>"),
+    ) as mock_full_repair:
+        repaired = asyncio.run(
+            pipeline._fix_with_llm(
+                code,
+                errors,
+                GameSpec(game_type="casual"),
+                runtime_contract=None,
+                max_tokens=4096,
+            )
+        )
+
+    assert "const value = 1;" in repaired
+    assert mock_script_repair.await_count == 2
+    assert "SCRIPT WINDOW SYNTAX REPAIR" in mock_script_repair.await_args_list[0].kwargs["prompt"]
+    assert "SCRIPT SYNTAX REPAIR (RETURN JAVASCRIPT ONLY)" in mock_script_repair.await_args_list[1].kwargs["prompt"]
+    assert mock_full_repair.await_count == 0

@@ -62,7 +62,13 @@ python3 scripts/analyze_yield_batch.py tmp/yield-batch-20260911/summary.json \
 2. **修复预算是整页重生成**：大量失败本可通过局部 patch / qa_fix 解决，却消耗 full regeneration attempt，放大上游不稳定的影响。
 3. **观测与归因分散**：game-service 任务态、ai-engine 阶段、LLM 调用日志、Playwright 报告分处多表/产物，批量测试需统一 ledger 才能做版本间对照。
 
-## 本轮代码优化（已提交，待 CI 部署）
+## 本轮代码优化（CI 修复后待部署）
+
+`1006933` 的 yield fallback 未过 CI。本轮补齐测试与合同信号，使该架构可部署：
+
+- 非 showcase `review_infrastructure` 继续降级到静态/runtime QA，create 集成测试与该行为对齐。
+- `repair_contract` / `repair_protocol` 回退整页重生成时，`generation_guidance` 同时保留质量门槛与合同失败信号（如 `keyboard handler removed`、`search_not_unique`）。
+- 窗口化 `qa_fix.syntax_structural` 截断后先回退整段 script 修复，再升整页重生成。
 
 ### 1. qa_fix 截断 / 无效修复 → 整页重生成
 
