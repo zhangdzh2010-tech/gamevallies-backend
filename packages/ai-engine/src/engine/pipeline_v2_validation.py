@@ -9,6 +9,7 @@ from .mobile_layout import has_short_edge_scaling
 from .qa_pipeline import QAPipeline, SYNTAX_REPAIR_FAMILY
 from .restart_entry import has_restart_entry
 from .terminal_state import has_required_state_presence
+from .storage_api_detection import contains_storage_api_usage
 from .pipeline_v2_support import ProgressCallback, INPUT_EVENT_PATTERNS, FORBIDDEN_API_PATTERNS
 
 logger = logging.getLogger(__name__)
@@ -194,6 +195,9 @@ class PipelineV2ValidationMixin:
         normalized = (api_name or "").strip()
         if not normalized:
             return False
+
+        if normalized in {"localStorage", "sessionStorage"}:
+            return contains_storage_api_usage(code, normalized)
 
         pattern = FORBIDDEN_API_PATTERNS.get(normalized)
         if pattern:
