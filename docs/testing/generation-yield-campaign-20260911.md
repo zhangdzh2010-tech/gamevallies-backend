@@ -4,7 +4,8 @@
 
 - 批量测试 50–100 次真实生产生成，记录日志与失败分层
 - 从架构层分析根因并实施优化
-- 成功率目标：99%（需 95% 单侧二项下界 ≥ 0.99，至少 50 次独立样本）
+- 成功率目标：99% **seed_worthy**（结构化审核 + 质量/创意门槛 + contract/runtime QA 通过；需 95% 单侧二项下界 ≥ 0.99，至少 50 次独立样本）
+- `pipeline_success`（合同/runtime 通过，含审核基础设施降级）**不是** 99% 口径，也不能靠降低质量/创意门槛刷高
 
 ## 测试账号与入口
 
@@ -37,7 +38,7 @@ python3 scripts/analyze_yield_batch.py tmp/yield-batch-20260911/summary.json \
 
 - `ledger.jsonl`：逐条验收账本
 - `summary.json`：滚动汇总与诊断
-- `analysis.json`：失败分层 + 架构建议
+- `analysis.json`：失败分层 + 架构建议；同时报告 `observedPipelineSuccessRate` 与 `observedSeedWorthyRate`
 
 ## 生产基线（专项启动前）
 

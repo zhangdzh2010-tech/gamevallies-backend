@@ -2680,6 +2680,47 @@ def test_quality_gate_allows_standard_tier_when_structured_review_is_missing():
     assert errors == []
 
 
+def test_create_outcome_labels_distinguish_pipeline_success_from_seed_worthy():
+    passing_review = LLMReviewResult(
+        ran=True,
+        is_complete_game=True,
+        has_real_gameplay=True,
+        fun_score=7.4,
+        visual_polish_score=7.2,
+        character_quality_score=6.6,
+    )
+    qa_ok = SimpleNamespace(success=True)
+    labels = V2PipelineRunner._create_outcome_labels(
+        review=passing_review,
+        qa_result=qa_ok,
+        qa_warnings=[],
+        quality_gate_errors=[],
+    )
+    assert labels["pipeline_success"] is True
+    assert labels["seed_worthy"] is True
+    assert labels["seed_worthy_reason"] == "structured_review_passed"
+
+    degraded = V2PipelineRunner._create_outcome_labels(
+        review=LLMReviewResult(ran=False),
+        qa_result=qa_ok,
+        qa_warnings=[{"type": "review_infrastructure_degraded"}],
+        quality_gate_errors=[],
+    )
+    assert degraded["pipeline_success"] is True
+    assert degraded["seed_worthy"] is False
+    assert degraded["seed_worthy_reason"] == "review_infrastructure_degraded"
+
+    missing_review = V2PipelineRunner._create_outcome_labels(
+        review=LLMReviewResult(ran=False),
+        qa_result=qa_ok,
+        qa_warnings=[],
+        quality_gate_errors=[],
+    )
+    assert missing_review["pipeline_success"] is True
+    assert missing_review["seed_worthy"] is False
+    assert missing_review["seed_worthy_reason"] == "structured_review_missing"
+
+
 def test_repair_fallback_guidance_keeps_quality_and_contract_signals():
     from src.engine.pipeline_errors import PipelineExecutionError
 

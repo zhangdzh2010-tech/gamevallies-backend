@@ -275,6 +275,51 @@ class PipelineV2QualityPolicyMixin:
         return errors
 
 
+    @staticmethod
+    def _create_outcome_labels(
+        *,
+        review: LLMReviewResult,
+        qa_result: Any,
+        qa_warnings: list[dict[str, Any]],
+        quality_gate_errors: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        """Separate pipeline completion from catalog seed-worthiness.
+
+        pipeline_success means contract + runtime QA produced publishable HTML.
+        seed_worthy additionally requires a real structured review that cleared
+        the existing quality/creativity gate. Review-infra degradation may still
+        complete the pipeline; those outputs are not catalog seeds.
+        """
+        pipeline_success = bool(getattr(qa_result, "success", False))
+        warning_types = {str(warning.get("type") or "") for warning in qa_warnings or []}
+        degraded_review = "review_infrastructure_degraded" in warning_types
+        near_miss = "quality_gate_near_miss" in warning_types
+        review_ran = bool(getattr(review, "ran", False))
+        remaining_errors = [str(error) for error in (quality_gate_errors or []) if str(error or "").strip()]
+        seed_worthy = (
+            pipeline_success
+            and review_ran
+            and not degraded_review
+            and (not remaining_errors or near_miss)
+        )
+        if seed_worthy:
+            reason = "structured_review_passed"
+        elif not pipeline_success:
+            reason = "contract_or_runtime_failed"
+        elif degraded_review:
+            reason = "review_infrastructure_degraded"
+        elif not review_ran:
+            reason = "structured_review_missing"
+        else:
+            reason = "quality_gate_unresolved"
+        return {
+            "pipeline_success": pipeline_success,
+            "seed_worthy": seed_worthy,
+            "seed_worthy_reason": reason,
+            "review_ran": review_ran,
+        }
+
+
     @classmethod
     def _can_accept_showcase_near_miss(
         cls,

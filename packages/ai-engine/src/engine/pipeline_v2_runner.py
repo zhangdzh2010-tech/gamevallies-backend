@@ -852,11 +852,38 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                 qa_result.code,
             )
 
+        remaining_gate_errors = self._quality_gate_errors(
+            spec,
+            review,
+            quality,
+            review_required=self._is_structured_review_required(spec),
+        )
+        outcome_labels = self._create_outcome_labels(
+            review=review,
+            qa_result=qa_result,
+            qa_warnings=qa_warnings,
+            quality_gate_errors=remaining_gate_errors,
+        )
+        try:
+            _p2_emit(
+                "create_outcome_labeled",
+                tier=getattr(getattr(spec, "generation_tier", None), "value", None),
+                game_type=getattr(spec, "game_type", None),
+                pipeline_success=outcome_labels["pipeline_success"],
+                seed_worthy=outcome_labels["seed_worthy"],
+                seed_worthy_reason=outcome_labels["seed_worthy_reason"],
+            )
+        except Exception:  # noqa: BLE001 - telemetry must never crash runner
+            pass
+
         stage_context["stage"] = "completed"
         self._notify(progress_cb, "completed", 100, "V2 pipeline completed", {
             "gameId": request.game_id,
             "userId": request.user_id,
             "runtimeProfile": runtime_profile,
+            "pipelineSuccess": outcome_labels["pipeline_success"],
+            "seedWorthy": outcome_labels["seed_worthy"],
+            "seedWorthyReason": outcome_labels["seed_worthy_reason"],
         })
         return RunPipelineResponse(
             game_id=request.game_id,
@@ -882,6 +909,10 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                 "gameplay_depth_bonus": quality.gameplay_depth_bonus,
                 "runtime_profile": runtime_profile,
                 "contract_version": runtime_contract.version,
+                "reviewRan": outcome_labels["review_ran"],
+                "pipeline_success": outcome_labels["pipeline_success"],
+                "seed_worthy": outcome_labels["seed_worthy"],
+                "seed_worthy_reason": outcome_labels["seed_worthy_reason"],
             },
         )
 

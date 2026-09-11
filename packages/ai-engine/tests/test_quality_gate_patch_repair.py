@@ -376,6 +376,10 @@ def test_review_infrastructure_degrades_for_standard_tier_without_regeneration()
     assert response.qa_passed
     assert response.quality_score == 7.1
     assert any(warning.get('type') == 'review_infrastructure_degraded' for warning in response.qa_warnings)
+    assert response.quality_breakdown["pipeline_success"] is True
+    assert response.quality_breakdown["seed_worthy"] is False
+    assert response.quality_breakdown["seed_worthy_reason"] == "review_infrastructure_degraded"
+    assert response.quality_breakdown["reviewRan"] is False
 
 
 def test_quality_patch_allowed_sections_maps_failing_dimensions():
@@ -419,6 +423,9 @@ def test_near_miss_uses_patch_repair_and_skips_full_regeneration():
     assert _spec().source_description in prompt
     assert "PATCHED_QUALITY_FIX" in response.html_code
     assert response.quality_score == 7.1
+    assert response.quality_breakdown["pipeline_success"] is True
+    assert response.quality_breakdown["seed_worthy"] is True
+    assert response.quality_breakdown["reviewRan"] is True
 
 
 def test_patch_format_failure_gets_one_correction_then_full_regeneration():
