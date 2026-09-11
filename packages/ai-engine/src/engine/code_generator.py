@@ -417,7 +417,7 @@ class CodeGenerator(CodeGenerationPromptsMixin):
         if _looks_like_complete_html_document(suffix):
             return suffix
         max_overlap = min(len(prefix), len(suffix), 400)
-        for overlap in range(max_overlap, 19, -1):
+        for overlap in range(max_overlap, 7, -1):
             if prefix.endswith(suffix[:overlap]):
                 return prefix + suffix[overlap:]
         return prefix + suffix

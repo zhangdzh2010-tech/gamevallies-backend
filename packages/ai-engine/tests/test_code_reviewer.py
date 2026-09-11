@@ -180,7 +180,7 @@ def test_invalid_evidence_is_bounded_and_preserves_candidate(update):
     source = SOURCE + '<!-- state -->'
     rejected = PASSING | dict(is_complete_game=False, issues=[FINDING['issue']], findings=[FINDING | update])
     with pytest.raises(PipelineExecutionError) as caught:
-        run_review_responses([json.dumps(rejected)] * 2, source)
+        run_review_responses([json.dumps(rejected)] * 3, source)
     assert caught.value.failure_family == 'review_evidence'
     assert caught.value.artifacts[0]['payload'] == source
 

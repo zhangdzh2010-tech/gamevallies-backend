@@ -183,6 +183,18 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(is_interactive_request(request))
         self.assertIs(normalize_interactive_request(request),request)
 
+    async def test_successful_science_result_persists_seed_worthy_labels(self):
+        request = normalize_interactive_request(self.request())
+        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
+            new=AsyncMock(side_effect=fake_llm)), patch(
+            'src.engine.interactive_creation.validate_interactive_html',
+            new=AsyncMock(return_value={'ran':True,'passed':True,'issues':[],'contentChanged':True})):
+            result = await run_interactive(request)
+        self.assertTrue(result.quality_breakdown['seed_worthy'])
+        self.assertEqual(result.quality_breakdown['seed_worthy_reason'], 'structured_review_passed')
+        self.assertTrue(result.quality_breakdown['pipeline_success'])
+        self.assertTrue(result.quality_breakdown['review_ran'])
+
     async def test_create_result_requires_real_browser_qa(self):
         request=normalize_interactive_request(self.request())
         with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',new=AsyncMock(side_effect=fake_llm)):
