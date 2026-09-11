@@ -613,3 +613,36 @@ class GroundedResetAcceptance(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(check['expected']),5)
         self.assertTrue(all(a['value']!=b['value'] for a,b in zip(check['input'],check['expected'])))
         self.assertEqual(check['expected'],check['observed'])
+
+class IsolatedMotionScenarios(unittest.IsolatedAsyncioTestCase):
+    HTML = '''<!DOCTYPE html><html><head><meta charset="utf-8"></head><body><h1>热平衡模型</h1>
+    <label>左温度<input id="left" type="range" min="0" max="1" step="0.1" value="0"></label>
+    <label>右温度<input id="right" type="range" min="0" max="1" step="0.1" value="1"></label>
+    <button id="start">开始</button><output id="temperature">0.500000</output><span id="notice"></span>
+    <script>let running=false,temperature=0.5;
+    const left=document.getElementById('left'),right=document.getElementById('right'),out=document.getElementById('temperature');
+    function frame(){if(!running)return;temperature+=( (Number(left.value)+Number(right.value))/2-temperature)*0.1;
+      out.textContent=temperature.toFixed(6);requestAnimationFrame(frame);}
+    function edit(){running=false;document.getElementById('notice').textContent='参数已调整';}
+    left.oninput=right.oninput=edit;
+    document.getElementById('start').onclick=()=>{running=!running;if(running)requestAnimationFrame(frame);};
+    </script></body></html>'''
+
+    async def test_equilibrium_is_perturbed_in_a_fresh_scenario_before_start(self):
+        report=await validate_interactive_html(self.HTML)
+        self.assertTrue(report['passed'],report['issues'])
+        motion=report['motionChecks'][0]
+        self.assertFalse(motion['scenarios'][0]['advances'])
+        self.assertTrue(motion['advances'])
+        self.assertEqual(motion['scenarios'][-1]['setup'],'single_parameter_edit')
+        self.assertEqual(motion['scenarios'][-1]['parameter'],'left')
+        self.assertEqual(motion['scenarios'][-1]['before'],'0')
+        self.assertEqual(motion['scenarios'][-1]['after'],'0.1')
+
+    async def test_boundary_stress_state_does_not_contaminate_initial_start(self):
+        html=self.HTML.replace('running=false,temperature=0.5','running=false,temperature=0').replace(
+            'function edit(){running=false;', 'function edit(){running=false;temperature=(Number(left.value)+Number(right.value))/2;')
+        report=await validate_interactive_html(html)
+        self.assertTrue(report['passed'],report['issues'])
+        self.assertEqual(len(report['motionChecks'][0]['scenarios']),1)
+        self.assertTrue(report['motionChecks'][0]['scenarios'][0]['advances'])
