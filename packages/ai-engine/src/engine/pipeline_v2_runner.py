@@ -28,7 +28,12 @@ from .code_generator import CodeGenerator
 from .code_reviewer import CodeReviewer
 from .dialogue_engine import DialogueEngine, _looks_like_educational_request
 from .game_designer import GameDesigner
-from .pipeline_errors import PipelineExecutionError, is_provider_transport_failure
+from .pipeline_errors import (
+    PipelineExecutionError,
+    is_provider_transport_failure,
+    is_retryable_provider_transport_failure,
+    is_truncation_failure,
+)
 from .pre_generation_validator import PreGenerationValidator
 from .prompt_store import require_prompt
 from .qa_pipeline import QAPipeline
@@ -434,6 +439,8 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
         last_quality_exc: Exception | None = None
         generation_guidance: Optional[str] = None
         extra_preflight_retry_granted = False
+        extra_truncation_retry_granted = False
+        extra_provider_transport_retry_granted = False
 
         quality_attempt = 0
         while quality_attempt < len(attempt_plan):
@@ -750,14 +757,70 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
             except PipelineExecutionError as exc:
                 last_quality_exc = exc
                 last_route_snapshot = getattr(exc, "route_snapshot", None) or last_route_snapshot
-                if (getattr(exc, "failure_family", None) in {"quality_repair_exhausted", "provider_transport", "route_configuration", "review_evidence", "review_actionability", "review_infrastructure"}
-                        or quality_attempt >= len(attempt_plan)
-                        or exc.stage not in {"logic_generate", "contract_qa", "runtime_simulation_qa", "code_review"}):
+                if (
+                    getattr(exc, "failure_family", None) == "provider_transport"
+                    and exc.stage == "logic_generate"
+                    and is_retryable_provider_transport_failure(exc)
+                    and not extra_provider_transport_retry_granted
+                ):
+                    extra_provider_transport_retry_granted = True
+                    next_provider_exclusions = self._advance_generation_provider_exclusions(
+                        last_route_snapshot,
+                        provider_exclusions,
+                    )
+                    if next_provider_exclusions is not None:
+                        provider_exclusions = next_provider_exclusions
+                    logger.warning(
+                        "Create generation for game %s hit provider transport on attempt %s; retrying once with backoff, same quality gates",
+                        request.game_id,
+                        quality_attempt,
+                    )
+                    self._notify(
+                        progress_cb,
+                        "logic_generate",
+                        64,
+                        "Retrying generation after provider timeout or gateway error",
+                        {
+                            "gameId": request.game_id,
+                            "userId": request.user_id,
+                            "runtimeProfile": runtime_profile,
+                            "attempt": quality_attempt,
+                            "maxAttempts": len(attempt_plan),
+                            "failedProviderId": (last_route_snapshot or {}).get("provider_id"),
+                            "failureFamily": "provider_transport",
+                            "reason": str(exc)[:2000],
+                            "infraRetry": True,
+                        },
+                    )
+                    await asyncio.sleep(self._provider_transport_retry_backoff_s(quality_attempt))
+                    continue
+                if getattr(exc, "failure_family", None) in {
+                    "quality_repair_exhausted",
+                    "provider_transport",
+                    "route_configuration",
+                    "review_evidence",
+                    "review_actionability",
+                    "review_infrastructure",
+                } or exc.stage not in {"logic_generate", "contract_qa", "runtime_simulation_qa", "code_review"}:
                     raise
-                generation_guidance = self._build_quality_regeneration_guidance(
-                    stage=exc.stage,
-                    message=str(exc),
-                )
+                if quality_attempt >= len(attempt_plan):
+                    if (
+                        exc.stage == "logic_generate"
+                        and is_truncation_failure(exc)
+                        and not extra_truncation_retry_granted
+                        and len(attempt_plan) < DEFAULT_STAGE_TOTAL_ATTEMPTS
+                    ):
+                        attempt_plan.append("safe")
+                        extra_truncation_retry_granted = True
+                    else:
+                        raise
+                if is_truncation_failure(exc) and exc.stage == "logic_generate":
+                    generation_guidance = self._build_truncation_compactness_guidance()
+                else:
+                    generation_guidance = self._build_quality_regeneration_guidance(
+                        stage=exc.stage,
+                        message=str(exc),
+                    )
                 if exc.stage == "logic_generate":
                     next_provider_exclusions = self._advance_generation_provider_exclusions(
                         last_route_snapshot,
@@ -1846,6 +1909,10 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
         )
 
     @staticmethod
+    def _provider_transport_retry_backoff_s(attempt: int) -> float:
+        return min(4.0, 2.0 * max(1, int(attempt)))
+
+    @staticmethod
     def _is_retryable_generation_error(exc: Exception) -> bool:
         message = str(exc).lower()
         retryable_markers = (
@@ -2002,20 +2069,32 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                 user_requirements=user_requirements,
             )
         except PipelineExecutionError as exc:
+            family = getattr(exc, "failure_family", None)
             if (
-                getattr(exc, "failure_family", None) != "review_infrastructure"
+                family not in {"review_infrastructure", "review_actionability"}
                 or self._is_structured_review_required(spec)
             ):
                 raise
+            degraded_type = (
+                "review_actionability_degraded"
+                if family == "review_actionability"
+                else "review_infrastructure_degraded"
+            )
             logger.warning(
-                "Structured review unavailable for non-showcase create; degrading to static/runtime QA only: %s",
+                "Structured review %s for non-showcase create; degrading to static/runtime QA only: %s",
+                "inconsistent" if family == "review_actionability" else "unavailable",
                 exc,
             )
             qa_warnings.append({
-                "type": "review_infrastructure_degraded",
-                "message": "Structured code review unavailable; proceeding with static and runtime QA only.",
+                "type": degraded_type,
+                "message": (
+                    "Structured review stayed inconsistent after bounded reassessments; "
+                    "proceeding with static and runtime QA only."
+                    if family == "review_actionability"
+                    else "Structured code review unavailable; proceeding with static and runtime QA only."
+                ),
                 "details": {
-                    "failureFamily": exc.failure_family,
+                    "failureFamily": family,
                     "stage": exc.stage,
                     "error": str(exc)[:500],
                 },
@@ -2028,7 +2107,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                 {
                     "gameId": game_id,
                     "userId": user_id,
-                    "failureFamily": exc.failure_family,
+                    "failureFamily": family,
                     "degraded": True,
                 },
             )

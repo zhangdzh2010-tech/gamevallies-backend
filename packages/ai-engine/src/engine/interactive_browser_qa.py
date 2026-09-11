@@ -55,6 +55,50 @@ Object.defineProperty(window,'__workAngleEvidence',{value:()=>{
 })();</script>"""
 
 CONTROLS = 'button,input[type=range],input[type=number],input[type=text],input:not([type]),textarea,select'
+_STOP_ACTION = re.compile(
+    r'^\W*(?:重置|暂停|停止|清空|取消|reset\b|pause\b|stop\b|clear\b|cancel\b)', re.I)
+_MOTION_ACTION = re.compile(
+    r'开始|启动|运行|播放|演示|继续|\b(?:start|play|run|resume)\b', re.I)
+_DISPLACEMENT_PARAMETER = re.compile(
+    r'角度|角位移|振幅|位移|初角|初相|偏角|amplitude|angle|theta|θ|displacement|offset', re.I)
+
+
+def classify_control_action(*, text: str = '', aria_label: str = '', control_id: str = '') -> str:
+    """Visible text first, then accessible name, then id. Unrecognized stays other."""
+    for candidate in (text, aria_label, control_id):
+        candidate = (candidate or '').strip()
+        if not candidate:
+            continue
+        if _STOP_ACTION.search(candidate):
+            return 'stop'
+        if _MOTION_ACTION.search(candidate):
+            return 'motion'
+    return 'other'
+
+
+def parameter_stimulus_priority(name: str) -> int:
+    """Prefer degrees of freedom that can leave an equilibrium (angle/amplitude)."""
+    return 0 if _DISPLACEMENT_PARAMETER.search(name or '') else 1
+
+
+def plan_motion_parameter_stimuli(parameters: list[dict], *, limit: int = 3) -> list[dict]:
+    """Order discovered range/number controls without inventing extra edits."""
+    ranked = []
+    for item in parameters:
+        if not item.get('enabled', True):
+            continue
+        ranked.append((
+            parameter_stimulus_priority(str(item.get('name') or '')),
+            str(item.get('kind') or ''),
+            int(item.get('index') or 0),
+            item,
+        ))
+    ranked.sort(key=lambda row: (row[0], row[1], row[2]))
+    return [item for _, _, _, item in ranked[:limit]]
+
+
+def motion_control_label(*, text: str = '', aria_label: str = '', control_id: str = '') -> str:
+    return ((aria_label or text or control_id) or '').strip() or (text or '').strip()
 DRAWING_PROBE = r"""<script>(function(){
 const reports=[],paths=new WeakMap(),moves=new WeakMap(),p=CanvasRenderingContext2D.prototype;
 Object.defineProperty(window,'__workDrawingIssues',{value:reports});
@@ -275,10 +319,16 @@ async def browser_report(code: str, *, brief: str = '') -> dict:
                     else:
                         clicked_button = True
                         text = (await control.inner_text()).strip()
+                        aria_label = (await control.get_attribute('aria-label') or '').strip()
+                        control_id = (await control.get_attribute('id') or '').strip()
                         navigation = await control.get_attribute('role') == 'tab'
-                        identity = await control.get_attribute('id') or text
-                        stops_or_resets = bool(re.search(r'^\W*(?:重置|暂停|停止|清空|取消|reset\b|pause\b|stop\b|clear\b|cancel\b)', text, re.I))
-                        motion = bool(not navigation and not stops_or_resets and re.search(r'开始|启动|运行|播放|演示|继续|\b(?:start|play|run|resume)\b', text, re.I)
+                        identity = control_id or text
+                        action = classify_control_action(
+                            text=text, aria_label=aria_label, control_id=control_id)
+                        motion_name = motion_control_label(
+                            text=text, aria_label=aria_label, control_id=control_id)
+                        motion = bool(
+                            not navigation and action == 'motion'
                             and re.search(r'\b(?:requestAnimationFrame|setInterval)\s*\(', code))
                         if motion:
                             # Boundary stress can produce a legitimate steady
@@ -292,7 +342,8 @@ async def browser_report(code: str, *, brief: str = '') -> dict:
                             navigation_path.append((index, identity))
                             if navigation_path not in navigation_states:
                                 navigation_states.append(list(navigation_path))
-                        if re.fullmatch(r'重置(?:初态)?|恢复初始|reset', text, re.I):
+                        reset_name = text or aria_label or control_id
+                        if re.fullmatch(r'重置(?:初态)?|恢复初始|reset', reset_name, re.I):
                             await host.wait_for_timeout(100)
                             reset_outputs = {x['key']:x['text'] for x in await frame.evaluate(OUTPUTS)}
                             # A nonempty initial numeric/result output must not
@@ -318,36 +369,71 @@ async def browser_report(code: str, *, brief: str = '') -> dict:
                                           'observedAfterMs':elapsed}]
                             # Initial conditions may also be at equilibrium.
                             # Probe at most three real, small parameter edits
-                            # across the entire report. Each starts afresh, then
-                            # clicks Start once: edits may pause a running model
-                            # and a second click may toggle an active model off.
-                            ranges_count = await frame.locator('input[type=range]').count()
-                            for range_index in range(min(ranges_count, 3)):
+                            # across the entire report. Prefer angle/amplitude
+                            # number or range controls; L/g-only edits that
+                            # leave a rest state still fail. Each starts
+                            # afresh, then clicks Start once.
+                            stimuli = []
+                            if not advances:
+                                discovered = []
+                                for kind, selector in (
+                                    ('range', 'input[type=range]'),
+                                    ('number', 'input[type=number]'),
+                                ):
+                                    locator = frame.locator(selector)
+                                    for parameter_index in range(min(await locator.count(), 6)):
+                                        parameter = locator.nth(parameter_index)
+                                        if not await parameter.is_visible() or not await parameter.is_enabled():
+                                            continue
+                                        parameter_name = (
+                                            await parameter.get_attribute('aria-label')
+                                            or await parameter.get_attribute('id')
+                                            or f'{kind}:{parameter_index}')
+                                        discovered.append({
+                                            'kind': kind, 'index': parameter_index, 'name': parameter_name})
+                                stimuli = plan_motion_parameter_stimuli(discovered, limit=3)
+                            for item in stimuli:
+                                kind, parameter_index, parameter_name = item['kind'], item['index'], item['name']
                                 if advances or motion_stimuli_remaining <= 0:
                                     break
                                 frame, controls = await restore_controls()
-                                parameter = frame.locator('input[type=range]').nth(range_index)
+                                parameter = frame.locator(
+                                    'input[type=range]' if kind == 'range' else 'input[type=number]'
+                                ).nth(parameter_index)
                                 if not await parameter.is_visible() or not await parameter.is_enabled():
                                     continue
-                                if not await parameter.evaluate('e=>Number(e.max||100)>Number(e.min||0)'):
+                                if kind == 'range' and not await parameter.evaluate(
+                                    'e=>Number(e.max||100)>Number(e.min||0)'
+                                ):
                                     continue
-                                motion_stimuli_remaining -= 1
-                                parameter_name = await parameter.get_attribute('aria-label') or await parameter.get_attribute('id') or str(range_index)
                                 old_value = await parameter.input_value()
-                                direction = await parameter.evaluate("e=>Number(e.value)<Number(e.max||100)?'ArrowRight':'ArrowLeft'")
-                                await parameter.press(direction, timeout=2000)
+                                if kind == 'range':
+                                    direction = await parameter.evaluate(
+                                        "e=>Number(e.value)<Number(e.max||100)?'ArrowRight':'ArrowLeft'")
+                                    await parameter.press(direction, timeout=2000)
+                                else:
+                                    stepped = await parameter.evaluate("""e=>{const v=Number(e.value||0),step=Number(e.step)||1;
+                                    const min=e.min===''?-1e6:Number(e.min),max=e.max===''?1e6:Number(e.max);
+                                    return String(Math.max(min,Math.min(max,v+step<=max?v+step:v-step)));}""")
+                                    if await parameter.get_attribute('readonly') is not None:
+                                        continue
+                                    await parameter.fill(stepped, timeout=2000)
+                                    await parameter.press('Tab', timeout=2000)
                                 new_value = await parameter.input_value()
                                 if old_value == new_value:
                                     continue
+                                motion_stimuli_remaining -= 1
                                 await controls.nth(index).click(timeout=2000)
                                 advances, elapsed = await observe_motion()
                                 scenarios.append({'setup':'single_parameter_edit', 'parameter':parameter_name,
                                                   'before':old_value, 'after':new_value,
                                                   'advances':advances, 'observedAfterMs':elapsed})
-                            motion_checks.append({'control':text,'advances':advances,'observedAfterMs':elapsed,
+                            motion_checks.append({'control':motion_name,'advances':advances,'observedAfterMs':elapsed,
                                                   'observationBudgetMs':2200,'scenarios':scenarios})
                             if not advances:
-                                issues.append(f'点击启动控件「{text}」后，动画/模拟时间/作品内容未持续变化。检查时间累加与真实经过时间。')
+                                issues.append(
+                                    f'点击启动控件「{motion_name}」后，动画/模拟时间/作品内容未持续变化。'
+                                    '检查时间累加与真实经过时间；动态模型须从可见非平衡初态启动，不要把拖拽当作唯一启动方式。')
                     exercised += 1
                     await host.wait_for_timeout(100)
                     angle_evidence.extend(await frame.evaluate('()=>window.__workAngleEvidence()'))

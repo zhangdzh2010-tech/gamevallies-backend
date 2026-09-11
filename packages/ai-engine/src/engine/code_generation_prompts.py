@@ -31,7 +31,8 @@ class CodeGenerationPromptsMixin:
             "- Declare every live helper, alias, and loop variable before use; never reference undeclared short aliases such as `line`, `cell`, `dot`, `nr`, `nc`, `viewWidth`, or `viewHeight`.",
             "- Set explicit non-zero `canvas.width` and `canvas.height` during init/resize before the first render.",
             "- Acquire `ctx = canvas.getContext('2d')` immediately after the canvas is created, and never call `ctx.setTransform(...)`, `ctx.clearRect(...)`, or similar APIs before that initialization succeeds.",
-            "- Do not initialize `ctx`, `player`, `touchState`, `dragState`, `dragStart`, or other live runtime objects to `null` if the main loop can run before they are assigned; prefer safe default objects or guard every property read until initialization completes.",
+            "- Do not leave `let ctx = null` while `requestAnimationFrame` can run. Create a safe default canvas context before the loop starts, for example `ctx = (canvas || document.querySelector('canvas')).getContext('2d'); if (!ctx) return;`.",
+            "- Do not initialize `player`, `touchState`, `dragState`, `dragStart`, or other live runtime objects to `null` if the main loop can run before they are assigned; prefer safe default objects or guard every property read until initialization completes.",
             "- Keep collection item aliases scoped to the loop or callback that declares them; if code reads `star.x`, `particle.alpha`, or similar live members, declare `const star = stars[i]` / `const particle = particles[i]` in the same block before use.",
             "- For decorative loops such as `dots`, `stars`, `particles`, or `lines`, use a concrete loop shape like `for (let i = 0; i < dots.length; i += 1) { const dot = dots[i]; if (!dot) continue; ... }` and never read `dot.*` outside that declaring block.",
             "- Declare `update()`, `render()`, and any loop helper before the first direct call or `requestAnimationFrame(loop)` callback that invokes them; never rely on undeclared function expressions being available earlier in the file.",
@@ -42,6 +43,7 @@ class CodeGenerationPromptsMixin:
             "- Keep a deep copy of the initial board for restart; restart must restore it, not run the random level generator again. For alternating local multiplayer, store the round's starting player separately from the current turn.",
             "- Losing window focus must preserve the board and score (pause if needed); never call restartGame() from a blur handler. Do not add an unrequested hint button; if requested, compute a valid hint rather than selecting the first empty cell.",
             "- Do not build translucent gradient or fill colors by concatenating alpha suffixes onto dynamic color strings such as `light.color + '80'`; use explicit `rgba(...)` / `hsla(...)` values or full `#RRGGBBAA` literals.",
+            "- Never emit forbidden browser APIs: eval, Function, import, require, fetch, XMLHttpRequest, WebSocket, localStorage, sessionStorage, or document.write. Keep all data, assets, and logic inline with in-memory variables.",
         ]
 
         profile = str(runtime_profile or "").strip().lower()

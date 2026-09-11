@@ -100,6 +100,122 @@ def pick_case(run_index: int) -> dict[str, str]:
     return ALL_CASES[(run_index - 1) % len(ALL_CASES)]
 
 
+INFRA_YIELD_FAMILIES = frozenset({"infra_maintenance", "provider_transport"})
+
+
+def is_generation_maintenance_error(exc: BaseException) -> bool:
+    message = str(exc or "")
+    if "GENERATION_MAINTENANCE" in message:
+        return True
+    return "HTTP 503" in message and "维护" in message
+
+
+def is_provider_gateway_timeout_error(exc: BaseException) -> bool:
+    message = str(exc or "")
+    return "504" in message and "Gateway Timeout" in message
+
+
+def is_infra_yield_row(row: dict[str, Any]) -> bool:
+    status = str(row.get("finalStatus") or "").lower()
+    family = str(row.get("failureFamily") or "").lower()
+    return status in INFRA_YIELD_FAMILIES or family in INFRA_YIELD_FAMILIES
+
+
+def _as_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list) and value and isinstance(value[0], dict):
+        return value[0]
+    return {}
+
+
+def _unwrap_data(payload: Any) -> dict[str, Any]:
+    mapping = _as_mapping(payload)
+    nested = mapping.get("data")
+    if isinstance(nested, dict):
+        return nested
+    return mapping
+
+
+def _first_present(mapping: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in mapping and mapping[key] is not None:
+            return mapping[key]
+    return None
+
+
+def extract_quality_outcome(*payloads: Any) -> dict[str, Any]:
+    """Pull seed-worthiness labels out of generation-status or admin diagnostics."""
+    quality_breakdown: dict[str, Any] | None = None
+    seed_worthy = None
+    seed_worthy_reason = None
+    pipeline_success = None
+    review_fun = None
+    review_visual = None
+    review_character = None
+    final_score = None
+
+    def _ingest(raw: Any) -> None:
+        nonlocal quality_breakdown, seed_worthy, seed_worthy_reason
+        nonlocal pipeline_success, review_fun, review_visual, review_character, final_score
+        mapping = _unwrap_data(raw)
+        if not mapping:
+            return
+        summary = mapping.get("resultSummary")
+        if isinstance(summary, dict):
+            _ingest(summary)
+        breakdown = mapping.get("qualityBreakdown") or mapping.get("quality_breakdown")
+        if isinstance(breakdown, dict):
+            quality_breakdown = breakdown
+            _ingest(breakdown)
+        if seed_worthy is None:
+            value = _first_present(mapping, "seedWorthy", "seed_worthy")
+            if value is not None:
+                seed_worthy = bool(value)
+        if not seed_worthy_reason:
+            value = _first_present(mapping, "seedWorthyReason", "seed_worthy_reason")
+            if value is not None:
+                seed_worthy_reason = str(value)
+        if pipeline_success is None:
+            value = _first_present(mapping, "pipelineSuccess", "pipeline_success")
+            if value is not None:
+                pipeline_success = bool(value)
+        if review_fun is None:
+            review_fun = _first_present(mapping, "review_fun_score", "fun_score")
+        if review_visual is None:
+            review_visual = _first_present(mapping, "review_visual_polish_score", "visual_polish_score")
+        if review_character is None:
+            review_character = _first_present(
+                mapping, "review_character_quality_score", "character_quality_score"
+            )
+        if final_score is None:
+            final_score = _first_present(mapping, "final_score", "qualityScore", "quality_score")
+
+    for payload in payloads:
+        if payload is None:
+            continue
+        if isinstance(payload, dict) and "diagnostics" in payload and len(payload) <= 8:
+            _ingest(payload)
+            _ingest(payload.get("diagnostics"))
+            diagnostics = _as_mapping(payload.get("diagnostics"))
+            _ingest(diagnostics.get("task"))
+            _ingest(diagnostics.get("gameStatus"))
+            _ingest(diagnostics.get("qualityBreakdown"))
+            continue
+        _ingest(payload)
+
+    return {
+        "seedWorthy": seed_worthy,
+        "seedWorthyReason": seed_worthy_reason,
+        "pipelineSuccess": pipeline_success,
+        "qualityBreakdown": quality_breakdown,
+        "reviewFunScore": review_fun,
+        "reviewVisualPolishScore": review_visual,
+        "reviewCharacterQualityScore": review_character,
+        "finalScore": final_score,
+    }
+
+
 def ledger_row(
     *,
     run_id: str,
@@ -110,6 +226,7 @@ def ledger_row(
 ) -> dict[str, Any]:
     final_status = str(result.get("finalStatus") or "unknown").lower()
     succeeded = final_status == "succeeded"
+    outcome = extract_quality_outcome(result, result.get("statusData"), result.get("diagnostics"))
     return {
         "run_id": run_id,
         "run_index": run_index,
@@ -131,6 +248,14 @@ def ledger_row(
         "author_play_ok": result.get("authorPlayOk"),
         "started_at": result.get("startedAt"),
         "completed_at": result.get("completedAt"),
+        "seedWorthy": result.get("seedWorthy") if result.get("seedWorthy") is not None else outcome["seedWorthy"],
+        "seedWorthyReason": result.get("seedWorthyReason") or outcome["seedWorthyReason"],
+        "pipelineSuccess": result.get("pipelineSuccess") if result.get("pipelineSuccess") is not None else outcome["pipelineSuccess"],
+        "qualityBreakdown": result.get("qualityBreakdown") or outcome["qualityBreakdown"],
+        "reviewFunScore": outcome["reviewFunScore"],
+        "reviewVisualPolishScore": outcome["reviewVisualPolishScore"],
+        "reviewCharacterQualityScore": outcome["reviewCharacterQualityScore"],
+        "finalScore": outcome["finalScore"],
     }
 
 
@@ -176,6 +301,7 @@ def run_single(
     final_status = str(status_data.get("status") or "").lower() or "unknown"
     task_id = status_data.get("taskId") or task_id
     elapsed_s = round(time.monotonic() - started_mono, 1)
+    quality_outcome = extract_quality_outcome(status_data)
 
     result: dict[str, Any] = {
         "runId": run_id,
@@ -189,10 +315,15 @@ def run_single(
         "failedStage": status_data.get("failedStage"),
         "failureFamily": status_data.get("failureFamily"),
         "errorMessage": status_data.get("errorMessage"),
+        "statusData": status_data,
         "pollHistory": terminal.get("history") or [],
         "timedOutLocally": bool(terminal.get("timeout")),
         "elapsedS": elapsed_s,
         "completedAt": now_iso(),
+        "seedWorthy": quality_outcome["seedWorthy"],
+        "seedWorthyReason": quality_outcome["seedWorthyReason"],
+        "pipelineSuccess": quality_outcome["pipelineSuccess"],
+        "qualityBreakdown": quality_outcome["qualityBreakdown"],
     }
 
     if final_status == "succeeded":
@@ -218,6 +349,15 @@ def run_single(
             admin_token,
             bearer_headers,
         )
+        diagnostic_outcome = extract_quality_outcome(result, result["diagnostics"])
+        if result.get("seedWorthy") is None:
+            result["seedWorthy"] = diagnostic_outcome["seedWorthy"]
+        if not result.get("seedWorthyReason"):
+            result["seedWorthyReason"] = diagnostic_outcome["seedWorthyReason"]
+        if result.get("pipelineSuccess") is None:
+            result["pipelineSuccess"] = diagnostic_outcome["pipelineSuccess"]
+        if not result.get("qualityBreakdown"):
+            result["qualityBreakdown"] = diagnostic_outcome["qualityBreakdown"]
 
     return result
 
@@ -248,6 +388,10 @@ def write_summary(
     )
     succeeded = statuses.get("succeeded", 0)
     completed = len(results)
+    product = [r for r in results if not is_infra_yield_row(r)]
+    product_succeeded = sum(1 for r in product if str(r.get("finalStatus") or "").lower() == "succeeded")
+    seed_labeled = [r for r in product if r.get("seedWorthy") is not None]
+    seed_worthy = sum(1 for r in seed_labeled if r.get("seedWorthy"))
     summary = {
         "generatedAt": now_iso(),
         "baseUrl": base_url,
@@ -256,6 +400,13 @@ def write_summary(
         "succeeded": succeeded,
         "failed": completed - succeeded,
         "successRate": round(succeeded / completed, 4) if completed else None,
+        "infraMaintenance": statuses.get("infra_maintenance", 0),
+        "productCompleted": len(product),
+        "productSucceeded": product_succeeded,
+        "productSuccessRate": round(product_succeeded / len(product), 4) if product else None,
+        "seedWorthyLabeled": len(seed_labeled),
+        "seedWorthy": seed_worthy,
+        "seedWorthyRate": round(seed_worthy / len(seed_labeled), 4) if seed_labeled else None,
         "statusBreakdown": dict(statuses),
         "failureFamilyBreakdown": dict(families),
         "failedStageBreakdown": dict(stages),
@@ -385,14 +536,24 @@ def main(argv: list[str]) -> int:
                 wait_s=args.wait_s,
             )
         except Exception as exc:
+            maintenance = is_generation_maintenance_error(exc)
+            transport = is_provider_gateway_timeout_error(exc)
+            family = (
+                "infra_maintenance" if maintenance
+                else "provider_transport" if transport
+                else "script_error"
+            )
             result = {
                 "runIndex": run_index,
                 "name": case["name"],
                 "title": case["title"],
                 "startedAt": now_iso(),
-                "finalStatus": "script_error",
+                "finalStatus": "infra_maintenance" if maintenance else "script_error",
+                "failureFamily": family,
                 "errorMessage": str(exc),
                 "completedAt": now_iso(),
+                "seedWorthy": False,
+                "seedWorthyReason": family,
             }
         row = ledger_row(
             run_id=result.get("runId") or str(uuid.uuid4()),

@@ -44,8 +44,25 @@ def analyze(summary_path: Path) -> dict:
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     results = summary.get("results") or []
     terminal = [r for r in results if str(r.get("finalStatus") or "").lower() != "unknown"]
-    succeeded = sum(1 for r in terminal if str(r.get("finalStatus")).lower() == "succeeded")
-    failed = [r for r in terminal if str(r.get("finalStatus")).lower() != "succeeded"]
+    INFRA_YIELD_FAMILIES = frozenset({"infra_maintenance", "provider_transport"})
+
+    def _is_infra(row: dict) -> bool:
+        status = str(row.get("finalStatus") or "").lower()
+        family = str(row.get("failureFamily") or "").lower()
+        return status in INFRA_YIELD_FAMILIES or family in INFRA_YIELD_FAMILIES
+
+    product = [r for r in terminal if not _is_infra(r)]
+    succeeded = sum(1 for r in product if str(r.get("finalStatus")).lower() == "succeeded")
+    failed = [r for r in product if str(r.get("finalStatus")).lower() != "succeeded"]
+    maintenance = [
+        r
+        for r in terminal
+        if str(r.get("finalStatus") or "").lower() == "infra_maintenance"
+        or str(r.get("failureFamily") or "").lower() == "infra_maintenance"
+    ]
+    provider_transport = [
+        r for r in terminal if str(r.get("failureFamily") or "").lower() == "provider_transport"
+    ]
 
     families = Counter(str(r.get("failureFamily") or "unknown") for r in failed)
     stages = Counter(str(r.get("failedStage") or "unknown") for r in failed)
@@ -79,7 +96,7 @@ def analyze(summary_path: Path) -> dict:
     completed = len(terminal)
 
     def _seed_worthy(row: dict) -> bool | None:
-        if "seedWorthy" in row:
+        if row.get("seedWorthy") is not None:
             return bool(row.get("seedWorthy"))
         breakdown = row.get("qualityBreakdown") or {}
         if not isinstance(breakdown, dict):
@@ -92,19 +109,22 @@ def analyze(summary_path: Path) -> dict:
             return bool(nested.get("seed_worthy"))
         return None
 
-    labeled = [row for row in terminal if _seed_worthy(row) is not None]
+    labeled = [row for row in product if _seed_worthy(row) is not None]
     seed_worthy = sum(1 for row in labeled if _seed_worthy(row))
     seed_rate_n = len(labeled)
     seed_bound = round(lower_bound(seed_worthy, seed_rate_n), 4) if seed_rate_n else None
     return {
         "source": str(summary_path),
         "completed": completed,
+        "infraMaintenance": len(maintenance),
+        "providerTransport": len(provider_transport),
+        "productCompleted": len(product),
         "targetCount": summary.get("targetCount"),
         "succeeded": succeeded,
-        "failed": completed - succeeded,
-        "observedPipelineSuccessRate": round(succeeded / completed, 4) if completed else None,
-        "observedSuccessRate": round(succeeded / completed, 4) if completed else None,
-        "oneSided95LowerBound": round(lower_bound(succeeded, completed), 4) if completed else None,
+        "failed": len(product) - succeeded,
+        "observedPipelineSuccessRate": round(succeeded / len(product), 4) if product else None,
+        "observedSuccessRate": round(succeeded / len(product), 4) if product else None,
+        "oneSided95LowerBound": round(lower_bound(succeeded, len(product)), 4) if product else None,
         "seedWorthyLabeled": seed_rate_n,
         "seedWorthy": seed_worthy,
         "observedSeedWorthyRate": round(seed_worthy / seed_rate_n, 4) if seed_rate_n else None,
@@ -121,6 +141,7 @@ def analyze(summary_path: Path) -> dict:
             "completions may count as pipeline_success but are not catalog seeds."
         ),
         "statusBreakdown": dict(Counter(str(r.get("finalStatus") or "unknown") for r in terminal)),
+        "infraMaintenanceCount": len(maintenance),
         "failureFamilyBreakdown": dict(families),
         "failedStageBreakdown": dict(stages),
         "failedCaseBreakdown": dict(cases),
@@ -131,11 +152,20 @@ def analyze(summary_path: Path) -> dict:
             "avg": round(sum(elapsed) / len(elapsed), 1) if elapsed else None,
         },
         "diagnosticsSamples": diagnostics_samples,
-        "architectureRecommendations": build_recommendations(families, stages),
+        "architectureRecommendations": build_recommendations(
+            families, stages,
+            infra_maintenance=len(maintenance),
+            provider_transport=len(provider_transport),
+        ),
     }
 
 
-def build_recommendations(families: Counter, stages: Counter) -> list[str]:
+def build_recommendations(
+    families: Counter,
+    stages: Counter,
+    infra_maintenance: int = 0,
+    provider_transport: int = 0,
+) -> list[str]:
     recs: list[str] = []
     if families.get("interactive_validation", 0) + families.get("artifact_quality", 0) > 0:
         recs.append(
@@ -148,10 +178,15 @@ def build_recommendations(families: Counter, stages: Counter) -> list[str]:
             "审核基础设施/证据校验失败：standard/safe 档在 review 不可用时降级为静态+运行 QA；"
             "showcase 保持 fail-closed；recover_review 已有一次纠错，可扩展 timeout_retry。"
         )
-    if families.get("provider_transport", 0) + families.get("pipeline", 0) + families.get("code_generation", 0) > 0:
+    if families.get("pipeline", 0) + families.get("code_generation", 0) > 0:
         recs.append(
-            "上游模型传输/代码生成失败：检查 provider 403/504 路由与备用线路；"
-            "transport 错误不得触发 quality 全量重生成；truncation retry cap 按 tier 对齐。"
+            "代码生成失败：检查 truncation 与 preflight 修复；"
+            "transport 错误不得当作创意/质量失败，也不得触发 quality 全量重生成。"
+        )
+    if provider_transport or families.get("provider_transport", 0) > 0:
+        recs.append(
+            "provider_transport（504/502/429 等网关超时）是基础设施，不是创意失败："
+            "应对同一质量门槛做有界退避重试并切换备用线路，排除在产品/seed 成功率之外。"
         )
     if families.get("quality_gate", 0) + families.get("quality_repair_exhausted", 0) > 0:
         recs.append(
@@ -161,6 +196,11 @@ def build_recommendations(families: Counter, stages: Counter) -> list[str]:
     if families.get("contract_qa", 0) > 0:
         recs.append(
             "contract_qa 失败：检查 runtime contract 与 touch/pointer 要求是否对桌面/工具类作品过严。"
+        )
+    if infra_maintenance or families.get("infra_maintenance", 0) > 0:
+        recs.append(
+            "infra_maintenance（HTTP 503 GENERATION_MAINTENANCE）应排除在产品成功率之外，"
+            "不计入 seed_worthy 或 pipeline_success 口径。"
         )
     if stages.get("runtime_simulation_qa", 0) >= stages.get("code_review", 0) and stages.get("runtime_simulation_qa", 0) > 0:
         recs.append(

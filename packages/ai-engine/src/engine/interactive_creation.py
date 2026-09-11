@@ -9,7 +9,11 @@ from ..api.models import GameRuntimeContract, GameSpec, RunPipelineResponse, Ite
 from ..services.llm_client import LLMClient
 from ..config.settings import settings
 from .code_generation_support import _extract_html
-from .pipeline_errors import PipelineExecutionError
+from .pipeline_errors import (
+    PipelineExecutionError,
+    is_provider_transport_failure,
+    is_retryable_provider_transport_failure,
+)
 from .artifact_quality import request_artifact_kind, review_prompt, assess_review, preservation_errors, preserve_cosmetic_scripts
 from .interactive_repair import apply_interactive_patch, repair_prompt
 from .review_recovery import recover_review, InvalidReviewEvidence
@@ -31,7 +35,7 @@ def normalize_interactive_request(request):
     request.prompt_bundle_snapshot = request.prompt_bundle_snapshot.model_copy(deep=True)
     request.prompt_bundle_snapshot.layers = {
         'creation_mode':'interactive_experience', 'source':'desktop-interactive-v1',
-        'system_prompt':SYSTEM_PROMPT, 'artifact_kind':kind,
+        'system_prompt':interactive_system_prompt(kind), 'artifact_kind':kind,
     }
     request.runtime_contract = GameRuntimeContract.model_validate({
         'version':'1.0', 'runtime_profile':'interactive_experience',
@@ -102,6 +106,66 @@ SYSTEM_PROMPT = '''你是桌面交互作品工程师。根据用户的原始创�
 为不同系统的字体度量留出布局余量，根字号增大12.5%时1000×600核心区域仍完整；优先缩小主图、压缩空白或响应式重排，不缩小字体或隐藏主操作。
 不要依赖宿主提供游戏 runtime、积分回调或 game_over 消息。遵从用户选择的方向和内容。'''
 
+SCIENCE_RUNTIME_GUIDANCE = '''
+科学演示运行契约（验收不会放宽）：
+动态模型（单摆、轨道、波动、种群、流动等）在点击开始/播放后必须从可见的非平衡初态持续推进。默认不要停在θ=0、零振幅或静止平衡；不要把拖拽释放当作唯一启动方式。
+开始、暂停、重置必须是可见且可区分的独立控件，名称写在按钮文本或aria-label中，不要只用图标。
+摆长、重力、振幅、初角等参数须为带标签的range或number，并立即更新公式读数（如T=2π√(L/g)）；参数必须进入运动方程，不能只改标签。
+连续动画用requestAnimationFrame或setInterval，按真实经过时间累积并重绘Canvas/SVG或更新可见状态，不能只改按钮文案或只靠CSS。
+首屏用紧凑结构：说明/公式放details或短行，画布 max-width:100% 且 max-height:min(38vh,240px)，开始/暂停/重置与参数用flex-wrap留在画布下方。body padding不超过8px。根字号增大12.5%后1000×600核心图形与控件仍须完整可见；只能缩小主图、压缩空白或响应式重排，禁止缩小字号或隐藏主操作。'''
+
+
+def interactive_system_prompt(kind: str) -> str:
+    return SYSTEM_PROMPT + (SCIENCE_RUNTIME_GUIDANCE if kind == 'science' else '')
+
+
+def science_runtime_repair_guidance(issues: list[str]) -> str:
+    text = '\n'.join(issues)
+    hints = []
+    if re.search(r'未持续变化|时间累加|非平衡', text):
+        hints.append(
+            '动态模型须从可见非平衡初态启动：给摆球/轨道/波源一个默认位移或初速度，'
+            '点击开始后用累积帧时间推进并重绘。不要依赖拖拽才开始，不要停在θ=0。'
+            '开始/暂停/重置分开标注（文本或aria-label）。L/g等参数必须进入方程并更新公式读数。')
+    if re.search(r'核心图形/控件不完整|字号容差|横向溢出', text):
+        hints.append(
+            '压缩说明与主图，开始/暂停/重置和参数控件留在1000×600首屏；次要公式假设可折叠。'
+            '画布使用 max-width:100% 与 max-height:min(38vh,240px)，flex-wrap 排列控件，body padding≤8px。'
+            '不要缩小字号或隐藏核心控件。')
+    return '\n'.join(hints)
+
+
+PREVIEW_LAYOUT_COMPACT_MARKERS = ('字号容差', '核心图形/控件不完整', '横向溢出')
+PREVIEW_LAYOUT_COMPACT_STYLE = (
+    '<style data-work-layout-compact="true">'
+    'html,body{box-sizing:border-box;max-width:100%;overflow-x:hidden}'
+    'body{margin:0 !important;padding:8px !important}'
+    'h1,h2,h3,p{margin:4px 0 !important}'
+    'canvas,svg{display:block !important;max-width:100% !important;'
+    'max-height:min(38vh,240px) !important;width:auto !important;height:auto !important}'
+    'button,input,select,label,output{display:inline-block !important;max-width:100%;'
+    'margin:4px 6px !important;padding:6px 8px !important;vertical-align:middle}'
+    'form,.toolbar,[data-work-controls]{display:flex !important;flex-wrap:wrap !important;'
+    'gap:6px;align-items:center}'
+    '</style>'
+)
+
+
+def should_apply_preview_layout_compact(report: dict) -> bool:
+    issues = list(report.get('layoutIssues') or []) + list(report.get('issues') or [])
+    return any(any(marker in issue for marker in PREVIEW_LAYOUT_COMPACT_MARKERS) for issue in issues)
+
+
+def apply_preview_layout_compact(html: str) -> str:
+    """Shrink the main graphic and spacing for 1000x600 + font-stress. Never shrink type."""
+    if not html or 'data-work-layout-compact' in html:
+        return html
+    if re.search(r'</head\s*>', html, re.I):
+        return re.sub(r'</head\s*>', PREVIEW_LAYOUT_COMPACT_STYLE + '</head>', html, count=1, flags=re.I)
+    if re.search(r'<body\b', html, re.I):
+        return re.sub(r'(<body\b[^>]*>)', r'\1' + PREVIEW_LAYOUT_COMPACT_STYLE, html, count=1, flags=re.I)
+    return PREVIEW_LAYOUT_COMPACT_STYLE + html
+
 
 async def run_interactive(request, progress_cb=None):
     started = time.time()
@@ -129,16 +193,28 @@ async def run_interactive(request, progress_cb=None):
         nonlocal full_generations
         full_generations += 1
         remaining = max(1, int(deadline-time.time()))
-        text = await client.complete_with_truncation_retry(
-            max_tokens=8192, system=SYSTEM_PROMPT,
-            messages=[{'role':'user','content':prompt + ('\n\n请修复以下运行检查问题，返回完整作品：\n'+'\n'.join(issues) if issues else '')}],
-            step_key='iterate.element_change' if iterate else 'code_generate.full', stage='logic_generate',
-            request_timeout_s=remaining, overall_timeout_s=remaining, response_size_hint='full_document',
-            allow_provider_fallback=True,
-            context_scope='request', compression_policy='code_generation',
-            truncation_retry_attempts=1, truncation_retry_max_tokens=16384,
-            timeout_retry_attempts=0, provider_retry_on_timeout_errors=False,
-        )
+        repair_hint = science_runtime_repair_guidance(issues) if issues else ''
+        try:
+            text = await client.complete_with_truncation_retry(
+                max_tokens=8192, system=interactive_system_prompt(kind),
+                messages=[{'role':'user','content':prompt + ('\n\n请修复以下运行检查问题，返回完整作品：\n'+'\n'.join(issues)
+                    + (('\n'+repair_hint) if repair_hint else '') if issues else '')}],
+                step_key='iterate.element_change' if iterate else 'code_generate.full', stage='logic_generate',
+                request_timeout_s=remaining, overall_timeout_s=remaining, response_size_hint='full_document',
+                allow_provider_fallback=True,
+                context_scope='request', compression_policy='code_generation',
+                truncation_retry_attempts=1, truncation_retry_max_tokens=16384,
+                timeout_retry_attempts=0, provider_retry_attempts=2,
+                provider_retry_on_timeout_errors=True,
+                provider_retry_base_delay_s=2, provider_retry_max_delay_s=8,
+            )
+        except Exception as exc:
+            if is_provider_transport_failure(exc) or is_retryable_provider_transport_failure(exc):
+                raise PipelineExecutionError(
+                    f'Full LLM generation failed: {exc}',
+                    stage='logic_generate', failure_family='provider_transport',
+                ) from exc
+            raise
         return extract_interactive_document(text)
 
     for attempt in range(1, 3):
@@ -162,7 +238,8 @@ async def run_interactive(request, progress_cb=None):
                     max_tokens=4096, system='修复现有交互作品，只输出精确替换补丁JSON，不重写整个作品。',
                     messages=[{'role':'user','content':repair_prompt(
                         original + ('\n修改要求：' + feedback if feedback else ''),code,repair_issues,
-                        layout_only=layout_only)}],
+                        layout_only=layout_only,
+                        extra_guidance=science_runtime_repair_guidance(repair_issues))}],
                     step_key='iterate.element_change' if source_code and attempt == 1 else 'quality_gate.patch_fix', stage='logic_generate',
                     request_timeout_s=remaining, overall_timeout_s=remaining,
                     response_size_hint='large_patch', allow_provider_fallback=True,
@@ -218,6 +295,29 @@ async def run_interactive(request, progress_cb=None):
                     stage='runtime_simulation_qa',failure_family='runtime_infrastructure',
                     artifacts=candidate_history + [{'artifact_type':'failed_interactive_candidate',
                         'content_type':'text/html','payload':code,'metadata':{'attempt':attempt,'stage':'runtime_simulation_qa'}}]) from exc
+        if (not report.get('passed') and should_apply_preview_layout_compact(report)
+                and 'data-work-layout-compact' not in code):
+            compacted = apply_preview_layout_compact(code)
+            if compacted != code:
+                qa_attempts += 1
+                try:
+                    compact_report = await asyncio.wait_for(
+                        validate_interactive_html(
+                            compacted, brief=original + ('\n' + feedback if feedback else '')),
+                        timeout=min(60, max(1, deadline - time.time())))
+                except Exception:
+                    compact_report = None
+                if compact_report is not None and (
+                    compact_report.get('passed')
+                    or len(compact_report.get('layoutIssues') or []) < len(report.get('layoutIssues') or [])
+                ):
+                    compact_report['layoutCompactApplied'] = True
+                    code = compacted
+                    report = compact_report
+                    candidate_history.append({
+                        'artifact_type':'interactive_candidate','content_type':'text/html',
+                        'payload':code,'metadata':{'attempt':attempt,'operation':'layout_compact',
+                                                 'runtimePassed':report['passed']}})
         preserved = preservation_errors(source_code, code, feedback)
         if source_code and code == source_code:
             preserved.append('修改没有产生有效变更，请在保留约束内落实用户要求。')

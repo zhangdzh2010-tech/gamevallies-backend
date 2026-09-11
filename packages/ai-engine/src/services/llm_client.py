@@ -80,6 +80,7 @@ class LLMResponseTruncatedError(ValueError):
         message: str,
         *,
         response_excerpt: Optional[str] = None,
+        partial_text: Optional[str] = None,
         upstream_request_id: Optional[str] = None,
         stop_reason: Optional[str] = None,
         input_tokens: Optional[int] = None,
@@ -88,6 +89,7 @@ class LLMResponseTruncatedError(ValueError):
     ) -> None:
         super().__init__(message)
         self.response_excerpt = response_excerpt
+        self.partial_text = partial_text if partial_text is not None else response_excerpt
         self.upstream_request_id = upstream_request_id
         self.stop_reason = stop_reason
         self.input_tokens = input_tokens
@@ -1650,6 +1652,7 @@ class LLMClient:
         truncation_retry_increment: int = 2048,
         truncation_retry_max_tokens: Optional[int] = None,
         truncation_retry_min_tokens: Optional[int] = None,
+        truncation_retry_guidance: Optional[str] = None,
         timeout_retry_attempts: int = 0,
         timeout_retry_increment_s: int = 60,
         timeout_retry_max_s: Optional[int] = None,
@@ -1724,6 +1727,8 @@ class LLMClient:
         timeout_attempt = 0
         provider_retry_limit = max(0, int(provider_retry_attempts))
         provider_retry_attempt = 0
+        size_guidance = str(truncation_retry_guidance or "").strip()
+        base_messages = list(messages or [])
 
         while True:
             # Adaptive token budget: keep it off for full-document generation paths so
@@ -1739,9 +1744,12 @@ class LLMClient:
                     int(current_overall_timeout_s),
                     int(requested_request_timeout_s),
                 )
+            retry_messages = list(base_messages)
+            if truncation_attempt > 0 and size_guidance:
+                retry_messages.append({"role": "user", "content": size_guidance})
             try:
                 return await self.complete(
-                    messages=messages,
+                    messages=retry_messages,
                     max_tokens=requested_max_tokens,
                     system=system,
                     model=model,
@@ -1765,13 +1773,19 @@ class LLMClient:
                 next_requested = max(requested_max_tokens + retry_increment, retry_floor or 0)
                 if retry_ceiling is not None:
                     next_requested = min(next_requested, retry_ceiling)
-                if next_requested <= requested_max_tokens:
+                grew = next_requested > requested_max_tokens
+                if not grew:
+                    next_requested = requested_max_tokens
+                if not grew and not size_guidance:
                     raise
                 logger.warning(
-                    "LLM %s response was truncated (stop_reason=%s, outputTokens=%s); retrying with larger budget (%s -> %s)",
+                    "LLM %s response was truncated (stop_reason=%s, outputTokens=%s); retrying with %s (%s -> %s)",
                     step_key,
                     exc.stop_reason,
                     exc.output_tokens,
+                    "larger budget and size guidance" if grew and size_guidance
+                    else "larger budget" if grew
+                    else "stricter size guidance",
                     requested_max_tokens,
                     next_requested,
                 )
@@ -2453,6 +2467,7 @@ class LLMClient:
             raise LLMResponseTruncatedError(
                 "Anthropic response hit max_tokens and may be truncated",
                 response_excerpt=rendered[:1000] or None,
+                partial_text=rendered or None,
                 upstream_request_id=getattr(response, "id", None),
                 stop_reason=stop_reason,
                 input_tokens=usage_snapshot.input_tokens,
@@ -2548,6 +2563,7 @@ class LLMClient:
             raise LLMResponseTruncatedError(
                 "OpenAI-compatible response hit the output length limit and may be truncated",
                 response_excerpt=excerpt,
+                partial_text=text or None,
                 upstream_request_id=upstream_request_id,
                 stop_reason=finish_reason,
                 input_tokens=usage_snapshot.input_tokens,
@@ -2689,6 +2705,7 @@ class LLMClient:
                 raise LLMResponseTruncatedError(
                     "OpenAI-compatible streaming response hit the output length limit and may be truncated",
                     response_excerpt=excerpt,
+                    partial_text=rendered or None,
                     upstream_request_id=upstream_request_id,
                     stop_reason=finish_reason,
                     input_tokens=usage_snapshot.input_tokens,

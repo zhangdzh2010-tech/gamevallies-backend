@@ -413,7 +413,7 @@ def test_code_preflight_auto_repair_targets_primary_script_not_just_first_script
     assert not any(issue.code == "unsafe_nested_grid_read" for issue in issues)
 
 
-def test_code_preflight_keeps_uninitialized_ctx_visible_to_validation():
+def test_code_preflight_auto_repairs_null_ctx_before_the_main_loop():
     validator = CodePreflightValidator()
     html = """
     <!DOCTYPE html>
@@ -441,9 +441,24 @@ def test_code_preflight_keeps_uninitialized_ctx_visible_to_validation():
     repaired = validator.auto_repair(html, runtime_contract=GameRuntimeContract())
     issues = validator.validate(repaired, runtime_contract=GameRuntimeContract())
 
-    assert "__safeCanvasContext" not in repaired
     assert "let ctx = null" in repaired
-    assert any(issue.code == "nullable_runtime_object:ctx" for issue in issues)
+    assert "__bootCanvas" in repaired
+    assert "getContext('2d')" in repaired
+    assert not any(issue.code == "nullable_runtime_object:ctx" for issue in issues)
+
+
+def test_code_preflight_null_ctx_guidance_names_canvas_context_boot():
+    guidance = CodePreflightValidator().render_guidance([
+        CodePreflightIssue(
+            code="nullable_runtime_object:ctx",
+            message=(
+                "Do not leave `ctx` initialized as null while the main loop can run; "
+                "create a safe default canvas context before the loop starts."
+            ),
+        )
+    ])
+    assert "safe default canvas context" in guidance or "getContext('2d')" in guidance
+    assert "let ctx = null" in guidance
 
 
 def test_code_preflight_keeps_uninitialized_canvas_visible_to_validation():

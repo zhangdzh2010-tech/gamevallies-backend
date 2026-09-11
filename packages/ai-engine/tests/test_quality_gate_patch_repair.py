@@ -337,20 +337,47 @@ def test_verified_pause_defect_enters_patch_branch_without_full_regeneration():
     assert 'layered backgrounds/foregrounds' not in prompt
 
 
-@pytest.mark.parametrize('family', ['review_evidence', 'review_actionability'])
-def test_invalid_assessment_does_not_trigger_full_regeneration(family):
+def test_invalid_assessment_does_not_trigger_full_regeneration():
     from src.engine.pipeline_errors import PipelineExecutionError
     generated = []
     def generate(*args, **kwargs):
         generated.append(True)
         return _generated(BASE_CODE, 'provider-a'), []
-    failure = PipelineExecutionError('review evidence unavailable', stage='code_review', failure_family=family)
+    failure = PipelineExecutionError('review evidence unavailable', stage='code_review', failure_family='review_evidence')
     with pytest.raises(PipelineExecutionError) as caught:
         _run_create_with_mocks(generate_side_effect=generate,
             flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])],
             review_side_effect=[failure], compute_side_effect=[])
     assert caught.value is failure
     assert len(generated) == 1
+
+
+def test_review_actionability_degrades_for_standard_tier_without_inventing_defects():
+    from src.engine.pipeline_errors import PipelineExecutionError
+    generated = []
+    def generate(*args, **kwargs):
+        generated.append(True)
+        return _generated(BASE_CODE, 'provider-a'), []
+    failure = PipelineExecutionError(
+        'Code review evidence could not be validated: unexplained_score:fun_score=6.0 requires a source-grounded defect and correction under the existing rubric; reassess without inventing defects',
+        stage='code_review',
+        failure_family='review_actionability',
+    )
+    response, mocks = _run_create_with_mocks(
+        generate_side_effect=generate,
+        flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])],
+        review_side_effect=[failure],
+        compute_side_effect=[_quality(7.1)],
+    )
+    assert mocks.generate.await_count == 1
+    assert mocks.patch_text.await_count == 0
+    assert len(generated) == 1
+    assert response.qa_passed
+    assert any(warning.get('type') == 'review_actionability_degraded' for warning in response.qa_warnings)
+    assert response.quality_breakdown["pipeline_success"] is True
+    assert response.quality_breakdown["seed_worthy"] is False
+    assert response.quality_breakdown["seed_worthy_reason"] == "review_actionability_degraded"
+    assert response.quality_breakdown["reviewRan"] is False
 
 
 def test_review_infrastructure_degrades_for_standard_tier_without_regeneration():
@@ -401,6 +428,28 @@ def test_quality_patch_allowed_sections_maps_failing_dimensions():
 # ---------------------------------------------------------------------------
 # Create-pipeline integration tests
 # ---------------------------------------------------------------------------
+
+
+def test_patch_rereview_actionability_keeps_playable_candidate_off_seed_catalog():
+    from src.engine.pipeline_errors import PipelineExecutionError
+    failure = PipelineExecutionError(
+        'Code review evidence could not be validated: unexplained_score:fun_score=6.0 requires a source-grounded defect and correction under the existing rubric; reassess without inventing defects',
+        stage='code_review',
+        failure_family='review_actionability',
+    )
+    response, mocks = _run_create_with_mocks(
+        generate_side_effect=[(_generated(BASE_CODE, 'provider-a'), [])],
+        flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])],
+        review_side_effect=[_near_miss_review(), failure],
+        compute_side_effect=[_quality(5.9), _quality(7.0)],
+    )
+    assert mocks.generate.await_count == 1
+    assert mocks.patch_text.await_count == 1
+    assert response.qa_passed
+    assert any(warning.get('type') == 'review_actionability_degraded' for warning in response.qa_warnings)
+    assert response.quality_breakdown['pipeline_success'] is True
+    assert response.quality_breakdown['seed_worthy'] is False
+    assert response.quality_breakdown['seed_worthy_reason'] == 'review_actionability_degraded'
 
 
 def test_near_miss_uses_patch_repair_and_skips_full_regeneration():

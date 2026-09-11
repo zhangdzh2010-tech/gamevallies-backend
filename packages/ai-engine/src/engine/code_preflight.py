@@ -230,6 +230,12 @@ class CodePreflightValidator:
             repaired = self._repair_touch_fallback(repaired)
         if not seen_codes or "unsafe_color_alpha_concat" in seen_codes:
             repaired = self._repair_unsafe_color_alpha_concat(repaired)
+        if not seen_codes or any(
+            code.startswith("nullable_runtime_object:")
+            and code.split(":", 1)[-1] in {"ctx", "context"}
+            for code in seen_codes
+        ):
+            repaired = self._repair_null_canvas_context(repaired)
         return repaired or html_code
 
     @staticmethod
@@ -268,6 +274,42 @@ class CodePreflightValidator:
                 return (f'({event}.{kind} && {event}.{kind}.length ? {event}.{kind}[0] : '
                         f'({event}.{other} && {event}.{other}.length ? {event}.{other}[0] : {event}))')
             return block[1] + _TOUCH_FALLBACK_RE.sub(replace, script) + block[3]
+        return _SCRIPT_BLOCK_RE.sub(script_block, html_code)
+
+    @staticmethod
+    def _repair_null_canvas_context(html_code: str) -> str:
+        """Bind a real 2D context before the first rAF when ctx starts as null.
+
+        Does not invent a fake context object. If no canvas exists, validation
+        still fails. Scripts without an animation loop are left unchanged.
+        """
+        def script_block(block):
+            script = block.group("body")
+            if "requestAnimationFrame" not in script or "__bootCanvas" in script:
+                return block[0]
+            names = [
+                match.group("name")
+                for match in re.finditer(
+                    r"\b(?:let|var)\s+(?P<name>ctx|context)\s*=\s*null\b",
+                    script,
+                )
+            ]
+            if not names:
+                return block[0]
+            loop = re.search(r"requestAnimationFrame\s*\(", script)
+            if not loop:
+                return block[0]
+            boot = "".join(
+                (
+                    f"if (!{name}) {{"
+                    " const __bootCanvas = (typeof canvas!=='undefined' && canvas)"
+                    " ? canvas : document.querySelector('canvas');"
+                    f" if (__bootCanvas) {name} = __bootCanvas.getContext('2d');"
+                    "}"
+                )
+                for name in dict.fromkeys(names)
+            )
+            return block[1] + script[:loop.start()] + boot + script[loop.start():] + block[3]
         return _SCRIPT_BLOCK_RE.sub(script_block, html_code)
 
     def render_guidance(self, issues: Iterable[CodePreflightIssue]) -> str:
@@ -345,6 +387,12 @@ class CodePreflightValidator:
                 f"- Initialize nullable runtime objects like {joined} to safe defaults before requestAnimationFrame starts, "
                 "or guard every property read and write until the object is created."
             )
+            if {"ctx", "context"} & nullable_objects:
+                visible.append(
+                    "- Acquire a real 2D context before the loop starts, for example "
+                    "`ctx = (typeof canvas !== 'undefined' && canvas ? canvas : document.querySelector('canvas')).getContext('2d'); "
+                    "if (!ctx) return;`. Do not leave `let ctx = null` while `requestAnimationFrame` can run."
+                )
             if any(name.lower().startswith("touch") for name in nullable_objects):
                 visible.append(
                     "- For touch state, prefer a declared safe shape such as "
@@ -705,13 +753,20 @@ class CodePreflightValidator:
                 search_start=match.end(),
             ):
                 continue
+            if name in {"ctx", "context"}:
+                message = (
+                    f"Do not leave `{name}` initialized as null while the main loop can run; "
+                    "create a safe default canvas context before the loop starts."
+                )
+            else:
+                message = (
+                    f"Do not leave `{name}` initialized as null while the main loop can run; "
+                    f"create a safe default object before the first animation frame or guard every `{name}.*` access."
+                )
             issues.append(
                 CodePreflightIssue(
                     code=f"nullable_runtime_object:{name}",
-                    message=(
-                        f"Do not leave `{name}` initialized as null while the main loop can run; "
-                        f"create a safe default object before the first animation frame or guard every `{name}.*` access."
-                    ),
+                    message=message,
                 )
             )
         return issues
