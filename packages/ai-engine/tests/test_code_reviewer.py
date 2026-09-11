@@ -194,12 +194,34 @@ def test_invalid_scores_and_flags_are_never_coerced_to_passing(update):
     assert not CodeReviewer()._parse_review(json.dumps(PASSING | update)).ran
 
 
-def test_unexplained_low_score_remains_low_without_becoming_infrastructure_failure():
+def test_unexplained_low_score_is_corrected_before_it_can_trigger_code_edits():
     unsupported = PASSING | dict(fun_score=4)
-    result, client = run_review_responses([json.dumps(unsupported)])
+    finding = FINDING | {'dimension':'fun_score'}
+    supported = unsupported | dict(issues=[finding['issue']],findings=[finding])
+    result, client = run_review_responses([json.dumps(unsupported),json.dumps(supported)])
     assert result.ran and result.evidence_verified
     assert result.fun_score == 4
-    assert client.await_count == 1
+    assert result.findings == [finding]
+    assert client.await_count == 2
+    assert 'unexplained_score:fun_score=4' in client.await_args.kwargs['messages'][0]['content']
+    assert SOURCE in client.await_args.kwargs['messages'][0]['content']
+
+
+def test_score_without_defect_can_be_reassessed_without_changing_source():
+    unsupported = PASSING | dict(character_quality_score=6)
+    result, client = run_review_responses([json.dumps(unsupported),json.dumps(PASSING)])
+    assert result.character_quality_score == 8
+    assert result.issues == []
+    assert client.await_count == 2
+    assert all(c.kwargs['step_key']=='code_review' for c in client.await_args_list)
+
+
+def test_unexplained_score_exhaustion_is_bounded_and_retains_the_candidate():
+    unsupported = PASSING | dict(character_quality_score=6)
+    with pytest.raises(PipelineExecutionError) as caught:
+        run_review_responses([json.dumps(unsupported)]*2)
+    assert caught.value.failure_family == 'review_actionability'
+    assert caught.value.artifacts[0]['payload'] == SOURCE
 
 
 def test_findings_rebuild_redundant_issue_summary():
