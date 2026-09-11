@@ -646,3 +646,102 @@ class IsolatedMotionScenarios(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(report['passed'],report['issues'])
         self.assertEqual(len(report['motionChecks'][0]['scenarios']),1)
         self.assertTrue(report['motionChecks'][0]['scenarios'][0]['advances'])
+
+
+def _pendulum_html(*, theta=0.0, start='<button id="start">开始</button>', extra_input='', start_js='running=true;'):
+    return f'''<!doctype html><html><body>
+    <h1>单摆</h1><p>小角度理想单摆，T=2π√(L/g)，不是实验数据</p>
+    <label>摆长L<input id="L" type="range" min="0.5" max="2" step="0.1" value="1"></label>
+    <label>重力g<input id="g" type="range" min="5" max="15" step="0.1" value="9.8"></label>
+    {extra_input}<output id="period">2.007</output>
+    {start}<button id="pause">暂停</button><button id="reset">重置</button>
+    <canvas id="c" width="220" height="180"></canvas>
+    <script>
+    let L=1,g=9.8,theta={theta},omega=0,running=false,prev=performance.now(),acc=0;
+    const ctx=document.getElementById('c').getContext('2d');
+    function draw(){{
+      ctx.clearRect(0,0,220,180);
+      const x=110+80*Math.sin(theta),y=20+80*Math.cos(theta);
+      ctx.beginPath();ctx.moveTo(110,20);ctx.lineTo(x,y);ctx.stroke();
+      ctx.beginPath();ctx.arc(x,y,8,0,6.28);ctx.fill();
+      document.getElementById('period').textContent=(2*Math.PI*Math.sqrt(L/g)).toFixed(3);
+    }}
+    function frame(now){{
+      acc+=(now-prev)/1000;prev=now;
+      while(acc>=0.01){{acc-=0.01;if(running){{omega+=-(g/L)*theta*0.01;theta+=omega*0.01;}}}}
+      draw();requestAnimationFrame(frame);
+    }}
+    requestAnimationFrame(frame);
+    document.getElementById('L').oninput=e=>{{L=+e.target.value;draw();}};
+    document.getElementById('g').oninput=e=>{{g=+e.target.value;draw();}};
+    document.getElementById('start').onclick=()=>{{{start_js}}};
+    document.getElementById('pause').onclick=()=>{{running=false;}};
+    document.getElementById('reset').onclick=()=>{{running=false;theta={theta};omega=0;draw();}};
+    </script></body></html>'''
+
+
+class ScienceDemoMotionContract(unittest.IsolatedAsyncioTestCase):
+    async def test_resting_pendulum_still_fails_after_length_and_gravity_edits(self):
+        report = await validate_interactive_html(_pendulum_html(theta=0))
+        self.assertFalse(report['passed'])
+        self.assertFalse(report['motionChecks'][0]['advances'])
+        self.assertTrue(any(s['setup']=='single_parameter_edit' for s in report['motionChecks'][0]['scenarios']))
+        self.assertTrue(any('非平衡' in issue for issue in report['issues']))
+
+    async def test_displaced_pendulum_start_advances_without_drag(self):
+        report = await validate_interactive_html(_pendulum_html(theta=0.4))
+        self.assertTrue(report['passed'], report['issues'])
+        self.assertTrue(report['motionChecks'][0]['advances'])
+
+    async def test_number_initial_angle_is_perturbed_before_declaring_stall(self):
+        html = _pendulum_html(
+            extra_input='<label>初角<input id="theta0" type="number" min="0" max="0.5" step="0.1" value="0"></label>',
+            start_js="theta=+document.getElementById('theta0').value;running=true;")
+        report = await validate_interactive_html(html)
+        self.assertTrue(report['passed'], report['issues'])
+        motion = report['motionChecks'][0]
+        self.assertFalse(motion['scenarios'][0]['advances'])
+        self.assertEqual(motion['scenarios'][-1]['parameter'], 'theta0')
+        self.assertTrue(motion['advances'])
+
+    async def test_icon_only_start_is_discovered_and_still_must_animate(self):
+        dead = GOOD.replace(
+            '<button onclick="document.getElementById(\'count\').textContent=\'20\'">调整种群</button>',
+            '<button id="start" aria-label="开始" onclick="this.textContent=\'运行中\'">▶</button>'
+        ).replace('let population=10;', 'function unused(){requestAnimationFrame(()=>{})}')
+        report = await validate_interactive_html(dead)
+        self.assertFalse(report['passed'])
+        self.assertEqual(report['motionChecks'][0]['control'], '开始')
+        self.assertFalse(report['motionChecks'][0]['advances'])
+
+    async def test_science_generation_prompt_includes_runtime_contract(self):
+        request = normalize_interactive_request(RunPipelineV2Request(
+            game_id='game', user_id='user', timeout_s=1800,
+            raw_user_input='作品类型：科学演示。制作小角度理想单摆演示，可调摆长L和重力g，周期T=2π√(L/g)，有开始暂停重置。',
+            source_spec=GameSpec(game_type='interactive_experience', source_description='单摆')))
+        self.assertEqual(request.artifact_kind, 'science')
+        self.assertIn('非平衡', request.prompt_bundle_snapshot.layers['system_prompt'])
+        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
+                   new=AsyncMock(side_effect=[GOOD, await fake_llm(step_key='code_review')])) as llm, patch(
+                'src.engine.interactive_creation.validate_interactive_html',
+                new=AsyncMock(return_value={'ran':True,'passed':True,'issues':[]})):
+            await run_interactive(request)
+        self.assertIn('非平衡', llm.call_args_list[0].kwargs['system'])
+        self.assertIn('不要把拖拽', llm.call_args_list[0].kwargs['system'])
+
+    async def test_science_motion_repair_prompt_keeps_the_same_validation_bar(self):
+        failed = {'ran':True,'passed':False,'issues':['点击启动控件「开始」后，动画/模拟时间/作品内容未持续变化。']}
+        passed = {'ran':True,'passed':True,'issues':[]}
+        patch_json = json.dumps({'patches':[{'search':'<h1>种群模型</h1>','replace':'<h1>单摆</h1>'}]})
+        request = normalize_interactive_request(RunPipelineV2Request(
+            game_id='game', user_id='user', timeout_s=1800,
+            raw_user_input='作品类型：科学演示。做一个单摆实验。',
+            source_spec=GameSpec(game_type='interactive_experience', source_description='单摆')))
+        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
+                   new=AsyncMock(side_effect=[GOOD, patch_json, await fake_llm(step_key='code_review')])) as llm, patch(
+                'src.engine.interactive_creation.validate_interactive_html',
+                new=AsyncMock(side_effect=[failed, passed])):
+            await run_interactive(request)
+        repair = llm.call_args_list[1].kwargs['messages'][0]['content']
+        self.assertIn('非平衡', repair)
+        self.assertIn('不要依赖拖拽', repair)

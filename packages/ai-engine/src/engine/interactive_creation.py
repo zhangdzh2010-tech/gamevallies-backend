@@ -31,7 +31,7 @@ def normalize_interactive_request(request):
     request.prompt_bundle_snapshot = request.prompt_bundle_snapshot.model_copy(deep=True)
     request.prompt_bundle_snapshot.layers = {
         'creation_mode':'interactive_experience', 'source':'desktop-interactive-v1',
-        'system_prompt':SYSTEM_PROMPT, 'artifact_kind':kind,
+        'system_prompt':interactive_system_prompt(kind), 'artifact_kind':kind,
     }
     request.runtime_contract = GameRuntimeContract.model_validate({
         'version':'1.0', 'runtime_profile':'interactive_experience',
@@ -102,6 +102,31 @@ SYSTEM_PROMPT = '''你是桌面交互作品工程师。根据用户的原始创�
 为不同系统的字体度量留出布局余量，根字号增大12.5%时1000×600核心区域仍完整；优先缩小主图、压缩空白或响应式重排，不缩小字体或隐藏主操作。
 不要依赖宿主提供游戏 runtime、积分回调或 game_over 消息。遵从用户选择的方向和内容。'''
 
+SCIENCE_RUNTIME_GUIDANCE = '''
+科学演示运行契约（验收不会放宽）：
+动态模型（单摆、轨道、波动、种群、流动等）在点击开始/播放后必须从可见的非平衡初态持续推进。默认不要停在θ=0、零振幅或静止平衡；不要把拖拽释放当作唯一启动方式。
+开始、暂停、重置必须是可见且可区分的独立控件，名称写在按钮文本或aria-label中，不要只用图标。
+摆长、重力、振幅、初角等参数须为带标签的range或number，并立即更新公式读数（如T=2π√(L/g)）；参数必须进入运动方程，不能只改标签。
+连续动画用requestAnimationFrame或setInterval，按真实经过时间累积并重绘Canvas/SVG或更新可见状态，不能只改按钮文案或只靠CSS。
+核心画布与开始/暂停/重置/参数控件须留在1000×600首屏；公式假设和限制可折叠。'''
+
+
+def interactive_system_prompt(kind: str) -> str:
+    return SYSTEM_PROMPT + (SCIENCE_RUNTIME_GUIDANCE if kind == 'science' else '')
+
+
+def science_runtime_repair_guidance(issues: list[str]) -> str:
+    text = '\n'.join(issues)
+    hints = []
+    if re.search(r'未持续变化|时间累加|非平衡', text):
+        hints.append(
+            '动态模型须从可见非平衡初态启动：给摆球/轨道/波源一个默认位移或初速度，'
+            '点击开始后用累积帧时间推进并重绘。不要依赖拖拽才开始，不要停在θ=0。'
+            '开始/暂停/重置分开标注（文本或aria-label）。L/g等参数必须进入方程并更新公式读数。')
+    if re.search(r'核心图形/控件不完整|字号容差|横向溢出', text):
+        hints.append('压缩说明与主图，开始/暂停/重置和参数控件留在1000×600首屏；次要公式假设可折叠。')
+    return '\n'.join(hints)
+
 
 async def run_interactive(request, progress_cb=None):
     started = time.time()
@@ -129,9 +154,11 @@ async def run_interactive(request, progress_cb=None):
         nonlocal full_generations
         full_generations += 1
         remaining = max(1, int(deadline-time.time()))
+        repair_hint = science_runtime_repair_guidance(issues) if issues else ''
         text = await client.complete_with_truncation_retry(
-            max_tokens=8192, system=SYSTEM_PROMPT,
-            messages=[{'role':'user','content':prompt + ('\n\n请修复以下运行检查问题，返回完整作品：\n'+'\n'.join(issues) if issues else '')}],
+            max_tokens=8192, system=interactive_system_prompt(kind),
+            messages=[{'role':'user','content':prompt + ('\n\n请修复以下运行检查问题，返回完整作品：\n'+'\n'.join(issues)
+                + (('\n'+repair_hint) if repair_hint else '') if issues else '')}],
             step_key='iterate.element_change' if iterate else 'code_generate.full', stage='logic_generate',
             request_timeout_s=remaining, overall_timeout_s=remaining, response_size_hint='full_document',
             allow_provider_fallback=True,
@@ -162,7 +189,8 @@ async def run_interactive(request, progress_cb=None):
                     max_tokens=4096, system='修复现有交互作品，只输出精确替换补丁JSON，不重写整个作品。',
                     messages=[{'role':'user','content':repair_prompt(
                         original + ('\n修改要求：' + feedback if feedback else ''),code,repair_issues,
-                        layout_only=layout_only)}],
+                        layout_only=layout_only,
+                        extra_guidance=science_runtime_repair_guidance(repair_issues))}],
                     step_key='iterate.element_change' if source_code and attempt == 1 else 'quality_gate.patch_fix', stage='logic_generate',
                     request_timeout_s=remaining, overall_timeout_s=remaining,
                     response_size_hint='large_patch', allow_provider_fallback=True,

@@ -1,5 +1,53 @@
 import pytest
-from src.engine.interactive_creation import validate_interactive_html
+from src.engine.interactive_browser_qa import (
+    classify_control_action, motion_control_label, parameter_stimulus_priority,
+    plan_motion_parameter_stimuli)
+from src.engine.interactive_creation import (
+    interactive_system_prompt, science_runtime_repair_guidance, validate_interactive_html)
+
+
+@pytest.mark.parametrize('kwargs,expected', [
+    ({'text': '开始演示'}, 'motion'),
+    ({'text': '▶', 'aria_label': '开始'}, 'motion'),
+    ({'text': '▶', 'control_id': 'start'}, 'motion'),
+    ({'text': '暂停'}, 'stop'),
+    ({'text': '▶', 'aria_label': '暂停'}, 'stop'),
+    ({'text': '设置'}, 'other'),
+    ({'text': '取消', 'aria_label': '开始'}, 'stop'),
+])
+def test_control_action_uses_accessible_name_without_guessing(kwargs, expected):
+    assert classify_control_action(**kwargs) == expected
+
+
+def test_icon_start_reports_accessible_motion_label():
+    assert motion_control_label(text='▶', aria_label='开始') == '开始'
+
+
+def test_displacement_parameters_are_tried_before_length_or_gravity():
+    assert parameter_stimulus_priority('初角') < parameter_stimulus_priority('L')
+    assert parameter_stimulus_priority('amplitude') < parameter_stimulus_priority('g')
+    planned = plan_motion_parameter_stimuli([
+        {'kind': 'range', 'index': 0, 'name': 'L'},
+        {'kind': 'range', 'index': 1, 'name': 'g'},
+        {'kind': 'number', 'index': 0, 'name': 'theta0'},
+        {'kind': 'number', 'index': 1, 'name': 'unused', 'enabled': False},
+    ])
+    assert [item['name'] for item in planned] == ['theta0', 'L', 'g']
+
+
+def test_science_contract_is_not_applied_to_tools_and_does_not_relax_qa():
+    assert '非平衡' in interactive_system_prompt('science')
+    assert '不要把拖拽' in interactive_system_prompt('science')
+    assert '非平衡' not in interactive_system_prompt('tool')
+    assert '验收不会放宽' in interactive_system_prompt('science')
+
+
+def test_science_repair_guidance_is_tied_to_observed_runtime_defects():
+    motion = science_runtime_repair_guidance(['点击启动控件「开始」后，动画/模拟时间/作品内容未持续变化。'])
+    assert '非平衡' in motion and 'θ=0' in motion
+    layout = science_runtime_repair_guidance(['1000×600 (visible) 核心图形/控件不完整：start。'])
+    assert '1000×600' in layout
+    assert science_runtime_repair_guidance(['未检测到可操作且能改变作品内容的交互控件。']) == ''
 
 
 def tabbed_work(working=True):

@@ -69,7 +69,8 @@ def apply_interactive_patch(source: str, raw: str, *, layout_only: bool = False)
         raise ValueError('定向补丁无效，原候选已保留：'+str(exc)) from exc
 
 
-def repair_prompt(brief: str, source: str, issues: list[str], *, layout_only: bool = False) -> str:
+def repair_prompt(brief: str, source: str, issues: list[str], *, layout_only: bool = False,
+                  extra_guidance: str = '') -> str:
     return ('仅修复以下已定位问题，保持用户要求、公式、已正常工作的行为与视觉主题。'
         '只输出JSON：{"patches":[{"source_ref":"系统给出的方括号内源码编号","replace":"该编号对应整个片段的替换文本"}]}。'
         '编号不是源码；每段至多600字，替换时保留该片段内与目标无关的前后文本，不要把编号写入代码。'
@@ -80,4 +81,5 @@ def repair_prompt(brief: str, source: str, issues: list[str], *, layout_only: bo
         + ('本次只有浏览器确认的布局问题：仅修改已有<style>标签内部的CSS，逐字保留全部DOM和脚本。'
            '不要删除节点、更改id/事件/计算逻辑，不缩小文字或隐藏主要控件。优先压缩空白和主图尺寸、调整网格与弹性布局。'
            '跨越style边界的source_ref须逐字保留边界外内容，优先使用CSS内部唯一search。\n' if layout_only else '')
+        + ((extra_guidance.strip() + '\n') if extra_guidance else '')
         + json.dumps({'brief':brief,'issues':issues,'html':indexed_review_source(source)},ensure_ascii=False))
