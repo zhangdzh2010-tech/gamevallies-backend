@@ -16,6 +16,8 @@ Returns ran=False only when review is disabled; failed assessments retain eviden
 from __future__ import annotations
 
 import json
+import hashlib
+from dataclasses import asdict
 import logging
 import math
 import re
@@ -93,7 +95,15 @@ class CodeReviewer:
                 timeout_retry_increment_s=30, timeout_retry_max_s=120,
             )
 
+        assessments = []
+
         def assessment_errors(result):
+            errors = validate_assessment(result)
+            assessments.append({'attempt': len(assessments) + 1,
+                'assessment': asdict(result), 'validation_errors': list(errors)})
+            return errors
+
+        def validate_assessment(result):
             if not result.ran:
                 return ['invalid review schema']
             errors = validate_review_evidence(result, html_code)
@@ -117,21 +127,23 @@ class CodeReviewer:
         except InvalidReviewEvidence as exc:
             family = 'review_actionability' if any(
                 error.startswith('unexplained_score:') for error in exc.errors) else 'review_evidence'
-            raise self._evidence_failure(html_code, exc.errors, family) from exc
+            raise self._evidence_failure(html_code, exc.errors, family, assessments) from exc
         except PipelineExecutionError:
             raise
         except Exception as exc:
             logger.warning('Code review unavailable: %s', type(exc).__name__)
-            raise self._evidence_failure(html_code, ['assessment unavailable'], 'review_infrastructure') from exc
+            raise self._evidence_failure(html_code, ['assessment unavailable'], 'review_infrastructure', assessments) from exc
 
     @staticmethod
-    def _evidence_failure(code: str, errors: list[str], family: str) -> PipelineExecutionError:
+    def _evidence_failure(code: str, errors: list[str], family: str, assessments: list[dict] | None = None) -> PipelineExecutionError:
         return PipelineExecutionError('Code review evidence could not be validated: ' + '; '.join(errors),
             stage='code_review', failure_family=family, artifacts=[
                 {'artifact_type':'failed_quality_candidate','content_type':'text/html','payload':code,
                  'metadata':{'stage':'code_review','retained':True}},
                 {'artifact_type':'review_evidence_report','content_type':'application/json',
-                 'payload':{'errors':errors},'metadata':{'stage':'code_review'}},
+                 'payload':{'errors':errors, 'failure_family':family,
+                    'source_sha256':hashlib.sha256(code.encode('utf-8')).hexdigest(),
+                    'assessments':assessments or []},'metadata':{'stage':'code_review'}},
             ])
 
     def _parse_review(self, raw: str) -> LLMReviewResult:
