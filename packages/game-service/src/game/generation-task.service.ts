@@ -15,6 +15,7 @@ import { normalizeIntentBuildSnapshot } from "./intent-build.util";
 import {
   resolvePublicGenerationStage,
 } from "./generation-stage-contract";
+import { extractOutcomeLabels } from "./game-quality.policy";
 
 type JsonMap = Record<string, unknown>;
 
@@ -751,6 +752,32 @@ export class GenerationTaskService {
     };
   }
 
+  private summarizeOutcomeLabels(resultSummary: unknown): {
+    seedWorthy: boolean | null;
+    seedWorthyReason: string | null;
+    pipelineSuccess: boolean | null;
+  } {
+    const summary =
+      resultSummary && typeof resultSummary === "object" && !Array.isArray(resultSummary)
+        ? (resultSummary as JsonMap)
+        : {};
+    return extractOutcomeLabels(summary.qualityBreakdown || summary, summary);
+  }
+
+  private withOutcomeLabels(resultSummary: unknown): JsonMap | null {
+    if (!resultSummary || typeof resultSummary !== "object" || Array.isArray(resultSummary)) {
+      return resultSummary == null ? null : {};
+    }
+    const summary = resultSummary as JsonMap;
+    const labels = this.summarizeOutcomeLabels(summary);
+    return {
+      ...summary,
+      ...(labels.pipelineSuccess !== null ? { pipelineSuccess: labels.pipelineSuccess } : {}),
+      ...(labels.seedWorthy !== null ? { seedWorthy: labels.seedWorthy } : {}),
+      ...(labels.seedWorthyReason ? { seedWorthyReason: labels.seedWorthyReason } : {}),
+    };
+  }
+
   toTaskSummary(task: any) {
     const displayStage = this.getDisplayStage(task);
     const metadata =
@@ -798,7 +825,8 @@ export class GenerationTaskService {
       previewUrl: task.previewUrl,
       gatewayConfigVersion: task.gatewayConfigVersion,
       routeSnapshot: task.routeSnapshot,
-      resultSummary: task.resultSummary,
+      resultSummary: this.withOutcomeLabels(task.resultSummary),
+      ...this.summarizeOutcomeLabels(task.resultSummary),
       intentBuild,
       startedAt: task.startedAt,
       completedAt: task.completedAt,

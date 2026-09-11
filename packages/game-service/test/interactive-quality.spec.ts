@@ -1,5 +1,5 @@
 import { QUALITY_POLICY } from '../src/game/generated-quality-policy';
-import { assertCreateResultMeetsQualityGate } from '../src/game/game-quality.policy';
+import { assertCreateResultMeetsQualityGate, extractOutcomeLabels } from '../src/game/game-quality.policy';
 
 describe('Desktop interaction quality gate', () => {
   const passing = {ran:true,passed:true,contentChanged:true,controlsExercised:1,issues:[],
@@ -25,5 +25,18 @@ describe('Desktop interaction quality gate', () => {
   });
   it('retains the game score gate for game profiles', () => {
     expect(() => assertCreateResultMeetsQualityGate({...result,runtimeProfile:'casual_arcade',qualityScore:0,runtimeQaReport:passing})).toThrow();
+  });
+  it('derives seedWorthy for unlabeled tool and science successes', () => {
+    expect(extractOutcomeLabels(assessment)).toEqual({
+      seedWorthy: true,
+      seedWorthyReason: 'structured_review_passed',
+      pipelineSuccess: true,
+    });
+    expect(extractOutcomeLabels({review_fun_score: 7.2})).toEqual({
+      seedWorthy: null,
+      seedWorthyReason: null,
+      pipelineSuccess: null,
+    });
+    expect(QUALITY_POLICY.tiers.standard.fun_score).toBe(6.8);
   });
 });

@@ -1,6 +1,6 @@
 """Validate review citations, without claiming to prove their semantic conclusions."""
 from __future__ import annotations
-from .source_references import canonical_source_reference, source_reference_catalog, indexed_review_source
+from .source_references import resolve_source_reference, source_reference_catalog, indexed_review_source
 
 REVIEW_FLAGS = ('is_complete_game', 'has_real_gameplay', 'difficulty_balanced')
 REVIEW_SCORES = ('fun_score', 'visual_polish_score', 'character_quality_score')
@@ -64,12 +64,12 @@ def validate_review_evidence(review, source: str) -> list[str]:
             dimensions.add(dimension)
         reference = finding.get('source_ref')
         if reference is not None:
-            reference = canonical_source_reference(reference)
-            if reference not in catalog:
+            resolved = resolve_source_reference(reference, source, catalog)
+            if resolved is None:
                 errors.append(label + ': unknown or stale source reference')
             else:
-                finding['source_ref'] = reference
-                excerpt = catalog[reference]
+                finding['source_ref'] = resolved
+                excerpt = catalog[resolved]
                 if 'code_excerpt' in finding and finding['code_excerpt'] != excerpt:
                     errors.append(label + ': source reference and excerpt disagree')
                 else:

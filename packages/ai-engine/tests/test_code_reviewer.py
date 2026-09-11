@@ -180,7 +180,7 @@ def test_invalid_evidence_is_bounded_and_preserves_candidate(update):
     source = SOURCE + '<!-- state -->'
     rejected = PASSING | dict(is_complete_game=False, issues=[FINDING['issue']], findings=[FINDING | update])
     with pytest.raises(PipelineExecutionError) as caught:
-        run_review_responses([json.dumps(rejected)] * 2, source)
+        run_review_responses([json.dumps(rejected)] * 3, source)
     assert caught.value.failure_family == 'review_evidence'
     assert caught.value.artifacts[0]['payload'] == source
 
@@ -245,6 +245,21 @@ def test_unexplained_score_exhaustion_is_bounded_and_retains_the_candidate():
     assert [a['attempt'] for a in report['assessments']] == [1, 2, 3]
     assert [a['assessment']['character_quality_score'] for a in report['assessments']] == [6, 5, 4]
     assert all(a['validation_errors'][0].startswith('unexplained_score:') for a in report['assessments'])
+
+
+def test_stale_source_ref_gets_an_extra_citation_reassessment():
+    stale = PASSING | dict(is_complete_game=False, issues=[FINDING['issue']], findings=[
+        FINDING | {'source_ref': '0000000000000000:0', 'code_excerpt': FINDING['code_excerpt']}])
+    result, client = run_review_responses([
+        json.dumps(stale),
+        json.dumps(stale),
+        json.dumps(PASSING),
+    ])
+    assert result.is_complete_game
+    assert client.await_count == 3
+    correction = client.await_args.kwargs['messages'][0]['content']
+    assert 'unknown or stale source reference' in correction
+    assert 'bracketed label' in correction
 
 
 def test_unexplained_score_reprompt_asks_for_raise_or_source_grounded_defect():

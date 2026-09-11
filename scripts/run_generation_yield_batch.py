@@ -190,6 +190,24 @@ def extract_quality_outcome(*payloads: Any) -> dict[str, Any]:
             )
         if final_score is None:
             final_score = _first_present(mapping, "final_score", "qualityScore", "quality_score")
+        if seed_worthy is None:
+            artifact_kind = mapping.get("artifact_kind") or mapping.get("artifactKind")
+            review_ran = _first_present(mapping, "review_ran", "reviewRan")
+            passed = mapping.get("passed")
+            if artifact_kind in {"tool", "science"} and review_ran is not None:
+                seed_worthy = bool(review_ran) and bool(passed)
+                if not seed_worthy_reason:
+                    seed_worthy_reason = (
+                        "structured_review_passed"
+                        if seed_worthy
+                        else (
+                            "structured_review_missing"
+                            if not review_ran
+                            else "quality_gate_unresolved"
+                        )
+                    )
+                if pipeline_success is None:
+                    pipeline_success = bool(passed)
 
     for payload in payloads:
         if payload is None:

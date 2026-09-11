@@ -1596,6 +1596,65 @@ describe('GameService', () => {
     persistGeneratedGameResultSpy.mockRestore();
   });
 
+  it('persists seedWorthy for succeeded tool and science interactive experiences', async () => {
+    const persistGeneratedGameResultSpy = jest
+      .spyOn(service as any, 'persistGeneratedGameResult')
+      .mockResolvedValue(undefined);
+    const assertTaskCanPersistResultSpy = jest
+      .spyOn(service as any, 'assertTaskCanPersistResult')
+      .mockResolvedValue(undefined);
+
+    prisma.game.findUnique.mockResolvedValue({ title: 'Pendulum' });
+    const keys = Object.keys(require('../src/game/generated-quality-policy').QUALITY_POLICY.artifact_rubrics.science.weights);
+    const assessment = {
+      policy_version: require('../src/game/generated-quality-policy').QUALITY_POLICY.version,
+      artifact_kind: 'science',
+      review_ran: true,
+      passed: true,
+      score: 8,
+      critical_issues: [],
+      scores: Object.fromEntries(keys.map((key: string) => [key, 8])),
+      evidence: Object.fromEntries(keys.map((key: string) => [key, 'Concrete evidence'])),
+    };
+
+    await (service as any).completePipelineTask({
+      gameId: 'game-science-seed',
+      userId: 'user-science-seed',
+      description: '作品类型：科学演示。单摆',
+      taskId: 'task-science-seed',
+      responseData: {
+        html_code: '<!DOCTYPE html><html><body>pendulum</body></html>',
+        runtime_profile: 'interactive_experience',
+        quality_score: 8,
+        quality_breakdown: assessment,
+        runtime_qa_report: {
+          ran: true,
+          passed: true,
+          contentChanged: true,
+          controlsExercised: 2,
+          issues: [],
+          viewports: [
+            { width: 1366, horizontalOverflow: false },
+            { width: 1920, horizontalOverflow: false },
+          ],
+        },
+        game_spec: { game_type: 'interactive_experience', artifact_kind: 'science' },
+      },
+    });
+
+    expect(generationTaskService.markSucceeded).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'task-science-seed',
+      resultSummary: expect.objectContaining({
+        seedWorthy: true,
+        seedWorthyReason: 'structured_review_passed',
+        pipelineSuccess: true,
+      }),
+    }));
+
+    assertTaskCanPersistResultSpy.mockRestore();
+    persistGeneratedGameResultSpy.mockRestore();
+  });
+
   it('clamps v2 create timeouts to at least 1800 seconds', async () => {
     (configService.get as jest.Mock).mockImplementation((key: string, defaultValue?: string) => {
       const values: Record<string, string> = {

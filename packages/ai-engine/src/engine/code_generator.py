@@ -403,7 +403,24 @@ class CodeGenerator(CodeGenerationPromptsMixin):
         if not rendered or _looks_like_complete_html_document(rendered):
             return False
         lower = rendered.lower()
-        return "<html" in lower or "<!doctype html" in lower
+        return any(marker in lower for marker in (
+            "<html", "<!doctype html", "<script", "<canvas", "<body", "<style",
+        ))
+
+    @staticmethod
+    def _join_html_continuation(prefix: str, suffix: str) -> str:
+        """Append a continuation without double-counting a repeated tail."""
+        prefix = str(prefix or "")
+        suffix = str(suffix or "").strip()
+        if suffix.startswith("```"):
+            suffix = _extract_html(suffix)
+        if _looks_like_complete_html_document(suffix):
+            return suffix
+        max_overlap = min(len(prefix), len(suffix), 400)
+        for overlap in range(max_overlap, 7, -1):
+            if prefix.endswith(suffix[:overlap]):
+                return prefix + suffix[overlap:]
+        return prefix + suffix
 
     async def _continue_truncated_html(
         self,
@@ -420,51 +437,57 @@ class CodeGenerator(CodeGenerationPromptsMixin):
         prefix = str(partial_text or "").strip()
         if not self._looks_like_partial_html_document(prefix):
             return None
-        tail = prefix[-4000:] if len(prefix) > 4000 else prefix
-        try:
-            continuation = await self._client.complete_with_truncation_retry(
-                max_tokens=min(max(1024, token_budget // 2), 4096),
-                system=system,
-                messages=[{
-                    "role": "user",
-                    "content": (
-                        "The previous HTML5 game document was cut off by the output length limit. "
-                        "Continue EXACTLY from the unfinished suffix below. Output only the remaining "
-                        "characters needed to finish a valid document. Do not restart the file, do not "
-                        "repeat the prefix, and do not wrap the answer in markdown.\n\n"
-                        f"UNFINISHED SUFFIX:\n{tail}"
+        continue_budget = min(max(2048, token_budget // 2), 8192)
+        combined = prefix
+        for _round in range(2):
+            tail = combined[-4000:] if len(combined) > 4000 else combined
+            try:
+                continuation = await self._client.complete_with_truncation_retry(
+                    max_tokens=continue_budget,
+                    system=system,
+                    messages=[{
+                        "role": "user",
+                        "content": (
+                            "The previous HTML5 game document was cut off by the output length limit. "
+                            "Continue EXACTLY from the unfinished suffix below. Output only the remaining "
+                            "characters needed to finish a valid document. Do not restart the file, do not "
+                            "repeat the prefix, and do not wrap the answer in markdown. Close every open "
+                            "tag, especially </script>, </body>, and </html>.\n\n"
+                            f"UNFINISHED SUFFIX:\n{tail}"
+                        ),
+                    }],
+                    step_key="code_generate.continue",
+                    stage="code_generating",
+                    request_timeout_s=min(int(request_timeout_s), 90),
+                    overall_timeout_s=min(int(overall_timeout_s), 90),
+                    allow_provider_fallback=True,
+                    response_size_hint="large",
+                    context_scope="request",
+                    compression_policy="code_generation",
+                    truncation_retry_attempts=2,
+                    truncation_retry_increment=1024,
+                    truncation_retry_max_tokens=8192,
+                    truncation_retry_guidance=self._truncation_compactness_guidance(
+                        token_budget=continue_budget,
                     ),
-                }],
-                step_key="code_generate.continue",
-                stage="code_generating",
-                request_timeout_s=min(int(request_timeout_s), 90),
-                overall_timeout_s=min(int(overall_timeout_s), 90),
-                allow_provider_fallback=True,
-                response_size_hint="large",
-                context_scope="request",
-                compression_policy="code_generation",
-                truncation_retry_attempts=1,
-                truncation_retry_increment=512,
-                truncation_retry_max_tokens=4096,
-                truncation_retry_guidance=self._truncation_compactness_guidance(token_budget=2048),
-                timeout_retry_attempts=0,
-                provider_retry_attempts=1,
-                provider_retry_on_timeout_errors=False,
-                excluded_provider_ids=excluded_provider_ids,
-                sampling_profile=sampling_profile,
-            )
-        except Exception:
-            logger.warning("Truncated HTML continuation failed", exc_info=True)
-            return None
-        suffix = str(continuation or "").strip()
-        if suffix.startswith("```"):
-            suffix = _extract_html(suffix)
-        combined = prefix + suffix
-        if _looks_like_complete_html_document(combined):
-            return combined
-        extracted = _extract_html(combined)
-        if _looks_like_complete_html_document(extracted):
-            return extracted
+                    timeout_retry_attempts=0,
+                    provider_retry_attempts=1,
+                    provider_retry_on_timeout_errors=False,
+                    excluded_provider_ids=excluded_provider_ids,
+                    sampling_profile=sampling_profile,
+                )
+            except Exception:
+                logger.warning("Truncated HTML continuation failed", exc_info=True)
+                return None
+            suffix = str(continuation or "").strip()
+            if not suffix:
+                break
+            combined = self._join_html_continuation(combined, suffix)
+            if _looks_like_complete_html_document(combined):
+                return combined
+            extracted = _extract_html(combined)
+            if _looks_like_complete_html_document(extracted):
+                return extracted
         return None
 
     @staticmethod

@@ -770,21 +770,28 @@ def test_regressing_patch_never_replaces_the_next_repair_base():
     assert mocks.generate.await_count == 1
 
 
-def test_exhausted_quality_repairs_preserve_candidate_without_full_regeneration():
-    import pytest
-    from src.engine.pipeline_errors import PipelineExecutionError
-    with pytest.raises(PipelineExecutionError) as caught:
-        _run_create_with_mocks(
-            generate_side_effect=[(_generated(BASE_CODE, "provider-a"), [])],
-            flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])],
-            review_side_effect=[_near_miss_review()] * 3,
-            compute_side_effect=[_quality(5.9)] * 3,
-        )
-    failure = caught.value
-    assert failure.failure_family == "quality_repair_exhausted"
-    assert "PATCHED_QUALITY_FIX" in failure.artifacts[0]["payload"]
-    assert failure.artifacts[1]["payload"]["patchAttempts"] == 2
-    assert failure.artifacts[1]["payload"]["fun_score"] == 6.0
+def test_exhausted_quality_repairs_regenerate_without_lowering_fun_threshold():
+    from src.engine.generated_quality_policy import QUALITY_POLICY
+    assert QUALITY_POLICY["tiers"]["standard"]["fun_score"] == 6.8
+    events = []
+    response, mocks = _run_create_with_mocks(
+        generate_side_effect=[
+            (_generated(BASE_CODE, "provider-a"), []),
+            (_generated(BASE_CODE, "provider-b"), []),
+        ],
+        flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])] * 2,
+        review_side_effect=[_near_miss_review()] * 4 + [_passing_review()],
+        compute_side_effect=[_quality(5.9)] * 4 + [_quality(7.1)],
+        progress_cb=lambda *event: events.append(event),
+    )
+    assert mocks.generate.await_count == 2
+    assert mocks.patch_text.await_count == 3
+    assert response.quality_score == 7.1
+    guidance = mocks.generate.await_args.kwargs["generation_guidance"]
+    assert "QUALITY AND PRESENTATION CORRECTIONS" in guidance
+    assert "fun_score 6.0 is below the required 6.8" in guidance
+    assert "LOCAL REPAIR FAILED" in guidance
+    assert "quality_repair_exhausted" in guidance
 
 
 def test_style_patch_also_runs_runtime_validation():

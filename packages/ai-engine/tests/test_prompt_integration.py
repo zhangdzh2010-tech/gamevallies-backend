@@ -234,6 +234,23 @@ class TestPromptIntegration(unittest.TestCase):
         self.assertIn("gameCanvas", html)
         self.assertEqual(mock_complete.await_count, 2)
         self.assertEqual(mock_complete.await_args_list[1].kwargs["step_key"], "code_generate.continue")
+        self.assertEqual(mock_complete.await_args_list[1].kwargs["truncation_retry_attempts"], 2)
+        self.assertEqual(mock_complete.await_args_list[1].kwargs["truncation_retry_max_tokens"], 8192)
+
+    def test_truncated_continuation_strips_repeated_suffix_and_can_take_a_second_round(self):
+        from src.engine.code_generator import CodeGenerator
+
+        generator = CodeGenerator(llm_mode="real")
+        prefix = "<!DOCTYPE html><html><body><script>const x=1;"
+        overlap = "const x=1;"
+        first = overlap + "const y=2;"
+        second = "</script></body></html>"
+        joined = generator._join_html_continuation(prefix, first)
+        self.assertEqual(joined.count("const x=1;"), 1)
+        self.assertIn("const y=2;", joined)
+        complete = generator._join_html_continuation(joined, second)
+        self.assertTrue(complete.endswith("</html>"))
+        self.assertTrue(generator._looks_like_partial_html_document("<canvas id='g'></canvas><script>boot();"))
 
     def test_generation_timeout_budget_follows_single_admin_budget(self):
         simple_spec = GameSpec(

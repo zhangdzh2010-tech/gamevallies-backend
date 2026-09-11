@@ -331,4 +331,38 @@ describe('GenerationTaskService', () => {
       rawStage: 'contract_qa',
     }));
   });
+
+  it('lifts seedWorthy onto generation-status for unlabeled tool and science results', () => {
+    const summary = service.toTaskSummary({
+      id: 'task-science-1',
+      taskType: 'pipeline_run',
+      region: 'cn',
+      status: GenerationTaskStatus.succeeded,
+      timeoutS: 900,
+      wsChannel: 'game:task-science-1',
+      gameId: 'game-science-1',
+      progressStage: 'completed',
+      progressPct: 100,
+      createdAt: new Date('2026-09-11T10:00:00.000Z'),
+      updatedAt: new Date('2026-09-11T10:02:00.000Z'),
+      metadata: {},
+      resultSummary: {
+        qualityScore: 8,
+        qualityBreakdown: {
+          artifact_kind: 'science',
+          review_ran: true,
+          passed: true,
+          score: 8,
+        },
+      },
+    });
+
+    expect(summary.seedWorthy).toBe(true);
+    expect(summary.seedWorthyReason).toBe('structured_review_passed');
+    expect(summary.resultSummary).toEqual(expect.objectContaining({
+      seedWorthy: true,
+      seedWorthyReason: 'structured_review_passed',
+      pipelineSuccess: true,
+    }));
+  });
 });

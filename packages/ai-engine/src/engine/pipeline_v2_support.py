@@ -23,7 +23,7 @@ QUALITY_GATE_PATCH_MAX_DIMENSION_GAP = 2.0
 
 # Continue repairing a validated candidate before discarding it. The create
 # orchestrator owns this budget; individual patch requests never recurse.
-QUALITY_GATE_PATCH_MAX_ATTEMPTS = 2
+QUALITY_GATE_PATCH_MAX_ATTEMPTS = 3
 
 
 GENERATION_PROGRESS_HEARTBEAT_INTERVAL_S = 15.0

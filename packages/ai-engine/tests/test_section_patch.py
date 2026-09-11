@@ -244,7 +244,7 @@ def test_exact_section_batches_use_original_offsets_and_reject_cascading_edits()
              SectionPatch(section='SCRIPT',operation='replace_exact',search='const lives = 3;',content='const lives = 4;')]
     result = apply_section_patches(code,edits)
     assert 'const score = 2; const lives = 3; const lives = 4;' in result
-    with pytest.raises(ValueError,match='search_not_unique'):
+    with pytest.raises(ValueError,match='search_not_found'):
         apply_section_patches(code,[edits[0],SectionPatch(section='SCRIPT',operation='replace_exact',
             search='const score = 2;',content='const score = 5;')])
 

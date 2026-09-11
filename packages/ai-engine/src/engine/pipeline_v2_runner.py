@@ -441,6 +441,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
         extra_preflight_retry_granted = False
         extra_truncation_retry_granted = False
         extra_provider_transport_retry_granted = False
+        extra_repair_regen_granted = False
 
         quality_attempt = 0
         while quality_attempt < len(attempt_plan):
@@ -663,7 +664,11 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                             )
                         except PipelineExecutionError as patch_exc:
                             patch_family = getattr(patch_exc, "failure_family", None)
-                            if patch_family not in {"repair_protocol", "repair_contract"}:
+                            if patch_family not in {
+                                "repair_protocol",
+                                "repair_contract",
+                                "quality_repair_exhausted",
+                            }:
                                 raise
                             qa_warnings.append({
                                 "type": "quality_gate_patch_degraded",
@@ -714,7 +719,19 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                     if next_provider_exclusions is not None:
                         provider_exclusions = next_provider_exclusions
                     if quality_attempt >= len(attempt_plan):
-                        raise last_quality_exc
+                        repair_family = getattr(last_quality_exc, "failure_family", None)
+                        if (
+                            repair_family in {
+                                "quality_repair_exhausted",
+                                "repair_protocol",
+                                "repair_contract",
+                            }
+                            and not extra_repair_regen_granted
+                        ):
+                            attempt_plan.append("simple")
+                            extra_repair_regen_granted = True
+                        else:
+                            raise last_quality_exc
                     generation_guidance = self._build_review_quality_guidance(
                         spec,
                         review,
@@ -722,7 +739,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                         quality_gate_errors,
                     )
                     repair_family = getattr(last_quality_exc, "failure_family", None)
-                    if repair_family in {"repair_protocol", "repair_contract"}:
+                    if repair_family in {"repair_protocol", "repair_contract", "quality_repair_exhausted"}:
                         generation_guidance = self._append_repair_fallback_guidance(
                             generation_guidance,
                             last_quality_exc,
@@ -746,7 +763,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                             "reviewRan": review.ran,
                             "isCompleteGame": review.is_complete_game,
                             "hasRealGameplay": review.has_real_gameplay,
-                            "repairFallbackReason": str(last_quality_exc)[:500] if repair_family in {"repair_protocol", "repair_contract"} else None,
+                            "repairFallbackReason": str(last_quality_exc)[:500] if repair_family in {"repair_protocol", "repair_contract", "quality_repair_exhausted"} else None,
                             "scores": {"fun": review.fun_score, "visual": review.visual_polish_score,
                                 "character": review.character_quality_score, "final": quality.final_score},
                         },
@@ -795,7 +812,6 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                     await asyncio.sleep(self._provider_transport_retry_backoff_s(quality_attempt))
                     continue
                 if getattr(exc, "failure_family", None) in {
-                    "quality_repair_exhausted",
                     "provider_transport",
                     "route_configuration",
                     "review_evidence",
@@ -808,10 +824,19 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                         exc.stage == "logic_generate"
                         and is_truncation_failure(exc)
                         and not extra_truncation_retry_granted
-                        and len(attempt_plan) < DEFAULT_STAGE_TOTAL_ATTEMPTS
                     ):
                         attempt_plan.append("safe")
                         extra_truncation_retry_granted = True
+                    elif (
+                        getattr(exc, "failure_family", None) in {
+                            "quality_repair_exhausted",
+                            "repair_protocol",
+                            "repair_contract",
+                        }
+                        and not extra_repair_regen_granted
+                    ):
+                        attempt_plan.append("simple")
+                        extra_repair_regen_granted = True
                     else:
                         raise
                 if is_truncation_failure(exc) and exc.stage == "logic_generate":

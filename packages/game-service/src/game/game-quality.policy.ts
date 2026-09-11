@@ -72,6 +72,96 @@ export function extractQualityBreakdownMetric(
 }
 
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+
+function firstPresent(record: Record<string, unknown> | null, ...keys: string[]): unknown {
+  if (!record) {
+    return undefined;
+  }
+  for (const key of keys) {
+    if (record[key] !== undefined && record[key] !== null) {
+      return record[key];
+    }
+  }
+  return undefined;
+}
+
+
+function asBoolean(value: unknown): boolean | null {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true' || normalized === '1' || normalized === 'yes') {
+      return true;
+    }
+    if (normalized === 'false' || normalized === '0' || normalized === 'no') {
+      return false;
+    }
+  }
+  return null;
+}
+
+
+export function extractOutcomeLabels(
+  qualityBreakdown: unknown,
+  extras: Record<string, unknown> = {},
+): {
+  seedWorthy: boolean | null;
+  seedWorthyReason: string | null;
+  pipelineSuccess: boolean | null;
+} {
+  const breakdown = asRecord(qualityBreakdown);
+  const extraRecord = asRecord(extras) || {};
+  const seedWorthy = asBoolean(firstPresent(breakdown, 'seed_worthy', 'seedWorthy')
+    ?? firstPresent(extraRecord, 'seedWorthy', 'seed_worthy'));
+  const rawReason = firstPresent(breakdown, 'seed_worthy_reason', 'seedWorthyReason')
+    ?? firstPresent(extraRecord, 'seedWorthyReason', 'seed_worthy_reason');
+  const seedWorthyReason = typeof rawReason === 'string' && rawReason.trim()
+    ? rawReason
+    : null;
+  const pipelineSuccess = asBoolean(firstPresent(breakdown, 'pipeline_success', 'pipelineSuccess')
+    ?? firstPresent(extraRecord, 'pipelineSuccess', 'pipeline_success'));
+  if (seedWorthy !== null && seedWorthyReason) {
+    return { seedWorthy, seedWorthyReason, pipelineSuccess };
+  }
+
+  const artifactKind = String(
+    firstPresent(breakdown, 'artifact_kind', 'artifactKind')
+    ?? firstPresent(extraRecord, 'artifactKind', 'artifact_kind')
+    ?? '',
+  );
+  const runtimeProfile = String(
+    firstPresent(breakdown, 'runtime_profile', 'runtimeProfile')
+    ?? firstPresent(extraRecord, 'runtimeProfile', 'runtime_profile')
+    ?? '',
+  );
+  const interactive = artifactKind === 'tool' || artifactKind === 'science'
+    || runtimeProfile === 'interactive_experience';
+  if (!interactive) {
+    return { seedWorthy, seedWorthyReason, pipelineSuccess };
+  }
+
+  const reviewRan = didStructuredReviewRun(breakdown) || asBoolean(firstPresent(breakdown, 'review_ran', 'reviewRan')) === true;
+  const passed = asBoolean(firstPresent(breakdown, 'passed')) === true;
+  const derivedSeed = reviewRan && passed;
+  return {
+    seedWorthy: derivedSeed,
+    seedWorthyReason: derivedSeed
+      ? 'structured_review_passed'
+      : (!reviewRan ? 'structured_review_missing' : 'quality_gate_unresolved'),
+    pipelineSuccess: pipelineSuccess ?? passed,
+  };
+}
+
+
 export function didStructuredReviewRun(qualityBreakdown: unknown): boolean {
   if (!qualityBreakdown || typeof qualityBreakdown !== 'object' || Array.isArray(qualityBreakdown)) {
     return false;

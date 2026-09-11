@@ -80,6 +80,28 @@ def test_extract_quality_outcome_from_generation_status_and_admin_diagnostics():
     assert degraded["pipelineSuccess"] is True
 
 
+def test_extract_quality_outcome_infers_tool_science_seed_worthy():
+    status = {
+        "status": "succeeded",
+        "qualityBreakdown": {
+            "artifact_kind": "science",
+            "review_ran": True,
+            "passed": True,
+            "score": 8.1,
+            "scientific_correctness": 8,
+        },
+    }
+    outcome = extract_quality_outcome(status)
+    assert outcome["seedWorthy"] is True
+    assert outcome["seedWorthyReason"] == "structured_review_passed"
+    assert outcome["pipelineSuccess"] is True
+
+    unlabeled_game = extract_quality_outcome({
+        "qualityBreakdown": {"review_fun_score": 7.2, "final_score": 7.0},
+    })
+    assert unlabeled_game["seedWorthy"] is None
+
+
 def test_ledger_row_persists_seed_worthy_and_quality_breakdown():
     row = ledger_row(
         run_id="run-1",

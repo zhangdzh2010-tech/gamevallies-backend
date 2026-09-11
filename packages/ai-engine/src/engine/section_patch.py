@@ -667,9 +667,13 @@ def parse_patch_response(
                 raise ValueError("patch_validation_failed:invalid_content")
             search = item.get("search")
             source_ref = item.get('source_ref')
-            if operation == "replace_exact" and ((search is None) == (source_ref is None)
-                or (source_ref is not None and (not isinstance(source_ref,str) or not source_ref))
-                or (search is not None and (not isinstance(search,str) or not search))):
+            has_search = isinstance(search, str) and bool(search)
+            has_source_ref = isinstance(source_ref, str) and bool(source_ref)
+            if operation == "replace_exact" and not has_search and not has_source_ref:
+                raise ValueError("patch_validation_failed:invalid_search")
+            if operation == "replace_exact" and source_ref is not None and not has_source_ref:
+                raise ValueError("patch_validation_failed:invalid_search")
+            if operation == "replace_exact" and search is not None and not has_search:
                 raise ValueError("patch_validation_failed:invalid_search")
             patches.append(SectionPatch(section=section, operation=operation,
                 content=item["content"], search=search, source_ref=source_ref, anchor=item.get("anchor") or anchor))
@@ -792,9 +796,13 @@ def apply_section_patches(
             whole_sections.add(patch.section)
         if patch.operation == "replace_exact":
             existing = extract_patchable_sections(updated).get(patch.section)
-            if existing is None or not patch.search or existing.count(patch.search) != 1:
-                raise ValueError("patch_validation_failed:search_not_unique:" + patch.section)
-            replacement = existing.replace(patch.search, patch.content, 1)
+            from .source_references import locate_source_edit, apply_source_edits
+            try:
+                start, end = locate_source_edit(
+                    existing or '', search=patch.search, source_ref=patch.source_ref)
+                replacement = apply_source_edits(existing or '', [(start, end, patch.content)])
+            except ValueError as exc:
+                raise ValueError("patch_validation_failed:" + str(exc) + ":" + patch.section) from exc
             if patch.section == PATCH_SECTION_SCRIPT:
                 updated = replace_script_content(updated, replacement)
             elif patch.section == PATCH_SECTION_STYLE:
