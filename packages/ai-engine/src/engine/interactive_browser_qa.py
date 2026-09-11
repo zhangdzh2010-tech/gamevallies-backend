@@ -130,7 +130,10 @@ async def load_work(host, code: str, *, hidden: bool = False):
 
 async def browser_report(code: str) -> dict:
     from playwright.async_api import async_playwright
-    issues, js_errors, sandbox_errors = [], [], []
+    issues, js_errors, sandbox_errors, layout_issues = [], [], [], []
+    def layout_issue(message):
+        issues.append(message)
+        layout_issues.append(message)
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
         try:
@@ -160,11 +163,11 @@ async def browser_report(code: str) -> dict:
                 viewports.append(layout)
                 for mode, result in [('visible', layout), ('hidden-reveal', layout['hiddenReveal'])]:
                     if result['horizontalOverflow']:
-                        issues.append(f'{width}×{height} ({mode}) 桌面视口出现横向溢出。')
+                        layout_issue(f'{width}×{height} ({mode}) 桌面视口出现横向溢出。')
                     # 460px is diagnostic; the product acceptance contract is 600px.
                     if width == 1000 and height == 600 and result['coreOutsideCount']:
                         labels = ', '.join(x['id'] or x['label'] or x['tag'] for x in result['coreOutsideViewport'][:6])
-                        issues.append(f'1000×600 ({mode}) 核心图形/控件不完整：{labels}。压缩主布局；长列表可在有界容器内滚动，次要说明可折叠。')
+                        layout_issue(f'1000×600 ({mode}) 核心图形/控件不完整：{labels}。压缩主布局；长列表可在有界容器内滚动，次要说明可折叠。')
                     if any(c['width'] <= 0 or c['height'] <= 0 for c in result['canvasSizes']):
                         issues.append(f'{width}×{height} ({mode}) 可见Canvas像素尺寸为零。')
                 if (width, height) == (1000, 600):
@@ -175,7 +178,7 @@ async def browser_report(code: str) -> dict:
                     await host.wait_for_timeout(150)
                     layout['fontStress'] = await frame.evaluate(LAYOUT)
                     if layout['fontStress']['coreOutsideCount'] or layout['fontStress']['horizontalOverflow']:
-                        issues.append('1000×600 字号容差检查（根字号+12.5%）核心图形/控件溢出。为字体差异留余量，缩小主图或使用响应式布局；不要缩小文字或隐藏核心控件。')
+                        layout_issue('1000×600 字号容差检查（根字号+12.5%）核心图形/控件溢出。为字体差异留余量，缩小主图或使用响应式布局；不要缩小文字或隐藏核心控件。')
 
             await host.set_viewport_size({'width':1440,'height':900})
             frame = await load_work(host, code)
@@ -347,6 +350,7 @@ async def browser_report(code: str) -> dict:
                         f'输入{check["input"]}，预期{check["expected"]}，实际{check["observed"]}。')
             issues = list(dict.fromkeys(issues + js_errors + sandbox_errors))
             return {'ran':True,'passed':not issues,'issues':issues,'js_errors':list(dict.fromkeys(js_errors)),
+                'layoutIssues':list(dict.fromkeys(layout_issues)),
                 'sandbox':'allow-scripts','sandboxViolations':list(dict.fromkeys(sandbox_errors)),
                 'interaction_performed':bool(exercised),'dom_changed_after_input':changed,
                 'controlsExercised':exercised,'controlsDiscovered':total,'controlChecks':control_checks,
