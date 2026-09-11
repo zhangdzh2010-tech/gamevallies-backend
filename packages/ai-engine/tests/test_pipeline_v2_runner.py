@@ -477,7 +477,7 @@ def test_contract_qa_loop_caps_targeted_repairs_to_one_round():
 
 
 def test_create_generation_attempt_plan_uses_latency_safe_retry_budgets():
-    assert V2PipelineRunner._build_create_generation_attempt_plan("standard") == ("standard", "standard")
+    assert V2PipelineRunner._build_create_generation_attempt_plan("standard") == ("standard", "simple", "safe")
     assert V2PipelineRunner._build_create_generation_attempt_plan("simple") == ("simple", "standard")
     assert V2PipelineRunner._build_create_generation_attempt_plan("complex") == ("complex", "standard")
     assert V2PipelineRunner._build_create_generation_attempt_plan("showcase") == ("showcase", "complex", "standard")
@@ -2678,6 +2678,77 @@ def test_quality_gate_allows_standard_tier_when_structured_review_is_missing():
     )
 
     assert errors == []
+
+
+@pytest.mark.asyncio
+async def test_resolve_create_review_degrades_infrastructure_failure_for_standard_tier():
+    runner = V2PipelineRunner()
+    spec = GameSpec(
+        game_type="casual",
+        generation_tier="standard",
+        source_description="A polished delivery runner.",
+        entities=[],
+    )
+    qa_warnings: list[dict] = []
+    infra_error = PipelineExecutionError(
+        "Code review evidence could not be validated: assessment unavailable",
+        stage="code_review",
+        failure_family="review_infrastructure",
+    )
+
+    with patch.object(
+        runner,
+        "_resolve_concurrent_review",
+        new=AsyncMock(side_effect=infra_error),
+    ):
+        review = await runner._resolve_create_review(
+            None,
+            "<html></html>",
+            spec=spec,
+            review_requested=True,
+            qa_warnings=qa_warnings,
+            progress_cb=None,
+            game_id="game-1",
+            user_id="user-1",
+        )
+
+    assert review.ran is False
+    assert qa_warnings[0]["type"] == "review_infrastructure_degraded"
+
+
+@pytest.mark.asyncio
+async def test_resolve_create_review_keeps_showcase_fail_closed_on_infrastructure_failure():
+    runner = V2PipelineRunner()
+    spec = GameSpec(
+        game_type="casual",
+        generation_tier="showcase",
+        source_description="A premium showcase runner.",
+        entities=[],
+    )
+    infra_error = PipelineExecutionError(
+        "Code review evidence could not be validated: assessment unavailable",
+        stage="code_review",
+        failure_family="review_infrastructure",
+    )
+
+    with patch.object(
+        runner,
+        "_resolve_concurrent_review",
+        new=AsyncMock(side_effect=infra_error),
+    ):
+        with pytest.raises(PipelineExecutionError) as caught:
+            await runner._resolve_create_review(
+                None,
+                "<html></html>",
+                spec=spec,
+                review_requested=True,
+                qa_warnings=[],
+                progress_cb=None,
+                game_id="game-1",
+                user_id="user-1",
+            )
+
+    assert caught.value.failure_family == "review_infrastructure"
 
 
 def test_quality_gate_blocks_showcase_results_with_heavy_review_penalty():

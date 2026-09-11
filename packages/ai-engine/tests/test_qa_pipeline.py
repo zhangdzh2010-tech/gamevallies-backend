@@ -1078,3 +1078,48 @@ def test_syntax_repair_enables_fast_provider_fallback():
     assert mock_complete.await_args.kwargs["provider_retry_on_timeout_errors"] is False
     assert mock_complete.await_args.kwargs["context_scope"] == "request"
     assert mock_complete.await_args.kwargs["prefer_fast"] is True
+
+
+def test_run_with_retries_signals_regeneration_when_repair_returns_unchanged_code():
+    from types import SimpleNamespace
+
+    pipeline = QAPipeline()
+    broken = """<!DOCTYPE html><html><head><meta charset='UTF-8'></head><body>
+<script>const broken = ;</script></body></html>"""
+    syntax_errors = [
+        QACheckError(
+            type="L1_syntax",
+            message="JavaScript syntax error in <script>: Line 2: Unexpected token ;",
+            severity="error",
+        )
+    ]
+    failed_check = SimpleNamespace(passed=False, errors=syntax_errors, issue_list=[])
+
+    with patch.object(pipeline, "check", side_effect=[failed_check, failed_check]), patch.object(
+        pipeline,
+        "_syntax_repair_errors",
+        return_value=syntax_errors,
+    ), patch.object(
+        pipeline,
+        "_should_attempt_syntax_only_repair",
+        return_value=True,
+    ), patch.object(
+        pipeline,
+        "repair_code",
+        new=AsyncMock(return_value=broken),
+    ), patch.object(
+        pipeline._client,
+        "is_enabled",
+        return_value=True,
+    ):
+        result = asyncio.run(
+            pipeline.run_with_auto_fix(
+                broken,
+                GameSpec(game_type="casual"),
+                max_retries=2,
+            )
+        )
+
+    assert result.success is False
+    assert result.needs_regeneration is True
+    assert result.retries == 1

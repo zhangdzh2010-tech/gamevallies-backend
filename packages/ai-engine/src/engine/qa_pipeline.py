@@ -36,7 +36,7 @@ from ..api.models import (
 )
 from ..config.settings import settings
 from ..config.timeout_store import get_int as get_timeout_int
-from ..services.llm_client import LLMClient
+from ..services.llm_client import LLMClient, LLMResponseTruncatedError
 from ..services.llm_gateway import get_request_context
 from ..services.task_memory import task_memory
 from .prompt_store import require_prompt
@@ -836,19 +836,44 @@ class QAPipeline:
                 except Exception:
                     pass
             logger.info(f"QA attempt {attempt} failed ({len(repairable_errors)} syntax errors), triggering syntax-only auto-fix")
-            repaired_code = await self.repair_code(
-                code,
-                repairable_errors,
-                game_spec,
-                runtime_contract=runtime_contract,
-                prompt_bundle_snapshot=prompt_bundle_snapshot,
-                fix_round=attempt + 1,
-                max_fix_rounds=max_retries,
-            )
+            try:
+                repaired_code = await self.repair_code(
+                    code,
+                    repairable_errors,
+                    game_spec,
+                    runtime_contract=runtime_contract,
+                    prompt_bundle_snapshot=prompt_bundle_snapshot,
+                    fix_round=attempt + 1,
+                    max_fix_rounds=max_retries,
+                )
+            except LLMResponseTruncatedError as exc:
+                logger.warning(
+                    "Syntax repair hit output truncation on round %s; signaling full regeneration",
+                    repair_attempts + 1,
+                )
+                final = self.check(code, runtime_contract=runtime_contract)
+                return QAResult(
+                    success=False,
+                    code=code,
+                    retries=repair_attempts,
+                    last_errors=final.errors,
+                    needs_regeneration=True,
+                    issue_list=final.issue_list,
+                )
             repair_attempts += 1
             repaired_hash = self._code_hash(repaired_code)
             if repaired_hash == previous_code_hash:
                 logger.warning("QA repair produced an unchanged code hash on round %s; stopping early", repair_attempts)
+                final = self.check(code, runtime_contract=runtime_contract)
+                if not final.passed:
+                    return QAResult(
+                        success=False,
+                        code=code,
+                        retries=repair_attempts,
+                        last_errors=final.errors,
+                        needs_regeneration=True,
+                        issue_list=final.issue_list,
+                    )
                 code = repaired_code
                 break
 
@@ -1489,7 +1514,7 @@ class QAPipeline:
             response_size_hint="full_document",
             context_scope="request",
             compression_policy="qa_fix",
-            truncation_retry_attempts=1,
+            truncation_retry_attempts=2,
             truncation_retry_increment=2048,
             truncation_retry_max_tokens=retry_ceiling,
             truncation_retry_min_tokens=retry_floor,
@@ -1767,6 +1792,8 @@ class QAPipeline:
                             logger.warning(
                                 "Windowed script syntax repair returned invalid JavaScript; falling back to whole-script repair"
                             )
+                    except LLMResponseTruncatedError:
+                        raise
                     except Exception as window_exc:
                         logger.warning(
                             "Windowed script syntax repair failed, falling back to whole-script repair: %s",
@@ -1780,6 +1807,8 @@ class QAPipeline:
                 )
                 if repaired_script.strip():
                     return replace_script_content(code, repaired_script)
+            except LLMResponseTruncatedError:
+                raise
             except Exception as script_exc:
                 logger.warning(
                     "Whole-script syntax repair failed; skipping full-document fallback for script-only syntax errors: %s",
@@ -1805,6 +1834,8 @@ class QAPipeline:
                 f"Applied QA fix family={SYNTAX_REPAIR_FAMILY} round={fix_round}/{max_fix_rounds}",
             )
             return repaired
+        except LLMResponseTruncatedError:
+            raise
         except Exception as e:
             logger.error(f"LLM auto-fix failed: {e}")
             return code

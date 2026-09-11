@@ -590,13 +590,17 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
 
                 final_check = self.qa_pipeline.check(qa_result.code)
                 code_bytes = len(qa_result.code.encode("utf-8"))
-                review = LLMReviewResult(ran=False)
-                if review_requested:
-                    review = await self._resolve_concurrent_review(
-                        concurrent_review,
-                        qa_result.code,
-                        user_requirements=spec.source_description or "",
-                    )
+                review = await self._resolve_create_review(
+                    concurrent_review,
+                    qa_result.code,
+                    spec=spec,
+                    user_requirements=spec.source_description or "",
+                    review_requested=review_requested,
+                    qa_warnings=qa_warnings,
+                    progress_cb=progress_cb,
+                    game_id=request.game_id,
+                    user_id=request.user_id,
+                )
                 quality = self.quality_scorer.compute(
                     static=QAStaticResult(
                         passed=final_check.passed,
@@ -636,31 +640,46 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                         getattr(settings, "QUALITY_GATE_PATCH_REPAIR_ENABLED", True)
                         and self._should_attempt_quality_patch_repair(spec, review, quality)
                     ):
-                        patch_outcome = await self._repair_create_quality(
-                            request=request,
-                            spec=spec,
-                            runtime_contract=runtime_contract,
-                            code=qa_result.code,
-                            generation_strategy=generated.strategy,
-                            base_retries=qa_result.retries + runtime_retries,
-                            review=review,
-                            quality=quality,
-                            quality_gate_errors=quality_gate_errors,
-                            progress_cb=progress_cb,
-                            allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
-                        )
-                        # Patch repair passed the full gate; adopt the
-                        # patched candidate without spending another
-                        # full-generation attempt.
-                        qa_result.code = patch_outcome.code
-                        review = patch_outcome.review
-                        quality = patch_outcome.quality
-                        code_bytes = len(patch_outcome.code.encode("utf-8"))
-                        runtime_qa = patch_outcome.runtime_qa
-                        runtime_retries += patch_outcome.runtime_retries
-                        qa_warnings.extend(patch_outcome.qa_warnings)
-                        last_quality_exc = None
-                        break
+                        try:
+                            patch_outcome = await self._repair_create_quality(
+                                request=request,
+                                spec=spec,
+                                runtime_contract=runtime_contract,
+                                code=qa_result.code,
+                                generation_strategy=generated.strategy,
+                                base_retries=qa_result.retries + runtime_retries,
+                                review=review,
+                                quality=quality,
+                                quality_gate_errors=quality_gate_errors,
+                                progress_cb=progress_cb,
+                                allow_runtime_qa_unavailable=allow_runtime_qa_unavailable,
+                            )
+                        except PipelineExecutionError as patch_exc:
+                            patch_family = getattr(patch_exc, "failure_family", None)
+                            if patch_family not in {"repair_protocol", "repair_contract"}:
+                                raise
+                            qa_warnings.append({
+                                "type": "quality_gate_patch_degraded",
+                                "message": "Targeted patch repair failed; falling back to full regeneration.",
+                                "details": {
+                                    "failureFamily": patch_family,
+                                    "error": str(patch_exc)[:500],
+                                },
+                            })
+                            last_quality_exc = patch_exc
+                        else:
+                            # Patch repair passed the full gate; adopt the
+                            # patched candidate without spending another
+                            # full-generation attempt.
+                            qa_result.code = patch_outcome.code
+                            review = patch_outcome.review
+                            quality = patch_outcome.quality
+                            code_bytes = len(patch_outcome.code.encode("utf-8"))
+                            runtime_qa = patch_outcome.runtime_qa
+                            runtime_retries += patch_outcome.runtime_retries
+                            qa_warnings.extend(patch_outcome.qa_warnings)
+                            last_quality_exc = None
+                            break
                     if (
                         quality_attempt >= len(attempt_plan)
                         and self._can_accept_showcase_near_miss(
@@ -1922,6 +1941,60 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
             return
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+    async def _resolve_create_review(
+        self,
+        review_state: Optional[dict[str, Any]],
+        code: str,
+        *,
+        spec: GameSpec,
+        user_requirements: str = "",
+        review_requested: bool,
+        qa_warnings: list[dict[str, Any]],
+        progress_cb: ProgressCallback,
+        game_id: str,
+        user_id: str,
+    ) -> LLMReviewResult:
+        if not review_requested:
+            return LLMReviewResult(ran=False)
+        try:
+            return await self._resolve_concurrent_review(
+                review_state,
+                code,
+                user_requirements=user_requirements,
+            )
+        except PipelineExecutionError as exc:
+            if (
+                getattr(exc, "failure_family", None) != "review_infrastructure"
+                or self._is_structured_review_required(spec)
+            ):
+                raise
+            logger.warning(
+                "Structured review unavailable for non-showcase create; degrading to static/runtime QA only: %s",
+                exc,
+            )
+            qa_warnings.append({
+                "type": "review_infrastructure_degraded",
+                "message": "Structured code review unavailable; proceeding with static and runtime QA only.",
+                "details": {
+                    "failureFamily": exc.failure_family,
+                    "stage": exc.stage,
+                    "error": str(exc)[:500],
+                },
+            })
+            self._notify(
+                progress_cb,
+                "code_review",
+                96,
+                "Structured review unavailable; using static and runtime QA only",
+                {
+                    "gameId": game_id,
+                    "userId": user_id,
+                    "failureFamily": exc.failure_family,
+                    "degraded": True,
+                },
+            )
+            return LLMReviewResult(ran=False)
 
     async def _resolve_concurrent_review(
         self,

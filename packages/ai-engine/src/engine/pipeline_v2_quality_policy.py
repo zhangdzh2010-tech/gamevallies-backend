@@ -98,7 +98,7 @@ class PipelineV2QualityPolicyMixin:
         plan_by_budget: dict[str, tuple[str, ...]] = {
             "safe": ("safe", "simple"),
             "simple": ("simple", "standard"),
-            "standard": ("standard", "standard"),
+            "standard": ("standard", "simple", "safe"),
             "complex": ("complex", "standard"),
             "showcase": ("showcase", "complex", "standard"),
         }
