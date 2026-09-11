@@ -4,6 +4,7 @@ import pytest
 from src.api.models import GameSpec, RunPipelineV2Request
 from src.engine.artifact_quality import infer_artifact_kind, request_artifact_kind, assess_review, preservation_errors
 from src.engine.generated_quality_policy import QUALITY_POLICY
+from src.engine.source_references import source_reference_catalog
 
 
 def review(kind, **updates):
@@ -79,3 +80,64 @@ def test_cosmetic_edit_restores_source_scripts():
     assert result == '<h1>新名</h1><script>model(1);</script>'
     assert not preservation_errors(source, result, '仅修改标题')
     assert preserve_cosmetic_scripts(source, candidate, '修改模型参数') == candidate
+
+
+def test_suggestions_cannot_trigger_repairs_or_change_pass_status():
+    result = assess_review(review('tool', suggestions=['重置处于默认状态时可考虑添加提示']), 'tool')
+    assert result['passed'] and result['issues'] == []
+    assert result['suggestions']
+
+
+def grounded_review(**updates):
+    code = '<button onclick="value=2">加一</button>'
+    brief = '点击加一按钮将当前值增加一。'
+    issue = '加一操作赋值为2，重复点击不能递增。'
+    finding = dict(issue=issue, dimension='complete', basis='requirement',
+        requirement_quote=brief, source_ref=next(iter(source_reference_catalog(code))),
+        reason='处理器使用常量赋值，第二次点击仍为2，违反递增要求。', correction='改为递增当前值。')
+    finding.update(updates)
+    return code, brief, review('tool', complete=False, critical_issues=[issue], findings=[finding])
+
+
+def test_actual_requirement_defect_remains_blocking():
+    code, brief, raw = grounded_review()
+    result = assess_review(raw, 'tool', brief=brief, code=code)
+    assert result['review_ran'] and not result['passed']
+    assert result['issues'] == ['加一操作赋值为2，重复点击不能递增。', '未完整实现用户要求']
+
+
+@pytest.mark.parametrize('updates', [
+    {'requirement_quote':'必须保留全部历史记录'},
+    {'source_ref':'0000000000000000:0'},
+    {'basis':'rubric','rubric_dimension':'functional_correctness'},
+    {'reason':''}, {'correction':''},
+])
+def test_unsupported_defect_requires_review_correction(updates):
+    code, brief, raw = grounded_review(**updates)
+    result = assess_review(raw, 'tool', brief=brief, code=code)
+    assert not result['review_ran'] and not result['passed']
+
+
+def test_source_reference_is_bound_to_exact_candidate():
+    code, brief, raw = grounded_review()
+    assert not assess_review(raw, 'tool', brief=brief, code=code+' ')['review_ran']
+
+
+def test_low_score_requires_its_own_defect_evidence():
+    weights = QUALITY_POLICY['artifact_rubrics']['tool']['weights']
+    scores = {k:8 for k in weights}
+    key = next(iter(weights))
+    scores[key] = 6
+    invalid = assess_review(review('tool', scores=scores), 'tool')
+    assert not invalid['review_ran']
+    code, brief, raw = grounded_review(dimension=key, basis='rubric', rubric_dimension=key)
+    data = json.loads(raw)
+    data.update(complete=True, scores=scores)
+    result = assess_review(json.dumps(data), 'tool', brief=brief, code=code)
+    assert result['review_ran'] and not result['passed']
+
+
+def test_free_text_defect_is_not_an_actionable_repair_request():
+    result = assess_review(review('tool', critical_issues=['应保留未要求的历史记录'],
+        issues=['未观察到实际错误，可考虑优化']), 'tool')
+    assert not result['review_ran']
