@@ -558,3 +558,58 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(result.result['runtime_qa_report']['contentChanged'])
         finally:
             await manager.clear()
+
+class GroundedResetAcceptance(unittest.IsolatedAsyncioTestCase):
+    BRIEF = '调整参数；重置恢复全部初始状态。'
+    HTML = '''<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>
+    <h1>参数模型</h1><label>速度<input id="speed" type="range" min="0.05" max="0.45" step="0.01" value="0.15"></label>
+    <output id="value">0.15</output><button id="reset">↺ 重置</button>
+    <script>const s=document.getElementById('speed'),o=document.getElementById('value');
+    s.oninput=()=>o.textContent=s.value;
+    document.getElementById('reset').onclick=()=>{o.textContent=s.value;};</script></body></html>'''
+
+    def test_requirement_is_opt_in_and_preserves_explicit_exceptions(self):
+        from src.engine.interactive_contract_probes import reset_requirement
+        self.assertEqual(reset_requirement(self.BRIEF), '重置恢复全部初始状态')
+        self.assertIsNone(reset_requirement('提供重置按钮'))
+        self.assertIsNone(reset_requirement('不要重置恢复全部初始状态。'))
+        self.assertIsNone(reset_requirement(self.BRIEF+'重置时保留用户选择的预设。'))
+        self.assertIsNone(reset_requirement('Do not reset restore all initial state.'))
+        self.assertEqual(reset_requirement('Reset must restore all initial state.'),'Reset must restore all initial state')
+
+    async def test_real_transition_catches_reset_that_only_updates_status(self):
+        bad = await validate_interactive_html(self.HTML, brief=self.BRIEF)
+        checks = [x for x in bad['contractChecks'] if x['contract']=='reset_all_inputs_v1']
+        self.assertEqual(len(checks),1)
+        self.assertEqual(checks[0]['status'],'failed')
+        self.assertEqual(checks[0]['expected'][0]['value'],'0.15')
+        self.assertEqual(checks[0]['observed'][0]['value'],'0.45')
+        self.assertFalse(bad['passed'])
+        self.assertNotEqual(set(bad['issues']),set(bad['layoutIssues']))
+        fixed = self.HTML.replace('()=>{o.textContent=s.value;}',"()=>{s.value='0.15';o.textContent=s.value;}")
+        good = await validate_interactive_html(fixed, brief=self.BRIEF)
+        self.assertTrue(good['passed'],good['issues'])
+        self.assertEqual(good['contractChecks'][-1]['status'],'passed')
+
+    async def test_reset_probe_does_not_invent_requirement_or_ambiguous_scope(self):
+        allowed = await validate_interactive_html(self.HTML)
+        self.assertTrue(allowed['passed'],allowed['issues'])
+        self.assertFalse(allowed['contractChecks'])
+        ambiguous = self.HTML.replace('</body>','<button>全部重置</button></body>')
+        report = await validate_interactive_html(ambiguous, brief=self.BRIEF)
+        self.assertEqual(report['contractChecks'][-1]['status'],'unverified')
+        self.assertIn('unique',report['contractChecks'][-1]['reason'])
+
+    async def test_form_reset_restores_number_text_select_and_checkbox(self):
+        html = self.HTML.replace('<label>速度','<form id="params"><label>速度').replace(
+            '<button id="reset">', '<input type="number" value="4" min="1" max="8"><input type="text" value="初值">'
+            '<select><option value="a">甲</option><option value="b">乙</option></select>'
+            '<input type="checkbox" checked><button type="button" id="reset">').replace(
+            '<script>', '</form><script>').replace(
+            '()=>{o.textContent=s.value;}', "()=>{HTMLFormElement.prototype.reset.call(document.getElementById('params'));o.textContent=s.value;}")
+        report = await validate_interactive_html(html, brief=self.BRIEF)
+        check = report['contractChecks'][-1]
+        self.assertEqual(check['status'],'passed',check)
+        self.assertEqual(len(check['expected']),5)
+        self.assertTrue(all(a['value']!=b['value'] for a,b in zip(check['input'],check['expected'])))
+        self.assertEqual(check['expected'],check['observed'])

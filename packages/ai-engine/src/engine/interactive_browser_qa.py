@@ -9,7 +9,7 @@ import re
 
 from .runtime_isolation import network_policy_meta, restrict_context_network
 from .rendered_text_evidence import CANVAS_TEXT_PROBE
-from .interactive_contract_probes import run_input_contract_probes
+from .interactive_contract_probes import run_input_contract_probes, run_reset_contract_probe, reset_requirement
 
 # Same per-work storage semantics as the player's workStorageBridge.js. Data is
 # ephemeral in QA; neither generated code nor the adapter can read host storage.
@@ -128,7 +128,7 @@ async def load_work(host, code: str, *, hidden: bool = False):
     return frame
 
 
-async def browser_report(code: str) -> dict:
+async def browser_report(code: str, *, brief: str = '') -> dict:
     from playwright.async_api import async_playwright
     issues, js_errors, sandbox_errors, layout_issues = [], [], [], []
     def layout_issue(message):
@@ -344,6 +344,11 @@ async def browser_report(code: str) -> dict:
             # Start from clean state so previous edits cannot mask a dead input.
             frame = await load_work(host, code)
             contract_checks = await run_input_contract_probes(frame, host)
+            # Stateful acceptance needs its own clean transition, independent
+            # of the smoke walk's control order and intervening reloads.
+            if reset_requirement(brief):
+                frame = await load_work(host, code)
+                contract_checks.extend(await run_reset_contract_probe(frame, host, brief))
             for check in contract_checks:
                 if check['status'] == 'failed':
                     issues.append(f'输入输出契约失败 {check["contract"]}「{check["control"]}」：'

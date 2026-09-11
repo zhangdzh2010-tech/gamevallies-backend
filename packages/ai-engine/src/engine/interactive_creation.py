@@ -64,13 +64,13 @@ def extract_interactive_document(text: str) -> str:
     return code[:endings[-1].end()] if endings else code
 
 
-async def validate_interactive_html(code: str) -> dict:
+async def validate_interactive_html(code: str, *, brief: str = '') -> dict:
     from .runtime_qa import _runtime_qa_max_concurrency, _runtime_qa_semaphore
     async with _runtime_qa_semaphore(_runtime_qa_max_concurrency()):
-        return await _validate_interactive_html(code)
+        return await _validate_interactive_html(code, brief=brief)
 
 
-async def _validate_interactive_html(code: str) -> dict:
+async def _validate_interactive_html(code: str, *, brief: str = '') -> dict:
     """Execute supplied HTML in a network-isolated Chromium context."""
     has_end = bool(re.search(r'</html\s*>\s*$', code, re.I))
     has_script = bool(re.search(r'<script\b|\son(?:click|input|change|submit|keydown|keyup)\s*=', code, re.I))
@@ -80,7 +80,7 @@ async def _validate_interactive_html(code: str) -> dict:
     if len(code.encode()) > 300000:
         return {'passed':False,'issues':['作品超过 300 KB，请精简内联代码。']}
     from .interactive_browser_qa import browser_report
-    return await browser_report(code)
+    return await browser_report(code, brief=brief)
 
 
 SYSTEM_PROMPT = '''你是桌面交互作品工程师。根据用户的原始创意，输出单个可离线运行的完整 HTML，只有代码，不要 Markdown。
@@ -204,7 +204,7 @@ async def run_interactive(request, progress_cb=None):
         if progress_cb: progress_cb('runtime_simulation_qa',90,'正在检查桌面显示与交互',{'attempt':attempt})
         qa_attempts += 1
         try:
-            report = await asyncio.wait_for(validate_interactive_html(code), timeout=min(60,max(1,deadline-time.time())))
+            report = await asyncio.wait_for(validate_interactive_html(code, brief=original + ('\n' + feedback if feedback else '')), timeout=min(60,max(1,deadline-time.time())))
         except Exception as exc:
             tier = str(getattr(request, 'generation_tier', '') or 'standard').lower()
             if not settings.RUNTIME_QA_REQUIRED and tier != 'showcase':
