@@ -100,11 +100,25 @@ def pick_case(run_index: int) -> dict[str, str]:
     return ALL_CASES[(run_index - 1) % len(ALL_CASES)]
 
 
+INFRA_YIELD_FAMILIES = frozenset({"infra_maintenance", "provider_transport"})
+
+
 def is_generation_maintenance_error(exc: BaseException) -> bool:
     message = str(exc or "")
     if "GENERATION_MAINTENANCE" in message:
         return True
     return "HTTP 503" in message and "维护" in message
+
+
+def is_provider_gateway_timeout_error(exc: BaseException) -> bool:
+    message = str(exc or "")
+    return "504" in message and "Gateway Timeout" in message
+
+
+def is_infra_yield_row(row: dict[str, Any]) -> bool:
+    status = str(row.get("finalStatus") or "").lower()
+    family = str(row.get("failureFamily") or "").lower()
+    return status in INFRA_YIELD_FAMILIES or family in INFRA_YIELD_FAMILIES
 
 
 def _as_mapping(value: Any) -> dict[str, Any]:
@@ -374,12 +388,7 @@ def write_summary(
     )
     succeeded = statuses.get("succeeded", 0)
     completed = len(results)
-    product = [
-        r
-        for r in results
-        if str(r.get("finalStatus") or "").lower() not in {"infra_maintenance"}
-        and str(r.get("failureFamily") or "").lower() != "infra_maintenance"
-    ]
+    product = [r for r in results if not is_infra_yield_row(r)]
     product_succeeded = sum(1 for r in product if str(r.get("finalStatus") or "").lower() == "succeeded")
     seed_labeled = [r for r in product if r.get("seedWorthy") is not None]
     seed_worthy = sum(1 for r in seed_labeled if r.get("seedWorthy"))
@@ -528,17 +537,23 @@ def main(argv: list[str]) -> int:
             )
         except Exception as exc:
             maintenance = is_generation_maintenance_error(exc)
+            transport = is_provider_gateway_timeout_error(exc)
+            family = (
+                "infra_maintenance" if maintenance
+                else "provider_transport" if transport
+                else "script_error"
+            )
             result = {
                 "runIndex": run_index,
                 "name": case["name"],
                 "title": case["title"],
                 "startedAt": now_iso(),
                 "finalStatus": "infra_maintenance" if maintenance else "script_error",
-                "failureFamily": "infra_maintenance" if maintenance else "script_error",
+                "failureFamily": family,
                 "errorMessage": str(exc),
                 "completedAt": now_iso(),
                 "seedWorthy": False,
-                "seedWorthyReason": "infra_maintenance" if maintenance else "script_error",
+                "seedWorthyReason": family,
             }
         row = ledger_row(
             run_id=result.get("runId") or str(uuid.uuid4()),

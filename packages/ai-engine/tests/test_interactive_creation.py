@@ -714,6 +714,27 @@ class ScienceDemoMotionContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report['motionChecks'][0]['control'], '开始')
         self.assertFalse(report['motionChecks'][0]['advances'])
 
+    async def test_font_stress_layout_compact_is_applied_before_llm_repair(self):
+        failed = {
+            'ran': True, 'passed': False,
+            'issues': ['1000×600 字号容差检查（根字号+12.5%）核心图形/控件溢出。'],
+            'layoutIssues': ['1000×600 字号容差检查（根字号+12.5%）核心图形/控件溢出。'],
+        }
+        passed = {'ran': True, 'passed': True, 'issues': [], 'layoutIssues': []}
+        request = normalize_interactive_request(RunPipelineV2Request(
+            game_id='game', user_id='user', timeout_s=1800,
+            raw_user_input='作品类型：科学演示。做一个单摆实验。',
+            source_spec=GameSpec(game_type='interactive_experience', source_description='单摆')))
+        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
+                   new=AsyncMock(side_effect=[GOOD, await fake_llm(step_key='code_review')])) as llm, patch(
+                'src.engine.interactive_creation.validate_interactive_html',
+                new=AsyncMock(side_effect=[failed, passed])) as qa:
+            result = await run_interactive(request)
+        self.assertIn('data-work-layout-compact', result.html_code)
+        self.assertEqual(qa.await_count, 2)
+        self.assertEqual([c.kwargs['step_key'] for c in llm.call_args_list],
+                         ['code_generate.full', 'code_review'])
+
     async def test_science_generation_prompt_includes_runtime_contract(self):
         request = normalize_interactive_request(RunPipelineV2Request(
             game_id='game', user_id='user', timeout_s=1800,
@@ -728,6 +749,27 @@ class ScienceDemoMotionContract(unittest.IsolatedAsyncioTestCase):
             await run_interactive(request)
         self.assertIn('非平衡', llm.call_args_list[0].kwargs['system'])
         self.assertIn('不要把拖拽', llm.call_args_list[0].kwargs['system'])
+
+    async def test_font_stress_overflow_is_compacted_without_shrinking_type(self):
+        tall = '''<!doctype html><html><head><meta charset="utf-8">
+        <style>body{margin:16px;font:16px/1.4 sans-serif}
+        canvas{width:960px;height:520px;display:block}</style></head>
+        <body><h1>单摆</h1>
+        <p>小角度理想单摆，T=2π√(L/g)。</p>
+        <canvas id="c" width="960" height="520"></canvas>
+        <label>摆长L<input id="L" type="range" min="0.5" max="2" step="0.1" value="1"></label>
+        <label>重力g<input id="g" type="range" min="5" max="15" step="0.1" value="9.8"></label>
+        <button id="start">开始</button><button id="pause">暂停</button><button id="reset">重置</button>
+        <output id="period">2.007</output>
+        <script>document.getElementById('start').onclick=()=>{document.getElementById('period').textContent='2.100'};</script>
+        </body></html>'''
+        from src.engine.interactive_creation import apply_preview_layout_compact
+        original = await validate_interactive_html(tall)
+        self.assertTrue(any('字号容差' in issue or '核心图形' in issue for issue in original['issues']), original['issues'])
+        compact = apply_preview_layout_compact(tall)
+        self.assertNotIn('font-size', compact.split('data-work-layout-compact', 1)[-1][:400])
+        repaired = await validate_interactive_html(compact)
+        self.assertTrue(repaired['passed'], repaired['issues'])
 
     async def test_science_motion_repair_prompt_keeps_the_same_validation_bar(self):
         failed = {'ran':True,'passed':False,'issues':['点击启动控件「开始」后，动画/模拟时间/作品内容未持续变化。']}

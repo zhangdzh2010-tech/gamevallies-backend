@@ -10,6 +10,8 @@ from analyze_yield_batch import analyze
 from run_generation_yield_batch import (
     extract_quality_outcome,
     is_generation_maintenance_error,
+    is_infra_yield_row,
+    is_provider_gateway_timeout_error,
     ledger_row,
 )
 
@@ -22,6 +24,15 @@ def test_generation_maintenance_is_classified_as_infra_not_script_error():
         )
     )
     assert not is_generation_maintenance_error(RuntimeError("HTTP 500 upstream timeout"))
+
+
+def test_provider_gateway_timeout_is_infra_not_creative_failure():
+    timeout = RuntimeError(
+        "Server error '504 Gateway Timeout' for url 'https://www.zltokens.example/v1/chat/completions'"
+    )
+    assert is_provider_gateway_timeout_error(timeout)
+    assert is_infra_yield_row({"finalStatus": "failed", "failureFamily": "provider_transport"})
+    assert not is_infra_yield_row({"finalStatus": "failed", "failureFamily": "code_generation"})
 
 
 def test_extract_quality_outcome_from_generation_status_and_admin_diagnostics():
@@ -126,12 +137,22 @@ def test_analyze_excludes_infra_maintenance_from_product_and_seed_rates(tmp_path
                 "elapsedS": 20,
                 "seedWorthy": False,
             },
+            {
+                "finalStatus": "failed",
+                "failureFamily": "provider_transport",
+                "failedStage": "logic_generate",
+                "name": "simple_dodge_cn",
+                "elapsedS": 30,
+                "errorMessage": "Server error '504 Gateway Timeout' for url 'https://www.zltokens...'",
+                "seedWorthy": False,
+            },
         ],
     }
     path = tmp_path / "summary.json"
     path.write_text(json.dumps(summary), encoding="utf-8")
     report = analyze(path)
     assert report["infraMaintenance"] == 1
+    assert report["providerTransport"] == 1
     assert report["productCompleted"] == 3
     assert report["succeeded"] == 2
     assert report["failed"] == 1
@@ -139,4 +160,7 @@ def test_analyze_excludes_infra_maintenance_from_product_and_seed_rates(tmp_path
     assert report["seedWorthyLabeled"] == 3
     assert report["seedWorthy"] == 1
     assert report["observedSeedWorthyRate"] == 0.3333
-    assert "infra_maintenance" in " ".join(report["architectureRecommendations"])
+    recs = " ".join(report["architectureRecommendations"])
+    assert "infra_maintenance" in recs
+    assert "provider_transport" in recs
+    assert "创意失败" in recs or "不是创意" in recs

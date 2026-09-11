@@ -44,12 +44,14 @@ def analyze(summary_path: Path) -> dict:
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     results = summary.get("results") or []
     terminal = [r for r in results if str(r.get("finalStatus") or "").lower() != "unknown"]
-    product = [
-        r
-        for r in terminal
-        if str(r.get("finalStatus") or "").lower() not in {"infra_maintenance"}
-        and str(r.get("failureFamily") or "").lower() != "infra_maintenance"
-    ]
+    INFRA_YIELD_FAMILIES = frozenset({"infra_maintenance", "provider_transport"})
+
+    def _is_infra(row: dict) -> bool:
+        status = str(row.get("finalStatus") or "").lower()
+        family = str(row.get("failureFamily") or "").lower()
+        return status in INFRA_YIELD_FAMILIES or family in INFRA_YIELD_FAMILIES
+
+    product = [r for r in terminal if not _is_infra(r)]
     succeeded = sum(1 for r in product if str(r.get("finalStatus")).lower() == "succeeded")
     failed = [r for r in product if str(r.get("finalStatus")).lower() != "succeeded"]
     maintenance = [
@@ -57,6 +59,9 @@ def analyze(summary_path: Path) -> dict:
         for r in terminal
         if str(r.get("finalStatus") or "").lower() == "infra_maintenance"
         or str(r.get("failureFamily") or "").lower() == "infra_maintenance"
+    ]
+    provider_transport = [
+        r for r in terminal if str(r.get("failureFamily") or "").lower() == "provider_transport"
     ]
 
     families = Counter(str(r.get("failureFamily") or "unknown") for r in failed)
@@ -112,6 +117,7 @@ def analyze(summary_path: Path) -> dict:
         "source": str(summary_path),
         "completed": completed,
         "infraMaintenance": len(maintenance),
+        "providerTransport": len(provider_transport),
         "productCompleted": len(product),
         "targetCount": summary.get("targetCount"),
         "succeeded": succeeded,
@@ -147,7 +153,9 @@ def analyze(summary_path: Path) -> dict:
         },
         "diagnosticsSamples": diagnostics_samples,
         "architectureRecommendations": build_recommendations(
-            families, stages, infra_maintenance=len(maintenance)
+            families, stages,
+            infra_maintenance=len(maintenance),
+            provider_transport=len(provider_transport),
         ),
     }
 
@@ -156,6 +164,7 @@ def build_recommendations(
     families: Counter,
     stages: Counter,
     infra_maintenance: int = 0,
+    provider_transport: int = 0,
 ) -> list[str]:
     recs: list[str] = []
     if families.get("interactive_validation", 0) + families.get("artifact_quality", 0) > 0:
@@ -169,10 +178,15 @@ def build_recommendations(
             "审核基础设施/证据校验失败：standard/safe 档在 review 不可用时降级为静态+运行 QA；"
             "showcase 保持 fail-closed；recover_review 已有一次纠错，可扩展 timeout_retry。"
         )
-    if families.get("provider_transport", 0) + families.get("pipeline", 0) + families.get("code_generation", 0) > 0:
+    if families.get("pipeline", 0) + families.get("code_generation", 0) > 0:
         recs.append(
-            "上游模型传输/代码生成失败：检查 provider 403/504 路由与备用线路；"
-            "transport 错误不得触发 quality 全量重生成；truncation retry cap 按 tier 对齐。"
+            "代码生成失败：检查 truncation 与 preflight 修复；"
+            "transport 错误不得当作创意/质量失败，也不得触发 quality 全量重生成。"
+        )
+    if provider_transport or families.get("provider_transport", 0) > 0:
+        recs.append(
+            "provider_transport（504/502/429 等网关超时）是基础设施，不是创意失败："
+            "应对同一质量门槛做有界退避重试并切换备用线路，排除在产品/seed 成功率之外。"
         )
     if families.get("quality_gate", 0) + families.get("quality_repair_exhausted", 0) > 0:
         recs.append(

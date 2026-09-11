@@ -75,20 +75,25 @@ def test_mouse_fallback_accepts_an_explicit_inline_handler():
     assert has_registered_mouse_handler('<button onclick="startGame()">Start</button>')
 
 
-@pytest.mark.parametrize("status", [400, 401, 429, 502, 503, 504])
-def test_provider_http_failure_does_not_enter_quality_regeneration(status):
+def _transport_generate_error(status: int, provider_id: str = "primary"):
     import httpx
+    http_request = httpx.Request("POST", "https://www.zltokens.example/v1/chat/completions")
+    upstream = httpx.HTTPStatusError(
+        f"Server error '{status} Gateway Timeout' for url '{http_request.url}'",
+        request=http_request,
+        response=httpx.Response(status, request=http_request),
+    )
+    wrapped = RuntimeError("Full LLM generation failed")
+    wrapped.__cause__ = upstream
+    wrapped.route_snapshot = {"provider_id": provider_id, "fallback_provider_ids": []}
+    return wrapped
+
+
+def _run_create_with_generate_error(generate, *, sleep=None):
     runner = V2PipelineRunner()
     request = RunPipelineV2Request(game_id="transport-failure", user_id="user", raw_user_input="make a puzzle game")
     spec = GameSpec(game_type="puzzle", generation_tier="standard")
     contract = GameRuntimeContract(runtime_profile="puzzle_grid")
-    http_request = httpx.Request("POST", "https://provider.example/v1/chat/completions")
-    upstream = httpx.HTTPStatusError("upstream unavailable", request=http_request,
-                                   response=httpx.Response(status, request=http_request))
-    wrapped = RuntimeError("Full LLM generation failed")
-    wrapped.__cause__ = upstream
-    wrapped.route_snapshot = {"provider_id":"primary", "fallback_provider_ids":[]}
-    generate = AsyncMock(side_effect=wrapped)
     with ExitStack() as stack:
         for name, value in (("_build_create_spec",spec), ("_build_gdd",GDD()),
                             ("_remember_spec",None), ("_remember_runtime_contract",None)):
@@ -98,12 +103,45 @@ def test_provider_http_failure_does_not_enter_quality_regeneration(status):
         stack.enter_context(patch.object(runner.pre_gen_validator, "validate", return_value=[]))
         stack.enter_context(patch("src.engine.pipeline_v2_runner.task_memory.append_decision", new=AsyncMock()))
         stack.enter_context(patch.object(runner.code_generator, "generate", new=generate))
+        if sleep is not None:
+            stack.enter_context(patch("src.engine.pipeline_v2_runner.asyncio.sleep", new=sleep))
         with pytest.raises(PipelineExecutionError) as caught:
             asyncio.run(runner._run_create_impl(request, None, {"stage":"spec_build"}))
+    return caught.value
+
+
+@pytest.mark.parametrize("status", [400, 401])
+def test_non_retryable_provider_http_failure_does_not_enter_quality_regeneration(status):
+    wrapped = _transport_generate_error(status)
+    generate = AsyncMock(side_effect=wrapped)
+    caught = _run_create_with_generate_error(generate)
     assert generate.await_count == 1
-    assert caught.value.failure_family == "provider_transport"
-    assert caught.value.route_snapshot["provider_id"] == "primary"
-    assert caught.value.__cause__ is wrapped
+    assert generate.await_args.kwargs.get("generation_guidance") is None
+    assert caught.failure_family == "provider_transport"
+    assert caught.route_snapshot["provider_id"] == "primary"
+    assert caught.__cause__ is wrapped
+
+
+@pytest.mark.parametrize("status", [429, 502, 503, 504])
+def test_retryable_provider_http_failure_retries_once_without_creative_guidance(status):
+    first = _transport_generate_error(status)
+    second = _transport_generate_error(status)
+    generate = AsyncMock(side_effect=[first, second])
+    sleep = AsyncMock()
+    caught = _run_create_with_generate_error(generate, sleep=sleep)
+    assert generate.await_count == 2
+    assert all(call.kwargs.get("generation_guidance") is None for call in generate.await_args_list)
+    assert sleep.await_count == 1
+    assert caught.failure_family == "provider_transport"
+    assert caught.__cause__ is second
+
+
+def test_provider_transport_retry_is_not_a_creative_quality_loop():
+    from src.engine.pipeline_errors import is_retryable_provider_transport_failure
+    wrapped = _transport_generate_error(504)
+    assert is_retryable_provider_transport_failure(wrapped)
+    assert not is_retryable_provider_transport_failure(_transport_generate_error(401))
+    assert not is_retryable_provider_transport_failure(ValueError("HTML code says 504; not an HTTP exception"))
 
 
 def test_provider_transport_detection_preserves_semantic_errors_and_handles_cycles():
@@ -1782,6 +1820,49 @@ def test_generate_create_code_auto_repairs_dynamic_alpha_suffix_before_preflight
 
     assert "__withAlpha(light.color, 0.502)" in result.html_code
     assert not any(issue.code == "unsafe_color_alpha_concat" for issue in preflight_issues)
+
+
+def test_generate_create_code_auto_repairs_null_ctx_before_preflight_failure():
+    runner = V2PipelineRunner()
+    request = RunPipelineV2Request(
+        game_id="game-preflight-ctx",
+        user_id="user-preflight-ctx",
+        raw_user_input="make a dodge game",
+    )
+    spec = GameSpec(game_type="casual", core_mechanics=[{"type": "tap_dodge"}])
+    runtime_contract = GameRuntimeContract(runtime_profile="casual_arcade")
+    generated = GenerateCodeResult(
+        html_code=(
+            "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas><script>"
+            "const canvas=document.getElementById('gameCanvas');"
+            "canvas.width=360;canvas.height=640;"
+            "let ctx=null;"
+            "function loop(){ctx.clearRect(0,0,canvas.width,canvas.height);requestAnimationFrame(loop);}"
+            "requestAnimationFrame(loop);"
+            "</script></body></html>"
+        ),
+        strategy="llm",
+        generation_time_ms=10,
+        code_size_bytes=100,
+    )
+
+    with patch.object(
+        runner.code_generator,
+        "generate",
+        new=AsyncMock(return_value=generated),
+    ):
+        result, preflight_issues = asyncio.run(
+            runner._generate_create_code(
+                request,
+                spec,
+                GDD(),
+                runtime_contract,
+                budget_override="simple",
+            )
+        )
+
+    assert "__bootCanvas" in result.html_code
+    assert not any(issue.code == "nullable_runtime_object:ctx" for issue in preflight_issues)
 
 
 def test_contract_qa_loop_signals_regeneration_when_only_non_syntax_errors_exist():
