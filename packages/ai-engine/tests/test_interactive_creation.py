@@ -4,7 +4,7 @@ import json
 from unittest.mock import patch, AsyncMock
 from src.api.models import RunPipelineV2Request, IterateV2Request, GameSpec
 from src.engine.interactive_creation import normalize_interactive_request, is_interactive_request, run_interactive, validate_interactive_html, extract_interactive_document
-from src.engine.source_references import indexed_review_source
+from src.engine.source_references import indexed_review_source, source_reference_catalog
 
 GOOD = '''<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{margin:24px;font:18px sans-serif}button{padding:12px}</style></head><body><h1>种群模型</h1><p>简化模型，不是实验数据</p><output id="count">10</output><button onclick="document.getElementById('count').textContent='20'">调整种群</button><script>let population=10;</script></body></html>'''
 
@@ -68,10 +68,35 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(next(a['payload'] for a in caught.exception.artifacts
             if a['artifact_type']=='failed_interactive_candidate'),GOOD)
 
+    async def test_invented_requirement_corrects_review_without_repairing_valid_source(self):
+        valid = json.loads(await fake_llm(step_key='code_review'))
+        invalid = dict(valid, complete=False, critical_issues=['必须保存历史记录'], findings=[
+            dict(issue='必须保存历史记录', dimension='complete', basis='requirement',
+                requirement_quote='保存全部历史记录',
+                source_ref=next(iter(source_reference_catalog(GOOD))),
+                reason='审核自行假设必须保存历史记录。', correction='增加历史记录。')])
+        valid['suggestions'] = ['可选增加历史记录']
+        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
+            new=AsyncMock(side_effect=[GOOD,json.dumps(invalid),json.dumps(valid)])) as llm, patch(
+            'src.engine.interactive_creation.validate_interactive_html',
+            new=AsyncMock(return_value={'ran':True,'passed':True,'issues':[]})) as qa:
+            result = await run_interactive(normalize_interactive_request(self.request()))
+        self.assertEqual(result.html_code, GOOD)
+        self.assertEqual(qa.await_count, 1)
+        self.assertEqual([c.kwargs['step_key'] for c in llm.call_args_list],
+            ['code_generate.full','code_review','code_review'])
+        self.assertEqual(result.quality_breakdown['suggestions'], ['可选增加历史记录'])
+        self.assertEqual(result.quality_breakdown['issues'], [])
+
     async def test_runtime_regression_retains_last_valid_candidate(self):
         from src.engine.pipeline_errors import PipelineExecutionError
         review = json.loads(await fake_llm(step_key='code_review'))
         review['critical_issues'] = ['required control missing']
+        review['findings'] = [dict(issue='required control missing', dimension='critical_issue',
+            basis='requirement', requirement_quote='种群变化模型',
+            source_ref=next(iter(source_reference_catalog(GOOD))),
+            reason='Required population control is missing in this synthetic assessment.',
+            correction='Add the requested population control.')]
         delta = json.dumps({'patches':[{'search':'let population=10;','replace':"throw new Error('regression');"}]})
         with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
             new=AsyncMock(side_effect=[GOOD,json.dumps(review),delta])), patch(
