@@ -49,7 +49,7 @@ def test_cosmetic_feedback_inherits_source_type_and_explicit_game_wins():
 def test_distinct_weighted_scores_and_fail_closed(kind):
     assert assess_review(review(kind),kind)['score'] == 8
     assert assess_review(review(kind),kind)['passed']
-    for raw in ['{}','not json',review(kind,complete='true'),review(kind,evidence={}),
+    for raw in ['{}','not json',review(kind,complete='maybe'),review(kind,evidence={}),
         review(kind,scores={'fun_score':10}),review(kind,artifact_kind='game'),
         review(kind,critical_issues=['Core operation returns incorrect output'])]:
         assert not assess_review(raw,kind)['passed']
@@ -57,7 +57,7 @@ def test_distinct_weighted_scores_and_fail_closed(kind):
     key = next(iter(metrics))
     metrics[key] = 0
     assert not assess_review(review(kind,scores=metrics),kind)['passed']
-    for bad in [float('nan'),float('inf'),True,'10',11,-1]:
+    for bad in [float('nan'),float('inf'),True,'high',11,-1]:
         metrics[key] = bad
         assert not assess_review(review(kind,scores=metrics),kind)['passed']
 
@@ -152,6 +152,72 @@ def test_science_review_recovers_json_wrapped_in_prose():
     result = assess_review(raw, 'science')
     assert result['review_ran'] and result['passed']
     assert result['score'] == 8
+
+
+def test_tool_review_recovers_omitted_empty_lists_and_model_wrappers():
+    data = json.loads(review('tool'))
+    data.pop('issues')
+    data.pop('critical_issues')
+    data['complete'] = 'true'
+    data['artifact_kind'] = '工具'
+    data['scores'] = {key: '8' for key in data['scores']}
+    wrapped = json.dumps({'assessment': data})
+    result = assess_review(wrapped, 'tool')
+    assert result['review_ran'] and result['passed']
+    assert result['issues'] == []
+    assert result['critical_issues'] == []
+    assert result['score'] == 8
+
+
+def test_science_review_recovers_object_shaped_issue_lists_without_inventing_scores():
+    code, brief, raw = grounded_review()
+    data = json.loads(raw)
+    defect = data['critical_issues'][0]
+    data['issues'] = [{'issue': defect, 'reason': 'wrapper'}]
+    data['critical_issues'] = [{'text': defect}]
+    result = assess_review(json.dumps(data), 'tool', brief=brief, code=code)
+    assert result['review_ran'] and not result['passed']
+    assert '加一操作赋值为2，重复点击不能递增。' in result['issues']
+
+
+def test_missing_scores_are_never_invented_from_wrappers():
+    data = json.loads(review('science'))
+    data.pop('scores')
+    result = assess_review(json.dumps({'review': data}), 'science')
+    assert not result['review_ran'] and not result['passed']
+    assert result['score'] == 0
+    assert '分类审核未返回完整、有效且有依据的评分。' in result['issues']
+
+
+def test_structural_field_errors_get_a_bounded_reask_without_code_rewrite():
+    import asyncio
+    from src.engine.review_recovery import recover_review
+
+    valid = review('science')
+    metrics = ['scientific_correctness', 'parameter_fidelity', 'explanation_integrity', 'visual_clarity']
+    broken = json.dumps({
+        'artifact_kind': 'science',
+        'complete': True,
+        'scores': {key: 8 for key in metrics},
+        'evidence': {key: 'ok' for key in metrics},
+        'issues': [{'bad': True}],
+    })
+    calls = []
+
+    async def request(correction):
+        calls.append(correction)
+        return valid if correction else broken
+
+    verified = asyncio.run(recover_review(
+        request,
+        lambda raw: assess_review(raw, 'science'),
+        lambda parsed: [] if parsed['review_ran'] else parsed['issues'],
+    ))
+    assert verified.assessment['review_ran']
+    assert verified.requests == 2
+    assert calls[1] is not None
+    assert 'Never invent or inflate scores' in calls[1]
+    assert 'invalid list field: issues' in calls[1]
 
 
 def test_science_in_span_source_ref_is_accepted():

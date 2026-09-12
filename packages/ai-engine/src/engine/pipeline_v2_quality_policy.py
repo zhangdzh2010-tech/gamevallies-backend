@@ -376,6 +376,21 @@ class PipelineV2QualityPolicyMixin:
         ]
         for error in errors[:6]:
             lines.append(f"- Fix this explicitly: {error}")
+        normalized_errors = " ".join(str(error or "").lower() for error in errors)
+        if (
+            not getattr(review, "is_complete_game", False)
+            or "incomplete or placeholder output" in normalized_errors
+        ):
+            lines.append(
+                "- The previous candidate was incomplete or placeholder-like. Emit one complete playable HTML5 "
+                "game with boot/ready → playing, a real input loop, visible scoring or progress, and working "
+                "start/pause/resume/restart. Do not leave TODO comments, stub handlers, empty loops, or "
+                "'coming soon' screens."
+            )
+            lines.append(
+                "- Keep the existing fun_score / visual / character gates. Completeness means the requested loop "
+                "actually runs in code, not a shorter prototype or implied second page."
+            )
         if review.evidence_verified and review.findings:
             for finding in review.findings:
                 lines.append(f"- {finding['issue']}: {finding['reason']} Correction: {finding['correction']}")
@@ -928,6 +943,24 @@ class PipelineV2QualityPolicyMixin:
                 "- The first tap or pointerdown on the main play surface must immediately call `startGame()` / enter "
                 "`playing` or mutate visible HUD/canvas state so runtime QA can observe a state change without using an "
                 "overlay-only start button."
+            )
+            _append_recipe(
+                "- For grid/puzzle games, the first pointerdown on a board cell must change a visible selection, "
+                "highlight, swap preview, or HUD; a second tap or short drag to a neighbor must complete a move. "
+                "Do not require a long animation or a perfect match before any pixel or DOM change."
+            )
+        if any(token in normalized_issue_blob for token in (
+            "declare or inline `resize`",
+            "declare or inline `loop`",
+            "declare or inline resize",
+            "declare or inline loop",
+            "tdz_symbol:resize",
+            "tdz_symbol:loop",
+        )):
+            _append_recipe(
+                "- Declare `function resize()` and `function loop()` as hoisted function declarations in the same "
+                "script. Convert `const resize = () => {}` / `let loop = function () {}` to function declarations "
+                "so `init()`, `addEventListener('resize', resize)`, and `requestAnimationFrame(loop)` cannot hit TDZ."
             )
         if "returns unless the game is already in `playing`" in normalized_issue_blob or "returns unless the game is already in 'playing'" in normalized_issue_blob:
             _append_recipe(

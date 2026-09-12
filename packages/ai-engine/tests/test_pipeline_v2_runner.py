@@ -2020,6 +2020,79 @@ def test_contract_qa_loop_repairs_syntax_only_errors_before_contract_regeneratio
     assert mock_repair.await_count == 1
 
 
+def test_contract_qa_loop_classifies_syntax_repair_truncation_without_leaking():
+    from src.services.llm_client import LLMResponseTruncatedError
+
+    runner = V2PipelineRunner()
+    syntax_errors = [
+        QACheckError(
+            type="L1_syntax",
+            message="JavaScript syntax error in <script>: Unexpected end of input",
+            severity="error",
+        ),
+    ]
+
+    with patch.object(
+        runner,
+        "_validate_contract_bundle",
+        return_value=syntax_errors,
+    ), patch.object(
+        runner.qa_pipeline,
+        "repair_code",
+        new=AsyncMock(side_effect=LLMResponseTruncatedError(
+            "OpenAI-compatible response hit the output length limit and may be truncated"
+        )),
+    ):
+        result = asyncio.run(
+            runner._run_contract_qa_loop(
+                code="<!DOCTYPE html><html><body><script>" + ("const x=1;" * 200) + "</script></body></html>",
+                spec=GameSpec(game_type="puzzle"),
+                runtime_contract=GameRuntimeContract(runtime_profile="puzzle_grid"),
+                prompt_bundle_snapshot={},
+                progress_cb=lambda *_args, **_kwargs: None,
+                game_id="game-qa-truncation",
+                user_id="user-qa-truncation",
+            )
+        )
+
+    assert result.success is False
+    assert result.needs_regeneration is True
+    assert result.truncated is True
+    assert any(error.type == "qa_truncation" for error in result.last_errors)
+    assert any("output length limit" in error.message for error in result.last_errors)
+
+
+def test_quality_guidance_keeps_placeholder_and_fun_score_bars():
+    from src.engine.generated_quality_policy import QUALITY_POLICY
+    from src.engine.quality_scorer import LLMReviewResult
+
+    assert QUALITY_POLICY["tiers"]["standard"]["fun_score"] == 6.8
+    review = LLMReviewResult(
+        ran=True,
+        is_complete_game=False,
+        has_real_gameplay=True,
+        difficulty_balanced=True,
+        fun_score=7.0,
+        visual_polish_score=7.0,
+        character_quality_score=7.0,
+        issues=[],
+    )
+    errors = V2PipelineRunner._quality_gate_errors(
+        GameSpec(game_type="casual", generation_tier="standard"),
+        review,
+        SimpleNamespace(final_score=7.0, review_bonus=0.0),
+    )
+    assert "Return a complete, polished game instead of an incomplete or placeholder output." in errors
+    guidance = V2PipelineRunner._build_review_quality_guidance(
+        GameSpec(game_type="casual", generation_tier="standard"),
+        review,
+        SimpleNamespace(final_score=7.0),
+        errors,
+    )
+    assert "incomplete or placeholder-like" in guidance
+    assert "Keep the existing fun_score" in guidance
+
+
 def test_quality_regeneration_guidance_adds_forbidden_api_recipe_without_removing_bans():
     guidance = V2PipelineRunner._build_quality_regeneration_guidance(
         stage="contract_qa",

@@ -131,6 +131,26 @@ def _validate_findings(data: dict, kind: str, brief: str, code: str) -> None:
             raise ValueError('low score lacks a source-bound finding: '+key)
 
 
+_ASSESSMENT_WRAPPER_KEYS = ('assessment', 'review', 'result', 'data', 'json', 'payload')
+_KIND_ALIASES = {
+    'tool': 'tool', '工具': 'tool',
+    'science': 'science', '科学演示': 'science', '科学': 'science',
+    'game': 'game', '游戏': 'game',
+}
+_ISSUE_OBJECT_KEYS = ('issue', 'text', 'message', 'detail', 'reason', 'summary')
+
+
+def _unwrap_assessment_object(data: dict) -> dict:
+    """Use a nested review object when the model wrapped a complete assessment."""
+    if any(key in data for key in ('scores', 'artifact_kind', 'complete', 'critical_issues', 'issues')):
+        return data
+    for key in _ASSESSMENT_WRAPPER_KEYS:
+        inner = data.get(key)
+        if isinstance(inner, dict):
+            return _unwrap_assessment_object(inner)
+    return data
+
+
 def _parse_assessment_json(raw: str) -> dict:
     """Recover a JSON object from a review payload without inventing fields."""
     cleaned = re.sub(r'^```(?:json)?\s*|\s*```$', '', str(raw or '').strip(), flags=re.I | re.M)
@@ -146,7 +166,97 @@ def _parse_assessment_json(raw: str) -> dict:
         data = json.loads(cleaned[start:end + 1])
     if not isinstance(data, dict):
         raise ValueError('json')
-    return data
+    return _unwrap_assessment_object(data)
+
+
+def _coerce_complete_flag(value: object) -> bool:
+    if type(value) is bool:
+        return value
+    if value in (1, 0):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {'true', 'yes'}:
+            return True
+        if normalized in {'false', 'no'}:
+            return False
+    raise ValueError('type/completeness')
+
+
+def _coerce_artifact_kind(value: object, expected: str) -> str:
+    if value == expected:
+        return expected
+    if isinstance(value, str):
+        mapped = _KIND_ALIASES.get(value.strip().lower()) or _KIND_ALIASES.get(value.strip())
+        if mapped == expected:
+            return expected
+    raise ValueError('type/completeness')
+
+
+def _issue_text(value: object) -> str | None:
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    if isinstance(value, dict):
+        for key in _ISSUE_OBJECT_KEYS:
+            text = value.get(key)
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+    return None
+
+
+def _coerce_string_list(value: object, field: str, *, required: bool) -> list[str]:
+    """Recover omitted/null/object-shaped lists. Never invent issue text."""
+    if value is None:
+        if required:
+            raise ValueError(f'invalid list field: {field}')
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if not isinstance(value, list):
+        raise ValueError(f'invalid list field: {field}')
+    if len(value) > 20:
+        raise ValueError(f'invalid list field: {field}')
+    recovered: list[str] = []
+    for item in value:
+        text = _issue_text(item)
+        if text:
+            recovered.append(text)
+        elif item in (None, ''):
+            continue
+        else:
+            raise ValueError(f'invalid list field: {field}')
+    return recovered
+
+
+def _project_finding_issues(findings: object) -> list[str]:
+    if not isinstance(findings, list):
+        return []
+    projected: list[str] = []
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        text = _issue_text(finding)
+        if text:
+            projected.append(text)
+    return projected
+
+
+def _coerce_existing_score(value: object, key: str):
+    """Accept numeric strings already present. Do not invent missing scores."""
+    if type(value) in (int, float) and not isinstance(value, bool):
+        if math.isfinite(value) and 0 <= value <= 10:
+            return value
+        raise ValueError(key)
+    if isinstance(value, str):
+        try:
+            parsed = float(value.strip())
+        except ValueError:
+            raise ValueError(key) from None
+        if math.isfinite(parsed) and 0 <= parsed <= 10:
+            return int(parsed) if parsed.is_integer() else parsed
+    raise ValueError(key)
 
 
 def assess_review(raw: str, kind: str, *, brief: str = '', code: str = '') -> dict:
@@ -154,19 +264,35 @@ def assess_review(raw: str, kind: str, *, brief: str = '', code: str = '') -> di
     rubric = QUALITY_POLICY['artifact_rubrics'][kind]
     try:
         data = _parse_assessment_json(raw)
-        if data.get('artifact_kind') != kind or type(data.get('complete')) is not bool:
-            raise ValueError('type/completeness')
-        for field in ('critical_issues', 'issues', 'suggestions'):
-            values = data.get(field, [] if field == 'suggestions' else None)
-            if not isinstance(values, list) or len(values) > 20 or any(
-                not isinstance(value, str) or not value.strip() for value in values
-            ):
-                raise ValueError(field)
+        data['artifact_kind'] = _coerce_artifact_kind(data.get('artifact_kind'), kind)
+        data['complete'] = _coerce_complete_flag(data.get('complete'))
+        findings = data.get('findings')
+        if findings is None:
+            findings = []
+            data['findings'] = findings
+        projected = _project_finding_issues(findings)
+        data['suggestions'] = _coerce_string_list(data.get('suggestions'), 'suggestions', required=False)
+        # Models often omit empty arrays. Recover those shapes; do not invent scores.
+        if 'issues' not in data or data.get('issues') is None:
+            data['issues'] = list(projected)
+        else:
+            data['issues'] = _coerce_string_list(data.get('issues'), 'issues', required=True)
+        if 'critical_issues' not in data or data.get('critical_issues') is None:
+            data['critical_issues'] = [
+                finding['issue'] for finding in findings
+                if isinstance(finding, dict)
+                and finding.get('dimension') == 'critical_issue'
+                and isinstance(finding.get('issue'), str)
+                and finding['issue'].strip()
+            ]
+        else:
+            data['critical_issues'] = _coerce_string_list(
+                data.get('critical_issues'), 'critical_issues', required=True)
         scores, evidence = data['scores'], data['evidence']
+        if not isinstance(scores, dict) or not isinstance(evidence, dict):
+            raise ValueError('scores' if not isinstance(scores, dict) else 'evidence')
         for key in rubric['weights']:
-            value = scores.get(key)
-            if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 10:
-                raise ValueError(key)
+            scores[key] = _coerce_existing_score(scores.get(key), key)
             if not isinstance(evidence.get(key), str) or not evidence[key].strip():
                 raise ValueError('missing evidence: '+key)
         _validate_findings(data, kind, brief, code)

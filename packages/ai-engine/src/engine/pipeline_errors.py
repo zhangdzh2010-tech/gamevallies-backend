@@ -63,6 +63,8 @@ def is_truncation_failure(exc: BaseException) -> bool:
         seen.add(id(exc))
         if isinstance(exc, LLMResponseTruncatedError):
             return True
+        if getattr(exc, "failure_family", None) == "qa_truncation":
+            return True
         message = str(exc or "").lower()
         if "output length limit" in message or "hit max_tokens and may be truncated" in message:
             return True

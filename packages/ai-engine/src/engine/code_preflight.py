@@ -75,6 +75,12 @@ _LANE_HELPER_CALL_RE = re.compile(r"\.\s*(?P<name>laneX|laneCenterX|laneY)\s*\("
 _GRID_CELL_PROPERTY_READ_RE = re.compile(
     r"\bgrid\s*\[\s*(?P<row>[^\]]+?)\s*\]\s*\[\s*(?P<col>[^\]]+?)\s*\]\s*\.(?P<prop>[A-Za-z_$][A-Za-z0-9_$]*)"
 )
+_TDZ_HELPER_NAMES = frozenset({"resize", "loop"})
+_FUNCTION_BINDING_RE = re.compile(
+    rf"\b(?P<kind>const|let|var)\s+(?P<name>{_IDENTIFIER_RE})\s*=\s*"
+    rf"(?P<prefix>async\s+)?(?P<body>function\b|\([^)]*\)\s*=>|(?P<single>{_IDENTIFIER_RE})\s*=>)",
+    re.MULTILINE,
+)
 _SCRIPT_BLOCK_RE = re.compile(r"(<script\b[^>]*>)(?P<body>[\s\S]*?)(</script>)", re.IGNORECASE)
 _BLOCK_COMMENT_RE = re.compile(r"/\*[\s\S]*?\*/")
 _LINE_COMMENT_RE = re.compile(r"//[^\n]*")
@@ -212,6 +218,7 @@ class CodePreflightValidator:
         issues.extend(self._check_nullable_runtime_objects(script))
         issues.extend(self._check_lane_helper_calls(script, runtime_contract))
         issues.extend(self._check_nested_grid_reads(script, runtime_contract))
+        issues.extend(self._check_tdz_helpers(script))
         issues.extend(self._check_undefined_symbols(script))
         return self._dedupe(issues)
 
@@ -236,6 +243,12 @@ class CodePreflightValidator:
             for code in seen_codes
         ):
             repaired = self._repair_null_canvas_context(repaired)
+        if not seen_codes or any(
+            code.startswith(("tdz_symbol:", "undefined_symbol:"))
+            and code.split(":", 1)[-1] in _TDZ_HELPER_NAMES
+            for code in seen_codes
+        ):
+            repaired = self._repair_tdz_runtime_helpers(repaired)
         return repaired or html_code
 
     @staticmethod
@@ -317,6 +330,7 @@ class CodePreflightValidator:
         seen = set()
         seen_codes = set()
         undefined_symbols: set[str] = set()
+        tdz_symbols: set[str] = set()
         nullable_objects: set[str] = set()
         raw_messages: list[str] = []
         for issue in issues:
@@ -328,6 +342,8 @@ class CodePreflightValidator:
             raw_messages.append(issue.message)
             if issue.code.startswith("undefined_symbol:"):
                 undefined_symbols.add(issue.code.split(":", 1)[1])
+            if issue.code.startswith("tdz_symbol:"):
+                tdz_symbols.add(issue.code.split(":", 1)[1])
             if issue.code.startswith("nullable_runtime_object:"):
                 nullable_objects.add(issue.code.split(":", 1)[1])
             visible.append(f"- {issue.message}")
@@ -424,6 +440,17 @@ class CodePreflightValidator:
             visible.append(
                 "- Declare `render()` and `update()` before the first direct call or loop bootstrap that invokes them; "
                 "do not call them from `loop()` until both functions are defined in scope."
+            )
+        if {"resize", "loop"} & (undefined_symbols | tdz_symbols):
+            visible.append(
+                "- Declare `function resize(...)` and `function loop(...)` as function declarations "
+                "(not `const resize = () =>` / `let loop = function`). Function declarations hoist; "
+                "`const`/`let` arrows throw TDZ when `init()` or `addEventListener('resize', resize)` "
+                "or `requestAnimationFrame(loop)` runs before the binding is initialized."
+            )
+            visible.append(
+                "- Wire `window.addEventListener('resize', resize)` and `requestAnimationFrame(loop)` "
+                "only after those function declarations exist in the same script scope."
             )
         if "line" in undefined_symbols:
             visible.append(
@@ -945,6 +972,209 @@ class CodePreflightValidator:
                 _append_issue(name, suffix="a live expression")
 
         return issues
+
+    def _check_tdz_helpers(self, script: str) -> List[CodePreflightIssue]:
+        """Flag const/let resize/loop bindings that can throw TDZ via hoisted callers."""
+        scan_script = self._sanitize_for_symbol_scan(script)
+        issues: List[CodePreflightIssue] = []
+        for name in sorted(_TDZ_HELPER_NAMES):
+            binding = self._find_function_binding(scan_script, name)
+            if binding is None:
+                continue
+            kind, _start = binding
+            if kind == "var":
+                continue
+            if self._first_live_symbol_use(scan_script, name) is None:
+                continue
+            issues.append(
+                CodePreflightIssue(
+                    code=f"tdz_symbol:{name}",
+                    message=(
+                        f"Declare or inline `{name}` before use; `{kind} {name} = ...` is in the "
+                        "temporal dead zone when a hoisted init/listener/rAF path runs first."
+                    ),
+                )
+            )
+        return issues
+
+    @staticmethod
+    def _find_function_binding(script: str, name: str) -> tuple[str, int] | None:
+        for match in _FUNCTION_BINDING_RE.finditer(script):
+            if match.group("name") == name:
+                return match.group("kind"), match.start()
+        return None
+
+    def _first_live_symbol_use(self, script: str, name: str) -> int | None:
+        positions: list[int] = []
+        pattern = re.compile(rf"(?<![\w$.]){re.escape(name)}\b")
+        for match in pattern.finditer(script):
+            prefix = script[max(0, match.start() - 24):match.start()]
+            if re.search(r"\b(?:const|let|var|function|class)\s+$", prefix):
+                continue
+            if re.search(r"\b(?:const|let|var)\s+$", prefix):
+                continue
+            positions.append(match.start())
+        return min(positions) if positions else None
+
+    def _repair_tdz_runtime_helpers(self, html_code: str) -> str:
+        """Hoist const/let/var resize/loop function bindings to declarations."""
+        def script_block(block):
+            script = block.group("body")
+            repaired = self._hoist_function_bindings(script, _TDZ_HELPER_NAMES)
+            if repaired == script:
+                return block[0]
+            return block[1] + repaired + block[3]
+        return _SCRIPT_BLOCK_RE.sub(script_block, html_code)
+
+    @classmethod
+    def _hoist_function_bindings(cls, script: str, names: set[str]) -> str:
+        matches = [
+            match for match in _FUNCTION_BINDING_RE.finditer(script)
+            if match.group("name") in names
+        ]
+        if not matches:
+            return script
+        rebuilt: list[str] = []
+        cursor = 0
+        changed = False
+        for match in matches:
+            rewritten = cls._rewrite_function_binding(script, match)
+            if rewritten is None:
+                continue
+            text, end = rewritten
+            rebuilt.append(script[cursor:match.start()])
+            rebuilt.append(text)
+            cursor = end
+            changed = True
+        if not changed:
+            return script
+        rebuilt.append(script[cursor:])
+        return "".join(rebuilt)
+
+    @classmethod
+    def _rewrite_function_binding(
+        cls,
+        script: str,
+        match: re.Match[str],
+    ) -> tuple[str, int] | None:
+        name = match.group("name")
+        prefix = match.group("prefix") or ""
+        body_token = match.group("body") or ""
+        rest_start = match.end()
+        if body_token.startswith("function"):
+            # const resize = function (...) { ... }  or function resize (...) { ... }
+            after = script[rest_start:]
+            header = re.match(
+                rf"\s*(?:{re.escape(name)}\s*)?\((?P<params>[^)]*)\)\s*\{{",
+                after,
+            )
+            if not header:
+                return None
+            body_open = rest_start + header.end()
+            body, body_end = cls._consume_balanced_block(script, body_open)
+            if body is None:
+                return None
+            params = header.group("params")
+            async_prefix = "async " if prefix else ""
+            return f"{async_prefix}function {name}({params}) {{{body}}}", body_end
+        # Arrow: const loop = (t) => { ... } or t => expr
+        after = script[match.start("body"):]
+        arrow = re.match(
+            rf"(?:\((?P<params>[^)]*)\)|(?P<single>{_IDENTIFIER_RE}))\s*=>\s*",
+            after,
+        )
+        if not arrow:
+            return None
+        params = arrow.group("params")
+        if params is None:
+            params = arrow.group("single") or ""
+        expr_start = match.start("body") + arrow.end()
+        if expr_start < len(script) and script[expr_start] == "{":
+            body, body_end = cls._consume_balanced_block(script, expr_start + 1)
+            if body is None:
+                return None
+            # consume optional trailing semicolon
+            end = body_end
+            if end < len(script) and script[end] == ";":
+                end += 1
+            async_prefix = "async " if prefix else ""
+            return f"{async_prefix}function {name}({params}) {{{body}}}", end
+        statement, end = cls._consume_arrow_expression(script, expr_start)
+        if statement is None:
+            return None
+        async_prefix = "async " if prefix else ""
+        return f"{async_prefix}function {name}({params}) {{ return {statement}; }}", end
+
+    @staticmethod
+    def _consume_balanced_block(script: str, body_start: int) -> tuple[str | None, int]:
+        depth = 1
+        index = body_start
+        quote: str | None = None
+        escaped = False
+        while index < len(script):
+            ch = script[index]
+            if quote:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == quote:
+                    quote = None
+                index += 1
+                continue
+            if ch in {"'", '"', "`"}:
+                quote = ch
+                index += 1
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return script[body_start:index], index + 1
+            index += 1
+        return None, body_start
+
+    @staticmethod
+    def _consume_arrow_expression(script: str, start: int) -> tuple[str | None, int]:
+        index = start
+        depth_paren = depth_brace = depth_bracket = 0
+        quote: str | None = None
+        escaped = False
+        while index < len(script):
+            ch = script[index]
+            if quote:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == quote:
+                    quote = None
+                index += 1
+                continue
+            if ch in {"'", '"', "`"}:
+                quote = ch
+                index += 1
+                continue
+            if ch == "(":
+                depth_paren += 1
+            elif ch == ")" and depth_paren:
+                depth_paren -= 1
+            elif ch == "{":
+                depth_brace += 1
+            elif ch == "}" and depth_brace:
+                depth_brace -= 1
+            elif ch == "[":
+                depth_bracket += 1
+            elif ch == "]" and depth_bracket:
+                depth_bracket -= 1
+            elif ch == ";" and depth_paren == depth_brace == depth_bracket == 0:
+                return script[start:index].strip(), index + 1
+            elif ch == "\n" and depth_paren == depth_brace == depth_bracket == 0:
+                return script[start:index].strip(), index
+            index += 1
+        tail = script[start:].strip()
+        return (tail, len(script)) if tail else (None, start)
 
     @staticmethod
     def _sanitize_for_symbol_scan(script: str) -> str:

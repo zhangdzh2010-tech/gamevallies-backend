@@ -828,6 +828,7 @@ class QAPipeline:
                     retries=repair_attempts,
                     last_errors=final.errors,
                     needs_regeneration=True,
+                    truncated=True,
                     issue_list=final.issue_list,
                 )
 
@@ -863,12 +864,18 @@ class QAPipeline:
                     repair_attempts + 1,
                 )
                 final = self.check(code, runtime_contract=runtime_contract)
+                truncation_error = QACheckError(
+                    type="qa_truncation",
+                    message=str(exc),
+                    severity="error",
+                )
                 return QAResult(
                     success=False,
                     code=code,
                     retries=repair_attempts,
-                    last_errors=final.errors,
+                    last_errors=list(final.errors) + [truncation_error],
                     needs_regeneration=True,
+                    truncated=True,
                     issue_list=final.issue_list,
                 )
             repair_attempts += 1
@@ -1578,7 +1585,7 @@ class QAPipeline:
         request_timeout_s: int,
         max_tokens: int,
     ) -> str:
-        retry_ceiling = max(4096, max_tokens)
+        retry_ceiling = max(8192, max_tokens + 2048)
         text = await self._client.complete_with_truncation_retry(
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
@@ -1596,6 +1603,11 @@ class QAPipeline:
             truncation_retry_increment=1024,
             truncation_retry_max_tokens=retry_ceiling,
             truncation_retry_min_tokens=max_tokens,
+            truncation_retry_guidance=(
+                "OUTPUT SIZE CONSTRAINT: return only the repaired JavaScript (or the requested "
+                "window). No markdown, no restated HTML document, no unused comments. Keep the "
+                "same gameplay identifiers and required loop. Forbidden APIs remain banned."
+            ),
             timeout_retry_attempts=0,
             provider_retry_attempts=0,
             provider_retry_on_timeout_errors=False,
