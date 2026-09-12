@@ -75,12 +75,26 @@ _LANE_HELPER_CALL_RE = re.compile(r"\.\s*(?P<name>laneX|laneCenterX|laneY)\s*\("
 _GRID_CELL_PROPERTY_READ_RE = re.compile(
     r"\bgrid\s*\[\s*(?P<row>[^\]]+?)\s*\]\s*\[\s*(?P<col>[^\]]+?)\s*\]\s*\.(?P<prop>[A-Za-z_$][A-Za-z0-9_$]*)"
 )
-_TDZ_HELPER_NAMES = frozenset({"resize", "loop"})
 _FUNCTION_BINDING_RE = re.compile(
     rf"\b(?P<kind>const|let|var)\s+(?P<name>{_IDENTIFIER_RE})\s*=\s*"
     rf"(?P<prefix>async\s+)?(?P<body>function\b|\([^)]*\)\s*=>|(?P<single>{_IDENTIFIER_RE})\s*=>)",
     re.MULTILINE,
 )
+_BARE_FUNCTION_ASSIGN_RE = re.compile(
+    rf"(?<![\w$.])(?P<name>{_IDENTIFIER_RE})\s*=\s*"
+    rf"(?P<prefix>async\s+)?(?P<body>function\b|\([^)]*\)\s*=>|(?P<single>{_IDENTIFIER_RE})\s*=>)",
+    re.MULTILINE,
+)
+_BARE_ASSIGNMENT_RE = re.compile(
+    rf"(?<![\w$.])(?P<name>{_IDENTIFIER_RE})\s*(?:[+\-*/%]=|=(?!=))"
+)
+_ARRAY_DESTRUCTURE_ASSIGN_RE = re.compile(
+    r"(?<![\w$])\[(?P<body>[^\[\]]+)\]\s*=(?!=)"
+)
+_OBJECT_DESTRUCTURE_ASSIGN_RE = re.compile(
+    r"\(\s*\{(?P<body>[^{}]+)\}\s*\)\s*=(?!=)"
+)
+_DECL_KEYWORD_PREFIX_RE = re.compile(r"\b(?:const|let|var|function|class)\s+$")
 _SCRIPT_BLOCK_RE = re.compile(r"(<script\b[^>]*>)(?P<body>[\s\S]*?)(</script>)", re.IGNORECASE)
 _BLOCK_COMMENT_RE = re.compile(r"/\*[\s\S]*?\*/")
 _LINE_COMMENT_RE = re.compile(r"//[^\n]*")
@@ -243,12 +257,16 @@ class CodePreflightValidator:
             for code in seen_codes
         ):
             repaired = self._repair_null_canvas_context(repaired)
-        if not seen_codes or any(
-            code.startswith(("tdz_symbol:", "undefined_symbol:"))
-            and code.split(":", 1)[-1] in _TDZ_HELPER_NAMES
+        symbol_issue_names = {
+            code.split(":", 1)[-1]
             for code in seen_codes
-        ):
-            repaired = self._repair_tdz_runtime_helpers(repaired)
+            if code.startswith(("tdz_symbol:", "undefined_symbol:"))
+        }
+        if not seen_codes or symbol_issue_names:
+            repaired = self._repair_declare_before_use(
+                repaired,
+                names=symbol_issue_names or None,
+            )
         return repaired or html_code
 
     @staticmethod
@@ -441,16 +459,29 @@ class CodePreflightValidator:
                 "- Declare `render()` and `update()` before the first direct call or loop bootstrap that invokes them; "
                 "do not call them from `loop()` until both functions are defined in scope."
             )
-        if {"resize", "loop"} & (undefined_symbols | tdz_symbols):
+        hoist_names = tdz_symbols | (undefined_symbols & {"resize", "loop", "update", "render", "init"})
+        if tdz_symbols or hoist_names:
+            helpers = ", ".join(f"`{name}`" for name in sorted(tdz_symbols or hoist_names))
             visible.append(
-                "- Declare `function resize(...)` and `function loop(...)` as function declarations "
-                "(not `const resize = () =>` / `let loop = function`). Function declarations hoist; "
-                "`const`/`let` arrows throw TDZ when `init()` or `addEventListener('resize', resize)` "
-                "or `requestAnimationFrame(loop)` runs before the binding is initialized."
+                f"- Declare {helpers} as function declarations "
+                "(not `const name = () =>` / `let name = function`). Function declarations hoist; "
+                "`const`/`let` arrows throw TDZ when `init()` or a listener/rAF path runs "
+                "before the binding is initialized."
             )
             visible.append(
-                "- Wire `window.addEventListener('resize', resize)` and `requestAnimationFrame(loop)` "
-                "only after those function declarations exist in the same script scope."
+                "- Register `addEventListener` and `requestAnimationFrame` callbacks only after "
+                "those function declarations exist in the same script scope."
+            )
+        short_aliases = {
+            name
+            for name in undefined_symbols
+            if name not in tdz_symbols and len(name) <= 3 and name not in _RESERVED_IDENTIFIERS
+        }
+        if short_aliases & {"nr", "nc", "dr", "dc", "gc", "sc"} or {"nr", "nc"} & undefined_symbols:
+            visible.append(
+                "- Declare short grid/loop aliases before use. For neighbor walks write "
+                "`let nr, nc;` then `nr = r + dr; nc = c + dc;`, or "
+                "`const [nr, nc] = [r + dr, c + dc];`. Do not read `nr` / `nc` as implicit globals."
             )
         if "line" in undefined_symbols:
             visible.append(
@@ -974,16 +1005,18 @@ class CodePreflightValidator:
         return issues
 
     def _check_tdz_helpers(self, script: str) -> List[CodePreflightIssue]:
-        """Flag const/let resize/loop bindings that can throw TDZ via hoisted callers."""
+        """Flag const/let function bindings that can throw TDZ via hoisted callers."""
         scan_script = self._sanitize_for_symbol_scan(script)
         issues: List[CodePreflightIssue] = []
-        for name in sorted(_TDZ_HELPER_NAMES):
-            binding = self._find_function_binding(scan_script, name)
-            if binding is None:
+        seen: set[str] = set()
+        for match in _FUNCTION_BINDING_RE.finditer(scan_script):
+            name = match.group("name")
+            kind = match.group("kind")
+            if not name or name in seen or name in _RESERVED_IDENTIFIERS:
                 continue
-            kind, _start = binding
             if kind == "var":
                 continue
+            seen.add(name)
             if self._first_live_symbol_use(scan_script, name) is None:
                 continue
             issues.append(
@@ -1009,36 +1042,67 @@ class CodePreflightValidator:
         pattern = re.compile(rf"(?<![\w$.]){re.escape(name)}\b")
         for match in pattern.finditer(script):
             prefix = script[max(0, match.start() - 24):match.start()]
-            if re.search(r"\b(?:const|let|var|function|class)\s+$", prefix):
+            if _DECL_KEYWORD_PREFIX_RE.search(prefix):
                 continue
-            if re.search(r"\b(?:const|let|var)\s+$", prefix):
+            if re.match(r"\s*=(?!=)", script[match.end():]):
                 continue
             positions.append(match.start())
         return min(positions) if positions else None
 
-    def _repair_tdz_runtime_helpers(self, html_code: str) -> str:
-        """Hoist const/let/var resize/loop function bindings to declarations."""
+    def _repair_declare_before_use(
+        self,
+        html_code: str,
+        names: set[str] | None = None,
+    ) -> str:
+        """Hoist function bindings and declare assigned-but-undeclared aliases."""
         def script_block(block):
             script = block.group("body")
-            repaired = self._hoist_function_bindings(script, _TDZ_HELPER_NAMES)
+            repaired = self._hoist_function_bindings(script, names)
+            repaired = self._declare_assigned_symbols(repaired, names)
             if repaired == script:
                 return block[0]
             return block[1] + repaired + block[3]
         return _SCRIPT_BLOCK_RE.sub(script_block, html_code)
 
+    def _repair_tdz_runtime_helpers(self, html_code: str) -> str:
+        return self._repair_declare_before_use(html_code)
+
     @classmethod
-    def _hoist_function_bindings(cls, script: str, names: set[str]) -> str:
-        matches = [
-            match for match in _FUNCTION_BINDING_RE.finditer(script)
-            if match.group("name") in names
-        ]
+    def _iter_function_bindings(cls, script: str, names: set[str] | None):
+        matches = list(_FUNCTION_BINDING_RE.finditer(script))
+        covered = {match.start() for match in matches}
+        for match in _BARE_FUNCTION_ASSIGN_RE.finditer(script):
+            if match.start() in covered:
+                continue
+            prefix = script[max(0, match.start() - 10):match.start()]
+            if _DECL_KEYWORD_PREFIX_RE.search(prefix):
+                continue
+            matches.append(match)
+        matches.sort(key=lambda item: item.start())
+        for match in matches:
+            name = match.group("name")
+            if not name or name in _RESERVED_IDENTIFIERS:
+                continue
+            if names is not None and name not in names:
+                continue
+            yield match
+
+    def _hoist_function_bindings(self, script: str, names: set[str] | None) -> str:
+        matches = []
+        for match in self._iter_function_bindings(script, names):
+            name = match.group("name")
+            if names is None and self._first_live_symbol_use(script, name) is None:
+                continue
+            matches.append(match)
         if not matches:
             return script
         rebuilt: list[str] = []
         cursor = 0
         changed = False
         for match in matches:
-            rewritten = cls._rewrite_function_binding(script, match)
+            if match.start() < cursor:
+                continue
+            rewritten = self._rewrite_function_binding(script, match)
             if rewritten is None:
                 continue
             text, end = rewritten
@@ -1050,6 +1114,44 @@ class CodePreflightValidator:
             return script
         rebuilt.append(script[cursor:])
         return "".join(rebuilt)
+
+    def _declare_assigned_symbols(self, script: str, names: set[str] | None) -> str:
+        scan_script = self._sanitize_for_symbol_scan(script)
+        declared = self._collect_declared_symbols(scan_script)
+        assigned = self._collect_assigned_symbols(scan_script)
+        targets = {
+            name
+            for name in assigned
+            if name not in declared
+            and name not in _RESERVED_IDENTIFIERS
+            and (names is None or name in names)
+            and self._first_live_symbol_use(scan_script, name) is not None
+        }
+        if not targets:
+            return script
+        return "let " + ", ".join(sorted(targets)) + ";\n" + script.lstrip()
+
+    @staticmethod
+    def _collect_assigned_symbols(script: str) -> set[str]:
+        names: set[str] = set()
+
+        def _skip_declared(match: re.Match[str]) -> bool:
+            prefix = script[max(0, match.start() - 10):match.start()]
+            return bool(_DECL_KEYWORD_PREFIX_RE.search(prefix))
+
+        for match in _BARE_ASSIGNMENT_RE.finditer(script):
+            if _skip_declared(match):
+                continue
+            name = match.group("name")
+            if name:
+                names.add(name)
+        for match in _ARRAY_DESTRUCTURE_ASSIGN_RE.finditer(script):
+            if _skip_declared(match):
+                continue
+            names.update(CodePreflightValidator._extract_binding_identifiers(match.group("body") or ""))
+        for match in _OBJECT_DESTRUCTURE_ASSIGN_RE.finditer(script):
+            names.update(CodePreflightValidator._extract_binding_identifiers(match.group("body") or ""))
+        return names
 
     @classmethod
     def _rewrite_function_binding(

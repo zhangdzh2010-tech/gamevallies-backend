@@ -954,13 +954,25 @@ class PipelineV2QualityPolicyMixin:
             "declare or inline `loop`",
             "declare or inline resize",
             "declare or inline loop",
-            "tdz_symbol:resize",
-            "tdz_symbol:loop",
+            "tdz_symbol:",
+            "temporal dead zone",
+            "const name = () =>",
         )):
             _append_recipe(
-                "- Declare `function resize()` and `function loop()` as hoisted function declarations in the same "
-                "script. Convert `const resize = () => {}` / `let loop = function () {}` to function declarations "
-                "so `init()`, `addEventListener('resize', resize)`, and `requestAnimationFrame(loop)` cannot hit TDZ."
+                "- Declare helpers as hoisted function declarations in the same script. "
+                "Convert `const name = () => {}` / `let name = function () {}` to `function name() {}` "
+                "so `init()`, listeners, and `requestAnimationFrame` cannot hit TDZ."
+            )
+        if any(token in normalized_issue_blob for token in (
+            "declare or inline `nc`",
+            "declare or inline `nr`",
+            "declare or inline nc",
+            "declare or inline nr",
+        )):
+            _append_recipe(
+                "- For grid neighbor walks, declare short aliases before use: "
+                "`let nr, nc;` then `nr = r + dr; nc = c + dc;`, or "
+                "`const [nr, nc] = [r + dr, c + dc];`. Never read undeclared `nr` / `nc`."
             )
         if "returns unless the game is already in `playing`" in normalized_issue_blob or "returns unless the game is already in 'playing'" in normalized_issue_blob:
             _append_recipe(

@@ -260,8 +260,161 @@ def test_code_preflight_hoists_tdz_resize_and_loop_bindings():
     remaining = validator.validate(repaired, runtime_contract=GameRuntimeContract())
     assert not any(issue.code.startswith(("tdz_symbol:", "undefined_symbol:resize", "undefined_symbol:loop")) for issue in remaining)
     guidance = validator.render_guidance(issues)
-    assert "function resize" in guidance
+    assert "function declarations" in guidance
     assert "temporal dead zone" in " ".join(issue.message for issue in issues) or "function declarations" in guidance
+
+
+def test_code_preflight_hoists_tdz_helper_beyond_hardcoded_resize_loop():
+    validator = CodePreflightValidator()
+    html = """
+    <!DOCTYPE html>
+    <html>
+      <body>
+        <canvas id="gameCanvas"></canvas>
+        <script>
+          const canvas = document.getElementById('gameCanvas');
+          canvas.width = 360;
+          canvas.height = 640;
+          init();
+          const nc = (row, col) => {
+            return Number(row) + Number(col);
+          };
+          function init() {
+            const total = nc(1, 2);
+            requestAnimationFrame(nc);
+          }
+        </script>
+      </body>
+    </html>
+    """
+    issues = validator.validate(html, runtime_contract=GameRuntimeContract(runtime_profile="puzzle_grid_match"))
+    assert any(issue.code == "tdz_symbol:nc" for issue in issues)
+    repaired = validator.auto_repair(html, issues=issues)
+    assert "function nc(" in repaired
+    assert "const nc =" not in repaired
+    remaining = validator.validate(repaired, runtime_contract=GameRuntimeContract(runtime_profile="puzzle_grid_match"))
+    assert not any(issue.code in {"tdz_symbol:nc", "undefined_symbol:nc"} for issue in remaining)
+
+
+def test_code_preflight_declares_assigned_grid_neighbor_aliases():
+    validator = CodePreflightValidator()
+    html = """
+    <!DOCTYPE html>
+    <html>
+      <body>
+        <canvas id="gameCanvas"></canvas>
+        <script>
+          const canvas = document.getElementById('gameCanvas');
+          canvas.width = 360;
+          canvas.height = 640;
+          const grid = [[{ type: 1 }]];
+          function inBounds(row, col) {
+            return row >= 0 && col >= 0;
+          }
+          function countNeighbors(r, c) {
+            let n = 0;
+            nr = r + 1;
+            nc = c - 1;
+            if (inBounds(nr, nc) && grid[0]) n += 1;
+            return n;
+          }
+        </script>
+      </body>
+    </html>
+    """
+    issues = validator.validate(html, runtime_contract=GameRuntimeContract())
+    assert {issue.code for issue in issues} >= {"undefined_symbol:nr", "undefined_symbol:nc"}
+    assert any("live expression" in issue.message for issue in issues if issue.code == "undefined_symbol:nc")
+    repaired = validator.auto_repair(html, issues=issues)
+    assert "let nc, nr;" in repaired or "let nr, nc;" in repaired
+    remaining = validator.validate(repaired, runtime_contract=GameRuntimeContract())
+    assert not any(issue.code in {"undefined_symbol:nr", "undefined_symbol:nc"} for issue in remaining)
+    guidance = validator.render_guidance(issues)
+    assert "let nr, nc;" in guidance
+
+
+def test_code_preflight_declares_destructured_neighbor_aliases():
+    validator = CodePreflightValidator()
+    html = """
+    <!DOCTYPE html>
+    <html>
+      <body>
+        <canvas id="gameCanvas"></canvas>
+        <script>
+          const canvas = document.getElementById('gameCanvas');
+          canvas.width = 360;
+          canvas.height = 640;
+          function inBounds(row, col) { return row >= 0 && col >= 0; }
+          function walk(r, c, dr, dc) {
+            [nr, nc] = [r + dr, c + dc];
+            return inBounds(nr, nc);
+          }
+        </script>
+      </body>
+    </html>
+    """
+    issues = validator.validate(html, runtime_contract=GameRuntimeContract())
+    assert {issue.code for issue in issues} >= {"undefined_symbol:nr", "undefined_symbol:nc"}
+    repaired = validator.auto_repair(html, issues=issues)
+    assert "let nc, nr;" in repaired or "let nr, nc;" in repaired
+    remaining = validator.validate(repaired, runtime_contract=GameRuntimeContract())
+    assert not any(issue.code in {"undefined_symbol:nr", "undefined_symbol:nc"} for issue in remaining)
+
+
+def test_code_preflight_hoists_bare_function_assignment_used_as_live_expression():
+    validator = CodePreflightValidator()
+    html = """
+    <!DOCTYPE html>
+    <html>
+      <body>
+        <canvas id="gameCanvas"></canvas>
+        <script>
+          const canvas = document.getElementById('gameCanvas');
+          canvas.width = 360;
+          canvas.height = 640;
+          requestAnimationFrame(nc);
+          nc = (stamp) => {
+            return stamp;
+          };
+        </script>
+      </body>
+    </html>
+    """
+    issues = validator.validate(html, runtime_contract=GameRuntimeContract())
+    assert any(issue.code == "undefined_symbol:nc" for issue in issues)
+    repaired = validator.auto_repair(html, issues=issues)
+    assert "function nc(" in repaired
+    remaining = validator.validate(repaired, runtime_contract=GameRuntimeContract())
+    assert not any(issue.code == "undefined_symbol:nc" for issue in remaining)
+
+
+def test_code_preflight_does_not_invent_unassigned_undefined_symbols():
+    validator = CodePreflightValidator()
+    html = """
+    <!DOCTYPE html>
+    <html>
+      <body>
+        <canvas id="gameCanvas"></canvas>
+        <script>
+          const canvas = document.getElementById('gameCanvas');
+          canvas.width = 360;
+          canvas.height = 640;
+          function tick() {
+            if (anim < 1) {
+              missingHelper(anim);
+            }
+          }
+        </script>
+      </body>
+    </html>
+    """
+    issues = validator.validate(html, runtime_contract=GameRuntimeContract())
+    repaired = validator.auto_repair(html, issues=issues)
+    remaining = validator.validate(repaired, runtime_contract=GameRuntimeContract())
+    assert any(issue.code == "undefined_symbol:anim" for issue in remaining)
+    assert any(issue.code == "undefined_symbol:missingHelper" for issue in remaining)
+    assert "let anim" not in repaired
+    assert "function missingHelper" not in repaired
 
 
 def test_code_preflight_guidance_mentions_ready_state_input_gate():

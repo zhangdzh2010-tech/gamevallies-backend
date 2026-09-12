@@ -2239,6 +2239,25 @@ def test_quality_regeneration_guidance_adds_coordinate_guard_recipe_for_undefine
     assert "Initialize moving entities" in guidance
 
 
+def test_quality_regeneration_guidance_adds_generic_tdz_and_grid_alias_recipes():
+    tdz = V2PipelineRunner._build_quality_regeneration_guidance(
+        stage="logic_generate",
+        message=(
+            "Generated code failed preflight: Declare or inline `nc` before use; "
+            "`const nc = ...` is in the temporal dead zone when a hoisted init path runs first."
+        ),
+    )
+    assert "function name() {}" in tdz
+    assert "cannot hit TDZ" in tdz
+
+    neighbors = V2PipelineRunner._build_quality_regeneration_guidance(
+        stage="logic_generate",
+        message="Generated code failed preflight: Declare or inline `nc` before use; it is referenced as a live expression.",
+    )
+    assert "let nr, nc;" in neighbors
+    assert "Never read undeclared `nr` / `nc`" in neighbors
+
+
 def test_quality_regeneration_guidance_adds_dot_loop_scaffold():
     guidance = V2PipelineRunner._build_quality_regeneration_guidance(
         stage="logic_generate",
