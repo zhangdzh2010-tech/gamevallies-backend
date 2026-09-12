@@ -26,9 +26,10 @@ from ..services.llm_client import LLMClient
 from .prompt_format import safe_format_prompt
 from .prompt_store import require_prompt
 from .quality_scorer import LLMReviewResult
-from .pipeline_errors import PipelineExecutionError
+from .pipeline_errors import PipelineExecutionError, is_provider_transport_failure
 from .review_evidence import EVIDENCE_PROTOCOL, REVIEW_FLAGS, REVIEW_SCORES, validate_review_evidence, indexed_review_source
 from .review_recovery import recover_review, InvalidReviewEvidence
+from ..services.llm_http_evidence import attach_transport_evidence, collect_transport_evidence, transport_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -131,11 +132,30 @@ class CodeReviewer:
         except PipelineExecutionError:
             raise
         except Exception as exc:
+            evidence = collect_transport_evidence(exc)
+            if is_provider_transport_failure(exc) or evidence:
+                detail = transport_error_message(evidence, type(exc).__name__)
+                logger.warning('Code review unavailable due to provider transport: %s', detail)
+                failure = self._evidence_failure(
+                    html_code,
+                    [f'assessment unavailable: {detail}'],
+                    'review_infrastructure',
+                    assessments,
+                    transport_evidence=evidence,
+                )
+                attach_transport_evidence(failure, evidence)
+                raise failure from exc
             logger.warning('Code review unavailable: %s', type(exc).__name__)
             raise self._evidence_failure(html_code, ['assessment unavailable'], 'review_infrastructure', assessments) from exc
 
     @staticmethod
-    def _evidence_failure(code: str, errors: list[str], family: str, assessments: list[dict] | None = None) -> PipelineExecutionError:
+    def _evidence_failure(
+        code: str,
+        errors: list[str],
+        family: str,
+        assessments: list[dict] | None = None,
+        transport_evidence: dict | None = None,
+    ) -> PipelineExecutionError:
         return PipelineExecutionError('Code review evidence could not be validated: ' + '; '.join(errors),
             stage='code_review', failure_family=family, artifacts=[
                 {'artifact_type':'failed_quality_candidate','content_type':'text/html','payload':code,
@@ -143,7 +163,9 @@ class CodeReviewer:
                 {'artifact_type':'review_evidence_report','content_type':'application/json',
                  'payload':{'errors':errors, 'failure_family':family,
                     'source_sha256':hashlib.sha256(code.encode('utf-8')).hexdigest(),
-                    'assessments':assessments or []},'metadata':{'stage':'code_review'}},
+                    'assessments':assessments or [],
+                    **({'transportEvidence': transport_evidence} if transport_evidence else {})},
+                 'metadata':{'stage':'code_review'}},
             ])
 
     def _parse_review(self, raw: str) -> LLMReviewResult:

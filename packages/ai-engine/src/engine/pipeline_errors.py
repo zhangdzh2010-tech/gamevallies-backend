@@ -14,6 +14,7 @@ from typing import Any, Optional
 import httpx
 
 from ..services.llm_client import LLMResponseTruncatedError
+from ..services.llm_http_evidence import is_retryable_provider_http_status
 
 
 def is_provider_transport_failure(exc: BaseException) -> bool:
@@ -32,7 +33,7 @@ def is_provider_transport_failure(exc: BaseException) -> bool:
 
 
 def is_retryable_provider_transport_failure(exc: BaseException) -> bool:
-    """True for transient gateway/timeout transport, never for 4xx auth/contract errors.
+    """True for transient 403/429/5xx/timeout transport, never for 401/400 contract errors.
 
     A bounded infra retry may repeat generate() with backoff and the same
     quality gates. This is not a creative/quality regeneration.
@@ -44,15 +45,14 @@ def is_retryable_provider_transport_failure(exc: BaseException) -> bool:
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         if isinstance(current, httpx.HTTPStatusError):
-            status = int(current.response.status_code)
-            return status in {408, 409, 425, 429} or status >= 500
+            return is_retryable_provider_http_status(int(current.response.status_code))
         if isinstance(current, (httpx.TimeoutException, httpx.TransportError, httpx.RequestError)):
             return True
         current = current.__cause__ or current.__context__
     message = str(exc or "")
     return bool(
         getattr(exc, "failure_family", None) == "provider_transport"
-        and re.search(r"\b(?:429|502|503|504|gateway timeout|bad gateway)\b", message, re.I)
+        and re.search(r"\b(?:403|429|502|503|504|forbidden|gateway timeout|bad gateway)\b", message, re.I)
     )
 
 

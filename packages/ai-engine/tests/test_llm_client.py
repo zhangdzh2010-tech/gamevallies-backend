@@ -7,6 +7,7 @@ import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 import httpx
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -408,6 +409,87 @@ def test_complete_fails_over_to_secondary_provider_on_timeout():
         activity_states = [call.args[0]["details"]["activityState"] for call in emit_activity.await_args_list]
         assert activity_states[0] == "started"
         assert activity_states[-1] == "completed"
+    finally:
+        settings.LLM_MODE = old_mode
+        settings.LLM_PROVIDER_FAILOVER_ENABLED = old_failover
+
+
+def test_complete_does_not_fail_over_to_kimi_on_primary_403():
+    client = LLMClient()
+    primary = SimpleNamespace(
+        provider_id="deepseek",
+        provider_name="DeepSeek Primary",
+        provider_type="openai_compatible",
+        region="cn-shanghai",
+        base_url="https://www.zltokens.com/v1",
+        api_key="secret",
+        model="deepseek-chat",
+        fast_model="deepseek-chat",
+        request_timeout_s=600,
+        connect_timeout_s=15,
+        config_version=123,
+        route_snapshot={"step_key": "code_generate.full"},
+    )
+    secondary = SimpleNamespace(
+        provider_id="kimi-k3",
+        provider_name="Kimi Fallback",
+        provider_type="openai_compatible",
+        region="cn-shanghai",
+        base_url="https://kimi.example/v1",
+        api_key="secret-2",
+        model="kimi-k3",
+        fast_model="kimi-k3",
+        request_timeout_s=600,
+        connect_timeout_s=15,
+        config_version=123,
+        route_snapshot={"step_key": "code_generate.full"},
+    )
+    request = httpx.Request("POST", "https://www.zltokens.com/v1/chat/completions")
+    forbidden = httpx.HTTPStatusError(
+        "forbidden",
+        request=request,
+        response=httpx.Response(403, request=request, text='{"error":"Forbidden"}'),
+    )
+    old_mode = settings.LLM_MODE
+    old_failover = settings.LLM_PROVIDER_FAILOVER_ENABLED
+    settings.LLM_MODE = "real"
+    settings.LLM_PROVIDER_FAILOVER_ENABLED = True
+
+    try:
+        attempts = []
+
+        async def fake_complete_openai(**kwargs):
+            route = kwargs["route"]
+            attempts.append(route.provider_id)
+            raise forbidden
+
+        with patch.object(llm_client_module.gateway, "has_enabled_provider", return_value=True), patch.object(
+            llm_client_module.gateway,
+            "resolve_candidates",
+            return_value=[primary, secondary],
+        ), patch.object(
+            llm_client_module.gateway,
+            "emit_task_activity",
+            new=AsyncMock(),
+        ), patch.object(
+            llm_client_module.gateway,
+            "emit_llm_call_log",
+            new=AsyncMock(),
+        ), patch.object(
+            client,
+            "_complete_openai_compatible",
+            new=fake_complete_openai,
+        ):
+            with pytest.raises(httpx.HTTPStatusError):
+                asyncio.run(client.complete(
+                    messages=[{"role": "user", "content": "make me a game"}],
+                    max_tokens=16,
+                    step_key="code_generate.full",
+                    stage="code_generating",
+                    allow_provider_fallback=True,
+                ))
+
+        assert attempts == ["deepseek"]
     finally:
         settings.LLM_MODE = old_mode
         settings.LLM_PROVIDER_FAILOVER_ENABLED = old_failover
@@ -1858,6 +1940,48 @@ def test_complete_with_truncation_retry_retries_retryable_provider_errors_with_b
     assert mock_complete.await_count == 2
     assert mock_sleep.await_count == 1
     assert mock_sleep.await_args_list[0].args[0] == 3.0
+
+
+def test_complete_with_truncation_retry_retries_403_without_creative_guidance():
+    client = LLMClient()
+    request = httpx.Request("POST", "https://www.zltokens.com/v1/chat/completions")
+    response = httpx.Response(
+        403,
+        request=request,
+        headers={"x-request-id": "zl-403"},
+        text='{"error":{"message":"Forbidden","code":"quota"}}',
+    )
+    forbidden = httpx.HTTPStatusError("forbidden", request=request, response=response)
+
+    with patch.object(
+        client,
+        "complete",
+        new=AsyncMock(side_effect=[
+            forbidden,
+            "<!DOCTYPE html><html><body>ok</body></html>",
+        ]),
+    ) as mock_complete, patch.object(
+        llm_client_module.asyncio,
+        "sleep",
+        new=AsyncMock(),
+    ) as mock_sleep:
+        result = asyncio.run(
+            client.complete_with_truncation_retry(
+                messages=[{"role": "user", "content": "generate"}],
+                max_tokens=4096,
+                step_key="code_generate.full",
+                stage="code_generating",
+                provider_retry_attempts=1,
+                provider_retry_base_delay_s=2,
+                provider_retry_max_delay_s=8,
+            )
+        )
+
+    assert result == "<!DOCTYPE html><html><body>ok</body></html>"
+    assert mock_complete.await_count == 2
+    assert mock_sleep.await_count == 1
+    assert mock_complete.await_args_list[0].kwargs.get("generation_guidance") is None
+    assert mock_complete.await_args_list[1].kwargs.get("generation_guidance") is None
 
 
 def test_complete_with_truncation_retry_retries_cancelled_error_with_backoff():

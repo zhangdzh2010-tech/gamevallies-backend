@@ -122,7 +122,7 @@ def test_non_retryable_provider_http_failure_does_not_enter_quality_regeneration
     assert caught.__cause__ is wrapped
 
 
-@pytest.mark.parametrize("status", [429, 502, 503, 504])
+@pytest.mark.parametrize("status", [403, 429, 502, 503, 504])
 def test_retryable_provider_http_failure_retries_once_without_creative_guidance(status):
     first = _transport_generate_error(status)
     second = _transport_generate_error(status)
@@ -131,15 +131,39 @@ def test_retryable_provider_http_failure_retries_once_without_creative_guidance(
     caught = _run_create_with_generate_error(generate, sleep=sleep)
     assert generate.await_count == 2
     assert all(call.kwargs.get("generation_guidance") is None for call in generate.await_args_list)
+    assert all(
+        not call.kwargs.get("excluded_provider_ids")
+        for call in generate.await_args_list
+    )
     assert sleep.await_count == 1
     assert caught.failure_family == "provider_transport"
+    assert caught.retry_count >= 1
     assert caught.__cause__ is second
+
+
+def test_provider_403_retry_stays_on_same_primary_even_when_fallback_ids_exist():
+    first = _transport_generate_error(403, provider_id="deepseek")
+    first.route_snapshot = {"provider_id": "deepseek", "fallback_provider_ids": ["kimi-k3"]}
+    second = _transport_generate_error(403, provider_id="deepseek")
+    second.route_snapshot = {"provider_id": "deepseek", "fallback_provider_ids": ["kimi-k3"]}
+    generate = AsyncMock(side_effect=[first, second])
+    sleep = AsyncMock()
+    caught = _run_create_with_generate_error(generate, sleep=sleep)
+    assert generate.await_count == 2
+    assert all(
+        not call.kwargs.get("excluded_provider_ids")
+        for call in generate.await_args_list
+    )
+    assert all(call.kwargs.get("generation_guidance") is None for call in generate.await_args_list)
+    assert caught.failure_family == "provider_transport"
+    assert caught.route_snapshot["provider_id"] == "deepseek"
 
 
 def test_provider_transport_retry_is_not_a_creative_quality_loop():
     from src.engine.pipeline_errors import is_retryable_provider_transport_failure
     wrapped = _transport_generate_error(504)
     assert is_retryable_provider_transport_failure(wrapped)
+    assert is_retryable_provider_transport_failure(_transport_generate_error(403))
     assert not is_retryable_provider_transport_failure(_transport_generate_error(401))
     assert not is_retryable_provider_transport_failure(ValueError("HTML code says 504; not an HTTP exception"))
 

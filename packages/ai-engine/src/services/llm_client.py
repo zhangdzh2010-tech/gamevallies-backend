@@ -21,7 +21,12 @@ import httpx
 from ..config.settings import settings
 from ..config.timeout_store import get_int as get_timeout_int
 from .llm_gateway import gateway, get_request_context
-from .llm_http_evidence import failure_transport_evidence, transport_error_message
+from .llm_http_evidence import (
+    attach_transport_evidence,
+    failure_transport_evidence,
+    is_retryable_provider_http_status,
+    transport_error_message,
+)
 from .prompt_dedup import build_prompt_fingerprint, deep_dedupe_prompt
 from .task_memory import task_memory
 
@@ -406,6 +411,7 @@ def _summarize_error_message(message: str, limit: int = 160) -> str:
 
 
 def _is_retryable_provider_error(exc: BaseException) -> bool:
+    """Same-route retry: 403/429/5xx, timeouts, and parse/truncation recoveries."""
     if isinstance(exc, asyncio.CancelledError):
         return True
     if isinstance(exc, (asyncio.TimeoutError, httpx.TimeoutException, httpx.RequestError)):
@@ -415,8 +421,27 @@ def _is_retryable_provider_error(exc: BaseException) -> bool:
     if isinstance(exc, OpenAICompatibleResponseParseError):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code in {408, 409, 425, 429} or exc.response.status_code >= 500
+        return is_retryable_provider_http_status(exc.response.status_code)
     return False
+
+
+def _is_cross_provider_failover_error(exc: BaseException) -> bool:
+    """Walk to an explicit fallback only for timeouts and 429/5xx — never for 403.
+
+    Generate is deepseek-only after the business-stage fallback was cleared.
+    A 403 on the primary must stay on that primary (bounded same-route retry)
+    and must not implicitly promote kimi or any other second provider.
+    """
+    if isinstance(exc, httpx.HTTPStatusError) and int(exc.response.status_code) == 403:
+        return False
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, httpx.HTTPStatusError) and int(current.response.status_code) == 403:
+            return False
+        current = current.__cause__ or current.__context__
+    return _is_retryable_provider_error(exc)
 
 
 def _provider_retry_after_seconds(exc: Exception) -> Optional[float]:
@@ -1605,7 +1630,7 @@ class LLMClient:
             except asyncio.CancelledError as exc:
                 last_exc = exc
                 _attach_attempt_chain_to_exception(exc, [prepared.route])
-                if attempt_index >= total_attempts or not _is_retryable_provider_error(exc):
+                if attempt_index >= total_attempts or not _is_cross_provider_failover_error(exc):
                     raise
                 logger.warning(
                     "LLM call %s was canceled on provider %s (attempt %s/%s), trying fallback",
@@ -1618,7 +1643,7 @@ class LLMClient:
             except Exception as exc:
                 last_exc = exc
                 _attach_attempt_chain_to_exception(exc, [prepared.route])
-                if attempt_index >= total_attempts or not _is_retryable_provider_error(exc):
+                if attempt_index >= total_attempts or not _is_cross_provider_failover_error(exc):
                     raise
                 logger.warning(
                     "LLM call %s failed on provider %s (attempt %s/%s), trying fallback: %s",
@@ -2120,10 +2145,17 @@ class LLMClient:
             input_tokens = None
             output_tokens = None
             total_tokens = None
-            transport_evidence = failure_transport_evidence(exc, api_key=route.api_key)
+            transport_evidence = failure_transport_evidence(
+                exc,
+                api_key=route.api_key,
+                model=route.model,
+                provider_id=route.provider_id,
+                step_key=step_key,
+            )
             safe_error = transport_error_message(transport_evidence, str(exc))
             if transport_evidence:
                 route.route_snapshot = {**dict(route.route_snapshot or {}), "transportEvidence": transport_evidence}
+                attach_transport_evidence(exc, transport_evidence)
                 logger.warning("LLM transport failure: %s", json.dumps({
                     **transport_evidence, "stepKey": step_key,
                     "providerId": route.provider_id, "model": route.model,
@@ -2133,8 +2165,7 @@ class LLMClient:
             if isinstance(exc, httpx.HTTPStatusError):
                 http_status = exc.response.status_code
                 upstream_request_id = _response_request_id(httpx.Headers(transport_evidence.get("responseHeaders", {})))
-                # Response bodies can echo prompts or credentials. Retain only
-                # their size/hash in transportEvidence, not a raw excerpt.
+                error_body_excerpt = transport_evidence.get("bodyExcerpt")
             elif isinstance(exc, LLMResponseTruncatedError):
                 upstream_request_id = exc.upstream_request_id
                 error_body_excerpt = exc.response_excerpt
@@ -2292,10 +2323,17 @@ class LLMClient:
             input_tokens = None
             output_tokens = None
             total_tokens = None
-            transport_evidence = failure_transport_evidence(exc, api_key=route.api_key)
+            transport_evidence = failure_transport_evidence(
+                exc,
+                api_key=route.api_key,
+                model=route.model,
+                provider_id=route.provider_id,
+                step_key=step_key,
+            )
             safe_error = transport_error_message(transport_evidence, str(exc))
             if transport_evidence:
                 route.route_snapshot = {**dict(route.route_snapshot or {}), "transportEvidence": transport_evidence}
+                attach_transport_evidence(exc, transport_evidence)
                 logger.warning("LLM transport failure: %s", json.dumps({
                     **transport_evidence, "stepKey": step_key,
                     "providerId": route.provider_id, "model": route.model,
@@ -2305,6 +2343,7 @@ class LLMClient:
             if isinstance(exc, httpx.HTTPStatusError):
                 http_status = exc.response.status_code
                 upstream_request_id = _response_request_id(httpx.Headers(transport_evidence.get("responseHeaders", {})))
+                error_body_excerpt = transport_evidence.get("bodyExcerpt")
             elif isinstance(exc, LLMResponseTruncatedError):
                 upstream_request_id = exc.upstream_request_id
                 error_body_excerpt = exc.response_excerpt

@@ -296,3 +296,23 @@ def test_review_outage_is_not_an_optional_review_success(responses):
     if report['assessments']:
         assert report['assessments'][0]['assessment']['ran'] is False
         assert report['assessments'][0]['validation_errors'] == ['invalid review schema']
+
+
+def test_review_403_persists_transport_evidence_and_stays_non_creative():
+    import httpx
+    request = httpx.Request('POST', 'https://www.zltokens.com/v1/chat/completions')
+    response = httpx.Response(
+        403, request=request, headers={'x-request-id': 'zl-403'},
+        content=b'{"error":{"message":"Forbidden","code":"quota"}}',
+    )
+    forbidden = httpx.HTTPStatusError('Client error 403 Forbidden', request=request, response=response)
+    with pytest.raises(PipelineExecutionError) as caught:
+        run_review_responses([forbidden])
+    assert caught.value.failure_family == 'review_infrastructure'
+    assert 'Upstream HTTP 403' in str(caught.value)
+    assert 'assessment unavailable' in str(caught.value)
+    report = caught.value.artifacts[1]['payload']
+    assert report['transportEvidence']['httpStatus'] == 403
+    assert report['transportEvidence']['bodyExcerpt']
+    assert 'Forbidden' in report['transportEvidence']['bodyExcerpt']
+    assert caught.value.transport_evidence['httpStatus'] == 403

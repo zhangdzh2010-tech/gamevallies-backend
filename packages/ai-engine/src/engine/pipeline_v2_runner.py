@@ -22,6 +22,11 @@ from ..api.models import (
 from ..config.settings import settings
 from ..config.timeout_store import get_float as get_timeout_float, get_int as get_timeout_int
 from ..services.llm_gateway import get_request_context
+from ..services.llm_http_evidence import (
+    attach_transport_evidence,
+    collect_transport_evidence,
+    transport_error_message,
+)
 from ..services.task_memory import task_memory
 from .code_preflight import CodePreflightValidator
 from .code_generator import CodeGenerator
@@ -809,14 +814,11 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                     and not extra_provider_transport_retry_granted
                 ):
                     extra_provider_transport_retry_granted = True
-                    next_provider_exclusions = self._advance_generation_provider_exclusions(
-                        last_route_snapshot,
-                        provider_exclusions,
-                    )
-                    if next_provider_exclusions is not None:
-                        provider_exclusions = next_provider_exclusions
+                    # Stay on the same primary. Generate is deepseek-only after
+                    # the business-stage fallback was cleared; do not exclude
+                    # the failed provider and implicitly promote kimi.
                     logger.warning(
-                        "Create generation for game %s hit provider transport on attempt %s; retrying once with backoff, same quality gates",
+                        "Create generation for game %s hit provider transport on attempt %s; retrying once on the same primary, same quality gates",
                         request.game_id,
                         quality_attempt,
                     )
@@ -835,6 +837,9 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                             "failureFamily": "provider_transport",
                             "reason": str(exc)[:2000],
                             "infraRetry": True,
+                            "samePrimaryRetry": True,
+                            "transportEvidence": getattr(exc, "transport_evidence", None)
+                            or (last_route_snapshot or {}).get("transportEvidence"),
                         },
                     )
                     await asyncio.sleep(self._provider_transport_retry_backoff_s(quality_attempt))
@@ -846,6 +851,14 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                     "review_actionability",
                     "review_infrastructure",
                 } or exc.stage not in {"logic_generate", "contract_qa", "runtime_simulation_qa", "code_review"}:
+                    if (
+                        getattr(exc, "failure_family", None) == "provider_transport"
+                        and extra_provider_transport_retry_granted
+                    ):
+                        try:
+                            exc.retry_count = max(int(getattr(exc, "retry_count", 0) or 0), 1)
+                        except Exception:
+                            pass
                     raise
                 if quality_attempt >= len(attempt_plan):
                     if (
@@ -1569,15 +1582,21 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                 excluded_provider_ids=self._normalize_provider_exclusions(excluded_provider_ids),
             )
         except Exception as exc:
+            evidence = collect_transport_evidence(exc)
             wrapped = PipelineExecutionError(
-                f"Full LLM generation failed: {exc}",
+                f"Full LLM generation failed: {transport_error_message(evidence, str(exc))}",
                 stage="logic_generate",
                 failure_family=getattr(exc, "failure_family", None) or ("provider_transport" if is_provider_transport_failure(exc) else "code_generation"),
             )
+            if evidence:
+                attach_transport_evidence(wrapped, evidence)
             route_snapshot = getattr(exc, "route_snapshot", None)
             if route_snapshot is not None:
                 try:
-                    setattr(wrapped, "route_snapshot", route_snapshot)
+                    setattr(wrapped, "route_snapshot", {
+                        **dict(route_snapshot),
+                        **({"transportEvidence": evidence} if evidence else {}),
+                    })
                 except Exception:
                     pass
             raise wrapped from exc
