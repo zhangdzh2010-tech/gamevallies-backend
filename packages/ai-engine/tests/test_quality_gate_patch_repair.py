@@ -20,8 +20,13 @@ from src.api.models import (
     RunPipelineV2Request,
 )
 from src.config.settings import settings
+from src.engine.generated_quality_policy import QUALITY_POLICY
 from src.engine.pipeline_v2_runner import V2PipelineRunner
 from src.engine.quality_scorer import LLMReviewResult
+
+
+def test_standard_fun_score_bar_stays_at_6_8():
+    assert QUALITY_POLICY["tiers"]["standard"]["fun_score"] == 6.8
 
 BASE_SCRIPT = (
     "const canvas=document.getElementById('gameCanvas');"
@@ -397,7 +402,7 @@ def test_review_infrastructure_degrades_for_standard_tier_without_regeneration()
     response, mocks = _run_create_with_mocks(
         generate_side_effect=generate,
         flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])],
-        review_side_effect=[failure, failure],
+        review_side_effect=[failure, failure, failure],
         compute_side_effect=[_quality(7.1)],
     )
     assert mocks.generate.await_count == 1
@@ -439,6 +444,28 @@ def test_review_infrastructure_retries_playable_artifact_and_can_earn_seed_worth
     assert response.quality_breakdown["seed_worthy"] is True
     assert response.quality_breakdown["seed_worthy_reason"] == "structured_review_passed"
     assert response.quality_breakdown["reviewRan"] is True
+
+
+def test_patch_review_infrastructure_retries_and_can_earn_seed_worthy():
+    from src.engine.pipeline_errors import PipelineExecutionError
+    failure = PipelineExecutionError(
+        'Code review evidence could not be validated: assessment unavailable',
+        stage='code_review',
+        failure_family='review_infrastructure',
+    )
+    response, mocks = _run_create_with_mocks(
+        generate_side_effect=[(_generated(BASE_CODE, 'provider-a'), [])],
+        flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])],
+        review_side_effect=[_near_miss_review(), failure, failure, _passing_review()],
+        compute_side_effect=[_quality(5.9), _quality(7.1)],
+    )
+    assert mocks.generate.await_count == 1
+    assert mocks.patch_text.await_count == 1
+    assert response.qa_passed
+    assert not any(warning.get('type') == 'review_infrastructure_degraded' for warning in response.qa_warnings)
+    assert response.quality_breakdown['pipeline_success'] is True
+    assert response.quality_breakdown['seed_worthy'] is True
+    assert response.quality_breakdown['seed_worthy_reason'] == 'structured_review_passed'
 
 
 def test_quality_patch_allowed_sections_maps_failing_dimensions():
@@ -646,6 +673,36 @@ def test_explicit_desktop_requirements_override_touch_only_defaults():
         assert "not touchstart alone" in contract
         assert "without requiring a pressed button" in contract
     assert CodeGenerator._build_requested_platform_contract(_spec()) == ""
+
+
+def test_patch_extra_closer_is_salvaged_before_contract_rejection():
+    from src.engine.qa_pipeline import QAPipeline
+    from src.engine.section_patch import apply_section_patches, parse_patch_response
+
+    original = (
+        "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas><script>\n"
+        "function onMatch(count) {\n"
+        "  return count;\n"
+        "}\n"
+        "</script></body></html>"
+    )
+    text = json.dumps({
+        "patches": [{
+            "section": "SCRIPT",
+            "operation": "replace_exact",
+            "search": "  return count;\n}",
+            "content": "  return count;\n}\n}",
+        }]
+    })
+    patches, _ = parse_patch_response(text, allowed_sections=("SCRIPT",), strict=True, exact_only=True)
+    candidate = apply_section_patches(original, patches)
+    assert not QAPipeline._script_has_valid_syntax(
+        candidate.split("<script>")[1].split("</script>")[0]
+    )
+    salvaged = QAPipeline.salvage_html_script_syntax(candidate)
+    script = salvaged.split("<script>")[1].split("</script>")[0]
+    assert QAPipeline._script_has_valid_syntax(script)
+    assert "function onMatch(count)" in salvaged
 
 
 def test_patch_syntax_failure_corrects_original_before_runtime_or_regeneration():

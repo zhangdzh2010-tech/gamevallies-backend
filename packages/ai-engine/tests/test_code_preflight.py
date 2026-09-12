@@ -388,6 +388,39 @@ def test_code_preflight_hoists_bare_function_assignment_used_as_live_expression(
     assert not any(issue.code == "undefined_symbol:nc" for issue in remaining)
 
 
+def test_code_preflight_declares_incremented_live_counters_like_combo():
+    validator = CodePreflightValidator()
+    html = """
+    <!DOCTYPE html>
+    <html>
+      <body>
+        <canvas id="gameCanvas"></canvas>
+        <script>
+          const canvas = document.getElementById('gameCanvas');
+          canvas.width = 360;
+          canvas.height = 640;
+          function onMatch(count) {
+            combo++;
+            if (combo > 1) {
+              updateHud(combo);
+            }
+            return combo;
+          }
+        </script>
+      </body>
+    </html>
+    """
+    issues = validator.validate(html, runtime_contract=GameRuntimeContract(runtime_profile="puzzle_grid_match"))
+    assert any(issue.code == "undefined_symbol:combo" for issue in issues)
+    assert any("live expression" in issue.message for issue in issues if issue.code == "undefined_symbol:combo")
+    repaired = validator.auto_repair(html, issues=issues)
+    assert "let combo = 0;" in repaired
+    remaining = validator.validate(repaired, runtime_contract=GameRuntimeContract(runtime_profile="puzzle_grid_match"))
+    assert not any(issue.code == "undefined_symbol:combo" for issue in remaining)
+    guidance = validator.render_guidance(issues)
+    assert "let combo = 0;" in guidance
+
+
 def test_code_preflight_does_not_invent_unassigned_undefined_symbols():
     validator = CodePreflightValidator()
     html = """
