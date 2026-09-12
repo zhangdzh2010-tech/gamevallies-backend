@@ -88,7 +88,7 @@ function createEl(tag: string): MiniEl {
     },
     remove() {
       if (!this.parentNode) return;
-      this.parentNode.children = this.parentNode.children.filter((item) => item !== this);
+      this.parentNode.children = this.parentNode.children.filter((item: MiniEl) => item !== this);
       this.parentNode = null;
     },
     addEventListener(type, fn) {
