@@ -140,6 +140,13 @@ def fill_prompt(
         '{"title":"...","summary":"...","formula":"...","assumptions":"...","limits":"...",'
         '"caption":"...","scene_note":"..."}\n'
         "公式必须与配方科学一致；不要换成错误家族的模型。"
+        + (
+            "酶活性文案须写明先升后降与热变性，不要写成随温度单调上升。"
+            if recipe.id == "enzyme_temp"
+            else "渗透文案须标明内侧、外侧与半透膜，水流由浓度差驱动。"
+            if recipe.id == "osmosis"
+            else ""
+        )
     )
 
 
