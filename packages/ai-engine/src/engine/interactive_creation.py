@@ -270,6 +270,14 @@ def science_runtime_repair_guidance(issues: list[str]) -> str:
         hints.append(
             '双波源必须写成 y=A1·sin(kx-ωt)+A2·sin(kx-ωt+φ)，只有第二项加相位差。'
             '保留可调 param-lambda 与 param-phi，返回完整 HTML，不要截断文档。')
+    if re.search(r'酶|变性|酶活|arrhenius', text, re.I):
+        hints.append(
+            '酶活性须为相对 Arrhenius 乘热变性：rate=exp(-Ea/R(1/T-1/Tref))/(1+exp((T-Td)/w))，'
+            '默认Ea下在0–80°C先升后降，峰值约37–50°C。绘制整条rate-T曲线，不要画单调上升线。')
+    if re.search(r'渗透|半透|隔室|osmosis', text, re.I):
+        hints.append(
+            '渗透：开始时两侧体积必须不等（vin≠vout）；点击开始后体积与水流粒子持续变化。'
+            '绘制前判断 ctx/canvas 再设置 strokeStyle。标注内侧、外侧与半透膜。')
     return '\n'.join(hints)
 
 

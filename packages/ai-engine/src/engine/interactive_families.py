@@ -162,13 +162,13 @@ RECIPES: Dict[str, Recipe] = {
         family_id="param_formula_panel",
         subject="bio",
         title="酶活性-温度曲线",
-        formula="rate = k·exp(-Ea/RT)·D(T)",
+        formula="rate = exp[-Ea/R(1/T-1/Tref)] / (1+exp((T-Td)/w))",
         keywords=("酶", "enzyme", "温度", "活性", "变性", "arrhenius", "反应速率"),
         params=(
             _param("T", "温度 T", 0, 80, 1, 37, "°C"),
             _param("Ea", "活化能 Ea", 20, 80, 1, 50, "kJ/mol"),
         ),
-        assumptions="简化 Arrhenius 乘以热变性项，不是实验测得的酶活。",
+        assumptions="相对 37°C 的 Arrhenius 乘以热变性项 D(T)，示意先升后降，不是实验测得的酶活。",
         limits="未区分底物饱和或 pH；示意曲线。",
         units={"T": "°C", "rate": "a.u."},
         required_any=("酶", "enzyme", "arrhenius", "酶活"),
@@ -286,7 +286,7 @@ RECIPES: Dict[str, Recipe] = {
             _param("cout", "外侧浓度", 0.0, 1.0, 0.05, 0.2, "mol/L"),
             _param("k", "渗透系数 k", 0.05, 0.4, 0.05, 0.15, "1/s"),
         ),
-        assumptions="两侧充分混合，仅水透过示意膜。",
+        assumptions="两侧充分混合，仅水透过示意膜；水向高浓度侧流动。",
         limits="忽略静水压与真实细胞膜通道。",
         units={"c": "mol/L"},
         required_any=("渗透", "osmosis", "半透"),
@@ -391,6 +391,70 @@ def plane_mirror_rays(theta_rad: float, *, hit: Tuple[float, float] = (0.0, 0.0)
     }
 
 
+# Relative Arrhenius × logistic denaturation. Tref=37°C so A(37°C)=1.
+# Td=48°C, w=4°C: default Ea=50 kJ/mol peaks inside 37–50°C and falls by 80°C.
+ENZYME_GAS_R = 8.314
+ENZYME_TREF_C = 37.0
+ENZYME_TDENATURE_C = 48.0
+ENZYME_DENATURE_WIDTH_C = 4.0
+ENZYME_DEFAULT_EA_KJ = 50.0
+ENZYME_TEMP_MIN_C = 0.0
+ENZYME_TEMP_MAX_C = 80.0
+
+OSMOSIS_VOL_MIN = 0.15
+OSMOSIS_VOL_MAX = 0.85
+OSMOSIS_START_VIN = 0.32
+OSMOSIS_START_VOUT = 0.58
+OSMOSIS_FLUX_SCALE = 1.2
+
+
+def enzyme_activity_rate(temp_c: float, ea_kj_mol: float = ENZYME_DEFAULT_EA_KJ) -> float:
+    """rate = exp(-Ea/R·(1/T-1/Tref)) / (1+exp((T-Td)/w))."""
+    tk = float(temp_c) + 273.15
+    tref = ENZYME_TREF_C + 273.15
+    ea = float(ea_kj_mol) * 1000.0
+    arrhenius = math.exp(-ea / ENZYME_GAS_R * (1.0 / tk - 1.0 / tref))
+    denature = 1.0 / (1.0 + math.exp((float(temp_c) - ENZYME_TDENATURE_C) / ENZYME_DENATURE_WIDTH_C))
+    return arrhenius * denature
+
+
+def enzyme_activity_peak_celsius(
+    ea_kj_mol: float = ENZYME_DEFAULT_EA_KJ,
+    t_min: float = ENZYME_TEMP_MIN_C,
+    t_max: float = ENZYME_TEMP_MAX_C,
+    step: float = 0.25,
+) -> Tuple[float, float]:
+    """Interior temperature of the maximum rate on [t_min, t_max]."""
+    best_t = t_min
+    best_rate = -1.0
+    sample = t_min
+    while sample <= t_max + 1e-9:
+        rate = enzyme_activity_rate(sample, ea_kj_mol)
+        if rate > best_rate:
+            best_t = sample
+            best_rate = rate
+        sample += step
+    return best_t, best_rate
+
+
+def osmosis_volume_step(
+    vin: float,
+    vout: float,
+    cin: float,
+    cout: float,
+    k: float,
+    dt: float,
+    *,
+    scale: float = OSMOSIS_FLUX_SCALE,
+) -> Tuple[float, float, float]:
+    """Water flux J=k(cin-cout) toward the high-concentration side."""
+    flux = float(k) * (float(cin) - float(cout))
+    transfer = flux * float(dt) * float(scale)
+    next_in = min(OSMOSIS_VOL_MAX, max(OSMOSIS_VOL_MIN, float(vin) + transfer))
+    next_out = min(OSMOSIS_VOL_MAX, max(OSMOSIS_VOL_MIN, float(vout) - transfer))
+    return next_in, next_out, flux
+
+
 _PARAM_FORMULA_JS = r"""
   window.WorkFamily = (function(){
     var recipe = "__RECIPE__";
@@ -402,6 +466,13 @@ _PARAM_FORMULA_JS = r"""
     function setReadout(text){
       var out = document.getElementById('work-readout');
       if (out) out.textContent = text;
+    }
+    function enzymeRate(Tc, Ea){
+      var Tk = Tc + 273.15;
+      var Tref = 37 + 273.15;
+      var arr = Math.exp(-Ea * 1000 / 8.314 * (1 / Tk - 1 / Tref));
+      var denature = 1 / (1 + Math.exp((Tc - 48) / 4));
+      return arr * denature;
     }
     function compute(){
       if (recipe === 'ohm_law'){
@@ -419,12 +490,9 @@ _PARAM_FORMULA_JS = r"""
       }
       if (recipe === 'enzyme_temp'){
         var Tc = num('param-T', 37), Ea = num('param-Ea', 50);
-        var Tk = Tc + 273.15;
-        var arr = Math.exp(-Ea * 1000 / (8.314 * Tk));
-        var denature = 1 / (1 + Math.exp((Tc - 55) / 4));
-        var rate = 4000 * arr * denature;
-        setReadout('rate=' + rate.toFixed(3) + ' a.u.');
-        return {kind:'enzyme', T:Tc, rate:rate};
+        var rate = enzymeRate(Tc, Ea);
+        setReadout('rate=' + rate.toFixed(3) + ' a.u.  T=' + Tc.toFixed(0) + '°C');
+        return {kind:'enzyme', T:Tc, Ea:Ea, rate:rate};
       }
       if (recipe === 'photosynthesis_rate'){
         var I = num('param-I', 40), C = num('param-C', 400);
@@ -439,13 +507,14 @@ _PARAM_FORMULA_JS = r"""
     }
     return {
       applyParams: compute,
-      onStart: function(){ phase = 0.2; },
+      onStart: function(){ if (phase < 0.05) phase = 0.2; compute(); },
       reset: function(){ phase = 0.2; compute(); },
-      step: function(dt){ phase += dt; },
+      step: function(dt){ phase += dt; if (recipe === 'enzyme_temp') compute(); },
       draw: function(ctx, canvas){
-        if (!ctx || !canvas) return;
+        if (!ctx || !canvas || typeof ctx.clearRect !== 'function') return;
         var s = compute();
-        var w = canvas.width, h = canvas.height;
+        var w = canvas.width || 0, h = canvas.height || 0;
+        if (w < 8 || h < 8) return;
         ctx.clearRect(0,0,w,h);
         ctx.fillStyle = '#0f172a'; ctx.fillRect(0,0,w,h);
         ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2;
@@ -477,16 +546,50 @@ _PARAM_FORMULA_JS = r"""
           ctx.font = '12px sans-serif';
           ctx.fillText('活塞体积 ∝ V', left + chamberW + 16, 28);
           ctx.fillText('P=' + s.P.toFixed(0) + ' Pa', left + chamberW + 16, 48);
-        } else if (s.kind === 'enzyme' || s.kind === 'photo'){
-          var y = h - 20 - (s.rate * (s.kind==='photo'? h*0.6 : Math.min(h*0.7, s.rate*40)));
-          ctx.beginPath(); ctx.moveTo(20,h-20);
+        } else if (s.kind === 'enzyme'){
+          var pad = 26, left = pad, right = w - 12, top = 18, bottom = h - 22;
+          var span = Math.max(40, right - left), rise = Math.max(24, bottom - top);
+          var peak = 0.05, tSample, rSample, i;
+          for (tSample = 0; tSample <= 80; tSample += 2){
+            rSample = enzymeRate(tSample, s.Ea);
+            if (rSample > peak) peak = rSample;
+          }
+          var rateY = function(rateVal){
+            return bottom - rise * Math.min(1, Math.max(0, rateVal / peak));
+          };
+          var tempX = function(tempC){
+            return left + span * Math.min(1, Math.max(0, tempC / 80));
+          };
+          ctx.strokeStyle = '#64748b'; ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.moveTo(left, top); ctx.lineTo(left, bottom); ctx.lineTo(right, bottom); ctx.stroke();
+          ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2;
+          ctx.beginPath();
+          for (i = 0; i <= 80; i += 2){
+            var px = tempX(i), py = rateY(enzymeRate(i, s.Ea));
+            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+          }
+          ctx.stroke();
+          var markX = tempX(s.T), markY = rateY(s.rate);
+          ctx.fillStyle = '#f97316';
+          ctx.beginPath(); ctx.arc(markX, markY, 5, 0, Math.PI * 2); ctx.fill();
+          var scanT = (phase * 22) % 80;
+          var scanX = tempX(scanT), scanY = rateY(enzymeRate(scanT, s.Ea));
+          ctx.fillStyle = '#facc15';
+          ctx.beginPath(); ctx.arc(scanX, scanY, 3 + Math.sin(phase * 6), 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = '#e2e8f0';
+          ctx.font = '11px sans-serif';
+          ctx.fillText('T/°C', right - 28, bottom - 4);
+          ctx.fillText('rate', left + 4, top + 10);
+          ctx.fillText('最适', Math.min(right - 28, Math.max(left + 4, tempX(44) - 10)), top + 10);
+        } else if (s.kind === 'photo'){
+          ctx.beginPath(); ctx.moveTo(20, h-20);
           for (var x=20;x<w-20;x+=6){
             var t = (x-20)/(w-40);
-            var yy = s.kind==='photo' ? h-20 - s.rate*h*0.55*(0.4+0.6*t) : h-20 - Math.min(h*0.7, (0.3+t)*s.rate*30);
+            var yy = h-20 - s.rate*h*0.55*(0.4+0.6*t);
             ctx.lineTo(x, yy + 6*Math.sin(phase+t*6));
           }
           ctx.stroke();
-          ctx.fillStyle = '#f97316'; ctx.fillRect(w*0.7, y, 10, 10);
+          ctx.fillStyle = '#f97316'; ctx.fillRect(w*0.7, h-20 - s.rate*h*0.6, 10, 10);
         } else {
           var x = 40 + (w-80) * (0.15 + 0.35*(1-Math.cos(phase * Math.min(2, s.a/4))));
           ctx.fillStyle = '#22c55e'; ctx.fillRect(x, h*0.45, 24, 24);
@@ -729,10 +832,11 @@ _RAY_OPTICS_JS = r"""
 _COMPARTMENT_JS = r"""
   window.WorkFamily = (function(){
     var recipe = "__RECIPE__";
-    var vin = 0.45, vout = 0.45, x = 1.2, y = 0.6;
+    var vin = 0.32, vout = 0.58, x = 1.2, y = 0.6;
     var hist = [];
     var maxHist = 160;
     var delta = 0.4;
+    var flow = 0;
     function num(id, fallback){
       var el = document.getElementById(id);
       return el ? +el.value : fallback;
@@ -745,23 +849,33 @@ _COMPARTMENT_JS = r"""
       hist.push([x, y]);
       if (hist.length > maxHist) hist.shift();
     }
+    function osmosisFlux(){
+      return num('param-k',0.15) * (num('param-cin',0.8) - num('param-cout',0.2));
+    }
+    function clampVol(v){
+      return Math.min(0.85, Math.max(0.15, v));
+    }
+    function ensureOsmosisOffset(){
+      if (Math.abs(vin - vout) < 0.12){ vin = 0.32; vout = 0.58; }
+    }
     return {
       applyParams: function(){
         if (recipe === 'osmosis'){
-          setReadout('Δc=' + (num('param-cin',0.8)-num('param-cout',0.2)).toFixed(2));
+          var J0 = osmosisFlux();
+          setReadout('J=' + J0.toFixed(3) + '  Vin=' + vin.toFixed(2) + '  Vout=' + vout.toFixed(2));
         } else {
           setReadout('猎物x=' + x.toFixed(2) + '  捕食者y=' + y.toFixed(2) + '  δ=' + delta.toFixed(2));
         }
       },
       onStart: function(){
-        if (recipe === 'osmosis'){ vin = 0.35; vout = 0.55; }
+        if (recipe === 'osmosis'){ ensureOsmosisOffset(); if (flow < 0.05) flow = 0.05; }
         if (recipe === 'population'){
           if (x < 0.2){ x = 1.2; y = 0.6; }
           if (!hist.length) record();
         }
       },
       reset: function(){
-        if (recipe === 'osmosis'){ vin = 0.45; vout = 0.45; }
+        if (recipe === 'osmosis'){ vin = 0.32; vout = 0.58; flow = 0; }
         else { x = 1.2; y = 0.6; hist = []; record(); }
         this.applyParams();
       },
@@ -769,9 +883,10 @@ _COMPARTMENT_JS = r"""
         if (recipe === 'osmosis'){
           var cin = num('param-cin',0.8), cout = num('param-cout',0.2), k = num('param-k',0.15);
           var J = k * (cin - cout);
-          vin = Math.min(0.85, Math.max(0.15, vin + J*dt*0.15));
-          vout = Math.min(0.85, Math.max(0.15, vout - J*dt*0.15));
-          setReadout('J=' + J.toFixed(3) + '  Vin=' + vin.toFixed(2));
+          vin = clampVol(vin + J*dt*1.2);
+          vout = clampVol(vout - J*dt*1.2);
+          flow += dt;
+          setReadout('J=' + J.toFixed(3) + '  Vin=' + vin.toFixed(2) + '  Vout=' + vout.toFixed(2));
         } else {
           var a = num('param-alpha',0.8), b = num('param-beta',0.5), g = num('param-gamma',0.4);
           var dx = x * (a - b*y);
@@ -783,14 +898,41 @@ _COMPARTMENT_JS = r"""
         }
       },
       draw: function(ctx, canvas){
-        if (!ctx || !canvas) return;
-        var w = canvas.width, h = canvas.height;
+        if (!ctx || !canvas || typeof ctx.clearRect !== 'function') return;
+        var w = canvas.width || 0, h = canvas.height || 0;
+        if (w < 8 || h < 8) return;
         ctx.clearRect(0,0,w,h);
         ctx.fillStyle = '#0f172a'; ctx.fillRect(0,0,w,h);
         if (recipe === 'osmosis'){
-          ctx.fillStyle = '#0ea5e9'; ctx.fillRect(20, h*(1-vin), w*0.35, h*vin);
-          ctx.fillStyle = '#14b8a6'; ctx.fillRect(w*0.55, h*(1-vout), w*0.35, h*vout);
-          ctx.strokeStyle = '#f8fafc'; ctx.strokeRect(w*0.47, 10, 8, h-20);
+          var cin = num('param-cin',0.8), cout = num('param-cout',0.2);
+          var J = osmosisFlux();
+          var left = 16, boxW = w * 0.32, mid = w * 0.47, right = mid + 14;
+          ctx.fillStyle = '#0ea5e9';
+          ctx.fillRect(left, h*(1-vin), boxW, h*vin);
+          ctx.fillStyle = '#14b8a6';
+          ctx.fillRect(right, h*(1-vout), boxW, h*vout);
+          if (ctx.setLineDash) ctx.setLineDash([3,3]);
+          ctx.strokeStyle = '#e2e8f0';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(mid, 12, 10, h-24);
+          if (ctx.setLineDash) ctx.setLineDash([]);
+          ctx.fillStyle = '#f8fafc';
+          ctx.font = '11px sans-serif';
+          ctx.fillText('内侧', left + 6, 16);
+          ctx.fillText('c=' + cin.toFixed(2), left + 6, 30);
+          ctx.fillText('外侧', right + 6, 16);
+          ctx.fillText('c=' + cout.toFixed(2), right + 6, 30);
+          ctx.fillText('半透膜', Math.max(left, mid - 18), h - 8);
+          var dir = J >= 0 ? 1 : -1;
+          var i, u, px, py;
+          ctx.fillStyle = '#facc15';
+          for (i=0;i<5;i++){
+            u = (flow * 0.7 + i * 0.18) % 1;
+            if (dir < 0) u = 1 - u;
+            px = left + boxW + (right - left - boxW) * u;
+            py = h * 0.45 + 8 * Math.sin(flow * 4 + i);
+            ctx.beginPath(); ctx.arc(px, py, 3, 0, Math.PI*2); ctx.fill();
+          }
         } else {
           var pad = 22, mid = Math.floor(w * 0.58);
           ctx.font = '12px sans-serif';

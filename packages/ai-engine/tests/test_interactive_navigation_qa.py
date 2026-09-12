@@ -68,6 +68,10 @@ def test_science_repair_guidance_is_tied_to_observed_runtime_defects():
     layout = science_runtime_repair_guidance(['1000×600 (visible) 核心图形/控件不完整：start。'])
     assert '1000×600' in layout
     assert science_runtime_repair_guidance(['未检测到可操作且能改变作品内容的交互控件。']) == ''
+    enzyme = science_runtime_repair_guidance(['酶活性曲线缺少热变性，scientific_correctness过低。'])
+    assert '先升后降' in enzyme and '37–50' in enzyme
+    osmosis = science_runtime_repair_guidance(['渗透隔室在开始后体积未变化，半透膜不清晰。'])
+    assert 'vin≠vout' in osmosis and '半透膜' in osmosis
     tool_hint = tool_runtime_repair_guidance(['未检测到可操作且能改变作品内容的交互控件。'])
     assert '<output>' in tool_hint
     assert '空壳' in tool_hint

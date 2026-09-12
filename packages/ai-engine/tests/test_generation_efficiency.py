@@ -25,20 +25,29 @@ from src.engine.interactive_diversity import (
     plan_interactive_diversity,
 )
 from src.engine.interactive_families import (
+    ENZYME_DEFAULT_EA_KJ,
+    ENZYME_TEMP_MAX_C,
+    ENZYME_TEMP_MIN_C,
+    OSMOSIS_START_VIN,
+    OSMOSIS_START_VOUT,
     RECIPES,
+    enzyme_activity_peak_celsius,
+    enzyme_activity_rate,
     family_plugin_js,
     get_recipe,
+    osmosis_volume_step,
     plane_mirror_rays,
     recipes_for_family,
     wave_superposition,
 )
-from src.engine.interactive_router import route_interactive_template
 from src.engine.interactive_short_path import (
     assemble_short_path_document,
     default_slots,
     extract_fill_payload,
+    fill_prompt,
     looks_like_full_html,
 )
+from src.engine.interactive_router import route_interactive_template
 from src.engine.template_registry import TemplateRegistry
 
 
@@ -638,6 +647,162 @@ class ResidualFamilyContracts(unittest.IsolatedAsyncioTestCase):
             readout = await page.evaluate("() => document.getElementById('work-readout').textContent")
             await browser.close()
         self.assertIn("v=", readout)
+
+    def test_enzyme_rate_is_non_monotonic_with_interior_max(self):
+        peak_t, peak_rate = enzyme_activity_peak_celsius()
+        low = enzyme_activity_rate(ENZYME_TEMP_MIN_C, ENZYME_DEFAULT_EA_KJ)
+        mid = enzyme_activity_rate(37, ENZYME_DEFAULT_EA_KJ)
+        high = enzyme_activity_rate(ENZYME_TEMP_MAX_C, ENZYME_DEFAULT_EA_KJ)
+        self.assertGreaterEqual(peak_t, 37.0)
+        self.assertLessEqual(peak_t, 50.0)
+        self.assertGreater(peak_rate, low)
+        self.assertGreater(peak_rate, high)
+        self.assertGreater(mid, low)
+        self.assertGreater(mid, high)
+        self.assertLess(high, 0.25 * peak_rate)
+        rising = enzyme_activity_rate(20) < enzyme_activity_rate(35)
+        falling = enzyme_activity_rate(60) > enzyme_activity_rate(80)
+        self.assertTrue(rising)
+        self.assertTrue(falling)
+        plugin = family_plugin_js("param_formula_panel", get_recipe("enzyme_temp"))
+        self.assertIn("enzymeRate", plugin)
+        self.assertIn("1 / Tk - 1 / Tref", plugin)
+        self.assertIn("(Tc - 48) / 4", plugin)
+        self.assertNotIn("(0.3+t)*s.rate", plugin)
+        self.assertNotIn("4000 * arr * denature", plugin)
+        prompt = fill_prompt(
+            kind="science",
+            brief="酶活性随温度变化",
+            recipe=get_recipe("enzyme_temp"),
+            plan=plan_interactive_diversity(
+                family_id="param_formula_panel",
+                recipe_id="enzyme_temp",
+                title="酶",
+                formula=get_recipe("enzyme_temp").formula,
+                variation_seed="enzyme-fill",
+                ledger=DiversityLedger(),
+            ),
+            route=route_interactive_template("science", "作品类型：科学演示。制作酶活性随温度变化的示意曲线，可调温度和活化能。"),
+        )
+        self.assertIn("先升后降", prompt)
+
+    def test_osmosis_start_advances_volumes_and_draw_is_null_safe(self):
+        self.assertNotEqual(OSMOSIS_START_VIN, OSMOSIS_START_VOUT)
+        vin, vout, flux = osmosis_volume_step(
+            OSMOSIS_START_VIN, OSMOSIS_START_VOUT, 0.8, 0.2, 0.15, 0.25
+        )
+        self.assertGreater(flux, 0)
+        self.assertGreater(vin, OSMOSIS_START_VIN)
+        self.assertLess(vout, OSMOSIS_START_VOUT)
+        plugin = family_plugin_js("compartment_flow", get_recipe("osmosis"))
+        self.assertIn("typeof ctx.clearRect !== 'function'", plugin)
+        self.assertIn("ensureOsmosisOffset", plugin)
+        self.assertIn("半透膜", plugin)
+        self.assertIn("内侧", plugin)
+        self.assertIn("外侧", plugin)
+        self.assertIn("vin = 0.32", plugin)
+        self.assertIn("vout = 0.58", plugin)
+        self.assertNotIn("vin = 0.45; vout = 0.45", plugin)
+
+    async def test_assembled_enzyme_curve_and_start_motion(self):
+        html = _assemble_recipe(
+            "enzyme_temp",
+            "作品类型：科学演示。制作酶活性随温度变化的示意曲线，可调温度和活化能。",
+        )
+        self.assertIn("enzymeRate", html)
+        self.assertIn("T/°C", html)
+        report = await validate_interactive_html(html)
+        self.assertFalse(report.get("js_errors"), report)
+        self.assertTrue(report["passed"], report["issues"])
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            page = await browser.new_page()
+            await page.set_content(html)
+            curve = await page.evaluate(
+                """() => {
+                  const samples = [0, 20, 37, 44, 60, 80].map(T => {
+                    const slider = document.getElementById('param-T');
+                    slider.value = String(T);
+                    slider.dispatchEvent(new Event('input', {bubbles:true}));
+                    return {T: T, rate: WorkFamily.applyParams().rate};
+                  });
+                  return samples;
+                }"""
+            )
+            before = await page.evaluate(
+                """() => ({
+                  t: window.WorkRuntime.simTime(),
+                  snap: document.getElementById('work-canvas').toDataURL(),
+                  readout: document.getElementById('work-readout').textContent
+                })"""
+            )
+            await page.click("#btn-start")
+            await page.wait_for_timeout(220)
+            after = await page.evaluate(
+                """() => ({
+                  t: window.WorkRuntime.simTime(),
+                  snap: document.getElementById('work-canvas').toDataURL(),
+                  readout: document.getElementById('work-readout').textContent,
+                  nullSafe: (function(){
+                    try { WorkFamily.draw(null, null); WorkFamily.draw(undefined, document.getElementById('work-canvas')); return true; }
+                    catch (err) { return String(err); }
+                  })()
+                })"""
+            )
+            await browser.close()
+        rates = {row["T"]: row["rate"] for row in curve}
+        self.assertGreater(rates[37], rates[0])
+        self.assertGreater(rates[44], rates[80])
+        self.assertGreater(rates[37], rates[80])
+        self.assertGreater(after["t"], before["t"])
+        self.assertTrue(after["snap"] != before["snap"] or after["readout"] != before["readout"], after)
+        self.assertIs(after["nullSafe"], True)
+
+    async def test_assembled_osmosis_start_advances_volumes_and_null_safe_draw(self):
+        html = _assemble_recipe(
+            "osmosis",
+            "作品类型：科学演示。制作半透膜渗透实验，两侧浓度可调，水流按浓度差流动。",
+        )
+        self.assertIn("半透膜", html)
+        self.assertIn("内侧", html)
+        report = await validate_interactive_html(html)
+        self.assertFalse(report.get("js_errors"), report)
+        self.assertTrue(report["passed"], report["issues"])
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            page = await browser.new_page()
+            await page.set_content(html)
+            before = await page.evaluate(
+                """() => ({
+                  t: window.WorkRuntime.simTime(),
+                  readout: document.getElementById('work-readout').textContent,
+                  snap: document.getElementById('work-canvas').toDataURL()
+                })"""
+            )
+            await page.click("#btn-start")
+            await page.wait_for_timeout(220)
+            after = await page.evaluate(
+                """() => ({
+                  t: window.WorkRuntime.simTime(),
+                  readout: document.getElementById('work-readout').textContent,
+                  snap: document.getElementById('work-canvas').toDataURL(),
+                  nullSafe: (function(){
+                    try { WorkFamily.draw(null, null); WorkFamily.draw({}, document.getElementById('work-canvas')); return true; }
+                    catch (err) { return String(err); }
+                  })()
+                })"""
+            )
+            await browser.close()
+        self.assertGreater(after["t"], before["t"])
+        self.assertNotEqual(after["readout"], before["readout"], after)
+        self.assertIn("Vin=", after["readout"])
+        self.assertIn("Vout=", after["readout"])
+        self.assertTrue(after["snap"] != before["snap"] or after["readout"] != before["readout"])
+        self.assertIs(after["nullSafe"], True)
 
 
 if __name__ == "__main__":
