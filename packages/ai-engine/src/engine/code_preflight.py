@@ -17,6 +17,7 @@ _CALL_RE = re.compile(rf"(?<![\w$.])(?P<name>{_IDENTIFIER_RE})\s*\(")
 _VALUE_REFS = (
     re.compile(rf"(?<![\w$.])(?P<name>{_IDENTIFIER_RE})\s*(?:[+\-*/%]=|===|==|!==|!=|<=|>=|<|>)"),
     re.compile(rf"(?<![\w$.])(?P<name>{_IDENTIFIER_RE})\s*(?:\+\+|--)"),
+    re.compile(rf"(?:\+\+|--)\s*(?P<name>{_IDENTIFIER_RE})\b"),
     re.compile(rf"[(,]\s*(?P<name>{_IDENTIFIER_RE})\s*(?=[,)])"),
 )
 _DECL_RE = re.compile(
@@ -87,6 +88,9 @@ _BARE_FUNCTION_ASSIGN_RE = re.compile(
 )
 _BARE_ASSIGNMENT_RE = re.compile(
     rf"(?<![\w$.])(?P<name>{_IDENTIFIER_RE})\s*(?:[+\-*/%]=|=(?!=))"
+)
+_INCREMENT_RE = re.compile(
+    rf"(?:(?<![\w$.])(?P<name>{_IDENTIFIER_RE})\s*(?:\+\+|--)|(?:\+\+|--)\s*(?P<prefix>{_IDENTIFIER_RE})\b)"
 )
 _ARRAY_DESTRUCTURE_ASSIGN_RE = re.compile(
     r"(?<![\w$])\[(?P<body>[^\[\]]+)\]\s*=(?!=)"
@@ -477,11 +481,25 @@ class CodePreflightValidator:
             for name in undefined_symbols
             if name not in tdz_symbols and len(name) <= 3 and name not in _RESERVED_IDENTIFIERS
         }
+        live_aliases = {
+            name
+            for name in undefined_symbols
+            if name not in tdz_symbols and name not in _RESERVED_IDENTIFIERS
+        }
         if short_aliases & {"nr", "nc", "dr", "dc", "gc", "sc"} or {"nr", "nc"} & undefined_symbols:
             visible.append(
                 "- Declare short grid/loop aliases before use. For neighbor walks write "
                 "`let nr, nc;` then `nr = r + dr; nc = c + dc;`, or "
                 "`const [nr, nc] = [r + dr, c + dc];`. Do not read `nr` / `nc` as implicit globals."
+            )
+        remaining_live = live_aliases - {"nr", "nc", "dr", "dc", "gc", "sc", "line", "dot", "star", "type"}
+        if remaining_live:
+            examples = ", ".join(f"`{name}`" for name in sorted(remaining_live)[:6])
+            visible.append(
+                f"- Declare live counters and aliases such as {examples} before use. "
+                "For incrementing scores write `let combo = 0;` (or the reported name) "
+                "before `name++` / `name += 1` / `updateHud(name)`. Never read an undeclared "
+                "identifier as a live expression."
             )
         if "line" in undefined_symbols:
             visible.append(
@@ -1119,9 +1137,10 @@ class CodePreflightValidator:
         scan_script = self._sanitize_for_symbol_scan(script)
         declared = self._collect_declared_symbols(scan_script)
         assigned = self._collect_assigned_symbols(scan_script)
+        incremented = self._collect_incremented_symbols(scan_script)
         targets = {
             name
-            for name in assigned
+            for name in assigned | incremented
             if name not in declared
             and name not in _RESERVED_IDENTIFIERS
             and (names is None or name in names)
@@ -1129,7 +1148,23 @@ class CodePreflightValidator:
         }
         if not targets:
             return script
-        return "let " + ", ".join(sorted(targets)) + ";\n" + script.lstrip()
+        increment_only = sorted(name for name in targets if name in incremented and name not in assigned)
+        assigned_only = sorted(name for name in targets if name not in increment_only)
+        prefix_parts: list[str] = []
+        if increment_only:
+            prefix_parts.append("let " + ", ".join(f"{name} = 0" for name in increment_only) + ";")
+        if assigned_only:
+            prefix_parts.append("let " + ", ".join(assigned_only) + ";")
+        return "\n".join(prefix_parts) + "\n" + script.lstrip()
+
+    @staticmethod
+    def _collect_incremented_symbols(script: str) -> set[str]:
+        names: set[str] = set()
+        for match in _INCREMENT_RE.finditer(script):
+            name = match.group("name") or match.group("prefix")
+            if name:
+                names.add(name)
+        return names
 
     @staticmethod
     def _collect_assigned_symbols(script: str) -> set[str]:

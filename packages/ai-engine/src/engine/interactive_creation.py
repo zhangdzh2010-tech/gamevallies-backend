@@ -17,7 +17,11 @@ from .pipeline_errors import (
 from ..services.llm_http_evidence import attach_transport_evidence, collect_transport_evidence, transport_error_message
 from .artifact_quality import request_artifact_kind, review_prompt, assess_review, preservation_errors, preserve_cosmetic_scripts, interactive_outcome_labels
 from .interactive_repair import apply_interactive_patch, repair_prompt
-from .review_recovery import recover_review, InvalidReviewEvidence
+from .review_recovery import (
+    REVIEW_INFRASTRUCTURE_RETRY_LIMIT,
+    recover_review,
+    InvalidReviewEvidence,
+)
 from .candidate_checkpoint import CandidateCheckpoint
 
 DESKTOP_BRIEF_MARKER = '请生成桌面浏览器中的可交互创意作品'
@@ -74,23 +78,29 @@ def _review_infrastructure_retry_backoff_s() -> float:
 
 
 async def _review_interactive_artifact(request_review, kind, brief, code, *, progress_cb=None, attempt=1):
-    """Structured review with one infra retry after playable QA. Never invents scores."""
+    """Structured review with bounded infra retries after playable QA. Never invents scores."""
     parse = lambda raw: assess_review(raw, kind, brief=brief, code=code)
     validate = lambda parsed: [] if parsed['review_ran'] else parsed['issues']
-    try:
-        return await recover_review(request_review, parse, validate)
-    except InvalidReviewEvidence:
-        raise
-    except Exception as first:
-        if progress_cb:
-            progress_cb(
-                'code_review', 95, '正在重试结构化审核，保留已通过运行检查的候选',
-                {'attempt': attempt, 'reviewRetry': True,
-                 'failureFamily': 'review_infrastructure' if not is_provider_transport_failure(first)
-                 else 'provider_transport'},
-            )
-        await asyncio.sleep(_review_infrastructure_retry_backoff_s())
-        return await recover_review(request_review, parse, validate)
+    last_exc: Exception | None = None
+    for retry in range(REVIEW_INFRASTRUCTURE_RETRY_LIMIT + 1):
+        try:
+            return await recover_review(request_review, parse, validate)
+        except InvalidReviewEvidence:
+            raise
+        except Exception as exc:
+            last_exc = exc
+            if retry >= REVIEW_INFRASTRUCTURE_RETRY_LIMIT:
+                raise
+            if progress_cb:
+                progress_cb(
+                    'code_review', 95, '正在重试结构化审核，保留已通过运行检查的候选',
+                    {'attempt': attempt, 'reviewRetry': True,
+                     'reviewRetryAttempt': retry + 1,
+                     'failureFamily': 'review_infrastructure' if not is_provider_transport_failure(exc)
+                     else 'provider_transport'},
+                )
+            await asyncio.sleep(_review_infrastructure_retry_backoff_s())
+    raise last_exc or RuntimeError('assessment unavailable')
 
 
 async def validate_interactive_html(code: str, *, brief: str = '') -> dict:

@@ -292,6 +292,29 @@ def test_incomplete_science_scores_get_a_bounded_reask_without_inventing_values(
     assert 'visual_clarity' in calls[1]
 
 
+def test_invalid_schema_gets_a_bounded_reask_without_inventing_scores():
+    import asyncio
+    from src.engine.review_recovery import recover_review
+
+    valid = review('science')
+    calls = []
+
+    async def request(correction):
+        calls.append(correction)
+        return valid if correction else 'not-json'
+
+    verified = asyncio.run(recover_review(
+        request,
+        lambda raw: assess_review(raw, 'science'),
+        lambda parsed: [] if parsed['review_ran'] else parsed['issues'],
+    ))
+    assert verified.assessment['review_ran']
+    assert verified.requests == 2
+    assert calls[1] is not None
+    assert 'Never invent or inflate scores' in calls[1]
+    assert 'Do not change the artifact' in calls[1]
+
+
 def test_interactive_outcome_labels_mark_tool_and_science_seed_worthy():
     assessment = assess_review(review('science'), 'science')
     labels = interactive_outcome_labels(assessment, {'passed': True})

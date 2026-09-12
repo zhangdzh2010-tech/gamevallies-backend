@@ -79,6 +79,7 @@ logger = logging.getLogger(__name__)
 from .pipeline_v2_quality_policy import PipelineV2QualityPolicyMixin
 from .pipeline_v2_specification import PipelineV2SpecificationMixin
 from .pipeline_v2_validation import PipelineV2ValidationMixin
+from .review_recovery import REVIEW_INFRASTRUCTURE_RETRY_LIMIT
 from .pipeline_v2_support import (
     DEFAULT_STAGE_TOTAL_ATTEMPTS,
     QUALITY_GATE_PATCH_STEP_KEY,
@@ -2148,55 +2149,60 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
     ) -> LLMReviewResult:
         if not review_requested:
             return LLMReviewResult(ran=False)
-        try:
-            return await self._resolve_concurrent_review(
-                review_state,
-                code,
-                user_requirements=user_requirements,
-            )
-        except PipelineExecutionError as exc:
-            if getattr(exc, "failure_family", None) != "review_infrastructure":
-                return self._finalize_create_review_failure(
-                    exc,
-                    spec=spec,
-                    qa_warnings=qa_warnings,
-                    progress_cb=progress_cb,
-                    game_id=game_id,
-                    user_id=user_id,
-                )
-            logger.warning(
-                "Structured review unavailable after playable QA for game %s; retrying once on the same artifact: %s",
-                game_id,
-                exc,
-            )
-            self._notify(
-                progress_cb,
-                "code_review",
-                95,
-                "Retrying structured review on the playable artifact",
-                {
-                    "gameId": game_id,
-                    "userId": user_id,
-                    "failureFamily": "review_infrastructure",
-                    "reviewRetry": True,
-                },
-            )
-            await asyncio.sleep(self._review_infrastructure_retry_backoff_s())
+        last_exc: PipelineExecutionError | None = None
+        for retry in range(REVIEW_INFRASTRUCTURE_RETRY_LIMIT + 1):
             try:
                 return await self._resolve_concurrent_review(
-                    None,
+                    review_state if retry == 0 else None,
                     code,
                     user_requirements=user_requirements,
                 )
-            except PipelineExecutionError as retry_exc:
-                return self._finalize_create_review_failure(
-                    retry_exc,
-                    spec=spec,
-                    qa_warnings=qa_warnings,
-                    progress_cb=progress_cb,
-                    game_id=game_id,
-                    user_id=user_id,
+            except PipelineExecutionError as exc:
+                last_exc = exc
+                if getattr(exc, "failure_family", None) != "review_infrastructure":
+                    return self._finalize_create_review_failure(
+                        exc,
+                        spec=spec,
+                        qa_warnings=qa_warnings,
+                        progress_cb=progress_cb,
+                        game_id=game_id,
+                        user_id=user_id,
+                    )
+                if retry >= REVIEW_INFRASTRUCTURE_RETRY_LIMIT:
+                    break
+                logger.warning(
+                    "Structured review unavailable after playable QA for game %s; retry %s/%s on the same artifact: %s",
+                    game_id,
+                    retry + 1,
+                    REVIEW_INFRASTRUCTURE_RETRY_LIMIT,
+                    exc,
                 )
+                self._notify(
+                    progress_cb,
+                    "code_review",
+                    95,
+                    "Retrying structured review on the playable artifact",
+                    {
+                        "gameId": game_id,
+                        "userId": user_id,
+                        "failureFamily": "review_infrastructure",
+                        "reviewRetry": True,
+                        "reviewRetryAttempt": retry + 1,
+                    },
+                )
+                await asyncio.sleep(self._review_infrastructure_retry_backoff_s())
+        return self._finalize_create_review_failure(
+            last_exc or PipelineExecutionError(
+                "Code review evidence could not be validated: assessment unavailable",
+                stage="code_review",
+                failure_family="review_infrastructure",
+            ),
+            spec=spec,
+            qa_warnings=qa_warnings,
+            progress_cb=progress_cb,
+            game_id=game_id,
+            user_id=user_id,
+        )
 
     def _finalize_create_review_failure(
         self,

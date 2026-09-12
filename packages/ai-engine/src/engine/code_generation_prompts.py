@@ -28,14 +28,14 @@ class CodeGenerationPromptsMixin:
     ) -> str:
         lines = [
             "CODE SAFETY CHECKLIST (FIRST PRIORITY):",
-            "- Declare every live helper, alias, and loop variable before use; never reference undeclared short aliases such as `line`, `cell`, `dot`, `nr`, `nc`, `viewWidth`, or `viewHeight`.",
+            "- Declare every live helper, alias, counter, and loop variable before use; never reference undeclared names such as `combo`, `line`, `cell`, `dot`, `nr`, `nc`, `viewWidth`, or `viewHeight`.",
             "- Set explicit non-zero `canvas.width` and `canvas.height` during init/resize before the first render.",
             "- Acquire `ctx = canvas.getContext('2d')` immediately after the canvas is created, and never call `ctx.setTransform(...)`, `ctx.clearRect(...)`, or similar APIs before that initialization succeeds.",
             "- Do not leave `let ctx = null` while `requestAnimationFrame` can run. Create a safe default canvas context before the loop starts, for example `ctx = (canvas || document.querySelector('canvas')).getContext('2d'); if (!ctx) return;`.",
             "- Do not initialize `player`, `touchState`, `dragState`, `dragStart`, or other live runtime objects to `null` if the main loop can run before they are assigned; prefer safe default objects or guard every property read until initialization completes.",
             "- Keep collection item aliases scoped to the loop or callback that declares them; if code reads `star.x`, `particle.alpha`, or similar live members, declare `const star = stars[i]` / `const particle = particles[i]` in the same block before use.",
             "- For decorative loops such as `dots`, `stars`, `particles`, or `lines`, use a concrete loop shape like `for (let i = 0; i < dots.length; i += 1) { const dot = dots[i]; if (!dot) continue; ... }` and never read `dot.*` outside that declaring block.",
-            "- Declare `update()`, `render()`, and any helper used by `init()`, listeners, or rAF (`resize`, `loop`, `nc`, …) as function declarations. Do not use `const name = () =>` or `let name = function` — those bindings throw TDZ if a hoisted caller runs first. Declare short neighbor aliases (`let nr, nc;` or `const [nr, nc] = …`) before reading them.",
+            "- Declare `update()`, `render()`, and any helper used by `init()`, listeners, or rAF (`resize`, `loop`, `nc`, …) as function declarations. Do not use `const name = () =>` or `let name = function` — those bindings throw TDZ if a hoisted caller runs first. Declare short neighbor aliases (`let nr, nc;` or `const [nr, nc] = …`) and live counters (`let combo = 0;`) before reading or incrementing them.",
             "- If resize or layout logic uses `scaleX`, `scaleY`, `uiScale`, `viewWidth`, or `viewHeight`, define those aliases inside the same resize/init block before the first HUD or canvas draw that reads them.",
             "- Do not begin a statement with a bare `.` or split property chains across lines; every canvas or object call must be a complete JavaScript statement on its own line.",
             "- The first canvas/document interaction must be able to start gameplay from `boot` / `ready`; never write a primary input handler that only says `if (state !== 'playing') return` unless that same handler can call `startGame()` first.",

@@ -2281,6 +2281,13 @@ def test_quality_regeneration_guidance_adds_generic_tdz_and_grid_alias_recipes()
     assert "let nr, nc;" in neighbors
     assert "Never read undeclared `nr` / `nc`" in neighbors
 
+    combo = V2PipelineRunner._build_quality_regeneration_guidance(
+        stage="logic_generate",
+        message="Generated code failed preflight: Declare or inline `combo` before use; it is referenced as a live expression.",
+    )
+    assert "let combo = 0;" in combo
+    assert "live expression" in combo
+
 
 def test_quality_regeneration_guidance_adds_dot_loop_scaffold():
     guidance = V2PipelineRunner._build_quality_regeneration_guidance(
@@ -3126,7 +3133,7 @@ async def test_resolve_create_review_degrades_infrastructure_failure_for_standar
             user_id="user-1",
         )
 
-    assert resolve.await_count == 2
+    assert resolve.await_count == 3
     assert review.ran is False
     assert qa_warnings[0]["type"] == "review_infrastructure_degraded"
 
@@ -3176,6 +3183,50 @@ async def test_resolve_create_review_retries_infrastructure_and_returns_real_rev
 
 
 @pytest.mark.asyncio
+async def test_resolve_create_review_recovers_on_second_infrastructure_retry():
+    runner = V2PipelineRunner()
+    spec = GameSpec(
+        game_type="casual",
+        generation_tier="standard",
+        source_description="A polished delivery runner.",
+        entities=[],
+    )
+    qa_warnings: list[dict] = []
+    infra_error = PipelineExecutionError(
+        "Code review evidence could not be validated: assessment unavailable",
+        stage="code_review",
+        failure_family="review_infrastructure",
+    )
+    recovered = LLMReviewResult(
+        ran=True,
+        is_complete_game=True,
+        has_real_gameplay=True,
+        fun_score=7.4,
+        visual_polish_score=7.2,
+        character_quality_score=6.6,
+    )
+    resolve = AsyncMock(side_effect=[infra_error, infra_error, recovered])
+    with patch.object(runner, "_resolve_concurrent_review", new=resolve), patch.object(
+        runner, "_review_infrastructure_retry_backoff_s", return_value=0
+    ):
+        review = await runner._resolve_create_review(
+            None,
+            "<html></html>",
+            spec=spec,
+            review_requested=True,
+            qa_warnings=qa_warnings,
+            progress_cb=None,
+            game_id="game-1",
+            user_id="user-1",
+        )
+
+    assert resolve.await_count == 3
+    assert review is recovered
+    assert review.ran is True
+    assert qa_warnings == []
+
+
+@pytest.mark.asyncio
 async def test_resolve_create_review_keeps_showcase_fail_closed_on_infrastructure_failure():
     runner = V2PipelineRunner()
     spec = GameSpec(
@@ -3206,7 +3257,7 @@ async def test_resolve_create_review_keeps_showcase_fail_closed_on_infrastructur
                 user_id="user-1",
             )
 
-    assert resolve.await_count == 2
+    assert resolve.await_count == 3
     assert caught.value.failure_family == "review_infrastructure"
 
 

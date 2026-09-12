@@ -540,7 +540,7 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
     async def test_review_infrastructure_failure_retains_candidate_without_regeneration(self):
         from src.engine.pipeline_errors import PipelineExecutionError
         with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
-            new=AsyncMock(side_effect=[GOOD,RuntimeError('review unavailable'),RuntimeError('review unavailable')])) as llm, patch(
+            new=AsyncMock(side_effect=[GOOD,RuntimeError('review unavailable'),RuntimeError('review unavailable'),RuntimeError('review unavailable')])) as llm, patch(
             'src.engine.interactive_creation.validate_interactive_html',
             new=AsyncMock(return_value={'ran':True,'passed':True,'issues':[]})), patch(
             'src.engine.interactive_creation._review_infrastructure_retry_backoff_s',
@@ -548,7 +548,7 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(PipelineExecutionError) as caught:
                 await run_interactive(normalize_interactive_request(self.request()))
         self.assertEqual(caught.exception.failure_family,'review_infrastructure')
-        self.assertEqual(llm.call_count,3)
+        self.assertEqual(llm.call_count,4)
         self.assertEqual(next(a['payload'] for a in caught.exception.artifacts
                              if a['artifact_type']=='failed_interactive_candidate'),GOOD)
 

@@ -639,6 +639,9 @@ class PipelineV2QualityPolicyMixin:
                     failure_stage = 'patch_application'
                     self._validate_quality_patch_extent(normalized_code, patches)
                     candidate = apply_section_patches(normalized_code, patches)
+                    salvaged = self.qa_pipeline.salvage_html_script_syntax(candidate)
+                    if salvaged != candidate:
+                        candidate = salvaged
                     # A parseable batch is not yet a valid candidate. Validate
                     # its boundaries and syntax before spending runtime/review
                     # or the orchestrator's full-generation recovery budget.
@@ -702,29 +705,17 @@ class PipelineV2QualityPolicyMixin:
             static_check = self.qa_pipeline.check(candidate)
 
             failure_stage = "review"
-            try:
-                patched_review = await self.code_reviewer.review(
-                    candidate, user_requirements=spec.source_description or ""
-                )
-            except PipelineExecutionError as review_exc:
-                if (
-                    getattr(review_exc, "failure_family", None) != "review_actionability"
-                    or self._is_structured_review_required(spec)
-                ):
-                    raise
-                qa_warnings.append({
-                    "type": "review_actionability_degraded",
-                    "message": (
-                        "Structured review stayed inconsistent after bounded reassessments; "
-                        "proceeding with static and runtime QA only."
-                    ),
-                    "details": {
-                        "failureFamily": review_exc.failure_family,
-                        "stage": review_exc.stage,
-                        "error": str(review_exc)[:500],
-                    },
-                })
-                patched_review = LLMReviewResult(ran=False)
+            patched_review = await self._resolve_create_review(
+                None,
+                candidate,
+                spec=spec,
+                user_requirements=spec.source_description or "",
+                review_requested=True,
+                qa_warnings=qa_warnings,
+                progress_cb=progress_cb,
+                game_id=request.game_id,
+                user_id=request.user_id,
+            )
             patched_quality = self.quality_scorer.compute(
                 static=QAStaticResult(
                     passed=static_check.passed,
@@ -746,7 +737,10 @@ class PipelineV2QualityPolicyMixin:
                 review_required=self._is_structured_review_required(spec),
             )
             if not patched_review.ran and not any(
-                str(warning.get("type") or "") == "review_actionability_degraded"
+                str(warning.get("type") or "") in {
+                    "review_actionability_degraded",
+                    "review_infrastructure_degraded",
+                }
                 for warning in qa_warnings
             ):
                 remaining_errors.append("Repair must receive a structured review before it can replace the previous candidate.")
@@ -973,6 +967,13 @@ class PipelineV2QualityPolicyMixin:
                 "- For grid neighbor walks, declare short aliases before use: "
                 "`let nr, nc;` then `nr = r + dr; nc = c + dc;`, or "
                 "`const [nr, nc] = [r + dr, c + dc];`. Never read undeclared `nr` / `nc`."
+            )
+        if "referenced as a live expression" in normalized_issue_blob:
+            _append_recipe(
+                "- Declare every live counter, alias, or loop variable before reading it. "
+                "For incrementing scores write `let combo = 0;` (or the reported name) before "
+                "`name++` / `name += 1` / `updateHud(name)`. Never read an undeclared identifier "
+                "as a live expression."
             )
         if "returns unless the game is already in `playing`" in normalized_issue_blob or "returns unless the game is already in 'playing'" in normalized_issue_blob:
             _append_recipe(

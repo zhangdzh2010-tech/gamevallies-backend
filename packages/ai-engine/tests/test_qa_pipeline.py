@@ -1247,3 +1247,44 @@ def test_windowed_syntax_truncation_falls_back_to_whole_script_repair():
     assert "SCRIPT WINDOW SYNTAX REPAIR" in mock_script_repair.await_args_list[0].kwargs["prompt"]
     assert "SCRIPT SYNTAX REPAIR (RETURN JAVASCRIPT ONLY)" in mock_script_repair.await_args_list[1].kwargs["prompt"]
     assert mock_full_repair.await_count == 0
+
+
+def test_salvage_script_syntax_removes_one_extra_closer_and_keeps_logic():
+    broken = (
+        "function onMatch(count) {\n"
+        "  combo += count;\n"
+        "  return combo;\n"
+        "}\n"
+        "}\n"
+        "function render() { return combo; }\n"
+    )
+    assert not QAPipeline._script_has_valid_syntax(broken)
+    salvaged = QAPipeline.salvage_script_syntax(broken)
+    assert salvaged is not None
+    assert QAPipeline._script_has_valid_syntax(salvaged)
+    assert "function onMatch(count)" in salvaged
+    assert salvaged.count("function") == 2
+    assert salvaged.count("}") == 2
+
+
+def test_salvage_html_script_syntax_repairs_patched_document():
+    html = (
+        "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas><script>\n"
+        "const canvas = document.getElementById('gameCanvas');\n"
+        "function loop() {\n"
+        "  requestAnimationFrame(loop);\n"
+        "}\n"
+        "}\n"
+        "</script></body></html>"
+    )
+    repaired = QAPipeline.salvage_html_script_syntax(html)
+    script = repaired.split("<script>")[1].split("</script>")[0]
+    assert QAPipeline._script_has_valid_syntax(script)
+    assert "function loop()" in repaired
+    assert QAPipeline.salvage_html_script_syntax(repaired) == repaired
+
+
+def test_salvage_script_syntax_does_not_invent_missing_statements():
+    broken = "const combo = function;"
+    assert QAPipeline.salvage_script_syntax(broken) is None
+    assert not QAPipeline._script_has_valid_syntax(broken)

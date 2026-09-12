@@ -487,6 +487,74 @@ class QAPipeline:
         except Exception:
             return False
 
+    @staticmethod
+    def _parse_script_syntax_error(script: str) -> tuple[int | None, str]:
+        cleaned = (script or "").strip()
+        if not cleaned or esprima is None:
+            return None, ""
+        try:
+            esprima.parseScript(cleaned, tolerant=False)
+            return None, ""
+        except Exception as exc:
+            line = getattr(exc, "lineNumber", None)
+            try:
+                line = int(line) if line is not None else None
+            except (TypeError, ValueError):
+                line = None
+            description = str(getattr(exc, "description", None) or exc)
+            return line, description
+
+    @classmethod
+    def salvage_script_syntax(cls, script: str) -> str | None:
+        """Remove one extra closer when a patch leaves a stray `}` / `)` / `]`.
+
+        Only accepts a candidate that parses. Does not invent statements or scores.
+        """
+        if cls._script_has_valid_syntax(script):
+            return script
+        line, description = cls._parse_script_syntax_error(script)
+        if line is None or not re.search(r"Unexpected token\s*(\}|\)|\])", description, re.I):
+            return None
+        closer_match = re.search(r"Unexpected token\s*(\}|\)|\])", description, re.I)
+        closer = closer_match.group(1) if closer_match else "}"
+        lines = (script or "").splitlines()
+        if not lines or line < 1 or line > len(lines):
+            return None
+        original_line = lines[line - 1]
+        stripped = original_line.strip()
+        if stripped in {closer, closer + ";", closer + ","}:
+            candidate_lines = lines[: line - 1] + lines[line:]
+        elif original_line.rstrip().endswith(closer) or original_line.rstrip().endswith(closer + ";"):
+            updated = original_line.rstrip()
+            if updated.endswith(";"):
+                updated = updated[:-1].rstrip()
+            if not updated.endswith(closer):
+                return None
+            updated = updated[: -len(closer)].rstrip()
+            if not updated.strip():
+                candidate_lines = lines[: line - 1] + lines[line:]
+            else:
+                suffix = "\n" if original_line.endswith("\n") else ""
+                indent = original_line[: len(original_line) - len(original_line.lstrip())]
+                candidate_lines = lines[: line - 1] + [indent + updated + suffix] + lines[line:]
+        else:
+            return None
+        candidate = "\n".join(candidate_lines)
+        if not cls._script_has_valid_syntax(candidate):
+            return None
+        return candidate
+
+    @classmethod
+    def salvage_html_script_syntax(cls, html_code: str) -> str:
+        """Keep a patched document only when a local closer salvage restores parse."""
+        script = extract_script_content(html_code or "")
+        if not script or cls._script_has_valid_syntax(script):
+            return html_code
+        salvaged = cls.salvage_script_syntax(script)
+        if not salvaged:
+            return html_code
+        return replace_script_content(html_code, salvaged)
+
     def _extract_input_handlers(self, code: str) -> Dict[str, List[str]]:
         detected: Dict[str, set[str]] = {
             family: set() for family in _INPUT_EVENT_FAMILIES

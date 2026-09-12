@@ -194,6 +194,18 @@ def test_invalid_scores_and_flags_are_never_coerced_to_passing(update):
     assert not CodeReviewer()._parse_review(json.dumps(PASSING | update)).ran
 
 
+def test_invalid_review_schema_can_recover_on_third_reassessment_without_inventing_scores():
+    result, client = run_review_responses(['not json', 'still not json', json.dumps(PASSING)])
+    assert result.ran is True
+    assert result.fun_score == 8
+    assert result.issues == []
+    assert client.await_count == 3
+    correction = client.await_args.kwargs['messages'][0]['content']
+    assert 'invalid review schema' in correction
+    assert 'Never invent or inflate scores' in correction
+    assert SOURCE in correction
+
+
 def test_unexplained_score_can_raise_on_third_reassessment_without_inventing_defects():
     unsupported = PASSING | dict(fun_score=6)
     still = PASSING | dict(fun_score=6)
