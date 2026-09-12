@@ -685,8 +685,8 @@ _RAY_OPTICS_JS = r"""
         var w = canvas.width, h = canvas.height;
         var pad = 22;
         var cy = h / 2;
-        var length = Math.min((w - 2 * pad) * 0.42, h / 2 - pad - 8);
-        var mx = Math.min(w - pad - 20, pad + 24 + length);
+        var length = Math.min((w - 2 * pad) * 0.28, h / 2 - pad - 8);
+        var mx = Math.min(w - pad - 20, Math.max(pad + 24 + length, w * 0.58));
         var ix = mx - length * Math.cos(angleRad);
         var iy = cy - length * Math.sin(angleRad);
         var rx = mx - length * Math.cos(angleRad);
