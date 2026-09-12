@@ -394,8 +394,19 @@ _INTERACTION_JS = """
     if (!target) return false;
 
     const rect = target.getBoundingClientRect ? target.getBoundingClientRect() : { left: 0, top: 0, width: 320, height: 480 };
-    const clientX = rect.left + Math.max(8, (rect.width || 320) / 2);
-    const clientY = rect.top + Math.max(8, (rect.height || 480) / 2);
+    const midX = rect.left + Math.max(8, (rect.width || 320) / 2);
+    const midY = rect.top + Math.max(8, (rect.height || 480) / 2);
+    const cell = Math.max(28, Math.min(72, Math.round(Math.min(rect.width || 320, rect.height || 480) / 8)));
+    const tapPoints = [
+        [midX, midY],
+        [midX + cell, midY],
+        [midX, midY + cell],
+        [midX - cell, midY],
+        [midX, midY - cell],
+        [midX + cell, midY + cell]
+    ];
+    const clientX = tapPoints[0][0];
+    const clientY = tapPoints[0][1];
     const makeTouchLikePoint = function(x, y) {
         return {
             identifier: 1,
@@ -476,19 +487,55 @@ _INTERACTION_JS = """
         }
     };
 
+    const pointInit = function(x, y, extra) {
+        return Object.assign({
+            clientX: x,
+            clientY: y,
+            offsetX: x - (rect.left || 0),
+            offsetY: y - (rect.top || 0),
+            button: 0
+        }, extra || {});
+    };
+    const tapAt = function(x, y) {
+        dispatch(target, 'pointerdown', 'PointerEvent', pointInit(x, y, { pointerId: 1, pointerType: 'touch', buttons: 1 }));
+        dispatch(target, 'pointerup', 'PointerEvent', pointInit(x, y, { pointerId: 1, pointerType: 'touch', buttons: 0 }));
+        dispatch(target, 'mousedown', 'MouseEvent', pointInit(x, y, { buttons: 1 }));
+        dispatch(target, 'mouseup', 'MouseEvent', pointInit(x, y, { buttons: 0 }));
+        dispatch(target, 'click', 'MouseEvent', pointInit(x, y));
+    };
+    const clickVisibleControls = function() {
+        const nodes = Array.from(document.querySelectorAll('button, [role="button"], [data-action], input[type="button"]'));
+        const matched = nodes.filter(function(node) {
+            const hint = ((node.getAttribute('aria-label') || '') + ' ' + (node.id || '') + ' ' + (node.textContent || '')).toLowerCase();
+            return /start|play|hint|shuffle|reset|restart|new|开始|提示|重来|重置/.test(hint);
+        }).slice(0, 3);
+        matched.forEach(function(node) {
+            try { node.click(); } catch (e) { /* ignore control click failures */ }
+        });
+    };
     const interactionSteps = [
-        function() { dispatch(target, 'pointerdown', 'PointerEvent', { pointerId: 1, pointerType: 'touch', clientX, clientY, button: 0, buttons: 1 }); },
-        function() { dispatch(target, 'pointermove', 'PointerEvent', { pointerId: 1, pointerType: 'touch', clientX: clientX + 12, clientY: clientY - 24, button: 0, buttons: 1 }); },
-        function() { dispatch(target, 'pointerup', 'PointerEvent', { pointerId: 1, pointerType: 'touch', clientX: clientX + 12, clientY: clientY - 24, button: 0, buttons: 0 }); },
+        function() { tapAt(tapPoints[0][0], tapPoints[0][1]); },
+        function() { tapAt(tapPoints[1][0], tapPoints[1][1]); },
+        function() {
+            dispatch(target, 'pointerdown', 'PointerEvent', pointInit(clientX, clientY, { pointerId: 1, pointerType: 'touch', buttons: 1 }));
+        },
+        function() {
+            dispatch(target, 'pointermove', 'PointerEvent', pointInit(clientX + cell, clientY - cell, { pointerId: 1, pointerType: 'touch', buttons: 1 }));
+        },
+        function() {
+            dispatch(target, 'pointerup', 'PointerEvent', pointInit(clientX + cell, clientY - cell, { pointerId: 1, pointerType: 'touch', buttons: 0 }));
+        },
         function() { dispatchTouch('touchstart', clientX, clientY); },
-        function() { dispatchTouch('touchmove', clientX + 12, clientY - 24); },
-        function() { dispatchTouch('touchend', clientX + 12, clientY - 24); },
-        function() { dispatch(target, 'mousedown', 'MouseEvent', { clientX, clientY, button: 0, buttons: 1 }); },
-        function() { dispatch(target, 'mousemove', 'MouseEvent', { clientX: clientX + 8, clientY: clientY - 8, button: 0, buttons: 1 }); },
-        function() { dispatch(target, 'mouseup', 'MouseEvent', { clientX: clientX + 8, clientY: clientY - 8, button: 0, buttons: 0 }); },
-        function() { dispatch(target, 'click', 'MouseEvent', { clientX, clientY, button: 0 }); },
+        function() { dispatchTouch('touchmove', clientX + cell, clientY - cell); },
+        function() { dispatchTouch('touchend', clientX + cell, clientY - cell); },
+        function() { tapAt(tapPoints[2][0], tapPoints[2][1]); },
+        function() { clickVisibleControls(); },
         function() { dispatch(document, 'keydown', 'KeyboardEvent', { key: 'ArrowUp', code: 'ArrowUp' }); },
-        function() { dispatch(document, 'keyup', 'KeyboardEvent', { key: 'ArrowUp', code: 'ArrowUp' }); }
+        function() { dispatch(document, 'keyup', 'KeyboardEvent', { key: 'ArrowUp', code: 'ArrowUp' }); },
+        function() { dispatch(document, 'keydown', 'KeyboardEvent', { key: 'ArrowLeft', code: 'ArrowLeft' }); },
+        function() { dispatch(document, 'keyup', 'KeyboardEvent', { key: 'ArrowLeft', code: 'ArrowLeft' }); },
+        function() { dispatch(document, 'keydown', 'KeyboardEvent', { key: ' ', code: 'Space' }); },
+        function() { dispatch(document, 'keyup', 'KeyboardEvent', { key: ' ', code: 'Space' }); }
     ];
 
     window.__qaInteractionScheduled = true;

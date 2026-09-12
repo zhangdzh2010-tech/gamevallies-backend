@@ -319,6 +319,7 @@ class QAResult(BaseModel):
     retries: int = 0
     last_errors: List[QACheckError] = Field(default_factory=list)
     needs_regeneration: bool = False
+    truncated: bool = False
     issue_list: QAIssueList = Field(default_factory=QAIssueList)
 
 

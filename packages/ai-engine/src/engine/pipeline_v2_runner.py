@@ -442,6 +442,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
         extra_truncation_retry_granted = False
         extra_provider_transport_retry_granted = False
         extra_repair_regen_granted = False
+        extra_completeness_retry_granted = False
 
         quality_attempt = 0
         while quality_attempt < len(attempt_plan):
@@ -547,20 +548,32 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                     raise
                 if qa_result.needs_regeneration:
                     error_messages = "; ".join(error.message for error in qa_result.last_errors[:5])
+                    truncated_repair = bool(getattr(qa_result, "truncated", False)) or any(
+                        "output length limit" in str(error.message or "").lower()
+                        or "may be truncated" in str(error.message or "").lower()
+                        or str(getattr(error, "type", "") or "") == "qa_truncation"
+                        for error in qa_result.last_errors
+                    )
                     last_quality_exc = PipelineExecutionError(
-                        f"Generated code failed contract QA: {error_messages}",
+                        (
+                            f"QA repair hit the output length limit and may be truncated: {error_messages}"
+                            if truncated_repair
+                            else f"Generated code failed contract QA: {error_messages}"
+                        ),
                         stage="contract_qa",
                         retry_count=qa_result.retries,
-                        failure_family="contract_qa",
+                        failure_family="qa_truncation" if truncated_repair else "contract_qa",
                         artifacts=[
                             self._build_text_artifact(
                                 artifact_type="failed_contract_candidate", payload=qa_result.code,
-                                metadata={"stage": "contract_qa", "attempt": quality_attempt},
+                                metadata={"stage": "contract_qa", "attempt": quality_attempt,
+                                          "truncated": truncated_repair},
                             ),
                             self._build_json_artifact(
                                 artifact_type="contract_qa_report",
                                 payload={"passed": False, "attempt": quality_attempt,
                                          "retryCount": qa_result.retries,
+                                         "truncated": truncated_repair,
                                          "errors": self._serialize_errors(qa_result.last_errors)},
                                 metadata={"stage": "contract_qa"},
                             ),
@@ -573,11 +586,19 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                     if next_provider_exclusions is not None:
                         provider_exclusions = next_provider_exclusions
                     if quality_attempt >= len(attempt_plan):
-                        raise last_quality_exc
-                    generation_guidance = self._build_quality_regeneration_guidance(
-                        stage="contract_qa",
-                        errors=qa_result.last_errors,
-                        message=str(last_quality_exc),
+                        if truncated_repair and not extra_truncation_retry_granted:
+                            attempt_plan.append("safe")
+                            extra_truncation_retry_granted = True
+                        else:
+                            raise last_quality_exc
+                    generation_guidance = (
+                        self._build_truncation_compactness_guidance()
+                        if truncated_repair
+                        else self._build_quality_regeneration_guidance(
+                            stage="contract_qa",
+                            errors=qa_result.last_errors,
+                            message=str(last_quality_exc),
+                        )
                     )
                     self._notify(
                         progress_cb,
@@ -720,6 +741,10 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                         provider_exclusions = next_provider_exclusions
                     if quality_attempt >= len(attempt_plan):
                         repair_family = getattr(last_quality_exc, "failure_family", None)
+                        incomplete_placeholder = any(
+                            "incomplete or placeholder output" in str(error or "").lower()
+                            for error in quality_gate_errors
+                        ) or not review.is_complete_game
                         if (
                             repair_family in {
                                 "quality_repair_exhausted",
@@ -730,6 +755,9 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                         ):
                             attempt_plan.append("simple")
                             extra_repair_regen_granted = True
+                        elif incomplete_placeholder and not extra_completeness_retry_granted:
+                            attempt_plan.append("simple")
+                            extra_completeness_retry_granted = True
                         else:
                             raise last_quality_exc
                     generation_guidance = self._build_review_quality_guidance(
@@ -821,7 +849,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                     raise
                 if quality_attempt >= len(attempt_plan):
                     if (
-                        exc.stage == "logic_generate"
+                        exc.stage in {"logic_generate", "contract_qa"}
                         and is_truncation_failure(exc)
                         and not extra_truncation_retry_granted
                     ):
@@ -839,7 +867,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                         extra_repair_regen_granted = True
                     else:
                         raise
-                if is_truncation_failure(exc) and exc.stage == "logic_generate":
+                if is_truncation_failure(exc) and exc.stage in {"logic_generate", "contract_qa"}:
                     generation_guidance = self._build_truncation_compactness_guidance()
                 else:
                     generation_guidance = self._build_quality_regeneration_guidance(
@@ -1678,15 +1706,24 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                 issue_list=qa_result.issue_list,
             ), runtime_qa, runtime_retries, qa_warnings
         else:
-            qa_result = await self._run_contract_qa_loop(
-                code=code,
-                spec=spec,
-                runtime_contract=runtime_contract,
-                prompt_bundle_snapshot=prompt_bundle_snapshot,
-                progress_cb=progress_cb,
-                game_id=game_id,
-                user_id=user_id,
-            )
+            try:
+                qa_result = await self._run_contract_qa_loop(
+                    code=code,
+                    spec=spec,
+                    runtime_contract=runtime_contract,
+                    prompt_bundle_snapshot=prompt_bundle_snapshot,
+                    progress_cb=progress_cb,
+                    game_id=game_id,
+                    user_id=user_id,
+                )
+            except Exception as exc:
+                if is_truncation_failure(exc):
+                    raise PipelineExecutionError(
+                        str(exc),
+                        stage="contract_qa",
+                        failure_family="qa_truncation",
+                    ) from exc
+                raise
         if not qa_result.success and qa_result.needs_regeneration:
             return qa_result, RuntimeQAResult(), 0, []
         if not qa_result.success:

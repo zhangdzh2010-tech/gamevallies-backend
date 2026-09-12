@@ -1186,6 +1186,8 @@ def test_run_with_retries_signals_regeneration_when_syntax_repair_truncates():
 
     assert result.success is False
     assert result.needs_regeneration is True
+    assert result.truncated is True
+    assert any(error.type == "qa_truncation" for error in result.last_errors)
 
 
 def test_windowed_syntax_truncation_falls_back_to_whole_script_repair():

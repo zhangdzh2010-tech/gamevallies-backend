@@ -5,6 +5,7 @@ import logging
 import re
 from typing import Any, Optional
 from ..api.models import GameRuntimeContract, GameSpec, QACheckError, QAResult
+from ..services.llm_client import LLMResponseTruncatedError
 from .mobile_layout import has_short_edge_scaling
 from .qa_pipeline import QAPipeline, SYNTAX_REPAIR_FAMILY
 from .restart_entry import has_restart_entry
@@ -40,15 +41,36 @@ class PipelineV2ValidationMixin:
                 if self.qa_pipeline._classify_error_family(error) == SYNTAX_REPAIR_FAMILY
             ]
             if syntax_errors:
-                repaired_code = await self.qa_pipeline.repair_code(
-                    current_code,
-                    syntax_errors,
-                    game_spec=spec,
-                    runtime_contract=runtime_contract,
-                    prompt_bundle_snapshot=prompt_bundle_snapshot,
-                    fix_round=1,
-                    max_fix_rounds=1,
-                )
+                try:
+                    repaired_code = await self.qa_pipeline.repair_code(
+                        current_code,
+                        syntax_errors,
+                        game_spec=spec,
+                        runtime_contract=runtime_contract,
+                        prompt_bundle_snapshot=prompt_bundle_snapshot,
+                        fix_round=1,
+                        max_fix_rounds=1,
+                    )
+                except LLMResponseTruncatedError as exc:
+                    logger.warning(
+                        "Contract QA syntax repair truncated for game %s; signaling compact regeneration: %s",
+                        game_id,
+                        exc,
+                    )
+                    truncation_error = QACheckError(
+                        type="qa_truncation",
+                        message=str(exc),
+                        severity="error",
+                    )
+                    return QAResult(
+                        success=False,
+                        code=current_code,
+                        retries=repair_attempts,
+                        last_errors=list(errors) + [truncation_error],
+                        needs_regeneration=True,
+                        truncated=True,
+                        issue_list=self.qa_pipeline.build_issue_list(list(errors) + [truncation_error], []),
+                    )
                 repaired_code = self.qa_pipeline._apply_deterministic_repairs(repaired_code)
                 repaired_errors = self._validate_contract_bundle(repaired_code, runtime_contract)
                 if len(repaired_errors) < len(errors):

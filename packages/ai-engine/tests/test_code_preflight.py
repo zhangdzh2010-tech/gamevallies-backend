@@ -222,6 +222,48 @@ def test_code_preflight_guidance_dedupes_messages():
     assert guidance.count("Declare or inline `anim`") == 1
 
 
+def test_code_preflight_hoists_tdz_resize_and_loop_bindings():
+    validator = CodePreflightValidator()
+    html = """
+    <!DOCTYPE html>
+    <html>
+      <body>
+        <canvas id="gameCanvas"></canvas>
+        <script>
+          const canvas = document.getElementById('gameCanvas');
+          canvas.width = 360;
+          canvas.height = 640;
+          init();
+          const resize = () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+          };
+          const loop = (t) => {
+            requestAnimationFrame(loop);
+          };
+          function init() {
+            resize();
+            loop();
+          }
+          window.addEventListener('resize', resize);
+        </script>
+      </body>
+    </html>
+    """
+    issues = validator.validate(html, runtime_contract=GameRuntimeContract())
+    assert {issue.code for issue in issues} >= {"tdz_symbol:resize", "tdz_symbol:loop"}
+    repaired = validator.auto_repair(html, issues=issues)
+    assert "function resize(" in repaired
+    assert "function loop(" in repaired
+    assert "const resize =" not in repaired
+    assert "const loop =" not in repaired
+    remaining = validator.validate(repaired, runtime_contract=GameRuntimeContract())
+    assert not any(issue.code.startswith(("tdz_symbol:", "undefined_symbol:resize", "undefined_symbol:loop")) for issue in remaining)
+    guidance = validator.render_guidance(issues)
+    assert "function resize" in guidance
+    assert "temporal dead zone" in " ".join(issue.message for issue in issues) or "function declarations" in guidance
+
+
 def test_code_preflight_guidance_mentions_ready_state_input_gate():
     validator = CodePreflightValidator()
     guidance = validator.render_guidance(
