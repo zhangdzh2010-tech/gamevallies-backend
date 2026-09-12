@@ -1214,7 +1214,20 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
         def progress(stage, percent, message, details=None):
             stage_context['stage'] = stage
             self._notify(progress_cb, stage, percent, message, details)
-        return await run_interactive(normalize_interactive_request(request), progress)
+        result = await run_interactive(normalize_interactive_request(request), progress)
+        breakdown = getattr(result, 'quality_breakdown', None) or {}
+        try:
+            await task_memory.update_meta(
+                getattr(request, 'task_id', None),
+                template_route=breakdown.get('template_route'),
+                template_family=breakdown.get('family_id'),
+                template_recipe=breakdown.get('recipe_id'),
+                prompt_tokens=breakdown.get('prompt_tokens'),
+                completion_tokens=breakdown.get('completion_tokens'),
+            )
+        except Exception:
+            pass
+        return result
 
     async def _assess_iterate_quality(
         self,

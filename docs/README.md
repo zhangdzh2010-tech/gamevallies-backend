@@ -2,6 +2,13 @@
 
 `docs/` contains active backend design, integration, deployment, and testing documents.
 
+## Architecture
+
+- [`architecture/generation-efficiency-memo-20260912.md`](./architecture/generation-efficiency-memo-20260912.md)
+  User-approved science/tool short-path design: DesktopRuntimeShell, four
+  interaction families, HIT/SOFT/MISS router, telemetry, and staging-only
+  template mining. Quality bars unchanged.
+
 ## Top-Level Plans
 
 - [`H5_TO_APP_DOWNLOAD_PROMO_PHASE1_PLAN_2026-04-13.md`](./H5_TO_APP_DOWNLOAD_PROMO_PHASE1_PLAN_2026-04-13.md)
