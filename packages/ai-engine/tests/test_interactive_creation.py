@@ -540,15 +540,32 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
     async def test_review_infrastructure_failure_retains_candidate_without_regeneration(self):
         from src.engine.pipeline_errors import PipelineExecutionError
         with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
-            new=AsyncMock(side_effect=[GOOD,RuntimeError('review unavailable')])) as llm, patch(
+            new=AsyncMock(side_effect=[GOOD,RuntimeError('review unavailable'),RuntimeError('review unavailable')])) as llm, patch(
             'src.engine.interactive_creation.validate_interactive_html',
-            new=AsyncMock(return_value={'ran':True,'passed':True,'issues':[]})):
+            new=AsyncMock(return_value={'ran':True,'passed':True,'issues':[]})), patch(
+            'src.engine.interactive_creation._review_infrastructure_retry_backoff_s',
+            return_value=0):
             with self.assertRaises(PipelineExecutionError) as caught:
                 await run_interactive(normalize_interactive_request(self.request()))
         self.assertEqual(caught.exception.failure_family,'review_infrastructure')
-        self.assertEqual(llm.call_count,2)
+        self.assertEqual(llm.call_count,3)
         self.assertEqual(next(a['payload'] for a in caught.exception.artifacts
                              if a['artifact_type']=='failed_interactive_candidate'),GOOD)
+
+    async def test_review_infrastructure_retries_playable_science_and_can_earn_seed_worthy(self):
+        valid = await fake_llm(step_key='code_review')
+        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
+            new=AsyncMock(side_effect=[GOOD,RuntimeError('review unavailable'),valid])) as llm, patch(
+            'src.engine.interactive_creation.validate_interactive_html',
+            new=AsyncMock(return_value={'ran':True,'passed':True,'issues':[]})), patch(
+            'src.engine.interactive_creation._review_infrastructure_retry_backoff_s',
+            return_value=0):
+            result = await run_interactive(normalize_interactive_request(self.request()))
+        self.assertEqual([c.kwargs['step_key'] for c in llm.call_args_list],
+            ['code_generate.full','code_review','code_review'])
+        self.assertTrue(result.quality_breakdown['seed_worthy'])
+        self.assertEqual(result.quality_breakdown['seed_worthy_reason'], 'structured_review_passed')
+        self.assertTrue(result.quality_breakdown['review_ran'])
 
     async def test_standard_create_soft_fails_runtime_infrastructure_when_optional(self):
         with patch('src.engine.interactive_creation.settings.RUNTIME_QA_REQUIRED', False), patch(

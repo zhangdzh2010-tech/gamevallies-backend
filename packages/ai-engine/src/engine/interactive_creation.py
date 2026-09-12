@@ -14,6 +14,7 @@ from .pipeline_errors import (
     is_provider_transport_failure,
     is_retryable_provider_transport_failure,
 )
+from ..services.llm_http_evidence import attach_transport_evidence, collect_transport_evidence, transport_error_message
 from .artifact_quality import request_artifact_kind, review_prompt, assess_review, preservation_errors, preserve_cosmetic_scripts, interactive_outcome_labels
 from .interactive_repair import apply_interactive_patch, repair_prompt
 from .review_recovery import recover_review, InvalidReviewEvidence
@@ -66,6 +67,30 @@ def extract_interactive_document(text: str) -> str:
     # Strip an explanation after a complete document; never invent missing code.
     endings = list(re.finditer(r'</html\s*>', code, re.I))
     return code[:endings[-1].end()] if endings else code
+
+
+def _review_infrastructure_retry_backoff_s() -> float:
+    return 1.0
+
+
+async def _review_interactive_artifact(request_review, kind, brief, code, *, progress_cb=None, attempt=1):
+    """Structured review with one infra retry after playable QA. Never invents scores."""
+    parse = lambda raw: assess_review(raw, kind, brief=brief, code=code)
+    validate = lambda parsed: [] if parsed['review_ran'] else parsed['issues']
+    try:
+        return await recover_review(request_review, parse, validate)
+    except InvalidReviewEvidence:
+        raise
+    except Exception as first:
+        if progress_cb:
+            progress_cb(
+                'code_review', 95, '正在重试结构化审核，保留已通过运行检查的候选',
+                {'attempt': attempt, 'reviewRetry': True,
+                 'failureFamily': 'review_infrastructure' if not is_provider_transport_failure(first)
+                 else 'provider_transport'},
+            )
+        await asyncio.sleep(_review_infrastructure_retry_backoff_s())
+        return await recover_review(request_review, parse, validate)
 
 
 async def validate_interactive_html(code: str, *, brief: str = '') -> dict:
@@ -341,22 +366,42 @@ async def run_interactive(request, progress_cb=None):
                     truncation_retry_attempts=1, truncation_retry_max_tokens=3072, timeout_retry_attempts=0,
                 )
             try:
-                verified = await recover_review(request_review, lambda raw: assess_review(raw, kind, brief=assessment_brief, code=code),
-                    lambda parsed: [] if parsed['review_ran'] else parsed['issues'])
+                verified = await _review_interactive_artifact(
+                    request_review,
+                    kind,
+                    assessment_brief,
+                    code,
+                    progress_cb=progress_cb,
+                    attempt=attempt,
+                )
                 assessment = verified.assessment | {'reviewRequests':verified.requests,
                     'sourceSha256':hashlib.sha256(code.encode()).hexdigest()}
             except Exception as exc:
-                family = 'review_evidence' if isinstance(exc, InvalidReviewEvidence) else 'review_infrastructure'
-                raise PipelineExecutionError('Artifact assessment failed: '+str(exc) if family == 'review_evidence'
-                    else 'Artifact review unavailable: '+type(exc).__name__,
+                family = 'review_evidence' if isinstance(exc, InvalidReviewEvidence) else (
+                    'provider_transport' if is_provider_transport_failure(exc) else 'review_infrastructure'
+                )
+                if family == 'provider_transport':
+                    # Playable QA already passed; keep this as review infra so a
+                    # later catalog seed check can still retry, not as a creative miss.
+                    family = 'review_infrastructure'
+                evidence = collect_transport_evidence(exc)
+                message = (
+                    'Artifact assessment failed: '+str(exc) if isinstance(exc, InvalidReviewEvidence)
+                    else 'Artifact review unavailable: '+transport_error_message(evidence, type(exc).__name__)
+                )
+                failure = PipelineExecutionError(
+                    message,
                     stage='code_review', failure_family=family,
                     artifacts=candidate_history + [
                         {'artifact_type':'failed_interactive_candidate','content_type':'text/html',
                          'payload':code,'metadata':{'attempt':attempt,'stage':'code_review'}},
                         {'artifact_type':'interactive_validation_report','content_type':'application/json',
-                         'payload':{'runtime':report,'reviewErrors':getattr(exc,'errors',[type(exc).__name__])},
+                         'payload':{'runtime':report,'reviewErrors':getattr(exc,'errors',[type(exc).__name__]),
+                                    **({'transportEvidence': evidence} if evidence else {})},
                          'metadata':{'attempt':attempt,'stage':'code_review'}},
-                    ]) from exc
+                    ])
+                attach_transport_evidence(failure, evidence)
+                raise failure from exc
             if not assessment['passed']:
                 report['issues'] += assessment['issues']
         report['generationAttempts']={'fullGenerationCalls':full_generations,'patchCalls':patch_calls,'qaAttempts':qa_attempts}

@@ -122,7 +122,7 @@ def test_non_retryable_provider_http_failure_does_not_enter_quality_regeneration
     assert caught.__cause__ is wrapped
 
 
-@pytest.mark.parametrize("status", [429, 502, 503, 504])
+@pytest.mark.parametrize("status", [403, 429, 502, 503, 504])
 def test_retryable_provider_http_failure_retries_once_without_creative_guidance(status):
     first = _transport_generate_error(status)
     second = _transport_generate_error(status)
@@ -133,6 +133,7 @@ def test_retryable_provider_http_failure_retries_once_without_creative_guidance(
     assert all(call.kwargs.get("generation_guidance") is None for call in generate.await_args_list)
     assert sleep.await_count == 1
     assert caught.failure_family == "provider_transport"
+    assert caught.retry_count >= 1
     assert caught.__cause__ is second
 
 
@@ -140,6 +141,7 @@ def test_provider_transport_retry_is_not_a_creative_quality_loop():
     from src.engine.pipeline_errors import is_retryable_provider_transport_failure
     wrapped = _transport_generate_error(504)
     assert is_retryable_provider_transport_failure(wrapped)
+    assert is_retryable_provider_transport_failure(_transport_generate_error(403))
     assert not is_retryable_provider_transport_failure(_transport_generate_error(401))
     assert not is_retryable_provider_transport_failure(ValueError("HTML code says 504; not an HTTP exception"))
 

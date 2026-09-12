@@ -48,6 +48,7 @@ from ..models import (
     RunPipelineV2Request,
 )
 from ...engine.dialogue_engine import DialogueEngine
+from ...services.llm_http_evidence import collect_transport_evidence
 from ...engine.pipeline_errors import PipelineExecutionError
 from ...engine.pipeline_v2_runner import V2PipelineRunner
 from ...engine.interactive_creation import normalize_interactive_request, is_interactive_request
@@ -498,9 +499,48 @@ def _build_failure_diagnostics(exc: Exception) -> dict[str, Any]:
         if detail is not None:
             diagnostics["httpDetail"] = detail
 
+    evidence = collect_transport_evidence(exc)
+    if evidence:
+        diagnostics["transportEvidence"] = evidence
+        diagnostics["httpStatusCode"] = evidence.get("httpStatus") or diagnostics.get("httpStatusCode")
+        headers = evidence.get("responseHeaders") or {}
+        diagnostics["upstreamRequestId"] = (
+            headers.get("x-request-id") or headers.get("request-id") or headers.get("x-trace-id")
+        )
+        diagnostics["providerModel"] = evidence.get("model")
+        diagnostics["providerEndpoint"] = evidence.get("endpoint")
+        diagnostics["providerId"] = evidence.get("providerId")
+        diagnostics["errorBodyExcerpt"] = evidence.get("bodyExcerpt")
+
     return {
         key: value
         for key, value in diagnostics.items()
+        if value not in (None, "", [], {})
+    }
+
+
+def _transport_failure_relay_details(
+    failure: dict[str, Any],
+    *,
+    pipeline_version: str,
+    entrypoint: str,
+) -> dict[str, Any]:
+    diagnostics = failure.get("diagnostics") or {}
+    return {
+        key: value
+        for key, value in {
+            "pipelineVersion": pipeline_version,
+            "entrypoint": entrypoint,
+            "exceptionClass": diagnostics.get("exceptionClass"),
+            "httpStatusCode": diagnostics.get("httpStatusCode"),
+            "upstreamRequestId": diagnostics.get("upstreamRequestId"),
+            "providerModel": diagnostics.get("providerModel"),
+            "providerEndpoint": diagnostics.get("providerEndpoint"),
+            "providerId": diagnostics.get("providerId"),
+            "errorBodyExcerpt": diagnostics.get("errorBodyExcerpt"),
+            "transportEvidence": diagnostics.get("transportEvidence"),
+            "failureFamily": failure.get("failure_family"),
+        }.items()
         if value not in (None, "", [], {})
     }
 
@@ -964,12 +1004,11 @@ async def _run_pipeline_v2_internal(
             timed_out=failure["timed_out"],
             failure_family=failure["failure_family"],
             primary_artifact_id=failure["primary_artifact_id"],
-            details={
-                "pipelineVersion": "v2",
-                "entrypoint": resolved_request.request_context.entrypoint,
-                "exceptionClass": failure.get("diagnostics", {}).get("exceptionClass"),
-                "httpStatusCode": failure.get("diagnostics", {}).get("httpStatusCode"),
-            },
+            details=_transport_failure_relay_details(
+                failure,
+                pipeline_version="v2",
+                entrypoint=resolved_request.request_context.entrypoint,
+            ),
         )
         await _relay_stage_summary_to_game_service(
             task_id=effective_task_id,
@@ -1186,12 +1225,11 @@ async def _run_iteration_v2_internal(
             timed_out=failure["timed_out"],
             failure_family=failure["failure_family"],
             primary_artifact_id=failure["primary_artifact_id"],
-            details={
-                "pipelineVersion": "v2",
-                "entrypoint": resolved_request.request_context.entrypoint,
-                "exceptionClass": failure.get("diagnostics", {}).get("exceptionClass"),
-                "httpStatusCode": failure.get("diagnostics", {}).get("httpStatusCode"),
-            },
+            details=_transport_failure_relay_details(
+                failure,
+                pipeline_version="v2",
+                entrypoint=resolved_request.request_context.entrypoint,
+            ),
         )
         await _relay_stage_summary_to_game_service(
             task_id=effective_task_id,

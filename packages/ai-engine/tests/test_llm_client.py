@@ -1860,6 +1860,48 @@ def test_complete_with_truncation_retry_retries_retryable_provider_errors_with_b
     assert mock_sleep.await_args_list[0].args[0] == 3.0
 
 
+def test_complete_with_truncation_retry_retries_403_without_creative_guidance():
+    client = LLMClient()
+    request = httpx.Request("POST", "https://www.zltokens.com/v1/chat/completions")
+    response = httpx.Response(
+        403,
+        request=request,
+        headers={"x-request-id": "zl-403"},
+        text='{"error":{"message":"Forbidden","code":"quota"}}',
+    )
+    forbidden = httpx.HTTPStatusError("forbidden", request=request, response=response)
+
+    with patch.object(
+        client,
+        "complete",
+        new=AsyncMock(side_effect=[
+            forbidden,
+            "<!DOCTYPE html><html><body>ok</body></html>",
+        ]),
+    ) as mock_complete, patch.object(
+        llm_client_module.asyncio,
+        "sleep",
+        new=AsyncMock(),
+    ) as mock_sleep:
+        result = asyncio.run(
+            client.complete_with_truncation_retry(
+                messages=[{"role": "user", "content": "generate"}],
+                max_tokens=4096,
+                step_key="code_generate.full",
+                stage="code_generating",
+                provider_retry_attempts=1,
+                provider_retry_base_delay_s=2,
+                provider_retry_max_delay_s=8,
+            )
+        )
+
+    assert result == "<!DOCTYPE html><html><body>ok</body></html>"
+    assert mock_complete.await_count == 2
+    assert mock_sleep.await_count == 1
+    assert mock_complete.await_args_list[0].kwargs.get("generation_guidance") is None
+    assert mock_complete.await_args_list[1].kwargs.get("generation_guidance") is None
+
+
 def test_complete_with_truncation_retry_retries_cancelled_error_with_backoff():
     client = LLMClient()
 

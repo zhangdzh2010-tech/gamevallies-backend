@@ -21,7 +21,12 @@ import httpx
 from ..config.settings import settings
 from ..config.timeout_store import get_int as get_timeout_int
 from .llm_gateway import gateway, get_request_context
-from .llm_http_evidence import failure_transport_evidence, transport_error_message
+from .llm_http_evidence import (
+    attach_transport_evidence,
+    failure_transport_evidence,
+    is_retryable_provider_http_status,
+    transport_error_message,
+)
 from .prompt_dedup import build_prompt_fingerprint, deep_dedupe_prompt
 from .task_memory import task_memory
 
@@ -415,7 +420,7 @@ def _is_retryable_provider_error(exc: BaseException) -> bool:
     if isinstance(exc, OpenAICompatibleResponseParseError):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code in {408, 409, 425, 429} or exc.response.status_code >= 500
+        return is_retryable_provider_http_status(exc.response.status_code)
     return False
 
 
@@ -2120,10 +2125,17 @@ class LLMClient:
             input_tokens = None
             output_tokens = None
             total_tokens = None
-            transport_evidence = failure_transport_evidence(exc, api_key=route.api_key)
+            transport_evidence = failure_transport_evidence(
+                exc,
+                api_key=route.api_key,
+                model=route.model,
+                provider_id=route.provider_id,
+                step_key=step_key,
+            )
             safe_error = transport_error_message(transport_evidence, str(exc))
             if transport_evidence:
                 route.route_snapshot = {**dict(route.route_snapshot or {}), "transportEvidence": transport_evidence}
+                attach_transport_evidence(exc, transport_evidence)
                 logger.warning("LLM transport failure: %s", json.dumps({
                     **transport_evidence, "stepKey": step_key,
                     "providerId": route.provider_id, "model": route.model,
@@ -2133,8 +2145,7 @@ class LLMClient:
             if isinstance(exc, httpx.HTTPStatusError):
                 http_status = exc.response.status_code
                 upstream_request_id = _response_request_id(httpx.Headers(transport_evidence.get("responseHeaders", {})))
-                # Response bodies can echo prompts or credentials. Retain only
-                # their size/hash in transportEvidence, not a raw excerpt.
+                error_body_excerpt = transport_evidence.get("bodyExcerpt")
             elif isinstance(exc, LLMResponseTruncatedError):
                 upstream_request_id = exc.upstream_request_id
                 error_body_excerpt = exc.response_excerpt
@@ -2292,10 +2303,17 @@ class LLMClient:
             input_tokens = None
             output_tokens = None
             total_tokens = None
-            transport_evidence = failure_transport_evidence(exc, api_key=route.api_key)
+            transport_evidence = failure_transport_evidence(
+                exc,
+                api_key=route.api_key,
+                model=route.model,
+                provider_id=route.provider_id,
+                step_key=step_key,
+            )
             safe_error = transport_error_message(transport_evidence, str(exc))
             if transport_evidence:
                 route.route_snapshot = {**dict(route.route_snapshot or {}), "transportEvidence": transport_evidence}
+                attach_transport_evidence(exc, transport_evidence)
                 logger.warning("LLM transport failure: %s", json.dumps({
                     **transport_evidence, "stepKey": step_key,
                     "providerId": route.provider_id, "model": route.model,
@@ -2305,6 +2323,7 @@ class LLMClient:
             if isinstance(exc, httpx.HTTPStatusError):
                 http_status = exc.response.status_code
                 upstream_request_id = _response_request_id(httpx.Headers(transport_evidence.get("responseHeaders", {})))
+                error_body_excerpt = transport_evidence.get("bodyExcerpt")
             elif isinstance(exc, LLMResponseTruncatedError):
                 upstream_request_id = exc.upstream_request_id
                 error_body_excerpt = exc.response_excerpt
