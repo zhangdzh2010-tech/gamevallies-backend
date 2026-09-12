@@ -88,6 +88,13 @@ def test_layout_scope_rejects_dom_script_comment_and_style_escape_changes(search
         apply_interactive_patch(LAYOUT_SOURCE, patch, layout_only=True)
 
 
+def test_patch_cannot_emit_incomplete_html_when_source_was_complete():
+    with pytest.raises(ValueError, match='complete HTML document'):
+        apply_interactive_patch(SOURCE, json.dumps({
+            'patches': [{'search': '</html>', 'replace': ''}],
+        }))
+
+
 def test_failed_layout_does_not_erase_prior_runtime_invariants():
     from src.engine.candidate_checkpoint import CandidateCheckpoint
     baseline = {'ran':True,'passed':False,'issues':['layout overflow'],

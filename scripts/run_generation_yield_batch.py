@@ -54,6 +54,8 @@ EXTRA_CASES: list[dict[str, str]] = [
         "description": "作品类型：科学演示。制作平面镜反射光学演示，可调入射角，入射光指向镜面交点、反射光离开交点，显示反射定律。不要游戏玩法。",
         "orientation": "landscape",
         "artifact_kind": "science",
+        "expected_family": "geometric_ray_2d",
+        "expected_subject": "physics",
     },
     {
         "name": "wave_interference_science_cn",
@@ -61,6 +63,8 @@ EXTRA_CASES: list[dict[str, str]] = [
         "description": "作品类型：科学演示。制作双波源干涉与波纹演示，可调振幅和波长，实时显示合成波形与公式。桌面横屏。",
         "orientation": "landscape",
         "artifact_kind": "science",
+        "expected_family": "field_or_wave_2d",
+        "expected_subject": "physics",
     },
     {
         "name": "free_fall_science_cn",
@@ -68,6 +72,8 @@ EXTRA_CASES: list[dict[str, str]] = [
         "description": "作品类型：科学演示。制作自由落体实验，可调高度和重力g，显示v=gt与位移公式，有开始暂停重置。不要积分或关卡。",
         "orientation": "landscape",
         "artifact_kind": "science",
+        "expected_family": "time_integrator_1d",
+        "expected_subject": "physics",
     },
     {
         "name": "temp_converter_cn",

@@ -24,7 +24,14 @@ from src.engine.interactive_diversity import (
     fingerprints_near_duplicate,
     plan_interactive_diversity,
 )
-from src.engine.interactive_families import RECIPES, get_recipe, recipes_for_family
+from src.engine.interactive_families import (
+    RECIPES,
+    family_plugin_js,
+    get_recipe,
+    plane_mirror_rays,
+    recipes_for_family,
+    wave_superposition,
+)
 from src.engine.interactive_router import route_interactive_template
 from src.engine.interactive_short_path import (
     assemble_short_path_document,
@@ -43,6 +50,7 @@ class RouterFamilies(unittest.TestCase):
             ("作品类型：科学演示。制作自由落体实验，可调高度和重力g，显示v=gt。", "HIT", "time_integrator_1d", "free_fall", "physics"),
             ("作品类型：科学演示。制作理想气体状态方程，可调n、T、V，按PV=nRT显示压强。", "HIT", "param_formula_panel", "gas_law", "chem"),
             ("作品类型：科学演示。制作双波源干涉与波纹演示，可调振幅和波长。", "HIT", "field_or_wave_2d", "wave_interference", "physics"),
+            ("作品类型：科学演示。制作平面镜反射光学演示，可调入射角，入射光指向镜面交点、反射光离开交点，显示反射定律。", "HIT", "geometric_ray_2d", "mirror_optics", "physics"),
             ("作品类型：科学演示。制作半透膜渗透实验，两侧浓度可调，水流按浓度差流动。", "HIT", "compartment_flow", "osmosis", "bio"),
             ("作品类型：科学演示。制作酶活性随温度变化的示意曲线，可调温度和活化能。", "HIT", "param_formula_panel", "enzyme_temp", "bio"),
             ("做一个捕食者与猎物的种群变化模型。", "HIT", "compartment_flow", "population", "bio"),
@@ -58,11 +66,12 @@ class RouterFamilies(unittest.TestCase):
     def test_miss_is_full_generate_not_failure(self):
         decision = route_interactive_template(
             "science",
-            "作品类型：科学演示。制作平面镜反射光学演示，可调入射角，显示反射定律。",
+            "作品类型：科学演示。制作三棱镜色散与透镜成像对比演示，可调折射率。",
         )
         self.assertEqual(decision.route, "MISS")
         self.assertFalse(decision.uses_short_path)
         self.assertIn(decision.reason, {"no_family_match", "ambiguous_family"})
+        self.assertIsNone(decision.family_id)
 
     def test_tool_converter_does_not_force_enzyme_family(self):
         decision = route_interactive_template(
@@ -93,6 +102,7 @@ class RouterFamilies(unittest.TestCase):
         self.assertTrue(recipes_for_family("time_integrator_1d"))
         self.assertTrue(recipes_for_family("field_or_wave_2d"))
         self.assertTrue(recipes_for_family("compartment_flow"))
+        self.assertTrue(recipes_for_family("geometric_ray_2d"))
 
 
 class ShellTimeAdvance(unittest.TestCase):
@@ -199,11 +209,11 @@ class ShortPathAndRegistry(unittest.IsolatedAsyncioTestCase):
     async def test_miss_brief_still_uses_full_logic_generate(self):
         request = normalize_interactive_request(RunPipelineV2Request(
             game_id="game", user_id="user", timeout_s=1800, artifact_kind="science",
-            raw_user_input="作品类型：科学演示。制作平面镜反射光学演示，可调入射角。",
+            raw_user_input="作品类型：科学演示。制作三棱镜色散演示，可调入射角和折射率。",
             source_spec=GameSpec(
                 game_type="interactive_experience",
                 artifact_kind="science",
-                source_description="作品类型：科学演示。制作平面镜反射光学演示，可调入射角。",
+                source_description="作品类型：科学演示。制作三棱镜色散演示，可调入射角和折射率。",
             ),
         ))
         html = '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body><h1>镜</h1><button>开始</button><script>1</script></body></html>'
@@ -249,6 +259,8 @@ class YieldLedgerEfficiency(unittest.TestCase):
         families = {case.get("expected_family") for case in EXTRA_CASES if case.get("expected_family")}
         self.assertIn("param_formula_panel", families)
         self.assertIn("compartment_flow", families)
+        self.assertIn("geometric_ray_2d", families)
+        self.assertIn("field_or_wave_2d", families)
 
         outcome = extract_quality_outcome({
             "qualityBreakdown": {
@@ -465,6 +477,167 @@ class ShortPathShellRegressions(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("getElementById('missing')", result.html_code)
         self.assertEqual(result.quality_breakdown["template_route"], "HIT")
         self.assertEqual(result.runtime_qa_report["generationAttempts"]["fullGenerationCalls"], 0)
+
+
+class ResidualFamilyContracts(unittest.IsolatedAsyncioTestCase):
+    def test_wave_superposition_uses_opposite_phase_only_on_second_source(self):
+        in_phase = wave_superposition(12, 0.4, amplitude1=0.6, amplitude2=0.6, wavelength=80, phase=0)
+        shifted = wave_superposition(12, 0.4, amplitude1=0.6, amplitude2=0.6, wavelength=80, phase=1.2)
+        opposite = wave_superposition(12, 0.4, amplitude1=0.6, amplitude2=0.6, wavelength=80, phase=3.141592653589793)
+        self.assertAlmostEqual(in_phase, 2 * 0.6 * __import__("math").sin(2 * __import__("math").pi * 12 / 80 - 0.4))
+        self.assertNotAlmostEqual(in_phase, shifted)
+        self.assertAlmostEqual(opposite, 0.0, places=6)
+        plugin = family_plugin_js("field_or_wave_2d", get_recipe("wave_interference"))
+        self.assertIn("param-lambda", plugin)
+        self.assertIn("param-phi", plugin)
+        self.assertIn("k*x - time + phi", plugin)
+        self.assertNotIn("2*Math.PI*x/lam - phi) + A2*Math.sin(2*Math.PI*x/lam - phi)", plugin)
+
+    def test_plane_mirror_rays_keep_incident_toward_and_reflected_away(self):
+        import math
+        rays = plane_mirror_rays(math.radians(30), hit=(200.0, 100.0), length=80.0)
+        ix, iy = rays["incident_from"]
+        hx, hy = rays["hit"]
+        rx, ry = rays["reflected_to"]
+        nx, ny = rays["normal_to"]
+        self.assertLess(ix, hx)
+        self.assertLess(rx, hx)
+        self.assertLess(iy, hy)
+        self.assertGreater(ry, hy)
+        self.assertAlmostEqual(ny, hy)
+        self.assertLess(nx, hx)
+
+        def angle_between(a, b):
+            na = math.hypot(*a)
+            nb = math.hypot(*b)
+            return math.acos(max(-1.0, min(1.0, (a[0] * b[0] + a[1] * b[1]) / (na * nb))))
+
+        back_incident = (ix - hx, iy - hy)
+        out_reflected = (rx - hx, ry - hy)
+        normal_dir = (nx - hx, ny - hy)
+        self.assertAlmostEqual(angle_between(back_incident, normal_dir), math.radians(30), places=6)
+        self.assertAlmostEqual(angle_between(out_reflected, normal_dir), math.radians(30), places=6)
+        self.assertGreater(hx - ix, 0)
+        self.assertLess(rx - hx, 0)
+
+    def test_assembled_wave_and_optics_keep_required_controls(self):
+        wave = _assemble_recipe("wave_interference", "双波源干涉")
+        optics = _assemble_recipe("mirror_optics", "平面镜反射")
+        fall = _assemble_recipe("free_fall", "自由落体")
+        for html in (wave, optics, fall):
+            self.assertTrue(re.search(r"</html\s*>\s*$", html, re.I))
+            self.assertEqual(shell_time_advance_contract_errors(html), [])
+        self.assertIn('id="param-lambda"', wave)
+        self.assertIn('id="param-phi"', wave)
+        self.assertIn('id="param-theta"', optics)
+        self.assertIn("angleRad", optics)
+        self.assertIn("var angleRad = 30 * Math.PI / 180", optics)
+        self.assertIn("法线", optics)
+        self.assertIn("地面", fall)
+
+    async def test_assembled_wave_phase_and_lambda_change_the_waveform(self):
+        html = _assemble_recipe("wave_interference", "作品类型：科学演示。制作双波源干涉与波纹演示，可调振幅和波长。")
+        report = await validate_interactive_html(html)
+        self.assertFalse(report.get("js_errors"), report)
+        self.assertTrue(report["passed"], report["issues"])
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            page = await browser.new_page()
+            await page.set_content(html)
+            probe = await page.evaluate(
+                """() => {
+                  const canvas = document.getElementById('work-canvas');
+                  const ctx = canvas.getContext('2d');
+                  function snap(){
+                    WorkFamily.draw(ctx, canvas);
+                    return canvas.toDataURL();
+                  }
+                  const before = snap();
+                  const phi = document.getElementById('param-phi');
+                  const lam = document.getElementById('param-lambda');
+                  phi.value = phi.max;
+                  phi.dispatchEvent(new Event('input', {bubbles:true}));
+                  const afterPhi = snap();
+                  lam.value = lam.min;
+                  lam.dispatchEvent(new Event('input', {bubbles:true}));
+                  const afterLam = snap();
+                  return {
+                    hasPhi: !!phi,
+                    hasLambda: !!lam,
+                    phiChanged: before !== afterPhi,
+                    lambdaChanged: afterPhi !== afterLam,
+                    readout: document.getElementById('work-readout').textContent
+                  };
+                }"""
+            )
+            await browser.close()
+        self.assertTrue(probe["hasPhi"])
+        self.assertTrue(probe["hasLambda"])
+        self.assertTrue(probe["phiChanged"], probe)
+        self.assertTrue(probe["lambdaChanged"], probe)
+        self.assertIn("φ=", probe["readout"])
+
+    async def test_assembled_mirror_optics_geometry_and_live_interaction(self):
+        html = _assemble_recipe(
+            "mirror_optics",
+            "作品类型：科学演示。制作平面镜反射光学演示，可调入射角，显示反射定律。",
+        )
+        report = await validate_interactive_html(html)
+        self.assertFalse(report.get("js_errors"), report)
+        self.assertTrue(report["passed"], report["issues"])
+        self.assertFalse(report.get("angleEvidence"), report.get("angleEvidence"))
+        clipped = [
+            item for item in report.get("canvasTextEvidence") or []
+            if item.get("type") == "canvas_text_clipped" and "法线" in str(item.get("text") or "")
+        ]
+        self.assertFalse(clipped, clipped)
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            page = await browser.new_page()
+            await page.set_content(html)
+            before = await page.evaluate("() => window.WorkRuntime.simTime()")
+            await page.click("#btn-start")
+            await page.wait_for_timeout(200)
+            probe = await page.evaluate(
+                """() => {
+                  const theta = document.getElementById('param-theta');
+                  const before = document.getElementById('work-readout').textContent;
+                  theta.value = '55';
+                  theta.dispatchEvent(new Event('input', {bubbles:true}));
+                  return {
+                    t: window.WorkRuntime.simTime(),
+                    before: before,
+                    after: document.getElementById('work-readout').textContent
+                  };
+                }"""
+            )
+            await browser.close()
+        self.assertGreater(probe["t"], before)
+        self.assertNotEqual(probe["before"], probe["after"])
+        self.assertIn("55", probe["after"])
+
+    async def test_assembled_free_fall_keeps_visual_labels_and_motion(self):
+        html = _assemble_recipe("free_fall", "作品类型：科学演示。制作自由落体实验，可调高度和重力g，显示v=gt。")
+        report = await validate_interactive_html(html)
+        self.assertFalse(report.get("js_errors"), report)
+        self.assertTrue(report["passed"], report["issues"])
+        self.assertIn("地面", html)
+        self.assertIn("y=", html)
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            page = await browser.new_page()
+            await page.set_content(html)
+            await page.click("#btn-start")
+            await page.wait_for_timeout(200)
+            readout = await page.evaluate("() => document.getElementById('work-readout').textContent")
+            await browser.close()
+        self.assertIn("v=", readout)
 
 
 if __name__ == "__main__":

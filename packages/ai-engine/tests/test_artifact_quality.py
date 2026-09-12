@@ -34,6 +34,7 @@ def review(kind, **updates):
     ('科学主题闯关。呈现方式：自由创意','game'),
     ('做一个牛顿第二定律演示，可调质量和力','science'),
     ('做一个光合作用实验','science'),
+    ('制作三棱镜色散演示，可调入射角和折射率','science'),
     ('Build an interactive physics lab for free fall','science'),
     ('制作一个生物酶活性随温度变化的实验','science'),
     ('做一个太空躲避手机竖屏小游戏','game'),
@@ -270,6 +271,35 @@ def test_science_source_bound_finding_gap_gets_a_bounded_reask_without_inventing
     assert 'defect lacks a source-bound finding' in calls[1]
     assert 'Never invent or inflate scores' in calls[1]
     assert 'source_ref' in calls[1]
+
+
+def test_low_visual_clarity_score_reask_allows_raise_or_source_bound_finding():
+    import asyncio
+    from src.engine.review_recovery import recover_review
+
+    valid = review('science')
+    data = json.loads(valid)
+    data['scores']['visual_clarity'] = 4
+    broken = json.dumps(data)
+    calls = []
+
+    async def request(correction):
+        calls.append(correction)
+        return valid if correction else broken
+
+    verified = asyncio.run(recover_review(
+        request,
+        lambda raw: assess_review(raw, 'science'),
+        lambda parsed: [] if parsed['review_ran'] else parsed['issues'],
+    ))
+    assert verified.assessment['review_ran']
+    assert verified.requests == 2
+    assert calls[1] is not None
+    assert 'low score lacks a source-bound finding' in calls[1]
+    assert 'visual_clarity' in calls[1]
+    assert 'source_ref' in calls[1]
+    assert 'raise that score' in calls[1]
+    assert 'Never invent a defect to justify a low score' in calls[1]
 
 
 def test_incomplete_science_scores_get_a_bounded_reask_without_inventing_values():
