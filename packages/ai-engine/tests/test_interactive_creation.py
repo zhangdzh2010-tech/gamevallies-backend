@@ -51,7 +51,7 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.html_code, GOOD)
         self.assertEqual(qa.await_count, 1)
         self.assertEqual([c.kwargs['step_key'] for c in llm.call_args_list],
-            ['code_generate.full','code_review','code_review'])
+            ['code_generate.template_fill','code_review','code_review'])
         self.assertIn('SAME complete source', llm.call_args_list[-1].kwargs['messages'][0]['content'])
         self.assertEqual(result.quality_breakdown['reviewRequests'], 2)
 
@@ -84,7 +84,7 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.html_code, GOOD)
         self.assertEqual(qa.await_count, 1)
         self.assertEqual([c.kwargs['step_key'] for c in llm.call_args_list],
-            ['code_generate.full','code_review','code_review'])
+            ['code_generate.template_fill','code_review','code_review'])
         self.assertEqual(result.quality_breakdown['suggestions'], ['可选增加历史记录'])
         self.assertEqual(result.quality_breakdown['issues'], [])
 
@@ -101,7 +101,7 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.html_code, GOOD.replace('margin:24px','margin:12px'))
         self.assertEqual(qa.await_count,2)
         self.assertEqual([c.kwargs['step_key'] for c in llm.call_args_list],
-            ['code_generate.full','quality_gate.patch_fix','quality_gate.patch_fix','code_review'])
+            ['code_generate.template_fill','quality_gate.patch_fix','quality_gate.patch_fix','code_review'])
         self.assertIn('layout_scope',llm.call_args_list[2].kwargs['messages'][0]['content'])
 
     async def test_layout_scope_exhaustion_cannot_fall_back_to_full_rewrite(self):
@@ -214,6 +214,11 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.quality_breakdown['seed_worthy_reason'], 'structured_review_passed')
         self.assertTrue(result.quality_breakdown['pipeline_success'])
         self.assertTrue(result.quality_breakdown['review_ran'])
+        self.assertEqual(result.quality_breakdown['template_route'], 'HIT')
+        self.assertEqual(result.quality_breakdown['family_id'], 'compartment_flow')
+        self.assertEqual(result.quality_breakdown['recipe_id'], 'population')
+        self.assertIn('generation_efficiency', result.quality_breakdown)
+        self.assertGreaterEqual(result.quality_breakdown['prompt_tokens'], 1)
 
     async def test_create_result_requires_real_browser_qa(self):
         request=normalize_interactive_request(self.request())
@@ -488,10 +493,10 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
             'src.engine.interactive_creation.validate_interactive_html',new=AsyncMock(side_effect=[failed,passed])):
             result = await run_interactive(normalize_interactive_request(self.request()))
         self.assertEqual([c.kwargs['step_key'] for c in llm.call_args_list],
-                         ['code_generate.full','quality_gate.patch_fix','code_review'])
+                         ['code_generate.template_fill','quality_gate.patch_fix','code_review'])
         self.assertIn('<h1>生态观察</h1>', result.html_code)
         self.assertEqual(result.runtime_qa_report['generationAttempts'],
-                         {'fullGenerationCalls':1,'patchCalls':1,'qaAttempts':2})
+                         {'fullGenerationCalls':0,'patchCalls':1,'qaAttempts':2})
 
     async def test_invalid_create_patch_corrects_against_retained_source(self):
         delta = json.dumps({'patches':[{'search':'<h1>种群模型</h1>','replace':'<h1>生态观察</h1>'}]})
@@ -506,7 +511,7 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(correction['html'], indexed_review_source(GOOD))
         self.assertIn('original defect', correction['issues'])
         self.assertEqual(result.runtime_qa_report['generationAttempts'],
-                         {'fullGenerationCalls':1,'patchCalls':2,'qaAttempts':2})
+                         {'fullGenerationCalls':0,'patchCalls':2,'qaAttempts':2})
 
     async def test_exhausted_create_patch_protocol_regenerates_and_revalidates(self):
         with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
@@ -516,11 +521,11 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
                                      {'ran':True,'passed':True,'issues':[]}])) as qa:
             result = await run_interactive(normalize_interactive_request(self.request()))
         self.assertEqual([c.kwargs['step_key'] for c in llm.call_args_list],
-                         ['code_generate.full','quality_gate.patch_fix','quality_gate.patch_fix','code_generate.full','code_review'])
+                         ['code_generate.template_fill','quality_gate.patch_fix','quality_gate.patch_fix','code_generate.full','code_review'])
         self.assertIn('original defect',llm.call_args_list[3].kwargs['messages'][0]['content'])
         self.assertEqual(qa.await_count, 2)
         self.assertEqual(result.runtime_qa_report['generationAttempts'],
-                         {'fullGenerationCalls':2,'patchCalls':2,'qaAttempts':2})
+                         {'fullGenerationCalls':1,'patchCalls':2,'qaAttempts':2})
 
     async def test_failed_regeneration_does_not_restart_the_budget_or_lose_evidence(self):
         from src.engine.pipeline_errors import PipelineExecutionError
@@ -562,7 +567,7 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
             return_value=0):
             result = await run_interactive(normalize_interactive_request(self.request()))
         self.assertEqual([c.kwargs['step_key'] for c in llm.call_args_list],
-            ['code_generate.full','code_review','code_review'])
+            ['code_generate.template_fill','code_review','code_review'])
         self.assertTrue(result.quality_breakdown['seed_worthy'])
         self.assertEqual(result.quality_breakdown['seed_worthy_reason'], 'structured_review_passed')
         self.assertTrue(result.quality_breakdown['review_ran'])
@@ -785,7 +790,7 @@ class ScienceDemoMotionContract(unittest.IsolatedAsyncioTestCase):
         self.assertIn('data-work-layout-compact', result.html_code)
         self.assertEqual(qa.await_count, 2)
         self.assertEqual([c.kwargs['step_key'] for c in llm.call_args_list],
-                         ['code_generate.full', 'code_review'])
+                         ['code_generate.template_fill', 'code_review'])
 
     async def test_science_generation_prompt_includes_runtime_contract(self):
         request = normalize_interactive_request(RunPipelineV2Request(
@@ -799,8 +804,11 @@ class ScienceDemoMotionContract(unittest.IsolatedAsyncioTestCase):
                 'src.engine.interactive_creation.validate_interactive_html',
                 new=AsyncMock(return_value={'ran':True,'passed':True,'issues':[]})):
             await run_interactive(request)
-        self.assertIn('非平衡', llm.call_args_list[0].kwargs['system'])
-        self.assertIn('不要把拖拽', llm.call_args_list[0].kwargs['system'])
+        first = llm.call_args_list[0]
+        prompt = (first.kwargs.get('system') or '') + (first.kwargs['messages'][0]['content'])
+        self.assertIn('非平衡', prompt)
+        self.assertIn('不要把拖拽', prompt)
+        self.assertEqual(first.kwargs['step_key'], 'code_generate.template_fill')
 
     async def test_font_stress_overflow_is_compacted_without_shrinking_type(self):
         tall = '''<!doctype html><html><head><meta charset="utf-8">

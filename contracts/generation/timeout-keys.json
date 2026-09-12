@@ -144,8 +144,8 @@
   },
   {
     "key": "timeout.ai_engine.runtime_qa.max_concurrency",
-    "defaultValue": "4",
-    "description": "Maximum concurrent runtime-QA browser sessions.",
+    "defaultValue": "6",
+    "description": "Maximum concurrent runtime-QA browser sessions. Non-FC default 6; FC workers still serialize via FC_DEPLOYMENT fallback when the store is unset.",
     "service": "ai-engine",
     "group": "runtime_qa",
     "unit": "count",
@@ -683,8 +683,8 @@
   },
   {
     "key": "timeout.ai_engine.llm.max_concurrency",
-    "defaultValue": "10",
-    "description": "Maximum concurrent LLM calls allowed by ai-engine.",
+    "defaultValue": "12",
+    "description": "Maximum concurrent LLM calls allowed by ai-engine. Raised from 10 for interactive short-path + review overlap; override down on small hosts.",
     "service": "ai-engine",
     "group": "config",
     "unit": "count",

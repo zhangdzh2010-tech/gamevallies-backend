@@ -104,6 +104,33 @@ EXTRA_CASES: list[dict[str, str]] = [
         "orientation": "portrait",
         "artifact_kind": "game",
     },
+    {
+        "name": "gas_law_science_cn",
+        "title": "Yield Gas Law",
+        "description": "作品类型：科学演示。制作理想气体状态方程演示，可调物质的量n、温度T和体积V，按PV=nRT显示压强，有开始暂停重置。桌面横屏，不要闯关。",
+        "orientation": "landscape",
+        "artifact_kind": "science",
+        "expected_family": "param_formula_panel",
+        "expected_subject": "chem",
+    },
+    {
+        "name": "osmosis_science_cn",
+        "title": "Yield Osmosis",
+        "description": "作品类型：科学演示。制作半透膜渗透实验，两侧浓度可调，水流按浓度差流动，有开始暂停重置。不要游戏玩法。",
+        "orientation": "landscape",
+        "artifact_kind": "science",
+        "expected_family": "compartment_flow",
+        "expected_subject": "bio",
+    },
+    {
+        "name": "enzyme_temp_science_cn",
+        "title": "Yield Enzyme Temp",
+        "description": "作品类型：科学演示。制作酶活性随温度变化的示意曲线，可调温度和活化能，说明热变性假设，有开始暂停重置。",
+        "orientation": "landscape",
+        "artifact_kind": "science",
+        "expected_family": "param_formula_panel",
+        "expected_subject": "bio",
+    },
 ]
 
 ALL_CASES = DEFAULT_CASES + EXTRA_CASES
@@ -235,6 +262,25 @@ def extract_quality_outcome(*payloads: Any) -> dict[str, Any]:
             continue
         _ingest(payload)
 
+    template_route = None
+    family_id = None
+    recipe_id = None
+    prompt_tokens = None
+    completion_tokens = None
+    if isinstance(quality_breakdown, dict):
+        template_route = quality_breakdown.get("template_route") or quality_breakdown.get("templateRoute")
+        family_id = quality_breakdown.get("family_id") or quality_breakdown.get("familyId")
+        recipe_id = quality_breakdown.get("recipe_id") or quality_breakdown.get("recipeId")
+        prompt_tokens = quality_breakdown.get("prompt_tokens") or quality_breakdown.get("promptTokens")
+        completion_tokens = quality_breakdown.get("completion_tokens") or quality_breakdown.get("completionTokens")
+        efficiency = quality_breakdown.get("generation_efficiency") or {}
+        if isinstance(efficiency, dict):
+            template_route = template_route or efficiency.get("template_route")
+            family_id = family_id or efficiency.get("family_id")
+            recipe_id = recipe_id or efficiency.get("recipe_id")
+            prompt_tokens = prompt_tokens if prompt_tokens is not None else efficiency.get("prompt_tokens")
+            completion_tokens = completion_tokens if completion_tokens is not None else efficiency.get("completion_tokens")
+
     return {
         "seedWorthy": seed_worthy,
         "seedWorthyReason": seed_worthy_reason,
@@ -244,6 +290,11 @@ def extract_quality_outcome(*payloads: Any) -> dict[str, Any]:
         "reviewVisualPolishScore": review_visual,
         "reviewCharacterQualityScore": review_character,
         "finalScore": final_score,
+        "template_route": template_route,
+        "family_id": family_id,
+        "recipe_id": recipe_id,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
     }
 
 
@@ -304,6 +355,11 @@ def ledger_row(
         "reviewVisualPolishScore": outcome["reviewVisualPolishScore"],
         "reviewCharacterQualityScore": outcome["reviewCharacterQualityScore"],
         "finalScore": outcome["finalScore"],
+        "template_route": result.get("template_route") or outcome.get("template_route"),
+        "family_id": result.get("family_id") or outcome.get("family_id"),
+        "recipe_id": result.get("recipe_id") or outcome.get("recipe_id"),
+        "prompt_tokens": result.get("prompt_tokens") if result.get("prompt_tokens") is not None else outcome.get("prompt_tokens"),
+        "completion_tokens": result.get("completion_tokens") if result.get("completion_tokens") is not None else outcome.get("completion_tokens"),
     }
 
 
@@ -375,6 +431,11 @@ def run_single(
         "seedWorthyReason": quality_outcome["seedWorthyReason"],
         "pipelineSuccess": quality_outcome["pipelineSuccess"],
         "qualityBreakdown": quality_outcome["qualityBreakdown"],
+        "template_route": quality_outcome.get("template_route"),
+        "family_id": quality_outcome.get("family_id"),
+        "recipe_id": quality_outcome.get("recipe_id"),
+        "prompt_tokens": quality_outcome.get("prompt_tokens"),
+        "completion_tokens": quality_outcome.get("completion_tokens"),
     }
 
     if final_status == "succeeded":

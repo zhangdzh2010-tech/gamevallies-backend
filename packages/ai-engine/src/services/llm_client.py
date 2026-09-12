@@ -505,7 +505,7 @@ _LLM_CALL_SEMAPHORES_LOCK = threading.Lock()
 
 
 def _llm_max_concurrency() -> int:
-    return max(get_timeout_int("timeout.ai_engine.llm.max_concurrency", 10, min_value=1), 1)
+    return max(get_timeout_int("timeout.ai_engine.llm.max_concurrency", 12, min_value=1), 1)
 
 
 def _llm_http_limits() -> httpx.Limits:

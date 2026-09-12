@@ -658,7 +658,7 @@ class RuntimeQAPhaseTimeoutError(asyncio.TimeoutError):
 
 def _runtime_qa_max_concurrency() -> int:
     # The provisioned FC worker has 1 GB RAM; serialize Chromium by default.
-    default_limit = 1 if os.getenv("FC_DEPLOYMENT") == "true" else 4
+    default_limit = 1 if os.getenv("FC_DEPLOYMENT") == "true" else 6
     return max(get_timeout_int("timeout.ai_engine.runtime_qa.max_concurrency", default_limit, min_value=1), 1)
 
 

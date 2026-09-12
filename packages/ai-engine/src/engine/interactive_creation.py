@@ -23,6 +23,22 @@ from .review_recovery import (
     InvalidReviewEvidence,
 )
 from .candidate_checkpoint import CandidateCheckpoint
+from .interactive_router import RouteDecision, route_interactive_template
+from .interactive_telemetry import GenerationTelemetry
+from .interactive_families import get_recipe
+from .interactive_short_path import (
+    FILL_STEP_KEY,
+    assemble_short_path_document,
+    default_slots,
+    extract_fill_payload,
+    fill_prompt,
+    fill_system_prompt,
+    looks_like_full_html,
+    merge_slots,
+)
+from .interactive_diversity import plan_interactive_diversity
+from .template_registry import registry as template_registry
+from ..services.task_memory import task_memory
 
 DESKTOP_BRIEF_MARKER = '请生成桌面浏览器中的可交互创意作品'
 
@@ -105,8 +121,13 @@ async def _review_interactive_artifact(request_review, kind, brief, code, *, pro
 
 async def validate_interactive_html(code: str, *, brief: str = '') -> dict:
     from .runtime_qa import _runtime_qa_max_concurrency, _runtime_qa_semaphore
-    async with _runtime_qa_semaphore(_runtime_qa_max_concurrency()):
-        return await _validate_interactive_html(code, brief=brief)
+    wait_started = time.perf_counter()
+    semaphore = _runtime_qa_semaphore(_runtime_qa_max_concurrency())
+    async with semaphore:
+        queue_wait_ms = (time.perf_counter() - wait_started) * 1000
+        report = await _validate_interactive_html(code, brief=brief)
+        report['queue_wait_ms'] = round(queue_wait_ms, 1)
+        return report
 
 
 async def _validate_interactive_html(code: str, *, brief: str = '') -> dict:
@@ -223,17 +244,52 @@ async def run_interactive(request, progress_cb=None):
     patch_calls=0
     qa_attempts=0
     terminal_failure_family = None
+    telemetry = GenerationTelemetry()
+    variation_seed = str(
+        getattr(getattr(request, 'source_spec', None), 'variation_seed', None)
+        or getattr(request, 'game_id', '')
+        or ''
+    )
+    route = (
+        RouteDecision(route='MISS', reason='iterate_preserves_source')
+        if iterate else
+        route_interactive_template(kind, original, variation_seed=variation_seed)
+    )
+    telemetry.set_route(route)
+    diversity_plan = None
+    assembled_slots = None
 
-    async def generate_document():
+    async def persist_route_meta(extra=None):
+        try:
+            await task_memory.update_meta(
+                getattr(request, 'task_id', None),
+                template_route=telemetry.template_route,
+                template_family=telemetry.family_id or '',
+                template_recipe=telemetry.recipe_id or '',
+                template_subject=telemetry.subject or '',
+                **(extra or {}),
+            )
+            await task_memory.append_decision(
+                getattr(request, 'task_id', None),
+                f"template_route={telemetry.template_route} family={telemetry.family_id} recipe={telemetry.recipe_id}",
+            )
+        except Exception:
+            pass
+
+    await persist_route_meta()
+
+    async def generate_full_document():
         nonlocal full_generations
         full_generations += 1
         remaining = max(1, int(deadline-time.time()))
         repair_hint = science_runtime_repair_guidance(issues) if issues else ''
+        user_content = prompt + ('\n\n请修复以下运行检查问题，返回完整作品：\n'+'\n'.join(issues)
+            + (('\n'+repair_hint) if repair_hint else '') if issues else '')
+        telemetry.start('logic_generate')
         try:
             text = await client.complete_with_truncation_retry(
                 max_tokens=8192, system=interactive_system_prompt(kind),
-                messages=[{'role':'user','content':prompt + ('\n\n请修复以下运行检查问题，返回完整作品：\n'+'\n'.join(issues)
-                    + (('\n'+repair_hint) if repair_hint else '') if issues else '')}],
+                messages=[{'role':'user','content':user_content}],
                 step_key='iterate.element_change' if iterate else 'code_generate.full', stage='logic_generate',
                 request_timeout_s=remaining, overall_timeout_s=remaining, response_size_hint='full_document',
                 allow_provider_fallback=True,
@@ -244,13 +300,92 @@ async def run_interactive(request, progress_cb=None):
                 provider_retry_base_delay_s=2, provider_retry_max_delay_s=8,
             )
         except Exception as exc:
+            telemetry.record('logic_generate', prompt=user_content, step_key='code_generate.full')
             if is_provider_transport_failure(exc) or is_retryable_provider_transport_failure(exc):
                 raise PipelineExecutionError(
                     f'Full LLM generation failed: {exc}',
                     stage='logic_generate', failure_family='provider_transport',
                 ) from exc
             raise
+        telemetry.record(
+            'logic_generate', prompt=interactive_system_prompt(kind) + user_content,
+            completion=text or '', step_key='iterate.element_change' if iterate else 'code_generate.full',
+        )
         return extract_interactive_document(text)
+
+    async def generate_short_path_document():
+        nonlocal route, diversity_plan, assembled_slots
+        recipe = get_recipe(route.recipe_id or '')
+        if recipe is None:
+            telemetry.template_route = 'MISS'
+            telemetry.short_path = False
+            telemetry.route_reason = 'missing_recipe'
+            return await generate_full_document()
+        plan = plan_interactive_diversity(
+            family_id=recipe.family_id,
+            recipe_id=recipe.id,
+            title=recipe.title,
+            formula=recipe.formula,
+            variation_seed=variation_seed,
+            generation_tier=str(getattr(request, 'generation_tier', '') or 'standard'),
+            summary=original.split('\n')[0],
+        )
+        diversity_plan = plan
+        telemetry.diversity_action = plan.action
+        if plan.fallback_to_full and settings.INTERACTIVE_DIVERSITY_FALLBACK_ENABLED:
+            telemetry.template_route = 'MISS'
+            telemetry.short_path = False
+            telemetry.route_reason = 'diversity_fallback'
+            route = RouteDecision(route='MISS', reason='diversity_fallback', family_id=recipe.family_id, recipe_id=recipe.id, subject=recipe.subject)
+            return await generate_full_document()
+        slots = default_slots(recipe, plan, original)
+        user_content = fill_prompt(kind=kind, brief=original, recipe=recipe, plan=plan, route=route)
+        system = fill_system_prompt(kind)
+        max_tokens = (
+            settings.INTERACTIVE_SHORT_PATH_HIT_MAX_TOKENS if route.route == 'HIT'
+            else settings.INTERACTIVE_SHORT_PATH_SOFT_MAX_TOKENS
+        )
+        remaining = max(1, int(deadline-time.time()))
+        telemetry.start('logic_generate')
+        try:
+            text = await client.complete_with_truncation_retry(
+                max_tokens=max_tokens, system=system,
+                messages=[{'role':'user','content':user_content}],
+                step_key=FILL_STEP_KEY, stage='logic_generate',
+                request_timeout_s=remaining, overall_timeout_s=remaining,
+                response_size_hint='medium_structured',
+                allow_provider_fallback=True,
+                context_scope='request', compression_policy='code_generation',
+                truncation_retry_attempts=1, truncation_retry_max_tokens=max(max_tokens, 4096),
+                timeout_retry_attempts=0, provider_retry_attempts=2,
+                provider_retry_on_timeout_errors=True,
+                provider_retry_base_delay_s=2, provider_retry_max_delay_s=8,
+            )
+        except Exception as exc:
+            telemetry.record('logic_generate', prompt=user_content, step_key=FILL_STEP_KEY)
+            if is_provider_transport_failure(exc) or is_retryable_provider_transport_failure(exc):
+                raise PipelineExecutionError(
+                    f'Full LLM generation failed: {exc}',
+                    stage='logic_generate', failure_family='provider_transport',
+                ) from exc
+            raise
+        telemetry.record('logic_generate', prompt=system + user_content, completion=text or '', step_key=FILL_STEP_KEY)
+        if looks_like_full_html(text or ''):
+            return extract_interactive_document(text)
+        assembled_slots = merge_slots(slots, extract_fill_payload(text or ''))
+        return assemble_short_path_document(recipe=recipe, slots=assembled_slots, plan=plan)
+
+    async def generate_document():
+        nonlocal full_generations
+        use_short = (
+            settings.INTERACTIVE_SHORT_PATH_ENABLED
+            and route.uses_short_path
+            and not iterate
+            and not issues
+        )
+        if use_short:
+            return await generate_short_path_document()
+        return await generate_full_document()
 
     for attempt in range(1, 3):
         if progress_cb: progress_cb('logic_generate',60,'正在实现桌面互动作品',{'attempt':attempt,'maxAttempts':2,'runtimeProfile':'interactive_experience'})
@@ -315,6 +450,7 @@ async def run_interactive(request, progress_cb=None):
         code = preserve_cosmetic_scripts(source_code, candidate, feedback)
         if progress_cb: progress_cb('runtime_simulation_qa',90,'正在检查桌面显示与交互',{'attempt':attempt})
         qa_attempts += 1
+        telemetry.start('runtime_simulation_qa')
         try:
             report = await asyncio.wait_for(validate_interactive_html(code, brief=original + ('\n' + feedback if feedback else '')), timeout=min(60,max(1,deadline-time.time())))
         except Exception as exc:
@@ -330,6 +466,11 @@ async def run_interactive(request, progress_cb=None):
                     stage='runtime_simulation_qa',failure_family='runtime_infrastructure',
                     artifacts=candidate_history + [{'artifact_type':'failed_interactive_candidate',
                         'content_type':'text/html','payload':code,'metadata':{'attempt':attempt,'stage':'runtime_simulation_qa'}}]) from exc
+        telemetry.record(
+            'runtime_simulation_qa',
+            queue_wait_ms=float(report.get('queue_wait_ms') or 0),
+            step_key='runtime_simulation_qa',
+        )
         if (not report.get('passed') and should_apply_preview_layout_compact(report)
                 and 'data-work-layout-compact' not in code):
             compacted = apply_preview_layout_compact(code)
@@ -365,16 +506,19 @@ async def run_interactive(request, progress_cb=None):
             assessment_brief = original + ("\n修改要求：" + feedback if feedback else "")
             async def request_review(correction):
                 remaining = max(1, int(deadline-time.time()))
-                return await client.complete_with_truncation_retry(
+                review_user = review_prompt(kind, assessment_brief, code, report) + ('\n\n' + correction if correction else '')
+                telemetry.start('code_review')
+                text = await client.complete_with_truncation_retry(
                     max_tokens=2048, system='独立审核，严格遵循分类评分规则，只返回JSON。',
-                    messages=[{'role':'user','content':review_prompt(kind, assessment_brief, code, report)
-                        + ('\n\n' + correction if correction else '')}],
+                    messages=[{'role':'user','content':review_user}],
                     step_key='code_review', stage='code_review', prefer_fast=True,
                     request_timeout_s=min(120,remaining), overall_timeout_s=min(120,remaining),
                     response_size_hint='medium_structured', allow_provider_fallback=True,
                     context_scope='request', compression_policy='code_review',
                     truncation_retry_attempts=1, truncation_retry_max_tokens=3072, timeout_retry_attempts=0,
                 )
+                telemetry.record('code_review', prompt=review_user, completion=text or '', step_key='code_review')
+                return text
             try:
                 verified = await _review_interactive_artifact(
                     request_review,
@@ -433,6 +577,27 @@ async def run_interactive(request, progress_cb=None):
         checkpoint = CandidateCheckpoint.capture(code, report, assessment)
         if report['passed'] and assessment and assessment['passed']:
             labels = interactive_outcome_labels(assessment, report)
+            efficiency = telemetry.to_dict()
+            if diversity_plan is not None:
+                efficiency['diversity'] = diversity_plan.to_dict()
+            labels = labels | telemetry.yield_fields() | {
+                'generation_efficiency': efficiency,
+            }
+            if labels.get('seed_worthy') and telemetry.family_id and telemetry.recipe_id:
+                template_registry.observe(
+                    family_id=telemetry.family_id,
+                    recipe_id=telemetry.recipe_id,
+                    subject=telemetry.subject or '',
+                    template_route=telemetry.template_route,
+                    fingerprint=(diversity_plan.fingerprint if diversity_plan else ''),
+                    slots=assembled_slots or {},
+                    seed_worthy=True,
+                )
+                if settings.INTERACTIVE_TEMPLATE_AUTO_PROMOTE and diversity_plan is not None:
+                    template_registry.promote_to_production(
+                        diversity_plan.fingerprint, allow_auto=True,
+                    )
+            await persist_route_meta(telemetry.yield_fields())
             common = dict(html_code=code,game_spec=request.source_spec,generation_time_ms=int((time.time()-started)*1000),
                 qa_retries=attempt-1,pipeline_version='v2',runtime_profile='interactive_experience',runtime_qa_report=report,
                 quality_score=assessment['score'],quality_breakdown=assessment | {'runtime_checks':report} | labels)

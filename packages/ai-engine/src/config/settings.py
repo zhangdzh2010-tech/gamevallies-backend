@@ -131,6 +131,16 @@ class Settings(BaseSettings):
     P2_GUARD_MIN_SAMPLES: int = 6                        # minimum hits AND misses before judging
     P2_GUARD_TRIP_DELTA: float = 0.75                    # miss_mean − hit_mean gap that trips
 
+    # ------------------------------------------------------------------
+    # Interactive generation-efficiency (science/tool short path)
+    # ------------------------------------------------------------------
+    INTERACTIVE_SHORT_PATH_ENABLED: bool = True
+    INTERACTIVE_SHORT_PATH_HIT_MAX_TOKENS: int = 2048
+    INTERACTIVE_SHORT_PATH_SOFT_MAX_TOKENS: int = 3072
+    INTERACTIVE_PATCH_FIRST_ON_SHORT_PATH: bool = True
+    INTERACTIVE_TEMPLATE_AUTO_PROMOTE: bool = False
+    INTERACTIVE_DIVERSITY_FALLBACK_ENABLED: bool = True
+
     class Config:
         env_file = ".env"
         case_sensitive = True
