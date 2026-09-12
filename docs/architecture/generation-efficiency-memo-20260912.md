@@ -1,7 +1,7 @@
 # Generation efficiency memo (2026-09-12)
 
 User-approved overnight slice for science/tool interactive generation. This is
-the design that shipped: a working short path for four interaction families,
+the design that shipped: a working short path for five interaction families,
 a HIT/SOFT/MISS router, queryable telemetry, and an observed→candidate→staging
 registry. Quality bars are unchanged.
 
@@ -57,6 +57,7 @@ Module: `packages/ai-engine/src/engine/interactive_families.py`
 | `time_integrator_1d` | fixed-step 1D integration | physics | pendulum, free fall |
 | `field_or_wave_2d` | 2D field / superposition | physics | wave interference |
 | `compartment_flow` | coupled compartments | bio / chem | osmosis, population |
+| `geometric_ray_2d` | labeled angle drives incident/reflected rays | physics | plane-mirror optics |
 
 Recipes carry distinctive `required_any` keywords so a temperature converter
 cannot be force-fit into enzyme-temp.
@@ -144,11 +145,13 @@ free-fall / population. Ledger records `kind`, `template_route`, `family_id`,
    - pendulum → `time_integrator_1d`
    - Ohm / gas law / enzyme-temp → `param_formula_panel`
    - wave interference → `field_or_wave_2d`
+   - plane-mirror optics → `geometric_ray_2d`
    - osmosis / population → `compartment_flow`
 2. Assemble a shell with `assemble_short_path_document` and assert
    `shell_time_advance_contract_errors(html) == []`.
-3. MISS: plane-mirror optics or a mixed pendulum+wave+osmosis brief must
-   call `code_generate.full` and still pass existing QA/review.
+3. MISS: a mixed pendulum+wave+osmosis brief or a family-less optics
+   variant (prism/lens without plane-mirror keywords) must call
+   `code_generate.full` and still pass existing QA/review.
 4. Live (optional): run yield cases and confirm HIT rows have lower
    `prompt_tokens` / `elapsed_s` than MISS rows, with `seedWorthy` still true.
 
@@ -170,7 +173,7 @@ Use this list for a later exhaustive matrix.
 | --- | --- | --- |
 | R1 | Science brief with distinctive recipe keywords → HIT | router |
 | R2 | Partial family match → SOFT + default recipe | router |
-| R3 | No family / geometric optics / mixed families → MISS | router |
+| R3 | No family / mixed families → MISS | router |
 | R4 | Tool without strong recipe → MISS | router |
 | R5 | Iterate always MISS (`iterate_preserves_source`) | router |
 | R6 | Ambiguous multi-family brief → MISS, never force-fit | router |
@@ -188,6 +191,7 @@ Use this list for a later exhaustive matrix.
 | F2 | `time_integrator_1d` pendulum / free fall | L1/L2 |
 | F3 | `field_or_wave_2d` wave interference | L1/L2 |
 | F4 | `compartment_flow` osmosis / population | L1/L2 |
+| F5 | `geometric_ray_2d` plane-mirror optics | L1/L2 |
 | D1 | Repeat stem swaps creative anchor | diversity |
 | D2 | Repeat after swap raises visual tier | diversity |
 | D3 | Repeat after raise → full generate | diversity |

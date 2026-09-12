@@ -41,6 +41,8 @@ _CITATION_ERROR_MARKERS = (
     'missing deduction evidence',
 )
 
+_LOW_SCORE_FINDING_MARKER = 'low score lacks a source-bound finding'
+
 
 _GENERIC_ASSESSMENT_FAILURE = '分类审核未返回完整、有效且有依据的评分'
 
@@ -188,6 +190,16 @@ def _build_review_correction(errors: list[str], previous_raw: str) -> str:
     if _schema_only(errors):
         return _schema_correction(errors, previous_raw)
     if _citation_only(errors):
+        low_score_action = (
+            'Every score below 7, including visual_clarity, needs a findings[] entry for that '
+            'dimension with a printed source_ref, a path trace, and a local correction. '
+            'If you cannot cite a real unreadability/crop/overlap/unlabeled-graphic defect for '
+            'visual_clarity or another low score, raise that score to the rubric-supported value '
+            '(7 or higher). Never invent a defect to justify a low score. Never leave a score '
+            'below 7 without a source-bound finding. '
+            if any(_LOW_SCORE_FINDING_MARKER in str(error) for error in errors) else
+            'Never invent or inflate scores. '
+        )
         return (
             'REASSESSMENT REQUIRED:\n'
             + payload
@@ -198,8 +210,9 @@ def _build_review_correction(errors: list[str], previous_raw: str) -> str:
             'above, for example [0123456789abcdef:0]. Those labels are this revision only. '
             'Do not invent a hash, do not reuse a previous candidate, and do not cite a raw byte '
             'offset that was not printed. If a claimed defect cannot be bound to a printed span, '
-            'remove that defect instead of inventing a citation. Never invent or inflate scores. '
-            'Return the complete assessment JSON.'
+            'remove that defect instead of inventing a citation. '
+            + low_score_action
+            + 'Return the complete assessment JSON.'
         )
     return (
         'REASSESSMENT REQUIRED:\n'

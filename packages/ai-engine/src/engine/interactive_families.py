@@ -6,6 +6,7 @@ that the DesktopRuntimeShell hosts.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -16,6 +17,7 @@ FAMILY_IDS = (
     "time_integrator_1d",
     "field_or_wave_2d",
     "compartment_flow",
+    "geometric_ray_2d",
 )
 # Arcade path is out of scope; stub so the registry has a stable slot.
 GAME_FAMILY_STUBS = ("arcade_loop",)
@@ -107,6 +109,16 @@ FAMILIES: Dict[str, Family] = {
         ),
         subjects=("bio", "chem"),
         interaction="exchange or coupled compartment rates",
+    ),
+    "geometric_ray_2d": Family(
+        id="geometric_ray_2d",
+        label="几何光线",
+        keywords=(
+            "平面镜", "反射定律", "入射角", "反射角", "法线",
+            "镜面反射", "plane mirror", "reflection law", "geometric optics",
+        ),
+        subjects=("physics",),
+        interaction="labeled angle drives incident and reflected rays",
     ),
 }
 
@@ -237,11 +249,30 @@ RECIPES: Dict[str, Recipe] = {
             _param("A1", "振幅 A1", 0.2, 1.2, 0.1, 0.6, ""),
             _param("A2", "振幅 A2", 0.2, 1.2, 0.1, 0.6, ""),
             _param("lambda", "波长 λ", 40, 140, 5, 80, "px"),
+            _param("phi", "相位差 φ", 0.2, 6.2, 0.1, 1.2, "rad"),
         ),
         assumptions="一维投影的两列简谐波线性叠加。",
         limits="不是水槽实验数据；坐标按 2A 留边。",
         units={"A": "a.u.", "lambda": "px"},
         required_any=("干涉", "interference", "双波", "波形"),
+    ),
+    "mirror_optics": Recipe(
+        id="mirror_optics",
+        family_id="geometric_ray_2d",
+        subject="physics",
+        title="平面镜反射",
+        formula="θᵢ = θᵣ",
+        keywords=(
+            "平面镜", "反射定律", "入射角", "入射光", "反射光",
+            "镜面", "法线", "反射角", "plane mirror", "reflection",
+        ),
+        params=(
+            _param("theta", "入射角 θ", 10, 70, 1, 30, "°"),
+        ),
+        assumptions="平面镜，法线垂直于镜面；入射光指向交点，反射光离开交点。",
+        limits="几何光学示意，不考虑波动、吸收或镜厚。",
+        units={"theta": "°"},
+        required_any=("平面镜", "反射定律", "反射光", "plane mirror", "法线", "镜面反射"),
     ),
     "osmosis": Recipe(
         id="osmosis",
@@ -329,9 +360,35 @@ def family_plugin_js(family_id: str, recipe: Recipe) -> str:
         "time_integrator_1d": _TIME_INTEGRATOR_JS,
         "field_or_wave_2d": _WAVE_JS,
         "compartment_flow": _COMPARTMENT_JS,
+        "geometric_ray_2d": _RAY_OPTICS_JS,
     }
     template = plugins.get(family_id, _PARAM_FORMULA_JS)
     return template.replace("__RECIPE__", recipe.id)
+
+
+def wave_superposition(x: float, t: float, *, amplitude1: float, amplitude2: float, wavelength: float, phase: float) -> float:
+    """y = A1 sin(kx - t) + A2 sin(kx - t + φ). Phase is only on the second source."""
+    lam = max(float(wavelength), 1e-6)
+    k = 2.0 * math.pi / lam
+    return (
+        float(amplitude1) * math.sin(k * x - t)
+        + float(amplitude2) * math.sin(k * x - t + float(phase))
+    )
+
+
+def plane_mirror_rays(theta_rad: float, *, hit: Tuple[float, float] = (0.0, 0.0), length: float = 1.0) -> Dict[str, Tuple[float, float]]:
+    """Vertical mirror, normal along -x. Incident travels toward hit; reflected leaves hit."""
+    mx, cy = hit
+    length = max(float(length), 1e-6)
+    theta = max(0.0, min(math.pi / 2 - 1e-3, float(theta_rad)))
+    incident_from = (mx - length * math.cos(theta), cy - length * math.sin(theta))
+    reflected_to = (mx - length * math.cos(theta), cy + length * math.sin(theta))
+    return {
+        "incident_from": incident_from,
+        "hit": (mx, cy),
+        "reflected_to": reflected_to,
+        "normal_to": (mx - length, cy),
+    }
 
 
 _PARAM_FORMULA_JS = r"""
@@ -497,9 +554,31 @@ _TIME_INTEGRATOR_JS = r"""
           ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(x,yb); ctx.stroke();
           ctx.beginPath(); ctx.arc(x,yb,10,0,Math.PI*2); ctx.fill();
         } else {
-          var y0 = num('param-y0',20);
-          var py = 16 + (h-36) * (1 - y/Math.max(1,y0));
-          ctx.fillRect(w/2-8, py, 16, 16);
+          var y0 = Math.max(1, num('param-y0',20));
+          var pad = 20;
+          var groundY = h - pad;
+          var topY = pad + 10;
+          var span = Math.max(40, groundY - topY);
+          var py = topY + span * (1 - y / y0);
+          ctx.strokeStyle = '#94a3b8';
+          ctx.beginPath(); ctx.moveTo(pad, topY); ctx.lineTo(pad, groundY); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(w * 0.22, groundY); ctx.lineTo(w * 0.82, groundY); ctx.stroke();
+          ctx.fillStyle = '#e2e8f0';
+          ctx.font = '12px sans-serif';
+          ctx.fillText('y0', pad + 6, topY);
+          ctx.fillText('地面', Math.max(pad + 6, w * 0.55), groundY - 6);
+          ctx.fillStyle = '#38bdf8';
+          ctx.fillRect(w / 2 - 8, py, 16, 16);
+          ctx.fillStyle = '#f8fafc';
+          ctx.fillText('m', w / 2 - 5, Math.max(topY, py - 6));
+          var labelY = Math.min(groundY - 22, Math.max(topY + 14, py + 16));
+          ctx.fillText('y=' + y.toFixed(1) + ' m', pad + 6, labelY);
+          ctx.fillText('v=' + v.toFixed(1) + ' m/s', pad + 6, Math.min(groundY - 8, labelY + 14));
+          if (v > 0.05){
+            var tip = Math.min(groundY - 4, py + 16 + Math.min(36, v * 2));
+            ctx.strokeStyle = '#f97316';
+            ctx.beginPath(); ctx.moveTo(w / 2, py + 16); ctx.lineTo(w / 2, tip); ctx.stroke();
+          }
         }
       }
     };
@@ -509,7 +588,7 @@ _TIME_INTEGRATOR_JS = r"""
 
 _WAVE_JS = r"""
   window.WorkFamily = (function(){
-    var phi = 0;
+    var time = 0;
     function num(id, fallback){
       var el = document.getElementById(id);
       return el ? +el.value : fallback;
@@ -518,31 +597,129 @@ _WAVE_JS = r"""
       var out = document.getElementById('work-readout');
       if (out) out.textContent = text;
     }
+    function phaseOffset(){
+      return num('param-phi', 1.2);
+    }
     return {
       applyParams: function(){
         var A1 = num('param-A1',0.6), A2 = num('param-A2',0.6);
-        setReadout('A1+A2=' + (A1+A2).toFixed(2) + ' (axis uses 2A)');
+        var lam = num('param-lambda',80), phi = phaseOffset();
+        setReadout('λ=' + lam.toFixed(0) + '  φ=' + phi.toFixed(2) + ' rad  A1+A2=' + (A1+A2).toFixed(2) + ' (axis uses 2A)');
       },
-      onStart: function(){ if (phi === 0) phi = 0.2; },
-      reset: function(){ phi = 0.2; this.applyParams(); },
-      step: function(dt){ phi += dt * 2.2; this.applyParams(); },
+      onStart: function(){ if (time === 0) time = 0.2; },
+      reset: function(){ time = 0.2; this.applyParams(); },
+      step: function(dt){ time += dt * 2.2; this.applyParams(); },
       draw: function(ctx, canvas){
         if (!ctx || !canvas) return;
         var w = canvas.width, h = canvas.height;
-        var A1 = num('param-A1',0.6), A2 = num('param-A2',0.6), lam = num('param-lambda',80);
+        var A1 = num('param-A1',0.6), A2 = num('param-A2',0.6);
+        var lam = Math.max(8, num('param-lambda',80));
+        var phi = phaseOffset();
         var A = Math.max(0.2, A1+A2);
-        var mid = h/2, amp = (h/2 - 16) / (2*Math.max(A, 0.4));
+        var mid = h/2, amp = (h/2 - 20) / (2*Math.max(A, 0.4));
+        var k = 2*Math.PI/lam;
+        function sample(x){
+          return A1*Math.sin(k*x - time) + A2*Math.sin(k*x - time + phi);
+        }
         ctx.clearRect(0,0,w,h);
         ctx.fillStyle = '#0f172a'; ctx.fillRect(0,0,w,h);
         ctx.strokeStyle = '#64748b';
         ctx.beginPath(); ctx.moveTo(0,mid); ctx.lineTo(w,mid); ctx.stroke();
-        ctx.strokeStyle = '#38bdf8'; ctx.beginPath();
-        for (var x=0;x<w;x++){
-          var y = A1*Math.sin(2*Math.PI*x/lam - phi) + A2*Math.sin(2*Math.PI*x/lam - phi);
-          var py = mid - y * amp;
-          if (x===0) ctx.moveTo(x,py); else ctx.lineTo(x,py);
+        function strokeWave(color, fn){
+          ctx.strokeStyle = color; ctx.beginPath();
+          for (var x=0;x<w;x++){
+            var py = mid - fn(x) * amp;
+            if (x===0) ctx.moveTo(x,py); else ctx.lineTo(x,py);
+          }
+          ctx.stroke();
         }
-        ctx.stroke();
+        strokeWave('#334155', function(x){ return A1*Math.sin(k*x - time); });
+        strokeWave('#475569', function(x){ return A2*Math.sin(k*x - time + phi); });
+        strokeWave('#38bdf8', sample);
+        ctx.fillStyle = '#e2e8f0';
+        ctx.font = '12px sans-serif';
+        ctx.fillText('φ=' + phi.toFixed(2), 16, 18);
+        ctx.fillText('λ=' + lam.toFixed(0), 16, 34);
+      }
+    };
+  })();
+"""
+
+
+_RAY_OPTICS_JS = r"""
+  window.WorkFamily = (function(){
+    var angleDeg = 30;
+    var angleRad = 30 * Math.PI / 180;
+    var pulse = 0;
+    function num(id, fallback){
+      var el = document.getElementById(id);
+      return el ? +el.value : fallback;
+    }
+    function setReadout(text){
+      var out = document.getElementById('work-readout');
+      if (out) out.textContent = text;
+    }
+    function syncAngle(){
+      angleDeg = Math.max(10, Math.min(70, num('param-theta', 30)));
+      angleRad = angleDeg * Math.PI / 180;
+      setReadout('θᵢ=' + angleDeg.toFixed(0) + '°  θᵣ=' + angleDeg.toFixed(0) + '°  反射定律 θᵢ=θᵣ');
+      return angleRad;
+    }
+    function arrow(ctx, x1, y1, x2, y2){
+      ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+      var ang = Math.atan2(y2-y1, x2-x1);
+      ctx.beginPath();
+      ctx.moveTo(x2,y2);
+      ctx.lineTo(x2 - 10*Math.cos(ang-0.4), y2 - 10*Math.sin(ang-0.4));
+      ctx.lineTo(x2 - 10*Math.cos(ang+0.4), y2 - 10*Math.sin(ang+0.4));
+      ctx.closePath(); ctx.fill();
+    }
+    return {
+      applyParams: function(){ syncAngle(); },
+      onStart: function(){ if (pulse === 0) pulse = 0.05; },
+      reset: function(){ pulse = 0; syncAngle(); },
+      step: function(dt){ pulse = (pulse + dt * 0.55) % 2; },
+      draw: function(ctx, canvas){
+        if (!ctx || !canvas) return;
+        syncAngle();
+        var w = canvas.width, h = canvas.height;
+        var pad = 22;
+        var mx = w - pad - 18;
+        var cy = h / 2;
+        var length = Math.min(mx - pad - 8, h/2 - pad - 8);
+        var ix = mx - length * Math.cos(angleRad);
+        var iy = cy - length * Math.sin(angleRad);
+        var rx = mx - length * Math.cos(angleRad);
+        var ry = cy + length * Math.sin(angleRad);
+        var nx = mx - Math.min(length * 0.72, mx - pad);
+        ctx.clearRect(0,0,w,h);
+        ctx.fillStyle = '#0f172a'; ctx.fillRect(0,0,w,h);
+        ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(mx, pad); ctx.lineTo(mx, h-pad); ctx.stroke();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = '#94a3b8'; ctx.setLineDash([5,4]);
+        ctx.beginPath(); ctx.moveTo(mx, cy); ctx.lineTo(nx, cy); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.strokeStyle = '#38bdf8'; ctx.fillStyle = '#38bdf8';
+        arrow(ctx, ix, iy, mx, cy);
+        ctx.strokeStyle = '#f97316'; ctx.fillStyle = '#f97316';
+        arrow(ctx, mx, cy, rx, ry);
+        ctx.strokeStyle = '#e2e8f0';
+        ctx.beginPath(); ctx.arc(mx, cy, Math.min(36, length*0.28), Math.PI-angleRad, Math.PI, false); ctx.stroke();
+        ctx.beginPath(); ctx.arc(mx, cy, Math.min(36, length*0.28), Math.PI, Math.PI+angleRad, false); ctx.stroke();
+        if (pulse > 0){
+          var u = pulse <= 1 ? pulse : pulse - 1;
+          var px = pulse <= 1 ? ix + (mx-ix)*u : mx + (rx-mx)*u;
+          var py = pulse <= 1 ? iy + (cy-iy)*u : cy + (ry-cy)*u;
+          ctx.fillStyle = '#facc15';
+          ctx.beginPath(); ctx.arc(px, py, 5, 0, Math.PI*2); ctx.fill();
+        }
+        ctx.fillStyle = '#e2e8f0';
+        ctx.font = '12px sans-serif';
+        ctx.fillText('镜', Math.max(pad, mx - 20), h - pad);
+        ctx.fillText('法线', Math.max(pad, (nx + mx) / 2 - 12), Math.max(pad + 12, cy - 12));
+        ctx.fillText('入射角 '+angleDeg.toFixed(0)+'°', Math.max(pad, ix + 8), Math.max(pad + 12, iy + 14));
+        ctx.fillText('反射角 '+angleDeg.toFixed(0)+'°', Math.max(pad, rx + 8), Math.min(h - pad, ry - 6));
       }
     };
   })();

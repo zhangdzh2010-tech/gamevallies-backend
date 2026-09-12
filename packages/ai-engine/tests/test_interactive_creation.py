@@ -3,7 +3,10 @@ import asyncio
 import json
 from unittest.mock import patch, AsyncMock
 from src.api.models import RunPipelineV2Request, IterateV2Request, GameSpec
-from src.engine.interactive_creation import normalize_interactive_request, is_interactive_request, run_interactive, validate_interactive_html, extract_interactive_document
+from src.engine.interactive_creation import (
+    normalize_interactive_request, is_interactive_request, run_interactive,
+    validate_interactive_html, extract_interactive_document, is_complete_interactive_document,
+)
 from src.engine.source_references import indexed_review_source, source_reference_catalog
 
 GOOD = '''<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{margin:24px;font:18px sans-serif}button{padding:12px}</style></head><body><h1>种群模型</h1><p>简化模型，不是实验数据</p><output id="count">10</output><button onclick="document.getElementById('count').textContent='20'">调整种群</button><script>let population=10;</script></body></html>'''
@@ -169,7 +172,7 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
 
     def miss_request(self):
         return RunPipelineV2Request(game_id='game',user_id='user',timeout_s=1800,
-            raw_user_input='作品类型：科学演示。制作平面镜反射光学演示，可调入射角。\n请生成桌面浏览器中的可交互创意作品。',
+            raw_user_input='作品类型：科学演示。制作三棱镜色散演示，可调入射角和折射率，显示光谱展开。不要游戏玩法。\n请生成桌面浏览器中的可交互创意作品。',
             source_spec=GameSpec(game_type='educational',source_description='做题闯关',entities=[]))
 
     async def test_desktop_brief_replaces_inferred_quiz_contract(self):
@@ -266,6 +269,36 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await validate_interactive_html(code))['passed'])
         truncated = extract_interactive_document(html.replace('</html>', ''))
         self.assertFalse((await validate_interactive_html(truncated))['passed'])
+        self.assertTrue(is_complete_interactive_document(html))
+        self.assertFalse(is_complete_interactive_document(truncated))
+
+    async def test_incomplete_html_repair_keeps_previous_complete_document(self):
+        from src.engine.pipeline_errors import PipelineExecutionError
+        review = json.loads(await fake_llm(step_key='code_review'))
+        review['scores']['scientific_correctness'] = 3
+        review['findings'] = [dict(
+            issue='formula missing', dimension='scientific_correctness',
+            basis='rubric', rubric_dimension='scientific_correctness',
+            source_ref=next(iter(source_reference_catalog(GOOD))),
+            reason='The displayed model does not implement the required relation.',
+            correction='Restore the labeled formula readout.')]
+        incomplete = '<html><body><h1>broken</h1><script>1</script>'
+        broken_patch = json.dumps({'patches':[{'search':'</html>','replace':''}]})
+        with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
+            new=AsyncMock(side_effect=[GOOD, json.dumps(review), broken_patch, broken_patch, incomplete])), patch(
+            'src.engine.interactive_creation.validate_interactive_html',
+            new=AsyncMock(return_value={'ran':True,'passed':True,'issues':[]})):
+            with self.assertRaises(PipelineExecutionError) as caught:
+                await run_interactive(normalize_interactive_request(self.miss_request()))
+        self.assertEqual(next(a['payload'] for a in caught.exception.artifacts
+            if a['artifact_type']=='failed_interactive_candidate'), GOOD)
+        self.assertTrue(any(
+            a.get('metadata', {}).get('discardedIncompleteHtml')
+            or (isinstance(a.get('payload'), dict) and a['payload'].get('reason') == 'incomplete_html_repair')
+            for a in caught.exception.artifacts
+        ))
+        self.assertTrue(is_complete_interactive_document(GOOD))
+        self.assertFalse(is_complete_interactive_document(incomplete))
 
     async def test_iteration_keeps_interactive_mode(self):
         source=normalize_interactive_request(self.request()).source_spec
@@ -841,9 +874,9 @@ class ScienceDemoMotionContract(unittest.IsolatedAsyncioTestCase):
         passed = {'ran':True,'passed':True,'issues':[]}
         patch_json = json.dumps({'patches':[{'search':'<h1>种群模型</h1>','replace':'<h1>单摆</h1>'}]})
         request = normalize_interactive_request(RunPipelineV2Request(
-            game_id='game', user_id='user', timeout_s=1800,
-            raw_user_input='作品类型：科学演示。制作平面镜反射光学演示，可调入射角。',
-            source_spec=GameSpec(game_type='interactive_experience', source_description='平面镜')))
+            game_id='game', user_id='user', timeout_s=1800, artifact_kind='science',
+            raw_user_input='作品类型：科学演示。制作三棱镜色散演示，可调入射角和折射率。',
+            source_spec=GameSpec(game_type='interactive_experience', artifact_kind='science', source_description='三棱镜色散')))
         with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
                    new=AsyncMock(side_effect=[GOOD, patch_json, await fake_llm(step_key='code_review')])) as llm, patch(
                 'src.engine.interactive_creation.validate_interactive_html',

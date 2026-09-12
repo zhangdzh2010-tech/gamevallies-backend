@@ -64,6 +64,8 @@ def apply_interactive_patch(source: str, raw: str, *, layout_only: bool = False)
             raise ValueError('layout_scope: only existing style contents may change; preserve DOM and scripts exactly')
         if result == source or len(result.encode()) > 300000:
             raise ValueError('empty or oversized repair')
+        if re.search(r'</html\s*>\s*$', source, re.I) and not re.search(r'</html\s*>\s*$', result, re.I):
+            raise ValueError('repair must keep a complete HTML document')
         return result
     except (ValueError, TypeError, KeyError) as exc:
         raise ValueError('定向补丁无效，原候选已保留：'+str(exc)) from exc

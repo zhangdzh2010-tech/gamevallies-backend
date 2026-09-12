@@ -88,6 +88,15 @@ def extract_interactive_document(text: str) -> str:
     return code[:endings[-1].end()] if endings else code
 
 
+def is_complete_interactive_document(html: str) -> bool:
+    """Same shape gate as runtime QA: a closed HTML document with executable script."""
+    if not html:
+        return False
+    has_end = bool(re.search(r'</html\s*>\s*$', html, re.I))
+    has_script = bool(re.search(r'<script\b|\son(?:click|input|change|submit|keydown|keyup)\s*=', html, re.I))
+    return has_end and has_script
+
+
 def ensure_full_path_chrome(html: str, brief: str) -> str:
     """Inject a readable title on MISS/full path when the model omitted one.
 
@@ -189,6 +198,7 @@ SYSTEM_PROMPT = '''你是桌面交互作品工程师。根据用户的原始创�
 绘图须为所有参数边界组合预留坐标、线宽与标注空间；例如双波振幅均为A时合成最大值为2A，坐标范围必须额外留边，不能把峰值中心线直接贴在画布边缘。角弧采用正确方向与最小夹角，曲线峰值和摆球不能越出画布。重置前取消旧动画回调，避免重复循环。
 多列清单必须给正文保留可阅读的最小宽度；窄桌面改为分组、切换日期或响应式少列布局，不能把中文任务挤成一字一行。编辑状态的保存按钮与提示文字须一致，并提供取消编辑入口。
 光学反射中，入射箭头指向镜面交点，反射箭头离开交点；不能把两者都画成从镜面发出的光。Canvas中从-π/2-θ到-π/2的小弧使用顺时针方向(false)，不要反画成2π-θ大弧。
+角弧必须与对应光线在同一侧：反射角弧画在反射光所在的半平面，不能画在法线另一侧。先声明 angleDeg/angleRad 再绘图，禁止暂时性死区。法线、入射角、反射角标签留在画布内边距内，不能贴边裁切到完全不可见。开始后光线脉冲或模拟时间必须持续变化。
 为不同系统的字体度量留出布局余量，根字号增大12.5%时1000×600核心区域仍完整；优先缩小主图、压缩空白或响应式重排，不缩小字体或隐藏主操作。
 不要依赖宿主提供游戏 runtime、积分回调或 game_over 消息。遵从用户选择的方向和内容。'''
 
@@ -218,6 +228,15 @@ def science_runtime_repair_guidance(issues: list[str]) -> str:
             '压缩说明与主图，开始/暂停/重置和参数控件留在1000×600首屏；次要公式假设可折叠。'
             '画布使用 max-width:100% 与 max-height:min(38vh,240px)，flex-wrap 排列控件，body padding≤8px。'
             '不要缩小字号或隐藏核心控件。')
+    if re.search(r'法线|裁切|angleRad|光学角弧|入射角|反射角', text):
+        hints.append(
+            '平面镜：在任何绘图前声明 angleDeg 与 angleRad，避免 TDZ。'
+            '入射箭头从光源指向镜面交点，反射箭头从交点离开；角弧与对应光线同侧。'
+            '法线/入射角/反射角标签留在画布内边距内。开始后用累积时间推进光线脉冲，入射角滑块必须立即重绘。')
+    if re.search(r'相位|param-lambda|同相|干涉', text):
+        hints.append(
+            '双波源必须写成 y=A1·sin(kx-ωt)+A2·sin(kx-ωt+φ)，只有第二项加相位差。'
+            '保留可调 param-lambda 与 param-phi，返回完整 HTML，不要截断文档。')
     return '\n'.join(hints)
 
 
@@ -477,6 +496,32 @@ async def run_interactive(request, progress_cb=None):
                 local_repair = False
         else:
             candidate = await generate_document()
+        if (
+            code
+            and is_complete_interactive_document(code)
+            and not is_complete_interactive_document(candidate)
+        ):
+            candidate_history.append({
+                'artifact_type': 'interactive_repair_protocol_report',
+                'content_type': 'application/json',
+                'payload': {
+                    'reason': 'incomplete_html_repair',
+                    'candidateBytes': len((candidate or '').encode()),
+                    'complete_html': False,
+                    'sourceSha256': hashlib.sha256(code.encode()).hexdigest(),
+                },
+                'metadata': {'attempt': attempt, 'discardedIncompleteHtml': True},
+            })
+            issues = list(issues) + [
+                '输出必须是包含交互脚本的完整 HTML 文档。'
+                f'bytes={len((candidate or "").encode())}, complete_html=False, retained_previous=True'
+            ]
+            if progress_cb:
+                progress_cb(
+                    'logic_generate', 66, '不完整修复已丢弃，保留上一份完整文档',
+                    {'attempt': attempt, 'failureFamily': 'repair_protocol'},
+                )
+            continue
         code = preserve_cosmetic_scripts(source_code, candidate, feedback)
         if progress_cb: progress_cb('runtime_simulation_qa',90,'正在检查桌面显示与交互',{'attempt':attempt})
         qa_attempts += 1
