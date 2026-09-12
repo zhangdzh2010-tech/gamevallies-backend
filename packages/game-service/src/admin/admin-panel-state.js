@@ -22,6 +22,7 @@ let currentTestProviderId = null;
 let currentTestProvider = null;
 let llmTestMessages = [];
 let currentTaskDetailId = null;
+let currentTaskDetailMeta = { title: '任务详情', focusSection: null };
 let taskDetailRefreshTimer = null;
 let subscriptionPlans = [];
 let currentSubscriptionPlanId = null;

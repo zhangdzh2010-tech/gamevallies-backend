@@ -444,7 +444,7 @@ function confirmDialog(title, msg) {
 
 // ===================== Tabs =====================
 function switchTab(tab) {
-  if (tab !== 'tasks') clearTaskDetailRefresh();
+  if (tab !== 'tasks' && !currentTaskDetailId) clearTaskDetailRefresh();
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
   document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === 'page-' + tab));
   if (tab === 'dashboard') loadStats();
