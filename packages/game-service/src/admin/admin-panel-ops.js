@@ -506,21 +506,65 @@ function renderLlmUsageSummary(logs) {
   `;
 }
 
+function taskDetailOverlayKey(taskId) {
+  return 'task-detail:' + taskId;
+}
+
+function handleTaskDetailOverlayClose() {
+  currentTaskDetailId = null;
+  currentTaskDetailMeta = { title: '任务详情', focusSection: null };
+  clearTaskDetailRefresh();
+}
+
 async function showTaskDetail(taskId, options = {}) {
-  currentTaskDetailId = taskId;
-  const wrap = document.getElementById('taskDetailWrap');
-  if (!options.silent) {
-    wrap.innerHTML = '<div class="loading"><div class="spinner"></div><div style="margin-top:8px">加载详情...</div></div>';
+  const isNewOpen = !options.silent && taskId !== currentTaskDetailId;
+  if (isNewOpen) {
+    currentTaskDetailMeta = {
+      title: options.title || '任务详情',
+      focusSection: options.focusSection || null,
+    };
+  } else if (!options.silent) {
+    if (options.title) currentTaskDetailMeta.title = options.title;
+    if (options.focusSection !== undefined) currentTaskDetailMeta.focusSection = options.focusSection;
   }
+
+  currentTaskDetailId = taskId;
+  const title = currentTaskDetailMeta.title || '任务详情';
+  const focusSection = options.silent ? null : currentTaskDetailMeta.focusSection;
+  const overlayKey = taskDetailOverlayKey(taskId);
+  const refreshAction = currentTaskDetailMeta.focusSection === 'source'
+    ? `showTaskDetail('${taskId}', { focusSection: 'source' })`
+    : `showTaskDetail('${taskId}')`;
+
+  if (!options.silent && !getDetailOverlay(overlayKey)) {
+    showDetailOverlay(title, '<div class="loading"><div class="spinner"></div><div style="margin-top:8px">加载详情...</div></div>', {
+      overlayKey,
+      maxWidth: '1120px',
+      onClose: handleTaskDetailOverlayClose,
+    });
+  }
+
   try {
     const task = await api('/tasks/' + taskId);
     if (currentTaskDetailId !== taskId) return;
-    wrap.innerHTML = buildTaskDetailMarkup(task, { title: '任务详情' });
+    if (options.silent && !getDetailOverlay(overlayKey)) return;
+    const detail = buildTaskDetailMarkup(task, { title, refreshAction });
+    showDetailOverlay(title, detail, {
+      overlayKey,
+      maxWidth: '1120px',
+      focusSelector: focusSection === 'source' ? '[data-task-source-card="true"]' : null,
+      onClose: handleTaskDetailOverlayClose,
+    });
     scheduleTaskDetailRefresh(task.id, task.status);
   } catch (e) {
     if (options.silent) return;
+    if (currentTaskDetailId !== taskId) return;
     clearTaskDetailRefresh();
-    wrap.innerHTML = `<div class="loading" style="color:#dc2626">详情加载失败: ${escHtml(e.message)}</div>`;
+    showDetailOverlay(title, `<div class="loading" style="color:#dc2626">详情加载失败: ${escHtml(e.message)}</div>`, {
+      overlayKey,
+      maxWidth: '1120px',
+      onClose: handleTaskDetailOverlayClose,
+    });
   }
 }
 

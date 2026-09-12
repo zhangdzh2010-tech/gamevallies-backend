@@ -441,17 +441,11 @@ async function showLogDetail(gameId, focusSection) {
     detail += '</div>';
     detail += '</div>';
 
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.innerHTML = '<div class="modal" style="max-width:1120px"><div class="modal-header"><h3>生成记录详情</h3><button class="modal-close" onclick="this.closest(\'.modal-overlay\').remove()">&times;</button></div><div class="modal-body">' + detail + '</div></div>';
-    document.body.appendChild(overlay);
-    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
-    if (focusSection === 'source') {
-      const sourceCard = overlay.querySelector('[data-log-source-card="true"]');
-      if (sourceCard) {
-        requestAnimationFrame(() => sourceCard.scrollIntoView({ behavior: 'smooth', block: 'start' }));
-      }
-    }
+    showDetailOverlay('生成记录详情', detail, {
+      overlayKey: 'generation-log:' + gameId,
+      maxWidth: '1120px',
+      focusSelector: focusSection === 'source' ? '[data-log-source-card="true"]' : null,
+    });
   } catch(e) {
     showDetailErrorOverlay('加载生成记录失败', e.message, {
       overlayKey: 'generation-log:error:' + gameId,
@@ -460,22 +454,103 @@ async function showLogDetail(gameId, focusSection) {
   }
 }
 
-function showDetailOverlay(title, detailHtml, options = {}) {
-  if (options.overlayKey) {
-    document.querySelectorAll('.modal-overlay[data-overlay-key]').forEach(node => {
-      if (node.dataset.overlayKey === options.overlayKey) node.remove();
-    });
+function getDetailOverlay(overlayKey) {
+  if (!overlayKey) return null;
+  const overlays = document.querySelectorAll('.modal-overlay[data-overlay-key]');
+  for (let i = 0; i < overlays.length; i++) {
+    if (overlays[i].dataset.overlayKey === overlayKey) return overlays[i];
   }
+  return null;
+}
+
+function closeDetailOverlay(overlay) {
+  const node = typeof overlay === 'string' ? getDetailOverlay(overlay) : overlay;
+  if (!node) return;
+  const onClose = node._detailOnClose;
+  node._detailOnClose = null;
+  node.remove();
+  if (typeof onClose === 'function') onClose();
+}
+
+function closeTopDetailOverlay() {
+  const overlays = document.querySelectorAll('.modal-overlay');
+  if (!overlays.length) return false;
+  closeDetailOverlay(overlays[overlays.length - 1]);
+  return true;
+}
+
+function bindDetailOverlayDismiss(overlay) {
+  overlay.addEventListener('click', e => {
+    if (e.target === overlay) closeDetailOverlay(overlay);
+  });
+  const closeBtn = overlay.querySelector('.modal-close');
+  if (closeBtn) {
+    closeBtn.addEventListener('click', () => closeDetailOverlay(overlay));
+  }
+}
+
+function focusDetailOverlaySection(overlay, selector) {
+  if (!overlay || !selector) return;
+  const target = overlay.querySelector(selector);
+  if (target && typeof target.scrollIntoView === 'function') {
+    requestAnimationFrame(() => target.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  }
+}
+
+function showDetailOverlay(title, detailHtml, options = {}) {
+  const existing = options.overlayKey ? getDetailOverlay(options.overlayKey) : null;
+  if (existing) {
+    if (options.onClose) existing._detailOnClose = options.onClose;
+    const heading = existing.querySelector('.modal-header h3');
+    if (heading) heading.textContent = title;
+    const body = existing.querySelector('.modal-body');
+    if (body) {
+      const prevScroll = body.scrollTop;
+      body.innerHTML = detailHtml;
+      if (options.focusSelector) {
+        focusDetailOverlaySection(existing, options.focusSelector);
+      } else {
+        body.scrollTop = prevScroll;
+      }
+    }
+    const modal = existing.querySelector('.modal');
+    if (modal && options.maxWidth) modal.style.maxWidth = options.maxWidth;
+    return existing;
+  }
+
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   if (options.overlayKey) overlay.dataset.overlayKey = options.overlayKey;
-  overlay.innerHTML = '<div class="modal" style="max-width:' + escAttr(options.maxWidth || '1120px') + '"><div class="modal-header"><h3>' + escHtml(title) + '</h3><button class="modal-close" onclick="this.closest(\'.modal-overlay\').remove()">&times;</button></div><div class="modal-body">' + detailHtml + '</div></div>';
+  overlay._detailOnClose = options.onClose || null;
+
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.style.maxWidth = options.maxWidth || '1120px';
+
+  const header = document.createElement('div');
+  header.className = 'modal-header';
+  const heading = document.createElement('h3');
+  heading.textContent = title;
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'modal-close';
+  closeBtn.setAttribute('aria-label', '关闭');
+  closeBtn.innerHTML = '&times;';
+  header.appendChild(heading);
+  header.appendChild(closeBtn);
+
+  const body = document.createElement('div');
+  body.className = 'modal-body';
+  body.innerHTML = detailHtml;
+
+  modal.appendChild(header);
+  modal.appendChild(body);
+  overlay.appendChild(modal);
   document.body.appendChild(overlay);
-  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
-  if (options.focusSelector) {
-    const target = overlay.querySelector(options.focusSelector);
-    if (target) requestAnimationFrame(() => target.scrollIntoView({ behavior: 'smooth', block: 'start' }));
-  }
+  bindDetailOverlayDismiss(overlay);
+  focusDetailOverlaySection(overlay, options.focusSelector);
   return overlay;
 }
 
@@ -490,27 +565,18 @@ function showDetailErrorOverlay(title, message, options = {}) {
 }
 
 async function showTaskDetailModal(taskId, options = {}) {
-  try {
-    const task = await api('/tasks/' + taskId);
-    const refreshAction = options.focusSection === 'source'
-      ? `showTaskDetailModal('${task.id}', { focusSection: 'source' })`
-      : `showTaskDetailModal('${task.id}')`;
-    const detail = buildTaskDetailMarkup(task, {
-      title: options.title || '生成记录详情',
-      refreshAction,
-    });
-    showDetailOverlay(options.title || '生成记录详情', detail, {
-      overlayKey: 'task-detail:' + task.id,
-      maxWidth: '1120px',
-      focusSelector: options.focusSection === 'source' ? '[data-task-source-card="true"]' : null,
-    });
-  } catch (e) {
-    showDetailErrorOverlay('加载任务详情失败', e.message, {
-      overlayKey: 'task-detail:error:' + taskId,
-      maxWidth: '560px',
-    });
-  }
+  return showTaskDetail(taskId, {
+    title: options.title || '生成记录详情',
+    focusSection: options.focusSection,
+    silent: options.silent,
+  });
 }
+
+document.addEventListener('keydown', function onDetailOverlayEscape(e) {
+  if (e.key !== 'Escape') return;
+  if (document.querySelector('.confirm-overlay')) return;
+  closeTopDetailOverlay();
+});
 
 function renderLogs(d) {
   setHtml('logsSummary', `<span class="llm-pill">共 ${fmtNum(d.total || 0)} 条记录</span><span class="llm-pill">第 ${fmtNum(d.page || 1)} / ${fmtNum(d.totalPages || 1)} 页</span>`);
