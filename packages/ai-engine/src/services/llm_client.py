@@ -411,6 +411,7 @@ def _summarize_error_message(message: str, limit: int = 160) -> str:
 
 
 def _is_retryable_provider_error(exc: BaseException) -> bool:
+    """Same-route retry: 403/429/5xx, timeouts, and parse/truncation recoveries."""
     if isinstance(exc, asyncio.CancelledError):
         return True
     if isinstance(exc, (asyncio.TimeoutError, httpx.TimeoutException, httpx.RequestError)):
@@ -422,6 +423,25 @@ def _is_retryable_provider_error(exc: BaseException) -> bool:
     if isinstance(exc, httpx.HTTPStatusError):
         return is_retryable_provider_http_status(exc.response.status_code)
     return False
+
+
+def _is_cross_provider_failover_error(exc: BaseException) -> bool:
+    """Walk to an explicit fallback only for timeouts and 429/5xx — never for 403.
+
+    Generate is deepseek-only after the business-stage fallback was cleared.
+    A 403 on the primary must stay on that primary (bounded same-route retry)
+    and must not implicitly promote kimi or any other second provider.
+    """
+    if isinstance(exc, httpx.HTTPStatusError) and int(exc.response.status_code) == 403:
+        return False
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, httpx.HTTPStatusError) and int(current.response.status_code) == 403:
+            return False
+        current = current.__cause__ or current.__context__
+    return _is_retryable_provider_error(exc)
 
 
 def _provider_retry_after_seconds(exc: Exception) -> Optional[float]:
@@ -1610,7 +1630,7 @@ class LLMClient:
             except asyncio.CancelledError as exc:
                 last_exc = exc
                 _attach_attempt_chain_to_exception(exc, [prepared.route])
-                if attempt_index >= total_attempts or not _is_retryable_provider_error(exc):
+                if attempt_index >= total_attempts or not _is_cross_provider_failover_error(exc):
                     raise
                 logger.warning(
                     "LLM call %s was canceled on provider %s (attempt %s/%s), trying fallback",
@@ -1623,7 +1643,7 @@ class LLMClient:
             except Exception as exc:
                 last_exc = exc
                 _attach_attempt_chain_to_exception(exc, [prepared.route])
-                if attempt_index >= total_attempts or not _is_retryable_provider_error(exc):
+                if attempt_index >= total_attempts or not _is_cross_provider_failover_error(exc):
                     raise
                 logger.warning(
                     "LLM call %s failed on provider %s (attempt %s/%s), trying fallback: %s",

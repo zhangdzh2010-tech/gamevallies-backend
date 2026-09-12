@@ -814,14 +814,11 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                     and not extra_provider_transport_retry_granted
                 ):
                     extra_provider_transport_retry_granted = True
-                    next_provider_exclusions = self._advance_generation_provider_exclusions(
-                        last_route_snapshot,
-                        provider_exclusions,
-                    )
-                    if next_provider_exclusions is not None:
-                        provider_exclusions = next_provider_exclusions
+                    # Stay on the same primary. Generate is deepseek-only after
+                    # the business-stage fallback was cleared; do not exclude
+                    # the failed provider and implicitly promote kimi.
                     logger.warning(
-                        "Create generation for game %s hit provider transport on attempt %s; retrying once with backoff, same quality gates",
+                        "Create generation for game %s hit provider transport on attempt %s; retrying once on the same primary, same quality gates",
                         request.game_id,
                         quality_attempt,
                     )
@@ -840,6 +837,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                             "failureFamily": "provider_transport",
                             "reason": str(exc)[:2000],
                             "infraRetry": True,
+                            "samePrimaryRetry": True,
                             "transportEvidence": getattr(exc, "transport_evidence", None)
                             or (last_route_snapshot or {}).get("transportEvidence"),
                         },

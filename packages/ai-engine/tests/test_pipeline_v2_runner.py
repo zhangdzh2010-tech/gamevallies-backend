@@ -131,10 +131,32 @@ def test_retryable_provider_http_failure_retries_once_without_creative_guidance(
     caught = _run_create_with_generate_error(generate, sleep=sleep)
     assert generate.await_count == 2
     assert all(call.kwargs.get("generation_guidance") is None for call in generate.await_args_list)
+    assert all(
+        not call.kwargs.get("excluded_provider_ids")
+        for call in generate.await_args_list
+    )
     assert sleep.await_count == 1
     assert caught.failure_family == "provider_transport"
     assert caught.retry_count >= 1
     assert caught.__cause__ is second
+
+
+def test_provider_403_retry_stays_on_same_primary_even_when_fallback_ids_exist():
+    first = _transport_generate_error(403, provider_id="deepseek")
+    first.route_snapshot = {"provider_id": "deepseek", "fallback_provider_ids": ["kimi-k3"]}
+    second = _transport_generate_error(403, provider_id="deepseek")
+    second.route_snapshot = {"provider_id": "deepseek", "fallback_provider_ids": ["kimi-k3"]}
+    generate = AsyncMock(side_effect=[first, second])
+    sleep = AsyncMock()
+    caught = _run_create_with_generate_error(generate, sleep=sleep)
+    assert generate.await_count == 2
+    assert all(
+        not call.kwargs.get("excluded_provider_ids")
+        for call in generate.await_args_list
+    )
+    assert all(call.kwargs.get("generation_guidance") is None for call in generate.await_args_list)
+    assert caught.failure_family == "provider_transport"
+    assert caught.route_snapshot["provider_id"] == "deepseek"
 
 
 def test_provider_transport_retry_is_not_a_creative_quality_loop():
