@@ -625,17 +625,17 @@ _WAVE_JS = r"""
         ctx.fillStyle = '#0f172a'; ctx.fillRect(0,0,w,h);
         ctx.strokeStyle = '#64748b';
         ctx.beginPath(); ctx.moveTo(0,mid); ctx.lineTo(w,mid); ctx.stroke();
-        function strokeWave(color, fn){
-          ctx.strokeStyle = color; ctx.beginPath();
+        function strokeWave(color, width, fn){
+          ctx.strokeStyle = color; ctx.lineWidth = width; ctx.beginPath();
           for (var x=0;x<w;x++){
             var py = mid - fn(x) * amp;
             if (x===0) ctx.moveTo(x,py); else ctx.lineTo(x,py);
           }
           ctx.stroke();
         }
-        strokeWave('#334155', function(x){ return A1*Math.sin(k*x - time); });
-        strokeWave('#475569', function(x){ return A2*Math.sin(k*x - time + phi); });
-        strokeWave('#38bdf8', sample);
+        strokeWave('#7dd3fc', 1.25, function(x){ return A1*Math.sin(k*x - time); });
+        strokeWave('#fdba74', 1.25, function(x){ return A2*Math.sin(k*x - time + phi); });
+        strokeWave('#e2e8f0', 2.2, sample);
         ctx.fillStyle = '#e2e8f0';
         ctx.font = '12px sans-serif';
         ctx.fillText('φ=' + phi.toFixed(2), 16, 18);
@@ -684,9 +684,9 @@ _RAY_OPTICS_JS = r"""
         syncAngle();
         var w = canvas.width, h = canvas.height;
         var pad = 22;
-        var mx = w - pad - 18;
         var cy = h / 2;
-        var length = Math.min(mx - pad - 8, h/2 - pad - 8);
+        var length = Math.min((w - 2 * pad) * 0.42, h / 2 - pad - 8);
+        var mx = Math.min(w - pad - 20, pad + 24 + length);
         var ix = mx - length * Math.cos(angleRad);
         var iy = cy - length * Math.sin(angleRad);
         var rx = mx - length * Math.cos(angleRad);
