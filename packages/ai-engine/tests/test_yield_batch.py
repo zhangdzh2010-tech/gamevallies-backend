@@ -8,12 +8,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "sc
 
 from analyze_yield_batch import analyze
 from run_generation_yield_batch import (
+    ALL_CASES,
+    EXTRA_CASES,
     extract_quality_outcome,
     is_generation_maintenance_error,
     is_infra_yield_row,
     is_provider_gateway_timeout_error,
     ledger_row,
+    resolve_ledger_kind,
 )
+from run_live_generation_e2e import DEFAULT_CASES
 
 
 def test_generation_maintenance_is_classified_as_infra_not_script_error():
@@ -123,6 +127,39 @@ def test_ledger_row_persists_seed_worthy_and_quality_breakdown():
     assert row["seedWorthy"] is True
     assert row["seedWorthyReason"] == "structured_review_passed"
     assert row["qualityBreakdown"]["review_fun_score"] == 7.5
+    assert row["kind"] == "game"
+
+
+def test_ledger_row_uses_real_artifact_kind_for_science_and_tool():
+    science = ledger_row(
+        run_id="run-2",
+        run_index=1,
+        case={"name": "pendulum_science_cn", "title": "Pendulum", "artifact_kind": "science"},
+        result={
+            "finalStatus": "succeeded",
+            "gameId": "game-2",
+            "qualityBreakdown": {"artifact_kind": "science", "review_ran": True, "passed": True},
+        },
+        base_url="https://www.zlspace.ai",
+    )
+    assert science["kind"] == "science"
+    assert resolve_ledger_kind(
+        {"name": "counter_tool_cn"},
+        {"qualityBreakdown": {"artifactKind": "tool"}},
+        {},
+    ) == "tool"
+
+
+def test_yield_case_mix_is_majority_science_education_and_tool_desktop():
+    cases = DEFAULT_CASES + EXTRA_CASES
+    assert cases == ALL_CASES
+    kinds = [case.get("artifact_kind") for case in cases]
+    science_or_tool = sum(kind in {"science", "tool"} for kind in kinds)
+    games = sum(kind == "game" for kind in kinds)
+    assert science_or_tool > games
+    assert games >= 1
+    assert any(case.get("orientation") == "portrait" and case.get("artifact_kind") == "game" for case in cases)
+    assert all(case.get("orientation") == "landscape" for case in cases if case.get("artifact_kind") in {"science", "tool"})
 
 
 def test_analyze_excludes_infra_maintenance_from_product_and_seed_rates(tmp_path: Path):

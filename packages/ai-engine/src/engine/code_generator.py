@@ -691,7 +691,11 @@ class CodeGenerator(CodeGenerationPromptsMixin):
             description=request_text,
         )
         prompt_template = require_prompt("prompt.game_design_template")
-        structured_design = prompt_template.format_map(_SafePromptFormatDict(prompt_values))
+        structured_design = self._rewrite_prompt_for_requested_platform(
+            prompt_template.format_map(_SafePromptFormatDict(prompt_values)),
+            spec,
+            runtime_contract,
+        )
         logic_generate_policy = self._resolved_bundle_prompt(prompt_bundle_snapshot, "logic_generate")
         profile_few_shot = self._resolve_profile_few_shot(
             prompt_bundle_snapshot,
@@ -729,7 +733,7 @@ class CodeGenerator(CodeGenerationPromptsMixin):
                 critical_intent_block,
                 core_playability_contract(spec),
                 "" if self._structured_design_has_ui_language(structured_design) else self._build_ui_language_block(spec.ui_language),
-                self._build_runtime_contract_block(runtime_contract, runtime_profile, prompt_bundle_snapshot),
+                self._build_runtime_contract_block(runtime_contract, runtime_profile, prompt_bundle_snapshot, spec=spec),
                 self._build_contract_implementation_checklist(runtime_contract, runtime_profile),
                 implementation_budget,
                 self._build_mobile_layout_guardrails(gdd, runtime_contract),
@@ -957,7 +961,9 @@ class CodeGenerator(CodeGenerationPromptsMixin):
             # PR-07 wire-up: additionally append the CreativeAnchors block if
             # one was produced (order: base → anchors → inspiration, so
             # concrete reference snippets come last for recency bias).
-            base_system = self._build_system_prompt(prompt_bundle_snapshot, spec=spec)
+            base_system = self._build_system_prompt(
+                prompt_bundle_snapshot, spec=spec, runtime_contract=runtime_contract,
+            )
             _parts = [base_system]
             if anchors_block:
                 _parts.append(anchors_block)
@@ -1140,6 +1146,7 @@ class CodeGenerator(CodeGenerationPromptsMixin):
         runtime_contract: Optional[GameRuntimeContract],
         runtime_profile: Optional[str],
         prompt_bundle_snapshot: Optional[Dict[str, Any]],
+        spec: Optional[GameSpec] = None,
     ) -> str:
         profile_value = runtime_profile or (
             runtime_contract.runtime_profile
@@ -1205,27 +1212,31 @@ class CodeGenerator(CodeGenerationPromptsMixin):
         normalized_aliases = [alias for alias in terminal_state_aliases if (alias or "").strip()]
         bundle_id = str((prompt_bundle_snapshot or {}).get("bundle_id") or "").strip()
         template = require_prompt("prompt.runtime_contract_summary")
-        rendered = template.format_map(_SafePromptFormatDict({
-            "runtime_profile": profile_value,
-            "contract_version": contract_version,
-            "bundle_id": bundle_id,
-            "layer_keys": self._resolve_bundle_layer_keys(prompt_bundle_snapshot),
-            "required_states": self._format_compact_contract_items(required_states, max_items=5),
-            "input_modes": self._format_compact_contract_items(input_modes, max_items=4),
-            "gestures": self._format_compact_contract_items(gestures, max_items=4),
-            "forbidden_apis": self._format_compact_contract_items(forbidden_apis, max_items=6),
-            "orientation": orientation,
-            "ui_scale_mode": ui_scale_mode,
-            "hud_min": hud_min,
-            "hud_max": hud_max,
-            "title_min": title_min,
-            "title_max": title_max,
-            "terminal_state_aliases": (
-                self._format_compact_contract_items(normalized_aliases, max_items=8)
-                if normalized_aliases and normalized_aliases != ["game_over"]
-                else ""
-            ),
-        }))
+        rendered = self._rewrite_prompt_for_requested_platform(
+            template.format_map(_SafePromptFormatDict({
+                "runtime_profile": profile_value,
+                "contract_version": contract_version,
+                "bundle_id": bundle_id,
+                "layer_keys": self._resolve_bundle_layer_keys(prompt_bundle_snapshot),
+                "required_states": self._format_compact_contract_items(required_states, max_items=5),
+                "input_modes": self._format_compact_contract_items(input_modes, max_items=4),
+                "gestures": self._format_compact_contract_items(gestures, max_items=4),
+                "forbidden_apis": self._format_compact_contract_items(forbidden_apis, max_items=6),
+                "orientation": orientation,
+                "ui_scale_mode": ui_scale_mode,
+                "hud_min": hud_min,
+                "hud_max": hud_max,
+                "title_min": title_min,
+                "title_max": title_max,
+                "terminal_state_aliases": (
+                    self._format_compact_contract_items(normalized_aliases, max_items=8)
+                    if normalized_aliases and normalized_aliases != ["game_over"]
+                    else ""
+                ),
+            })),
+            spec,
+            runtime_contract,
+        )
         return self._strip_empty_prompt_lines(rendered)
 
     def _build_platform_standard_fallback(self) -> str:
@@ -1289,25 +1300,49 @@ class CodeGenerator(CodeGenerationPromptsMixin):
         self,
         prompt_bundle_snapshot: Optional[Dict[str, Any]],
         spec: Optional[GameSpec] = None,
+        runtime_contract: Optional[GameRuntimeContract] = None,
     ) -> str:
         return self._compose_prompt_sections(
             [
-                self._resolved_bundle_prompt(prompt_bundle_snapshot, "locked_contract"),
-                self._resolved_bundle_prompt(prompt_bundle_snapshot, "product_policy"),
-                self._rewrite_system_prompt_for_generation_tier(
-                    require_prompt("prompt.code_gen_system"),
-                    spec=spec,
+                self._rewrite_prompt_for_requested_platform(
+                    self._resolved_bundle_prompt(prompt_bundle_snapshot, "locked_contract"),
+                    spec,
+                    runtime_contract,
                 ),
-                self._build_requested_platform_contract(spec),
+                self._rewrite_prompt_for_requested_platform(
+                    self._resolved_bundle_prompt(prompt_bundle_snapshot, "product_policy"),
+                    spec,
+                    runtime_contract,
+                ),
+                self._rewrite_prompt_for_requested_platform(
+                    self._rewrite_system_prompt_for_generation_tier(
+                        require_prompt("prompt.code_gen_system"),
+                        spec=spec,
+                    ),
+                    spec,
+                    runtime_contract,
+                ),
+                self._build_requested_platform_contract(spec, runtime_contract),
             ],
         )
 
     @staticmethod
-    def _build_requested_platform_contract(spec: Optional[GameSpec]) -> str:
-        if not requires_desktop(spec):
+    def _build_requested_platform_contract(
+        spec: Optional[GameSpec],
+        runtime_contract: Optional[GameRuntimeContract] = None,
+    ) -> str:
+        orientation = (
+            runtime_contract.mobile_layout.orientation
+            if runtime_contract and runtime_contract.mobile_layout
+            else None
+        )
+        if not requires_desktop(spec, orientation=orientation):
             return ""
         return (
             "EXPLICIT DESKTOP INPUT CONTRACT (overrides generic mobile-first defaults):\n"
+            "Target a desktop browser and a landscape PC preview canvas (about 1280x720). "
+            "Keyboard and mouse are first-class. Do not force phone-portrait mini-game framing, "
+            "arcade start/lose/restart, or touch-only controls unless the brief asked for a game. "
             "Implement the original desktop requirements. All visible controls, including start, "
             "pause, resume and restart, must respond to mouse clicks, not touchstart alone. "
             "When mouse movement is requested, pointer movement must control the player without "
@@ -1491,6 +1526,7 @@ class CodeGenerator(CodeGenerationPromptsMixin):
             runtime_contract,
             runtime_profile,
             prompt_bundle_snapshot,
+            spec=game_spec,
         )
         contract_implementation_block = self._build_contract_implementation_checklist(
             runtime_contract,
@@ -1541,7 +1577,7 @@ class CodeGenerator(CodeGenerationPromptsMixin):
             truncation_retry_cap = self._select_truncation_retry_cap(game_spec)
             text = await self._client.complete_with_truncation_retry(
                 max_tokens=token_budget,
-                system=self._build_system_prompt(prompt_bundle_snapshot, spec=game_spec),
+                system=self._build_system_prompt(prompt_bundle_snapshot, spec=game_spec, runtime_contract=runtime_contract),
                 messages=[{"role": "user", "content": prompt}],
                 step_key=step_key,
                 stage="code_generating",

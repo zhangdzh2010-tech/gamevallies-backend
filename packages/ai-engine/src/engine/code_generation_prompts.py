@@ -771,6 +771,50 @@ class CodeGenerationPromptsMixin:
             ("portrait reference", "landscape reference"),
             ("portrait layout", "landscape layout"),
             ("portrait sizing", "landscape sizing"),
+            ("Mobile-first portrait gameplay", "Desktop-browser landscape gameplay"),
+            ("mobile-first portrait gameplay", "desktop-browser landscape gameplay"),
+            ("Layout stays readable on mobile portrait", "Layout stays readable on a landscape desktop canvas"),
+            ("readable on mobile portrait", "readable on a landscape desktop canvas"),
+        )
+        updated = prompt
+        for source, target in replacements:
+            updated = updated.replace(source, target)
+        return updated
+
+    @staticmethod
+    def _rewrite_prompt_for_requested_platform(
+        prompt: str,
+        spec: Optional[GameSpec],
+        runtime_contract: Optional[GameRuntimeContract] = None,
+    ) -> str:
+        from .requested_platform import requires_desktop
+        orientation = (
+            runtime_contract.mobile_layout.orientation
+            if runtime_contract and runtime_contract.mobile_layout
+            else None
+        )
+        if not requires_desktop(spec, orientation=orientation):
+            return prompt
+        replacements = (
+            ("Mobile-first portrait gameplay.", "Desktop-browser landscape gameplay for Creative Studio PC preview."),
+            ("Mobile-first portrait gameplay", "Desktop-browser landscape gameplay"),
+            ("PLATFORM: mobile H5 browser / WebView", "PLATFORM: desktop browser"),
+            ("Platform target: mobile H5 browser / WebView with a single main canvas.",
+             "Platform target: desktop browser with a landscape PC canvas; keyboard and mouse are first-class."),
+            ("mobile H5 browser / WebView", "desktop browser"),
+            ("Layout stays readable on mobile portrait.", "Layout stays readable on a landscape desktop canvas."),
+            ("fully playable mobile game", "complete desktop interactive experience"),
+            ("smallest complete mobile game idea", "smallest complete experience that matches the request"),
+            ("premium for mobile H5", "premium for desktop browser"),
+            ("readable mobile UI", "readable desktop UI"),
+            ("Infer mobile-friendly controls when the user is vague.",
+             "Prefer pointer and keyboard on desktop; use touch only when the brief asks for a mobile game."),
+            ("Infer touch-friendly controls when the user is vague.",
+             "Prefer pointer and keyboard on desktop; use touch only when the brief asks for a mobile game."),
+            ("Preserve mobile readability", "Preserve desktop readability"),
+            ("Keep mobile controls and restart flow intact.", "Keep the requested controls and reset/restart flow intact."),
+            ("Produce a fully playable mobile game that follows the spec above without adding unrelated systems.",
+             "Produce a complete desktop experience that follows the spec above without forcing arcade start/lose/restart unless requested."),
         )
         updated = prompt
         for source, target in replacements:

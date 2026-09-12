@@ -563,7 +563,11 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
       source_code: params.sourceCode || null,
       generation_tier: generationTier,
       title: params.title || null,
-      platform: 'wechat_webview',
+      platform: gameRuntimePolicy.resolveRequestedPlatform({
+        description: params.description,
+        title: params.title,
+        orientation: params.orientation,
+      }),
       timeout_s: params.timeoutS,
       task_id: params.taskId,
       request_context: {
