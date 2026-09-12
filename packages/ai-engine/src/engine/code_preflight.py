@@ -16,6 +16,7 @@ _IDENTIFIER_RE = r"[A-Za-z_$][A-Za-z0-9_$]*"
 _CALL_RE = re.compile(rf"(?<![\w$.])(?P<name>{_IDENTIFIER_RE})\s*\(")
 _VALUE_REFS = (
     re.compile(rf"(?<![\w$.])(?P<name>{_IDENTIFIER_RE})\s*(?:[+\-*/%]=|===|==|!==|!=|<=|>=|<|>)"),
+    re.compile(rf"(?:===|==|!==|!=|<=|>=|<|>)\s*(?P<name>{_IDENTIFIER_RE})\b"),
     re.compile(rf"(?<![\w$.])(?P<name>{_IDENTIFIER_RE})\s*(?:\+\+|--)"),
     re.compile(rf"(?:\+\+|--)\s*(?P<name>{_IDENTIFIER_RE})\b"),
     re.compile(rf"[(,]\s*(?P<name>{_IDENTIFIER_RE})\s*(?=[,)])"),

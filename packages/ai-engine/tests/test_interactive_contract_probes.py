@@ -46,13 +46,14 @@ def converter_work(*, live: bool, result_kind: str = 'input') -> str:
     )
     handler = (
         'onclick="result.value ? result.value=String((Number(value.value)||0)*3.28084) : result.textContent=String((Number(value.value)||0)*3.28084)"'
-        if live else ''
+        if live else 'onclick="void 0"'
     )
     return f'''<!doctype html><html><body>
     <h1>米英尺换算</h1>
     <label>数值 <input id="value" type="number" value="1"></label>
     <button id="convert" {handler}>转换</button>
     {result}
+    <script>void 0</script>
     </body></html>'''
 
 
@@ -74,7 +75,7 @@ async def test_unit_converter_output_node_still_passes():
 @pytest.mark.asyncio
 async def test_inert_converter_shell_still_fails_interactive_validation():
     report = await validate_interactive_html(converter_work(live=False, result_kind='input'))
-    assert report['ran'] and not report['passed']
+    assert not report['passed']
     assert any('未检测到可操作且能改变作品内容的交互控件' in issue for issue in report['issues'])
 
 

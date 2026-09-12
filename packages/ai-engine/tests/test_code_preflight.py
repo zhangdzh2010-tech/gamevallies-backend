@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -1324,8 +1325,10 @@ def test_code_preflight_declares_literal_compared_live_state_without_hardcoded_n
         "undefined_symbol:boost",
     }
     repaired = validator.auto_repair(html, issues=issues)
-    assert "let gameState" in repaired or "let gameState," in repaired
-    assert "let phase" in repaired or "phase" in repaired.split("let ", 1)[-1]
+    declared = re.search(r"\blet\s+([^;]+);", repaired)
+    assert declared, repaired
+    declared_names = {part.strip() for part in declared.group(1).split(",")}
+    assert {"gameState", "phase"} <= declared_names
     remaining = validator.validate(repaired, runtime_contract=GameRuntimeContract())
     assert not any(
         issue.code in {
@@ -1365,8 +1368,10 @@ def test_code_preflight_declares_event_attribute_assigned_live_bindings():
         "undefined_symbol:hustle",
     }
     repaired = validator.auto_repair(html, issues=issues)
-    assert "let gameState" in repaired
-    assert "let hustle" in repaired
+    declared = re.search(r"\blet\s+([^;]+);", repaired)
+    assert declared, repaired
+    declared_names = {part.strip() for part in declared.group(1).split(",")}
+    assert {"gameState", "hustle"} <= declared_names
     remaining = validator.validate(repaired, runtime_contract=GameRuntimeContract())
     assert not any(
         issue.code in {"undefined_symbol:gameState", "undefined_symbol:hustle"}
