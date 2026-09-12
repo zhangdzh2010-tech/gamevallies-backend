@@ -32,6 +32,11 @@ def review(kind, **updates):
     ('波源干涉与波纹演示。呈现方式：动态演示','science'),
     ('日常换算器。呈现方式：交互实验','tool'),
     ('科学主题闯关。呈现方式：自由创意','game'),
+    ('做一个牛顿第二定律演示，可调质量和力','science'),
+    ('做一个光合作用实验','science'),
+    ('Build an interactive physics lab for free fall','science'),
+    ('制作一个生物酶活性随温度变化的实验','science'),
+    ('做一个太空躲避手机竖屏小游戏','game'),
 ])
 def test_classification(description, kind):
     assert infer_artifact_kind(description) == kind

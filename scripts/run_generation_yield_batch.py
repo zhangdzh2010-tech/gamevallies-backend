@@ -42,54 +42,67 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # Extra prompts beyond DEFAULT_CASES for variety in large batches.
 EXTRA_CASES: list[dict[str, str]] = [
     {
-        "name": "memory_cards_cn",
-        "title": "Yield Memory Cards",
-        "description": "作品类型：游戏。制作精致的4对卡片记忆配对游戏，含开始、翻牌、配对、步数、胜利提示和重新开始。",
+        "name": "population_science_cn",
+        "title": "Yield Population Model",
+        "description": "作品类型：科学演示。制作捕食者与猎物种群模型，可调增长率和捕食率，按Lotka-Volterra更新曲线，有开始暂停重置。桌面横屏，不要闯关。",
+        "orientation": "landscape",
+        "artifact_kind": "science",
     },
     {
-        "name": "reaction_timer_cn",
-        "title": "Yield Reaction Timer",
-        "description": "作品类型：游戏。制作五轮反应力挑战，等待随机信号再点击，抢跑判罚，显示每轮毫秒和最终成绩，可重玩。",
+        "name": "mirror_optics_science_cn",
+        "title": "Yield Mirror Optics",
+        "description": "作品类型：科学演示。制作平面镜反射光学演示，可调入射角，入射光指向镜面交点、反射光离开交点，显示反射定律。不要游戏玩法。",
+        "orientation": "landscape",
+        "artifact_kind": "science",
     },
     {
-        "name": "snake_classic_cn",
-        "title": "Yield Snake Classic",
-        "description": "作品类型：游戏。制作键盘控制贪吃蛇，含开始、暂停、食物、得分、碰撞结束和重开，清晰说明操作。",
+        "name": "wave_interference_science_cn",
+        "title": "Yield Wave Interference",
+        "description": "作品类型：科学演示。制作双波源干涉与波纹演示，可调振幅和波长，实时显示合成波形与公式。桌面横屏。",
+        "orientation": "landscape",
+        "artifact_kind": "science",
     },
     {
-        "name": "counter_tool_cn",
-        "title": "Yield Counter Tool",
-        "description": "作品类型：工具。制作交互计数器，初值0，增加、减少、重置按钮，允许负数，显示当前值。不要游戏玩法。",
+        "name": "free_fall_science_cn",
+        "title": "Yield Free Fall",
+        "description": "作品类型：科学演示。制作自由落体实验，可调高度和重力g，显示v=gt与位移公式，有开始暂停重置。不要积分或关卡。",
+        "orientation": "landscape",
+        "artifact_kind": "science",
     },
     {
         "name": "temp_converter_cn",
         "title": "Yield Temp Converter",
         "description": "作品类型：工具。制作摄氏和华氏双向温度转换器，输入值和单位后点击转换，正确处理负数、小数及无效输入。",
+        "orientation": "landscape",
+        "artifact_kind": "tool",
     },
     {
-        "name": "ohm_law_science_cn",
-        "title": "Yield Ohm Law Demo",
-        "description": "作品类型：科学演示。制作欧姆定律交互演示，电压V默认12伏、电阻R默认6欧，两者可调整，电流按I=V/R实时计算。",
+        "name": "unit_converter_cn",
+        "title": "Yield Unit Converter",
+        "description": "作品类型：工具。制作米与英尺双向单位换算工具，输入数值后转换，处理小数和无效输入，不要游戏玩法。",
+        "orientation": "landscape",
+        "artifact_kind": "tool",
     },
     {
-        "name": "pendulum_science_cn",
-        "title": "Yield Pendulum Demo",
-        "description": "作品类型：科学演示。制作小角度理想单摆演示，可调摆长L和重力g，周期T=2π√(L/g)，有开始暂停重置。",
+        "name": "snake_classic_cn",
+        "title": "Yield Snake Classic",
+        "description": "作品类型：游戏。制作键盘控制桌面贪吃蛇，含开始、暂停、食物、得分、碰撞结束和重开，清晰说明操作。",
+        "orientation": "landscape",
+        "artifact_kind": "game",
     },
     {
-        "name": "bubble_shooter_cn",
-        "title": "Yield Bubble Shooter",
-        "description": "做一个竖屏泡泡射击小游戏。点击开始后，玩家瞄准并发射彩色泡泡，三个同色相连消除，清空顶部泡泡获胜。需要分数、剩余步数和重新开始。",
+        "name": "memory_cards_cn",
+        "title": "Yield Memory Cards",
+        "description": "作品类型：游戏。制作精致的4对卡片记忆配对手机竖屏小游戏，含开始、翻牌、配对、步数、胜利提示和重新开始。",
+        "orientation": "portrait",
+        "artifact_kind": "game",
     },
     {
-        "name": "whack_mole_cn",
-        "title": "Yield Whack Mole",
-        "description": "做一个打地鼠小游戏。30秒内点击冒出的地鼠得分，错过不扣分，显示倒计时和最终成绩，有开始和重新开始按钮。",
-    },
-    {
-        "name": "color_match_cn",
-        "title": "Yield Color Match",
-        "description": "做一个颜色记忆小游戏。展示颜色序列后，玩家按顺序点击色块复现，每轮增加一个颜色，错误则结束并显示最高关卡。",
+        "name": "grid_puzzle_en",
+        "title": "Yield Grid Puzzle EN",
+        "description": "Create a small portrait mobile grid puzzle. The player taps tiles to connect matching runes and clear the board in under 20 moves. Include a score, remaining moves, a win state, a lose state, and restart.",
+        "orientation": "portrait",
+        "artifact_kind": "game",
     },
 ]
 
@@ -234,6 +247,23 @@ def extract_quality_outcome(*payloads: Any) -> dict[str, Any]:
     }
 
 
+def resolve_ledger_kind(case: dict[str, str], result: dict[str, Any], outcome: dict[str, Any]) -> str:
+    breakdown = result.get("qualityBreakdown") or outcome.get("qualityBreakdown") or {}
+    if not isinstance(breakdown, dict):
+        breakdown = {}
+    for candidate in (
+        case.get("artifact_kind"),
+        breakdown.get("artifact_kind"),
+        breakdown.get("artifactKind"),
+        result.get("artifact_kind"),
+        result.get("artifactKind"),
+    ):
+        kind = str(candidate or "").strip().lower()
+        if kind in {"game", "tool", "science"}:
+            return kind
+    return "game"
+
+
 def ledger_row(
     *,
     run_id: str,
@@ -249,7 +279,7 @@ def ledger_row(
         "run_id": run_id,
         "run_index": run_index,
         "environment": "production",
-        "kind": "game",
+        "kind": resolve_ledger_kind(case, result, outcome),
         "version": "yield-batch",
         "case_name": case["name"],
         "title": case["title"],
@@ -290,15 +320,18 @@ def run_single(
     run_id = str(uuid.uuid4())
     started_mono = time.monotonic()
     started_at = now_iso()
+    create_payload: dict[str, Any] = {
+        "title": f"{case['title']} #{run_index}",
+        "description": case["description"],
+        "regionHint": "cn_shanghai",
+        "timeoutS": timeout_s,
+    }
+    if case.get("orientation") in {"portrait", "landscape"}:
+        create_payload["orientation"] = case["orientation"]
     create_response = http_json(
         "POST",
         f"{base_url}/api/v1/games/generate",
-        payload={
-            "title": f"{case['title']} #{run_index}",
-            "description": case["description"],
-            "regionHint": "cn_shanghai",
-            "timeoutS": timeout_s,
-        },
+        payload=create_payload,
         headers=bearer_headers,
         timeout=60,
     )

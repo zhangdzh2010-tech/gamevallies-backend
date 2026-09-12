@@ -187,6 +187,12 @@ class GameDesigner:
     # ------------------------------------------------------------------
 
     def _build_canvas(self, spec: GameSpec, orientation: str = "portrait_first") -> CanvasConfig:
+        from .requested_platform import requires_desktop
+        if requires_desktop(spec, orientation=orientation) or spec.platform_constraints.platform in {
+            "desktop_browser",
+            "desktop_web",
+        }:
+            return CanvasConfig(width=1280, height=720, dpr_adaptive=True, target_fps=60)
         platform = spec.platform_constraints.platform
         if platform == "wechat_webview":
             width, height = 360, 640

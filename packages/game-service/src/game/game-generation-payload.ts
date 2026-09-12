@@ -27,6 +27,7 @@ import {
   normalizeRequestedGenerationTier,
   normalizeRequestedOrientation,
   resolveRequestedOrientationFromRuntime,
+  resolveRequestedPlatform,
   resolveRuntimeOrientationFromContract,
 } from './game-runtime.policy';
 
@@ -261,7 +262,10 @@ export function buildIterateV2Payload(params: {
     user_id: params.userId,
     current_code: params.currentCode,
     generation_tier: generationTier,
-    platform: 'wechat_webview',
+    platform: resolveRequestedPlatform({
+      description: params.feedback,
+      orientation,
+    }),
     timeout_s: params.timeoutS,
     task_id: params.taskId,
     request_context: {

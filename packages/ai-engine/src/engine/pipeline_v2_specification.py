@@ -7,7 +7,7 @@ from typing import Any, Optional
 from ..api.models import GenerationTier, GameEntity, GameRuntimeContract, GameSpec, RunPipelineV2Request, SourceBundleContext
 from .dialogue_engine import SlotExtractionFailure
 from .pipeline_errors import PipelineExecutionError
-from .requested_platform import normalize_requested_platform, requested_contract_overrides
+from .requested_platform import normalize_requested_platform, requested_contract_overrides, requires_desktop
 from .runtime_profile_ids import normalize_runtime_profile_id
 from .visual_pack_catalog import apply_visual_pack_defaults
 from .pipeline_v2_support import (
@@ -42,7 +42,14 @@ class PipelineV2SpecificationMixin:
             if request.title and spec.intent_summary:
                 spec.intent_summary = f"{request.title}: {spec.intent_summary}"
             spec = self._expand_spec_entities_for_budget(spec)
-            return apply_visual_pack_defaults(normalize_requested_platform(spec), variation_seed=request.game_id)
+            return apply_visual_pack_defaults(
+                normalize_requested_platform(
+                    spec,
+                    orientation=self._request_orientation(request),
+                    metadata=getattr(request, "metadata", None),
+                ),
+                variation_seed=request.game_id,
+            )
 
         description = request.raw_user_input.strip() or str(
             request.normalized_request.get("description", "")
@@ -69,7 +76,14 @@ class PipelineV2SpecificationMixin:
         )
         spec.complexity_budget = str(getattr(spec.generation_tier, "value", spec.generation_tier) or "standard")
         spec = self._expand_spec_entities_for_budget(spec)
-        return apply_visual_pack_defaults(normalize_requested_platform(spec), variation_seed=request.game_id)
+        return apply_visual_pack_defaults(
+            normalize_requested_platform(
+                spec,
+                orientation=self._request_orientation(request),
+                metadata=getattr(request, "metadata", None),
+            ),
+            variation_seed=request.game_id,
+        )
 
 
     @staticmethod
@@ -265,7 +279,7 @@ class PipelineV2SpecificationMixin:
         runtime_profile = normalize_runtime_profile_id(runtime_profile)
         contract = base_contract.model_copy(deep=True)
         contract.runtime_profile = runtime_profile
-        requested_orientation = self._resolve_contract_orientation(base_contract)
+        requested_orientation = self._resolve_contract_orientation(base_contract, spec)
         normalized_render_api = str(spec.platform_constraints.render_api or "").strip().lower()
         allow_webgl = normalized_render_api in {"", "webgl", "webgl2", "canvas2d_or_webgl", "canvas_or_webgl"}
         requires_canvas_2d = normalized_render_api == "canvas2d"
@@ -282,7 +296,9 @@ class PipelineV2SpecificationMixin:
         contract.state = contract.state.model_copy(update=self._profile_state_overrides(runtime_profile))
         contract.gameplay = contract.gameplay.model_copy(update=self._profile_gameplay_overrides(runtime_profile))
         # Explicit user requirements take precedence over genre/profile defaults.
-        input_overrides, extra_states = requested_contract_overrides(spec)
+        input_overrides, extra_states = requested_contract_overrides(
+            spec, orientation=requested_orientation, metadata=contract.metadata,
+        )
         if input_overrides:
             contract.input = contract.input.model_copy(update=input_overrides)
         if extra_states:
@@ -306,13 +322,35 @@ class PipelineV2SpecificationMixin:
 
 
     @staticmethod
-    def _resolve_contract_orientation(base_contract: GameRuntimeContract) -> str:
+    def _request_orientation(request: Any) -> str | None:
+        metadata = getattr(request, "metadata", None)
+        contract = getattr(request, "runtime_contract", None)
+        for candidate in (
+            metadata.get("orientation") if isinstance(metadata, dict) else None,
+            metadata.get("requested_orientation") if isinstance(metadata, dict) else None,
+            getattr(getattr(contract, "mobile_layout", None), "orientation", None),
+            getattr(getattr(contract, "canvas", None), "orientation", None),
+            (getattr(contract, "metadata", None) or {}).get("orientation") if contract else None,
+        ):
+            value = str(candidate or "").strip()
+            if value:
+                return value
+        return None
+
+    @staticmethod
+    def _resolve_contract_orientation(
+        base_contract: GameRuntimeContract,
+        spec: GameSpec | None = None,
+    ) -> str:
         orientation = str(
             getattr(base_contract.mobile_layout, "orientation", None)
             or getattr(base_contract.canvas, "orientation", None)
+            or (base_contract.metadata or {}).get("orientation")
             or "portrait_first"
         ).strip()
-        if orientation == "landscape_first":
+        if orientation in {"landscape", "landscape_first"}:
+            return "landscape_first"
+        if spec is not None and requires_desktop(spec, orientation=orientation, metadata=base_contract.metadata):
             return "landscape_first"
         return "portrait_first"
 

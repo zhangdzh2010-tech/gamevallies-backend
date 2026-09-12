@@ -138,13 +138,35 @@ export function inferRequestedOrientationFromText(
     '横屏',
     '横版',
     '宽屏',
-  ].some((token) => text.includes(token));
+    '桌面',
+    '电脑',
+    'desktop',
+    'keyboard',
+    'web pc',
+    'creative studio',
+  ].some((token) => text.includes(token)) || (/(?:^|[^a-z])pc(?:[^a-z]|$)/i).test(text);
   const hasPortraitHint = [
     'portrait',
     'vertical',
     '9:16',
     '竖屏',
     '纵向',
+    '手机',
+    'mobile portrait',
+    'mobile h5',
+  ].some((token) => text.includes(token));
+  const hasScienceOrToolHint = [
+    '科学演示',
+    '互动实验',
+    '物理实验',
+    '化学实验',
+    '生物实验',
+    '实验演示',
+    '作品类型：科学',
+    '作品类型：工具',
+    'artifact_kind: science',
+    'artifact_kind: tool',
+    '不要游戏',
   ].some((token) => text.includes(token));
 
   if (hasLandscapeHint && !hasPortraitHint) {
@@ -153,7 +175,32 @@ export function inferRequestedOrientationFromText(
   if (hasPortraitHint && !hasLandscapeHint) {
     return 'portrait';
   }
+  if (hasScienceOrToolHint && !hasPortraitHint) {
+    return 'landscape';
+  }
   return undefined;
+}
+
+
+export function resolveRequestedPlatform(params: {
+  description?: string | null;
+  title?: string | null;
+  orientation?: CreateGameOrientation | null;
+}): 'desktop_web' | 'wechat_webview' {
+  const text = `${params.title ?? ''} ${params.description ?? ''}`.trim().toLowerCase();
+  const explicitMobile = /手机|竖屏|portrait|mobile portrait|mobile h5/.test(text);
+  const explicitDesktop = /桌面|电脑|desktop|keyboard|横屏|横版|宽屏|landscape|creative studio|web pc/.test(text)
+    || (/(?:^|[^a-z])pc(?:[^a-z]|$)/i).test(text);
+  const landscape = params.orientation === 'landscape';
+  const scienceOrTool = /作品类型：\s*(科学|工具)|科学演示|互动实验|物理实验|化学实验|生物实验|不要游戏|artifact_kind:\s*(science|tool)/.test(text);
+
+  if (explicitMobile && !explicitDesktop && !landscape) {
+    return 'wechat_webview';
+  }
+  if (landscape || explicitDesktop || scienceOrTool) {
+    return 'desktop_web';
+  }
+  return 'wechat_webview';
 }
 
 

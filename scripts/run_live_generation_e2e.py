@@ -19,29 +19,39 @@ DEFAULT_ENV_PATH = REPO_ROOT / ".env.production"
 
 DEFAULT_CASES: list[dict[str, str]] = [
     {
+        "name": "pendulum_science_cn",
+        "title": "E2E Pendulum Science CN",
+        "description": "作品类型：科学演示。制作小角度理想单摆演示，可调摆长L和重力g，周期T=2π√(L/g)，有开始暂停重置。面向桌面浏览器横屏预览，不要做成手机竖屏小游戏。",
+        "orientation": "landscape",
+        "artifact_kind": "science",
+    },
+    {
+        "name": "ohm_law_science_cn",
+        "title": "E2E Ohm Law Science CN",
+        "description": "作品类型：科学演示。制作欧姆定律交互演示，电压V默认12伏、电阻R默认6欧，两者可调整，电流按I=V/R实时计算。桌面横屏，不要闯关或积分。",
+        "orientation": "landscape",
+        "artifact_kind": "science",
+    },
+    {
+        "name": "photosynthesis_science_cn",
+        "title": "E2E Photosynthesis Science CN",
+        "description": "作品类型：科学演示。做一个光合作用实验，可调光照强度和二氧化碳浓度，观察氧气产生速率，展示简化公式和假设。不要游戏闯关。",
+        "orientation": "landscape",
+        "artifact_kind": "science",
+    },
+    {
+        "name": "counter_tool_cn",
+        "title": "E2E Counter Tool CN",
+        "description": "作品类型：工具。制作交互计数器，初值0，增加、减少、重置按钮，允许负数，显示当前值。不要游戏玩法。",
+        "orientation": "landscape",
+        "artifact_kind": "tool",
+    },
+    {
         "name": "simple_dodge_cn",
         "title": "E2E Simple Dodge CN",
-        "description": "做一个太空躲避手机小游戏。玩家点击开始后，通过左右滑动躲开陨石并收集星星，坚持 30 秒获胜。必须有分数、开始提示、失败结算和重新开始按钮。",
-    },
-    {
-        "name": "grid_puzzle_en",
-        "title": "E2E Grid Puzzle EN",
-        "description": "Create a small portrait mobile grid puzzle. The player taps tiles to connect matching runes and clear the board in under 20 moves. Include a score, remaining moves, a win state, a lose state, and restart.",
-    },
-    {
-        "name": "lane_runner_en",
-        "title": "E2E Lane Runner EN",
-        "description": "Create a portrait endless lane runner for mobile web. The player swipes left or right to dodge traffic cones, collect batteries, and survive long enough to trigger a clear victory screen at 45 seconds. Include a visible combo meter and restart.",
-    },
-    {
-        "name": "topdown_action_cn",
-        "title": "E2E Topdown Action CN",
-        "description": "做一个竖屏俯视角动作射击小游戏。点击开始后，玩家拖动摇杆区域移动飞船，点击屏幕发射子弹，击败三波敌人后胜利。需要血量、分数、关卡提示、失败结算和重新开始。",
-    },
-    {
-        "name": "complex_runner_cn",
-        "title": "E2E Complex Runner CN",
-        "description": "做一个竖屏跑酷战斗小游戏。点击开始后玩家通过左右滑动切换跑道、上滑跳跃、下滑滑铲，途中需要躲避障碍、收集能量、击败一个小 Boss，最终在 60 秒内通关。必须包含清晰的新手提示、分数、血量、阶段进度、胜利页、失败页和重新开始。",
+        "description": "做一个太空躲避手机竖屏小游戏。玩家点击开始后，通过左右滑动躲开陨石并收集星星，坚持 30 秒获胜。必须有分数、开始提示、失败结算和重新开始按钮。",
+        "orientation": "portrait",
+        "artifact_kind": "game",
     },
 ]
 
@@ -262,15 +272,18 @@ def run_case(
     wait_s: int,
 ) -> dict[str, Any]:
     started_at = now_iso()
+    create_payload: dict[str, Any] = {
+        "title": case["title"],
+        "description": case["description"],
+        "regionHint": "cn_shanghai",
+        "timeoutS": timeout_s,
+    }
+    if case.get("orientation") in {"portrait", "landscape"}:
+        create_payload["orientation"] = case["orientation"]
     create_response = http_json(
         "POST",
         f"{base_url}/api/v1/games/generate",
-        payload={
-            "title": case["title"],
-            "description": case["description"],
-            "regionHint": "cn_shanghai",
-            "timeoutS": timeout_s,
-        },
+        payload=create_payload,
         headers=bearer_headers,
         timeout=60,
     )
