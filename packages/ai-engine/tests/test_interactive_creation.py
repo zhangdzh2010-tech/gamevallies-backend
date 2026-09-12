@@ -1,6 +1,7 @@
 import unittest
 import asyncio
 import json
+import time
 from unittest.mock import patch, AsyncMock
 from src.api.models import RunPipelineV2Request, IterateV2Request, GameSpec
 from src.engine.interactive_creation import (
@@ -20,6 +21,37 @@ async def fake_llm(**kwargs):
         return json.dumps({'patches':[{'search':'</body>', 'replace':
             '<button onclick="document.getElementById(\'count\').textContent=\'10\'">重置</button></body>'}]})
     return GOOD
+
+
+async def await_durable_completion(manager, task_id, *, timeout_s=90):
+    """Wait until the durable worker persists a terminal snapshot.
+
+    HIT short-path shells run real Playwright QA (4 viewports, Start motion,
+    slider/reset probes). That routinely exceeds a 10s poll on loaded CI, so
+    wait on the worker handle instead of a fixed iteration budget.
+    """
+    deadline = time.monotonic() + timeout_s
+    handle = None
+    while time.monotonic() < deadline:
+        handle = manager.durable.handles.get(task_id)
+        if handle is not None:
+            break
+        result = await manager.get_task(task_id)
+        if result is not None and result.status in {'succeeded', 'failed', 'canceled'}:
+            return result
+        await asyncio.sleep(0.02)
+    if handle is not None and not handle.done():
+        try:
+            await asyncio.wait_for(asyncio.shield(handle), timeout=max(0.01, deadline - time.monotonic()))
+        except asyncio.TimeoutError:
+            pass
+    while time.monotonic() < deadline:
+        result = await manager.get_task(task_id)
+        if result is not None and result.status in {'succeeded', 'failed', 'canceled'}:
+            return result
+        await asyncio.sleep(0.05)
+    return await manager.get_task(task_id)
+
 
 class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
     async def test_rendered_canvas_text_evidence_measures_overlap_and_clipping(self):
@@ -644,10 +676,8 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
             with patch.object(generate,'task_manager',manager), patch.object(settings,'GAME_SERVICE_UPSTREAM_URL',''), patch(
                 'src.engine.interactive_creation.LLMClient.complete_with_truncation_retry', new=AsyncMock(side_effect=fake_llm)):
                 handle=await generate.run_pipeline_v2_async(self.request(), x_idempotency_key='desktop-e2e')
-                for _ in range(200):
-                    result=await manager.get_task(handle.task_id)
-                    if result.status in {'succeeded','failed'}: break
-                    await asyncio.sleep(.05)
+                result=await await_durable_completion(manager, handle.task_id)
+                self.assertIsNotNone(result)
                 self.assertEqual(result.status,'succeeded',str(result.error))
                 self.assertEqual(result.result['runtime_profile'],'interactive_experience')
                 self.assertTrue(result.result['runtime_qa_report']['contentChanged'])
