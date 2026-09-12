@@ -80,8 +80,10 @@ Module: `packages/ai-engine/src/engine/interactive_short_path.py`
   limits, caption). Not full HTML.
 - Uses `ContractDigest` instead of re-sending the full interactive system prompt.
 - Assembles shell + family plugin + visual pack CSS.
-- If the model still returns a complete HTML document (legacy / mock path),
-  that document is accepted and still runs the existing QA gates.
+- Fill output is **never** used as the playable document, even when the model
+  returns a complete HTML page. JSON slots are merged when present; otherwise
+  recipe defaults are assembled. This keeps `gas_law` / `population` on the
+  canvas + executable-script shell instead of a broken fill page.
 - Invalid JSON falls back to recipe default slots (model remains the skeleton).
 - After a short-path candidate exists, repair stays **patch-first**.
 
@@ -149,6 +151,11 @@ free-fall / population. Ledger records `kind`, `template_route`, `family_id`,
    call `code_generate.full` and still pass existing QA/review.
 4. Live (optional): run yield cases and confirm HIT rows have lower
    `prompt_tokens` / `elapsed_s` than MISS rows, with `seedWorthy` still true.
+
+Tool MISS (temperature converter) can still fail `interactive_validation` when
+the full-generate model omits operable controls. Full path now injects a
+readable title/h1 from the brief when those tags are missing; it does **not**
+invent converter inputs. Treat missing controls as a known full-path flake.
 
 ```bash
 cd packages/ai-engine

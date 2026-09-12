@@ -33,7 +33,6 @@ from .interactive_short_path import (
     extract_fill_payload,
     fill_prompt,
     fill_system_prompt,
-    looks_like_full_html,
     merge_slots,
 )
 from .interactive_diversity import DiversityLedger, plan_interactive_diversity
@@ -87,6 +86,37 @@ def extract_interactive_document(text: str) -> str:
     # Strip an explanation after a complete document; never invent missing code.
     endings = list(re.finditer(r'</html\s*>', code, re.I))
     return code[:endings[-1].end()] if endings else code
+
+
+def ensure_full_path_chrome(html: str, brief: str) -> str:
+    """Inject a readable title on MISS/full path when the model omitted one.
+
+    Does not invent interactive controls — missing inputs stay a full-path flake.
+    """
+    if not html:
+        return html
+    headline = (brief or '').split('\n')[0].strip()
+    headline = re.sub(r'^作品类型[：:].*?(?:。|\.|$)', '', headline).strip() or headline
+    headline = headline[:80]
+    if not headline:
+        return html
+    escaped = (
+        headline.replace('&', '&amp;').replace('<', '&lt;')
+        .replace('>', '&gt;').replace('"', '&quot;')
+    )
+    has_title_text = bool(re.search(r'<title[^>]*>\s*[^<\s]', html, re.I))
+    has_heading = bool(re.search(r'<h1\b', html, re.I))
+    # An existing h1 already satisfies the readable-title QA check. Do not
+    # rewrite fixture or model HTML that already has a heading.
+    if has_title_text or has_heading:
+        return html
+    if re.search(r'<title[^>]*>\s*</title>', html, re.I):
+        html = re.sub(r'<title[^>]*>\s*</title>', f'<title>{escaped}</title>', html, count=1, flags=re.I)
+    elif re.search(r'<head\b', html, re.I):
+        html = re.sub(r'(<head[^>]*>)', rf'\1<title>{escaped}</title>', html, count=1, flags=re.I)
+    if re.search(r'<body\b', html, re.I):
+        html = re.sub(r'(<body[^>]*>)', rf'\1<h1 id="work-title">{escaped}</h1>', html, count=1, flags=re.I)
+    return html
 
 
 def _review_infrastructure_retry_backoff_s() -> float:
@@ -312,7 +342,7 @@ async def run_interactive(request, progress_cb=None):
             'logic_generate', prompt=interactive_system_prompt(kind) + user_content,
             completion=text or '', step_key='iterate.element_change' if iterate else 'code_generate.full',
         )
-        return extract_interactive_document(text)
+        return ensure_full_path_chrome(extract_interactive_document(text), original)
 
     async def generate_short_path_document():
         nonlocal route, diversity_plan, assembled_slots
@@ -372,8 +402,6 @@ async def run_interactive(request, progress_cb=None):
                 ) from exc
             raise
         telemetry.record('logic_generate', prompt=system + user_content, completion=text or '', step_key=FILL_STEP_KEY)
-        if looks_like_full_html(text or ''):
-            return extract_interactive_document(text)
         assembled_slots = merge_slots(slots, extract_fill_payload(text or ''))
         return assemble_short_path_document(recipe=recipe, slots=assembled_slots, plan=plan)
 

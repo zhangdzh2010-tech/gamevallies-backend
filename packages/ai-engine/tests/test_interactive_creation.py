@@ -47,11 +47,11 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
             new=AsyncMock(side_effect=[GOOD,'not JSON',valid])) as llm, patch(
             'src.engine.interactive_creation.validate_interactive_html',
             new=AsyncMock(return_value={'ran':True,'passed':True,'issues':[]})) as qa:
-            result = await run_interactive(normalize_interactive_request(self.request()))
+            result = await run_interactive(normalize_interactive_request(self.miss_request()))
         self.assertEqual(result.html_code, GOOD)
         self.assertEqual(qa.await_count, 1)
         self.assertEqual([c.kwargs['step_key'] for c in llm.call_args_list],
-            ['code_generate.template_fill','code_review','code_review'])
+            ['code_generate.full','code_review','code_review'])
         self.assertIn('SAME complete source', llm.call_args_list[-1].kwargs['messages'][0]['content'])
         self.assertEqual(result.quality_breakdown['reviewRequests'], 2)
 
@@ -62,7 +62,7 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
             'src.engine.interactive_creation.validate_interactive_html',
             new=AsyncMock(return_value={'ran':True,'passed':True,'issues':[]})):
             with self.assertRaises(PipelineExecutionError) as caught:
-                await run_interactive(normalize_interactive_request(self.request()))
+                await run_interactive(normalize_interactive_request(self.miss_request()))
         self.assertEqual(caught.exception.failure_family,'review_evidence')
         self.assertEqual(llm.await_count,3)
         self.assertEqual(next(a['payload'] for a in caught.exception.artifacts
@@ -80,11 +80,11 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
             new=AsyncMock(side_effect=[GOOD,json.dumps(invalid),json.dumps(valid)])) as llm, patch(
             'src.engine.interactive_creation.validate_interactive_html',
             new=AsyncMock(return_value={'ran':True,'passed':True,'issues':[]})) as qa:
-            result = await run_interactive(normalize_interactive_request(self.request()))
+            result = await run_interactive(normalize_interactive_request(self.miss_request()))
         self.assertEqual(result.html_code, GOOD)
         self.assertEqual(qa.await_count, 1)
         self.assertEqual([c.kwargs['step_key'] for c in llm.call_args_list],
-            ['code_generate.template_fill','code_review','code_review'])
+            ['code_generate.full','code_review','code_review'])
         self.assertEqual(result.quality_breakdown['suggestions'], ['可选增加历史记录'])
         self.assertEqual(result.quality_breakdown['issues'], [])
 
@@ -97,11 +97,11 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
             new=AsyncMock(side_effect=[GOOD,bad,good,await fake_llm(step_key='code_review')])) as llm, patch(
             'src.engine.interactive_creation.validate_interactive_html', new=AsyncMock(side_effect=[
                 runtime,dict(runtime,passed=True,issues=[],layoutIssues=[])])) as qa:
-            result = await run_interactive(normalize_interactive_request(self.request()))
+            result = await run_interactive(normalize_interactive_request(self.miss_request()))
         self.assertEqual(result.html_code, GOOD.replace('margin:24px','margin:12px'))
         self.assertEqual(qa.await_count,2)
         self.assertEqual([c.kwargs['step_key'] for c in llm.call_args_list],
-            ['code_generate.template_fill','quality_gate.patch_fix','quality_gate.patch_fix','code_review'])
+            ['code_generate.full','quality_gate.patch_fix','quality_gate.patch_fix','code_review'])
         self.assertIn('layout_scope',llm.call_args_list[2].kwargs['messages'][0]['content'])
 
     async def test_layout_scope_exhaustion_cannot_fall_back_to_full_rewrite(self):
@@ -112,7 +112,7 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
             new=AsyncMock(side_effect=[GOOD,bad,bad])) as llm, patch(
             'src.engine.interactive_creation.validate_interactive_html', new=AsyncMock(return_value=runtime)) as qa:
             with self.assertRaises(PipelineExecutionError) as caught:
-                await run_interactive(normalize_interactive_request(self.request()))
+                await run_interactive(normalize_interactive_request(self.miss_request()))
         self.assertEqual(caught.exception.failure_family,'repair_protocol')
         self.assertEqual(llm.await_count,3)
         self.assertEqual(qa.await_count,1)
@@ -124,10 +124,10 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         review = json.loads(await fake_llm(step_key='code_review'))
         review['critical_issues'] = ['required control missing']
         review['findings'] = [dict(issue='required control missing', dimension='critical_issue',
-            basis='requirement', requirement_quote='种群变化模型',
+            basis='requirement', requirement_quote='可调入射角',
             source_ref=next(iter(source_reference_catalog(GOOD))),
-            reason='Required population control is missing in this synthetic assessment.',
-            correction='Add the requested population control.')]
+            reason='Required angle control is missing in this synthetic assessment.',
+            correction='Add the requested angle control.')]
         delta = json.dumps({'patches':[{'search':'let population=10;','replace':"throw new Error('regression');"}]})
         with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
             new=AsyncMock(side_effect=[GOOD,json.dumps(review),delta])), patch(
@@ -135,7 +135,7 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
                 {'ran':True,'passed':True,'issues':[]},
                 {'ran':True,'passed':False,'issues':['regression']}])):
             with self.assertRaises(PipelineExecutionError) as caught:
-                await run_interactive(normalize_interactive_request(self.request()))
+                await run_interactive(normalize_interactive_request(self.miss_request()))
         self.assertEqual(next(a['payload'] for a in caught.exception.artifacts
             if a['artifact_type']=='failed_interactive_candidate'),GOOD)
         self.assertTrue(any(a.get('metadata',{}).get('discardedRegression') for a in caught.exception.artifacts))
@@ -165,6 +165,11 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
     def request(self):
         return RunPipelineV2Request(game_id='game',user_id='user',timeout_s=1800,
             raw_user_input='做一个捕食者与猎物的种群变化模型。\n请生成桌面浏览器中的可交互创意作品。',
+            source_spec=GameSpec(game_type='educational',source_description='做题闯关',entities=[]))
+
+    def miss_request(self):
+        return RunPipelineV2Request(game_id='game',user_id='user',timeout_s=1800,
+            raw_user_input='作品类型：科学演示。制作平面镜反射光学演示，可调入射角。\n请生成桌面浏览器中的可交互创意作品。',
             source_spec=GameSpec(game_type='educational',source_description='做题闯关',entities=[]))
 
     async def test_desktop_brief_replaces_inferred_quiz_contract(self):
@@ -399,7 +404,7 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
                    'src.engine.interactive_creation.validate_interactive_html',
                    new=AsyncMock(return_value=failed)):
             with self.assertRaises(PipelineExecutionError) as caught:
-                await run_interactive(normalize_interactive_request(self.request()))
+                await run_interactive(normalize_interactive_request(self.miss_request()))
         self.assertEqual(caught.exception.retry_count, 1)
         artifacts = {item['artifact_type']:item for item in caught.exception.artifacts}
         self.assertEqual(artifacts['failed_interactive_candidate']['payload'], second)
@@ -491,12 +496,12 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
             new=AsyncMock(side_effect=[GOOD,patch_json,await fake_llm(step_key='code_review')])) as llm, patch(
             'src.engine.interactive_creation.validate_interactive_html',new=AsyncMock(side_effect=[failed,passed])):
-            result = await run_interactive(normalize_interactive_request(self.request()))
+            result = await run_interactive(normalize_interactive_request(self.miss_request()))
         self.assertEqual([c.kwargs['step_key'] for c in llm.call_args_list],
-                         ['code_generate.template_fill','quality_gate.patch_fix','code_review'])
+                         ['code_generate.full','quality_gate.patch_fix','code_review'])
         self.assertIn('<h1>生态观察</h1>', result.html_code)
         self.assertEqual(result.runtime_qa_report['generationAttempts'],
-                         {'fullGenerationCalls':0,'patchCalls':1,'qaAttempts':2})
+                         {'fullGenerationCalls':1,'patchCalls':1,'qaAttempts':2})
 
     async def test_invalid_create_patch_corrects_against_retained_source(self):
         delta = json.dumps({'patches':[{'search':'<h1>种群模型</h1>','replace':'<h1>生态观察</h1>'}]})
@@ -505,13 +510,13 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
             'src.engine.interactive_creation.validate_interactive_html',
             new=AsyncMock(side_effect=[{'ran':True,'passed':False,'issues':['original defect']},
                                      {'ran':True,'passed':True,'issues':[]}])):
-            result = await run_interactive(normalize_interactive_request(self.request()))
+            result = await run_interactive(normalize_interactive_request(self.miss_request()))
         self.assertIn('生态观察', result.html_code)
         correction = json.loads(llm.call_args_list[2].kwargs['messages'][0]['content'].split('\n',1)[1])
         self.assertEqual(correction['html'], indexed_review_source(GOOD))
         self.assertIn('original defect', correction['issues'])
         self.assertEqual(result.runtime_qa_report['generationAttempts'],
-                         {'fullGenerationCalls':0,'patchCalls':2,'qaAttempts':2})
+                         {'fullGenerationCalls':1,'patchCalls':2,'qaAttempts':2})
 
     async def test_exhausted_create_patch_protocol_regenerates_and_revalidates(self):
         with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
@@ -519,13 +524,13 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
             'src.engine.interactive_creation.validate_interactive_html',
             new=AsyncMock(side_effect=[{'ran':True,'passed':False,'issues':['original defect']},
                                      {'ran':True,'passed':True,'issues':[]}])) as qa:
-            result = await run_interactive(normalize_interactive_request(self.request()))
+            result = await run_interactive(normalize_interactive_request(self.miss_request()))
         self.assertEqual([c.kwargs['step_key'] for c in llm.call_args_list],
-                         ['code_generate.template_fill','quality_gate.patch_fix','quality_gate.patch_fix','code_generate.full','code_review'])
+                         ['code_generate.full','quality_gate.patch_fix','quality_gate.patch_fix','code_generate.full','code_review'])
         self.assertIn('original defect',llm.call_args_list[3].kwargs['messages'][0]['content'])
         self.assertEqual(qa.await_count, 2)
         self.assertEqual(result.runtime_qa_report['generationAttempts'],
-                         {'fullGenerationCalls':1,'patchCalls':2,'qaAttempts':2})
+                         {'fullGenerationCalls':2,'patchCalls':2,'qaAttempts':2})
 
     async def test_failed_regeneration_does_not_restart_the_budget_or_lose_evidence(self):
         from src.engine.pipeline_errors import PipelineExecutionError
@@ -534,7 +539,7 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
             'src.engine.interactive_creation.validate_interactive_html',
             new=AsyncMock(return_value={'ran':True,'passed':False,'issues':['original defect']})):
             with self.assertRaises(PipelineExecutionError) as caught:
-                await run_interactive(normalize_interactive_request(self.request()))
+                await run_interactive(normalize_interactive_request(self.miss_request()))
         self.assertEqual(llm.call_count, 4)
         self.assertIn('original defect', str(caught.exception))
         self.assertEqual(len([a for a in caught.exception.artifacts
@@ -551,7 +556,7 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
             'src.engine.interactive_creation._review_infrastructure_retry_backoff_s',
             return_value=0):
             with self.assertRaises(PipelineExecutionError) as caught:
-                await run_interactive(normalize_interactive_request(self.request()))
+                await run_interactive(normalize_interactive_request(self.miss_request()))
         self.assertEqual(caught.exception.failure_family,'review_infrastructure')
         self.assertEqual(llm.call_count,4)
         self.assertEqual(next(a['payload'] for a in caught.exception.artifacts
@@ -565,9 +570,9 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
             new=AsyncMock(return_value={'ran':True,'passed':True,'issues':[]})), patch(
             'src.engine.interactive_creation._review_infrastructure_retry_backoff_s',
             return_value=0):
-            result = await run_interactive(normalize_interactive_request(self.request()))
+            result = await run_interactive(normalize_interactive_request(self.miss_request()))
         self.assertEqual([c.kwargs['step_key'] for c in llm.call_args_list],
-            ['code_generate.template_fill','code_review','code_review'])
+            ['code_generate.full','code_review','code_review'])
         self.assertTrue(result.quality_breakdown['seed_worthy'])
         self.assertEqual(result.quality_breakdown['seed_worthy_reason'], 'structured_review_passed')
         self.assertTrue(result.quality_breakdown['review_ran'])
@@ -837,8 +842,8 @@ class ScienceDemoMotionContract(unittest.IsolatedAsyncioTestCase):
         patch_json = json.dumps({'patches':[{'search':'<h1>种群模型</h1>','replace':'<h1>单摆</h1>'}]})
         request = normalize_interactive_request(RunPipelineV2Request(
             game_id='game', user_id='user', timeout_s=1800,
-            raw_user_input='作品类型：科学演示。做一个单摆实验。',
-            source_spec=GameSpec(game_type='interactive_experience', source_description='单摆')))
+            raw_user_input='作品类型：科学演示。制作平面镜反射光学演示，可调入射角。',
+            source_spec=GameSpec(game_type='interactive_experience', source_description='平面镜')))
         with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
                    new=AsyncMock(side_effect=[GOOD, patch_json, await fake_llm(step_key='code_review')])) as llm, patch(
                 'src.engine.interactive_creation.validate_interactive_html',

@@ -60,8 +60,12 @@ def shell_time_advance_contract_errors(html: str) -> list[str]:
         errors.append("missing pause control")
     if not re.search(r'id=["\']btn-reset["\']', html):
         errors.append("missing reset control")
-    if "work-canvas" not in html:
+    canvas_el = re.search(r"<canvas\b[^>]*\bid=['\"]work-canvas['\"]", html, re.I)
+    if "work-canvas" not in html or not canvas_el:
         errors.append("missing canvas")
+    ctx_call = re.search(r"\.getContext\s*\(", html)
+    if canvas_el and ctx_call and ctx_call.start() < canvas_el.start():
+        errors.append("getContext used before canvas element exists")
     if "WorkRuntime" not in html:
         errors.append("missing WorkRuntime state machine")
     if "acc +=" not in html and "acc+=" not in html:
@@ -164,20 +168,41 @@ _SHELL_HTML = """<!DOCTYPE html>
 (function(){
   var FIXED = 1/60;
   var MAX_DT = 0.05;
-  var canvas = document.getElementById('work-canvas');
-  var ctx = canvas.getContext('2d');
+  function ensureCanvas(){
+    var el = document.getElementById('work-canvas');
+    if (el && typeof el.getContext === 'function') return el;
+    el = document.createElement('canvas');
+    el.id = 'work-canvas';
+    el.width = 720;
+    el.height = 220;
+    el.setAttribute('data-work-canvas-repaired','true');
+    var mount = document.querySelector('form[data-work-controls]') || document.body;
+    if (mount && mount.parentNode) mount.parentNode.insertBefore(el, mount);
+    else document.body.appendChild(el);
+    return el;
+  }
+  var canvas = ensureCanvas();
+  var ctx = null;
+  try { ctx = canvas ? canvas.getContext('2d') : null; } catch (err) { ctx = null; }
   var running = false;
   var acc = 0;
   var last = 0;
   var simTime = 0;
   var raf = 0;
+  function paint(){
+    if (ctx && window.WorkFamily && WorkFamily.draw) WorkFamily.draw(ctx, canvas, simTime);
+  }
   function resize(){
+    if (!canvas) return;
     var rect = canvas.getBoundingClientRect();
     var w = Math.max(160, Math.floor(rect.width || 720));
     var h = Math.max(100, Math.floor(rect.height || 220));
     if (canvas.width !== w || canvas.height !== h){
       canvas.width = w;
       canvas.height = h;
+    }
+    if (!ctx){
+      try { ctx = canvas.getContext('2d'); } catch (err) { ctx = null; }
     }
   }
   function frame(now){
@@ -192,7 +217,7 @@ _SHELL_HTML = """<!DOCTYPE html>
         if (window.WorkFamily && WorkFamily.step) WorkFamily.step(FIXED, simTime);
       }
     }
-    if (window.WorkFamily && WorkFamily.draw) WorkFamily.draw(ctx, canvas, simTime);
+    paint();
     raf = requestAnimationFrame(frame);
   }
   window.WorkRuntime = {
@@ -201,24 +226,27 @@ _SHELL_HTML = """<!DOCTYPE html>
     reset: function(){
       running = false; acc = 0; last = 0; simTime = 0;
       if (window.WorkFamily && WorkFamily.reset) WorkFamily.reset();
-      if (window.WorkFamily && WorkFamily.draw) WorkFamily.draw(ctx, canvas, simTime);
+      paint();
     },
     isRunning: function(){ return running; },
     simTime: function(){ return simTime; },
     applyParams: function(){
       if (window.WorkFamily && WorkFamily.applyParams) WorkFamily.applyParams();
-      if (window.WorkFamily && WorkFamily.draw) WorkFamily.draw(ctx, canvas, simTime);
+      paint();
     }
   };
-  document.getElementById('btn-start').addEventListener('click', function(){ WorkRuntime.start(); });
-  document.getElementById('btn-pause').addEventListener('click', function(){ WorkRuntime.pause(); });
-  document.getElementById('btn-reset').addEventListener('click', function(){ WorkRuntime.reset(); });
+  var startBtn = document.getElementById('btn-start');
+  var pauseBtn = document.getElementById('btn-pause');
+  var resetBtn = document.getElementById('btn-reset');
+  if (startBtn) startBtn.addEventListener('click', function(){ WorkRuntime.start(); });
+  if (pauseBtn) pauseBtn.addEventListener('click', function(){ WorkRuntime.pause(); });
+  if (resetBtn) resetBtn.addEventListener('click', function(){ WorkRuntime.reset(); });
   document.querySelectorAll('[data-work-param]').forEach(function(el){
     el.addEventListener('input', function(){ WorkRuntime.applyParams(); });
     el.addEventListener('change', function(){ WorkRuntime.applyParams(); });
   });
-  if (window.ResizeObserver){
-    new ResizeObserver(function(){ resize(); if (window.WorkFamily && WorkFamily.draw) WorkFamily.draw(ctx, canvas, simTime); }).observe(canvas.parentNode || canvas);
+  if (window.ResizeObserver && canvas){
+    new ResizeObserver(function(){ resize(); paint(); }).observe(canvas.parentNode || canvas);
   }
   window.addEventListener('keydown', function(ev){
     if (ev.key === ' '){ ev.preventDefault(); running ? WorkRuntime.pause() : WorkRuntime.start(); }
@@ -227,7 +255,7 @@ _SHELL_HTML = """<!DOCTYPE html>
   {{FAMILY_SCRIPT}}
   resize();
   if (window.WorkFamily && WorkFamily.reset) WorkFamily.reset();
-  if (window.WorkFamily && WorkFamily.draw) WorkFamily.draw(ctx, canvas, 0);
+  paint();
   raf = requestAnimationFrame(frame);
 })();
 </script>
