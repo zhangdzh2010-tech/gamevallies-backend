@@ -211,8 +211,41 @@ SCIENCE_RUNTIME_GUIDANCE = '''
 首屏用紧凑结构：说明/公式放details或短行，画布 max-width:100% 且 max-height:min(38vh,240px)，开始/暂停/重置与参数用flex-wrap留在画布下方。body padding不超过8px。根字号增大12.5%后1000×600核心图形与控件仍须完整可见；只能缩小主图、压缩空白或响应式重排，禁止缩小字号或隐藏主操作。'''
 
 
+TOOL_RUNTIME_GUIDANCE = '''
+工具运行契约（验收不会放宽）：
+换算器、计算器、表单工具必须提供可见且可操作的输入（number/text/select）以及能改变作品内容的操作。
+每次有效输入、单位切换或点击转换后，必须把新结果写到可见文本节点（<output>、[data-work-output] 或结果区域的 textContent）。
+不要只把结果写进另一个 input 的 value 而不更新可见文字；不要只改按钮文案；不要输出没有真实换算的空壳。
+单位换算至少要有数值输入和可切换的单位，输入或转换后结果区域立即变化。无效输入用页面内提示，禁止 alert。'''
+
+
 def interactive_system_prompt(kind: str) -> str:
-    return SYSTEM_PROMPT + (SCIENCE_RUNTIME_GUIDANCE if kind == 'science' else '')
+    extra = ''
+    if kind == 'science':
+        extra = SCIENCE_RUNTIME_GUIDANCE
+    elif kind == 'tool':
+        extra = TOOL_RUNTIME_GUIDANCE
+    return SYSTEM_PROMPT + extra
+
+
+def tool_runtime_repair_guidance(issues: list[str]) -> str:
+    text = '\n'.join(issues)
+    if re.search(r'未检测到可操作且能改变作品内容的交互控件', text):
+        return (
+            '为工具补上可操作的 number/select/button，并把换算或计算结果写到 '
+            '<output> 或 [data-work-output] 的 textContent，使输入后可见内容变化。'
+            '不要只改只读 input 的 value，不要空壳页面。'
+        )
+    return ''
+
+
+def interactive_repair_guidance(kind: str, issues: list[str]) -> str:
+    parts = []
+    if kind == 'science':
+        parts.append(science_runtime_repair_guidance(issues))
+    if kind == 'tool':
+        parts.append(tool_runtime_repair_guidance(issues))
+    return '\n'.join(part for part in parts if part)
 
 
 def science_runtime_repair_guidance(issues: list[str]) -> str:
@@ -458,7 +491,7 @@ async def run_interactive(request, progress_cb=None):
                     messages=[{'role':'user','content':repair_prompt(
                         original + ('\n修改要求：' + feedback if feedback else ''),code,repair_issues,
                         layout_only=layout_only,
-                        extra_guidance=science_runtime_repair_guidance(repair_issues))}],
+                        extra_guidance=interactive_repair_guidance(kind, repair_issues))}],
                     step_key='iterate.element_change' if source_code and attempt == 1 else 'quality_gate.patch_fix', stage='logic_generate',
                     request_timeout_s=remaining, overall_timeout_s=remaining,
                     response_size_hint='large_patch', allow_provider_fallback=True,

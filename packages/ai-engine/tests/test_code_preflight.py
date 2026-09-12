@@ -1247,3 +1247,128 @@ def test_preflight_preserves_lazy_canvas_initialization_and_real_ellipse_renderi
             finally:
                 await browser.close()
     asyncio.run(check())
+
+
+def _preflight_canvas_html(script: str) -> str:
+    return f"""
+    <!DOCTYPE html>
+    <html>
+      <body>
+        <canvas id="gameCanvas"></canvas>
+        <script>
+          const canvas = document.getElementById('gameCanvas');
+          canvas.width = 640;
+          canvas.height = 480;
+          {script}
+        </script>
+      </body>
+    </html>
+    """
+
+
+def test_code_preflight_repairs_concatenated_canvas_host_methods():
+    validator = CodePreflightValidator()
+    html = _preflight_canvas_html(
+        """
+          const ctx = canvas.getContext('2d');
+          function draw(snake) {
+            ctxclearRect(0, 0, canvas.width, canvas.height);
+            ctxbeginPath();
+            ctxarc(snake.x, snake.y, 8, 0, Math.PI * 2);
+            ctxfill();
+          }
+          draw({x: 20, y: 20});
+        """
+    )
+    issues = validator.validate(html, runtime_contract=GameRuntimeContract())
+    assert {issue.code for issue in issues} >= {
+        "undefined_symbol:ctxbeginPath",
+        "undefined_symbol:ctxclearRect",
+        "undefined_symbol:ctxarc",
+        "undefined_symbol:ctxfill",
+    }
+    repaired = validator.auto_repair(html, issues=issues)
+    assert "ctx.beginPath(" in repaired
+    assert "ctx.clearRect(" in repaired
+    assert "ctx.arc(" in repaired
+    assert "ctx.fill(" in repaired
+    assert "ctxbeginPath" not in repaired
+    remaining = validator.validate(repaired, runtime_contract=GameRuntimeContract())
+    assert not any(
+        issue.code.startswith("undefined_symbol:ctx") for issue in remaining
+    )
+    guidance = validator.render_guidance(issues)
+    assert "ctx.beginPath()" in guidance
+    assert "ctxbeginPath()" in guidance
+
+
+def test_code_preflight_declares_literal_compared_live_state_without_hardcoded_names():
+    validator = CodePreflightValidator()
+    html = _preflight_canvas_html(
+        """
+          function step(flag) { return flag; }
+          function loop() {
+            if (gameState === 'playing' || 'paused' === phase) {
+              step(boost);
+            }
+          }
+          document.addEventListener('keydown', (event) => {
+            if (event.key === ' ') gameState = 'playing';
+          });
+        """
+    )
+    issues = validator.validate(html, runtime_contract=GameRuntimeContract())
+    assert {issue.code for issue in issues} >= {
+        "undefined_symbol:gameState",
+        "undefined_symbol:phase",
+        "undefined_symbol:boost",
+    }
+    repaired = validator.auto_repair(html, issues=issues)
+    assert "let gameState" in repaired or "let gameState," in repaired
+    assert "let phase" in repaired or "phase" in repaired.split("let ", 1)[-1]
+    remaining = validator.validate(repaired, runtime_contract=GameRuntimeContract())
+    assert not any(
+        issue.code in {
+            "undefined_symbol:gameState",
+            "undefined_symbol:phase",
+        }
+        for issue in remaining
+    )
+    assert any(issue.code == "undefined_symbol:boost" for issue in remaining)
+
+
+def test_code_preflight_declares_event_attribute_assigned_live_bindings():
+    validator = CodePreflightValidator()
+    html = """
+    <!DOCTYPE html>
+    <html>
+      <body>
+        <canvas id="gameCanvas"></canvas>
+        <button onclick="gameState='playing'; hustle=true">开始</button>
+        <script>
+          const canvas = document.getElementById('gameCanvas');
+          canvas.width = 640;
+          canvas.height = 480;
+          function tick(flag) { return flag; }
+          function loop() {
+            if (gameState === 'playing') {
+              tick(hustle);
+            }
+          }
+        </script>
+      </body>
+    </html>
+    """
+    issues = validator.validate(html, runtime_contract=GameRuntimeContract())
+    assert {issue.code for issue in issues} >= {
+        "undefined_symbol:gameState",
+        "undefined_symbol:hustle",
+    }
+    repaired = validator.auto_repair(html, issues=issues)
+    assert "let gameState" in repaired
+    assert "let hustle" in repaired
+    remaining = validator.validate(repaired, runtime_contract=GameRuntimeContract())
+    assert not any(
+        issue.code in {"undefined_symbol:gameState", "undefined_symbol:hustle"}
+        for issue in remaining
+    )

@@ -100,6 +100,93 @@ _OBJECT_DESTRUCTURE_ASSIGN_RE = re.compile(
 )
 _DECL_KEYWORD_PREFIX_RE = re.compile(r"\b(?:const|let|var|function|class)\s+$")
 _SCRIPT_BLOCK_RE = re.compile(r"(<script\b[^>]*>)(?P<body>[\s\S]*?)(</script>)", re.IGNORECASE)
+_ONATTR_RE = re.compile(r"""\son[a-z]+\s*=\s*(['"])(?P<body>.*?)(\1)""", re.IGNORECASE | re.DOTALL)
+_LITERAL_COMPARE_RE = re.compile(
+    rf"(?<![\w$.])(?P<name>{_IDENTIFIER_RE})\s*(?:===|!==|==|!=)\s*(?:['\"][^'\"]*['\"]|true|false)\b"
+    rf"|(?:['\"][^'\"]*['\"]|true|false)\s*(?:===|!==|==|!=)\s*(?P<rname>{_IDENTIFIER_RE})\b"
+)
+_CANVAS_PATH_METHODS = (
+    "createLinearGradient",
+    "createRadialGradient",
+    "createConicGradient",
+    "quadraticCurveTo",
+    "bezierCurveTo",
+    "isPointInStroke",
+    "resetTransform",
+    "getImageData",
+    "putImageData",
+    "measureText",
+    "isPointInPath",
+    "setLineDash",
+    "getLineDash",
+    "createPattern",
+    "setTransform",
+    "beginPath",
+    "closePath",
+    "roundRect",
+    "clearRect",
+    "fillRect",
+    "strokeRect",
+    "fillText",
+    "strokeText",
+    "drawImage",
+    "translate",
+    "restore",
+    "rotate",
+    "scale",
+    "transform",
+    "ellipse",
+    "moveTo",
+    "lineTo",
+    "arcTo",
+    "rect",
+    "fill",
+    "clip",
+    "save",
+    "arc",
+    "stroke",
+)
+_DOCUMENT_METHODS = (
+    "getElementsByClassName",
+    "getElementsByTagName",
+    "querySelectorAll",
+    "addEventListener",
+    "removeEventListener",
+    "getElementById",
+    "querySelector",
+    "createElement",
+)
+_WINDOW_METHODS = (
+    "requestAnimationFrame",
+    "cancelAnimationFrame",
+    "addEventListener",
+    "removeEventListener",
+    "getComputedStyle",
+    "setInterval",
+    "clearInterval",
+    "setTimeout",
+    "clearTimeout",
+)
+_CANVAS_ELEMENT_METHODS = (
+    "getBoundingClientRect",
+    "getContext",
+    "toDataURL",
+    "addEventListener",
+)
+_HOST_METHOD_MAP = {
+    "context": _CANVAS_PATH_METHODS,
+    "canvas": _CANVAS_ELEMENT_METHODS,
+    "document": _DOCUMENT_METHODS,
+    "window": _WINDOW_METHODS,
+    "ctx": _CANVAS_PATH_METHODS,
+}
+_HOST_CONCAT_RES = tuple(
+    (
+        host,
+        re.compile(rf"\b{host}(?P<method>{'|'.join(methods)})\b"),
+    )
+    for host, methods in _HOST_METHOD_MAP.items()
+)
 _BLOCK_COMMENT_RE = re.compile(r"/\*[\s\S]*?\*/")
 _LINE_COMMENT_RE = re.compile(r"//[^\n]*")
 _STRING_RE = re.compile(r"(['\"`])(?:\\.|(?!\1)[\s\S])*?\1")
@@ -267,6 +354,7 @@ class CodePreflightValidator:
             if code.startswith(("tdz_symbol:", "undefined_symbol:"))
         }
         if not seen_codes or symbol_issue_names:
+            repaired = self._repair_concatenated_host_methods(repaired)
             repaired = self._repair_declare_before_use(
                 repaired,
                 names=symbol_issue_names or None,
@@ -528,6 +616,19 @@ class CodePreflightValidator:
                 "- Acquire the 2D context immediately after creating the canvas, for example "
                 "`const ctx = canvas.getContext('2d'); if (!ctx) return;`, and only then call `ctx.setTransform(...)`, "
                 "`ctx.clearRect(...)`, or any other drawing API."
+            )
+        concat_symbols = {
+            name
+            for name in undefined_symbols
+            if any(name.startswith(host) and name[len(host):] in methods
+                   for host, methods in _HOST_METHOD_MAP.items())
+        }
+        if concat_symbols:
+            examples = ", ".join(f"`{name}`" for name in sorted(concat_symbols)[:4])
+            visible.append(
+                f"- Keep host object calls dotted; {examples} is a missing-dot concat. "
+                "Write `ctx.beginPath()`, `canvas.getContext('2d')`, or `document.getElementById(...)` "
+                "as property access, never `ctxbeginPath()` / `canvasgetContext()`."
             )
         if any("unexpected token ." in message.lower() for message in raw_messages):
             visible.append(
@@ -1073,10 +1174,15 @@ class CodePreflightValidator:
         names: set[str] | None = None,
     ) -> str:
         """Hoist function bindings and declare assigned-but-undeclared aliases."""
+        html_assigned = self._collect_html_event_assigned_symbols(html_code)
         def script_block(block):
             script = block.group("body")
             repaired = self._hoist_function_bindings(script, names)
-            repaired = self._declare_assigned_symbols(repaired, names)
+            repaired = self._declare_assigned_symbols(
+                repaired,
+                names,
+                extra_assigned=html_assigned,
+            )
             if repaired == script:
                 return block[0]
             return block[1] + repaired + block[3]
@@ -1133,14 +1239,20 @@ class CodePreflightValidator:
         rebuilt.append(script[cursor:])
         return "".join(rebuilt)
 
-    def _declare_assigned_symbols(self, script: str, names: set[str] | None) -> str:
+    def _declare_assigned_symbols(
+        self,
+        script: str,
+        names: set[str] | None,
+        extra_assigned: set[str] | None = None,
+    ) -> str:
         scan_script = self._sanitize_for_symbol_scan(script)
         declared = self._collect_declared_symbols(scan_script)
-        assigned = self._collect_assigned_symbols(scan_script)
+        assigned = self._collect_assigned_symbols(scan_script) | set(extra_assigned or ())
         incremented = self._collect_incremented_symbols(scan_script)
+        compared = self._collect_literal_compared_symbols(scan_script)
         targets = {
             name
-            for name in assigned | incremented
+            for name in assigned | incremented | compared
             if name not in declared
             and name not in _RESERVED_IDENTIFIERS
             and (names is None or name in names)
@@ -1156,6 +1268,37 @@ class CodePreflightValidator:
         if assigned_only:
             prefix_parts.append("let " + ", ".join(assigned_only) + ";")
         return "\n".join(prefix_parts) + "\n" + script.lstrip()
+
+    def _repair_concatenated_host_methods(self, html_code: str) -> str:
+        """Restore missing dots on known host.method concats. Never invent APIs."""
+        def script_block(block):
+            script = block.group("body")
+            repaired = script
+            for host, pattern in _HOST_CONCAT_RES:
+                repaired = pattern.sub(
+                    lambda match, host_name=host: f"{host_name}.{match.group('method')}",
+                    repaired,
+                )
+            if repaired == script:
+                return block[0]
+            return block[1] + repaired + block[3]
+        return _SCRIPT_BLOCK_RE.sub(script_block, html_code)
+
+    @staticmethod
+    def _collect_literal_compared_symbols(script: str) -> set[str]:
+        names: set[str] = set()
+        for match in _LITERAL_COMPARE_RE.finditer(script):
+            name = match.group("name") or match.group("rname")
+            if name:
+                names.add(name)
+        return names
+
+    @classmethod
+    def _collect_html_event_assigned_symbols(cls, html_code: str) -> set[str]:
+        names: set[str] = set()
+        for match in _ONATTR_RE.finditer(html_code or ""):
+            names.update(cls._collect_assigned_symbols(match.group("body") or ""))
+        return names
 
     @staticmethod
     def _collect_incremented_symbols(script: str) -> set[str]:

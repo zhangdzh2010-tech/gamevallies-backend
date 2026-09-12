@@ -194,6 +194,14 @@ def test_invalid_scores_and_flags_are_never_coerced_to_passing(update):
     assert not CodeReviewer()._parse_review(json.dumps(PASSING | update)).ran
 
 
+def test_parse_review_repairs_trailing_comma_json_without_changing_scores():
+    raw = json.dumps(PASSING)[:-1] + ",\n}\n"
+    result = CodeReviewer()._parse_review(raw)
+    assert result.ran is True
+    assert result.fun_score == 8
+    assert result.issues == []
+
+
 def test_invalid_review_schema_can_recover_on_third_reassessment_without_inventing_scores():
     result, client = run_review_responses(['not json', 'still not json', json.dumps(PASSING)])
     assert result.ran is True
