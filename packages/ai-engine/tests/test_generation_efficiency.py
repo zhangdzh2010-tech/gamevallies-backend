@@ -191,20 +191,28 @@ class ShortPathAndRegistry(unittest.IsolatedAsyncioTestCase):
 
     async def test_miss_brief_still_uses_full_logic_generate(self):
         request = normalize_interactive_request(RunPipelineV2Request(
-            game_id="game", user_id="user", timeout_s=1800,
+            game_id="game", user_id="user", timeout_s=1800, artifact_kind="science",
             raw_user_input="作品类型：科学演示。制作平面镜反射光学演示，可调入射角。",
-            source_spec=GameSpec(game_type="interactive_experience", source_description="镜面"),
+            source_spec=GameSpec(
+                game_type="interactive_experience",
+                artifact_kind="science",
+                source_description="作品类型：科学演示。制作平面镜反射光学演示，可调入射角。",
+            ),
         ))
         html = '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body><h1>镜</h1><button>开始</button><script>1</script></body></html>'
         review = json.dumps({
             "artifact_kind": "science", "complete": True, "critical_issues": [],
             "scores": {k: 8 for k in ["scientific_correctness", "parameter_fidelity", "explanation_integrity", "visual_clarity"]},
-            "evidence": {k: "ok" for k in ["scientific_correctness", "parameter_fidelity", "explanation_integrity", "visual_clarity"]},
+            "evidence": {k: "Fixture assertion for routing test" for k in ["scientific_correctness", "parameter_fidelity", "explanation_integrity", "visual_clarity"]},
             "issues": [],
         })
+        async def llm_side_effect(**kwargs):
+            if kwargs.get("step_key") == "code_review":
+                return review
+            return html
         with patch(
             "src.engine.interactive_creation.LLMClient.complete_with_truncation_retry",
-            new=AsyncMock(side_effect=[html, review]),
+            new=AsyncMock(side_effect=llm_side_effect),
         ) as llm, patch(
             "src.engine.interactive_creation.validate_interactive_html",
             new=AsyncMock(return_value={"ran": True, "passed": True, "issues": []}),

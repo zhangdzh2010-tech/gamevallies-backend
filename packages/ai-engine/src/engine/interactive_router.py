@@ -99,8 +99,16 @@ def route_interactive_template(
 
     score_map = {family_id: round(score, 3) for family_id, score in family_scores.items() if score}
 
-    # Conflicting interaction families at similar strength: do not force-fit.
+    competing_families = {
+        recipe.family_id
+        for score, recipe in recipe_scores
+        if score >= SOFT_MIN_SCORE
+    }
+    # Conflicting interaction families: do not force-fit a single model.
     if (
+        len(competing_families) >= 2
+        and (best_recipe_score - second_recipe_score) < HIT_MIN_SCORE
+    ) or (
         best_family_score >= SOFT_MIN_SCORE
         and second_family_score >= SOFT_MIN_SCORE
         and (best_family_score - second_family_score) < AMBIGUITY_MARGIN

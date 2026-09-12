@@ -66,9 +66,12 @@ def presentation_fingerprint(
     visual_pack_id: str,
     anchor: str,
     summary: str = "",
+    tier: str = "",
 ) -> str:
     stem = content_stem(family_id=family_id, recipe_id=recipe_id, title=title, formula=formula)
-    accent = hashlib.sha256(f"{visual_pack_id}|{anchor}|{(summary or '')[:80]}".encode()).hexdigest()[:8]
+    accent = hashlib.sha256(
+        f"{visual_pack_id}|{anchor}|{tier}|{(summary or '')[:80]}".encode()
+    ).hexdigest()[:8]
     return f"{stem}{accent}"
 
 
@@ -180,6 +183,7 @@ def plan_interactive_diversity(
         visual_pack_id=plan.visual_pack_id,
         anchor=plan.anchor,
         summary=summary,
+        tier=plan.tier,
     )
     if not store.stem_seen(plan.fingerprint):
         store.remember(plan.fingerprint)
@@ -198,6 +202,7 @@ def plan_interactive_diversity(
         visual_pack_id=plan.visual_pack_id,
         anchor=plan.anchor,
         summary=summary,
+        tier=plan.tier,
     )
     if not store.exact_seen(plan.fingerprint):
         store.remember(plan.fingerprint)
@@ -224,6 +229,7 @@ def plan_interactive_diversity(
         visual_pack_id=plan.visual_pack_id,
         anchor=plan.anchor,
         summary=summary,
+        tier=plan.tier,
     )
     if not store.exact_seen(plan.fingerprint):
         store.remember(plan.fingerprint)

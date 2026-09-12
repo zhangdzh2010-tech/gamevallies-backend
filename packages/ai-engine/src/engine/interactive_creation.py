@@ -36,7 +36,7 @@ from .interactive_short_path import (
     looks_like_full_html,
     merge_slots,
 )
-from .interactive_diversity import plan_interactive_diversity
+from .interactive_diversity import DiversityLedger, plan_interactive_diversity
 from .template_registry import registry as template_registry
 from ..services.task_memory import task_memory
 
@@ -258,6 +258,7 @@ async def run_interactive(request, progress_cb=None):
     telemetry.set_route(route)
     diversity_plan = None
     assembled_slots = None
+    diversity_ledger = DiversityLedger()
 
     async def persist_route_meta(extra=None):
         try:
@@ -329,6 +330,7 @@ async def run_interactive(request, progress_cb=None):
             variation_seed=variation_seed,
             generation_tier=str(getattr(request, 'generation_tier', '') or 'standard'),
             summary=original.split('\n')[0],
+            ledger=diversity_ledger,
         )
         diversity_plan = plan
         telemetry.diversity_action = plan.action
