@@ -87,6 +87,10 @@ _PARSE_NOISE_MARKERS = (
     'jsondecode',
     'not a valid json',
 )
+_PARSE_NOISE_EXACT = frozenset({
+    'json',
+    'jsondecodeerror',
+})
 
 
 def _citation_only(errors: list[str]) -> bool:
@@ -140,6 +144,7 @@ def _schema_only(errors: list[str]) -> bool:
             _GENERIC_ASSESSMENT_FAILURE in text
             or text in _SCHEMA_ERROR_MARKERS
             or text.startswith('assessment unavailable')
+            or text.lower() in _PARSE_NOISE_EXACT
             or any(marker in text.lower() for marker in _PARSE_NOISE_MARKERS)
         ):
             continue
