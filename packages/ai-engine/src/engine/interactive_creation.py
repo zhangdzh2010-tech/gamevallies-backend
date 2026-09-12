@@ -106,14 +106,15 @@ def ensure_full_path_chrome(html: str, brief: str) -> str:
     )
     has_title_text = bool(re.search(r'<title[^>]*>\s*[^<\s]', html, re.I))
     has_heading = bool(re.search(r'<h1\b', html, re.I))
-    if has_title_text and has_heading:
+    # An existing h1 already satisfies the readable-title QA check. Do not
+    # rewrite fixture or model HTML that already has a heading.
+    if has_title_text or has_heading:
         return html
-    if not has_title_text:
-        if re.search(r'<title[^>]*>\s*</title>', html, re.I):
-            html = re.sub(r'<title[^>]*>\s*</title>', f'<title>{escaped}</title>', html, count=1, flags=re.I)
-        elif re.search(r'<head\b', html, re.I):
-            html = re.sub(r'(<head[^>]*>)', rf'\1<title>{escaped}</title>', html, count=1, flags=re.I)
-    if not has_heading and re.search(r'<body\b', html, re.I):
+    if re.search(r'<title[^>]*>\s*</title>', html, re.I):
+        html = re.sub(r'<title[^>]*>\s*</title>', f'<title>{escaped}</title>', html, count=1, flags=re.I)
+    elif re.search(r'<head\b', html, re.I):
+        html = re.sub(r'(<head[^>]*>)', rf'\1<title>{escaped}</title>', html, count=1, flags=re.I)
+    if re.search(r'<body\b', html, re.I):
         html = re.sub(r'(<body[^>]*>)', rf'\1<h1 id="work-title">{escaped}</h1>', html, count=1, flags=re.I)
     return html
 

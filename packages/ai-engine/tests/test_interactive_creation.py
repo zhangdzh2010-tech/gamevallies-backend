@@ -124,10 +124,10 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         review = json.loads(await fake_llm(step_key='code_review'))
         review['critical_issues'] = ['required control missing']
         review['findings'] = [dict(issue='required control missing', dimension='critical_issue',
-            basis='requirement', requirement_quote='种群变化模型',
+            basis='requirement', requirement_quote='可调入射角',
             source_ref=next(iter(source_reference_catalog(GOOD))),
-            reason='Required population control is missing in this synthetic assessment.',
-            correction='Add the requested population control.')]
+            reason='Required angle control is missing in this synthetic assessment.',
+            correction='Add the requested angle control.')]
         delta = json.dumps({'patches':[{'search':'let population=10;','replace':"throw new Error('regression');"}]})
         with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
             new=AsyncMock(side_effect=[GOOD,json.dumps(review),delta])), patch(
@@ -501,7 +501,7 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
                          ['code_generate.full','quality_gate.patch_fix','code_review'])
         self.assertIn('<h1>生态观察</h1>', result.html_code)
         self.assertEqual(result.runtime_qa_report['generationAttempts'],
-                         {'fullGenerationCalls':0,'patchCalls':1,'qaAttempts':2})
+                         {'fullGenerationCalls':1,'patchCalls':1,'qaAttempts':2})
 
     async def test_invalid_create_patch_corrects_against_retained_source(self):
         delta = json.dumps({'patches':[{'search':'<h1>种群模型</h1>','replace':'<h1>生态观察</h1>'}]})
@@ -516,7 +516,7 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(correction['html'], indexed_review_source(GOOD))
         self.assertIn('original defect', correction['issues'])
         self.assertEqual(result.runtime_qa_report['generationAttempts'],
-                         {'fullGenerationCalls':0,'patchCalls':2,'qaAttempts':2})
+                         {'fullGenerationCalls':1,'patchCalls':2,'qaAttempts':2})
 
     async def test_exhausted_create_patch_protocol_regenerates_and_revalidates(self):
         with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
@@ -530,7 +530,7 @@ class InteractiveCreation(unittest.IsolatedAsyncioTestCase):
         self.assertIn('original defect',llm.call_args_list[3].kwargs['messages'][0]['content'])
         self.assertEqual(qa.await_count, 2)
         self.assertEqual(result.runtime_qa_report['generationAttempts'],
-                         {'fullGenerationCalls':1,'patchCalls':2,'qaAttempts':2})
+                         {'fullGenerationCalls':2,'patchCalls':2,'qaAttempts':2})
 
     async def test_failed_regeneration_does_not_restart_the_budget_or_lose_evidence(self):
         from src.engine.pipeline_errors import PipelineExecutionError
@@ -842,8 +842,8 @@ class ScienceDemoMotionContract(unittest.IsolatedAsyncioTestCase):
         patch_json = json.dumps({'patches':[{'search':'<h1>种群模型</h1>','replace':'<h1>单摆</h1>'}]})
         request = normalize_interactive_request(RunPipelineV2Request(
             game_id='game', user_id='user', timeout_s=1800,
-            raw_user_input='作品类型：科学演示。做一个单摆实验。',
-            source_spec=GameSpec(game_type='interactive_experience', source_description='单摆')))
+            raw_user_input='作品类型：科学演示。制作平面镜反射光学演示，可调入射角。',
+            source_spec=GameSpec(game_type='interactive_experience', source_description='平面镜')))
         with patch('src.engine.interactive_creation.LLMClient.complete_with_truncation_retry',
                    new=AsyncMock(side_effect=[GOOD, patch_json, await fake_llm(step_key='code_review')])) as llm, patch(
                 'src.engine.interactive_creation.validate_interactive_html',

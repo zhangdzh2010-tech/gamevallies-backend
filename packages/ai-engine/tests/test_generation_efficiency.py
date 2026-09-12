@@ -336,6 +336,8 @@ class ShortPathShellRegressions(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<title>", repaired)
         self.assertIn("<h1", repaired)
         self.assertIn("温度转换", repaired)
+        already = '<!DOCTYPE html><html><head></head><body><h1>已有标题</h1></body></html>'
+        self.assertEqual(ensure_full_path_chrome(already, "摄氏华氏转换"), already)
         self.assertNotIn("<input", repaired)
 
     def test_assembled_gas_and_population_have_executable_script_and_canvas(self):
