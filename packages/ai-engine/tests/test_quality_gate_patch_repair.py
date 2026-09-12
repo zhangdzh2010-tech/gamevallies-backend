@@ -228,6 +228,9 @@ def _run_create_with_mocks(
         stack.enter_context(
             patch.object(settings, "QUALITY_GATE_PATCH_REPAIR_ENABLED", patch_repair_enabled)
         )
+        stack.enter_context(
+            patch("src.engine.pipeline_v2_runner.asyncio.sleep", new=AsyncMock())
+        )
 
         response = asyncio.run(
             runner._run_create_impl(
@@ -394,7 +397,7 @@ def test_review_infrastructure_degrades_for_standard_tier_without_regeneration()
     response, mocks = _run_create_with_mocks(
         generate_side_effect=generate,
         flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])],
-        review_side_effect=[failure],
+        review_side_effect=[failure, failure],
         compute_side_effect=[_quality(7.1)],
     )
     assert mocks.generate.await_count == 1
@@ -407,6 +410,35 @@ def test_review_infrastructure_degrades_for_standard_tier_without_regeneration()
     assert response.quality_breakdown["seed_worthy"] is False
     assert response.quality_breakdown["seed_worthy_reason"] == "review_infrastructure_degraded"
     assert response.quality_breakdown["reviewRan"] is False
+
+
+def test_review_infrastructure_retries_playable_artifact_and_can_earn_seed_worthy():
+    from src.engine.pipeline_errors import PipelineExecutionError
+    generated = []
+    def generate(*args, **kwargs):
+        generated.append(True)
+        return _generated(BASE_CODE, 'provider-a'), []
+    failure = PipelineExecutionError(
+        'review evidence unavailable',
+        stage='code_review',
+        failure_family='review_infrastructure',
+    )
+    response, mocks = _run_create_with_mocks(
+        generate_side_effect=generate,
+        flow_side_effect=[(_qa_success(BASE_CODE), SimpleNamespace(ran=True, js_errors=[]), 0, [])],
+        review_side_effect=[failure, _passing_review()],
+        compute_side_effect=[_quality(7.1)],
+    )
+    assert mocks.generate.await_count == 1
+    assert mocks.patch_text.await_count == 0
+    assert len(generated) == 1
+    assert response.qa_passed
+    assert response.quality_score == 7.1
+    assert not any(warning.get('type') == 'review_infrastructure_degraded' for warning in response.qa_warnings)
+    assert response.quality_breakdown["pipeline_success"] is True
+    assert response.quality_breakdown["seed_worthy"] is True
+    assert response.quality_breakdown["seed_worthy_reason"] == "structured_review_passed"
+    assert response.quality_breakdown["reviewRan"] is True
 
 
 def test_quality_patch_allowed_sections_maps_failing_dimensions():

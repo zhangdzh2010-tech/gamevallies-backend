@@ -1975,6 +1975,11 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
         return min(4.0, 2.0 * max(1, int(attempt)))
 
     @staticmethod
+    def _review_infrastructure_retry_backoff_s() -> float:
+        """Brief pause before re-reviewing a playable artifact after infra loss."""
+        return 1.0
+
+    @staticmethod
     def _is_retryable_generation_error(exc: Exception) -> bool:
         message = str(exc).lower()
         retryable_markers = (
@@ -2131,49 +2136,103 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
                 user_requirements=user_requirements,
             )
         except PipelineExecutionError as exc:
-            family = getattr(exc, "failure_family", None)
-            if (
-                family not in {"review_infrastructure", "review_actionability"}
-                or self._is_structured_review_required(spec)
-            ):
-                raise
-            degraded_type = (
-                "review_actionability_degraded"
-                if family == "review_actionability"
-                else "review_infrastructure_degraded"
-            )
+            if getattr(exc, "failure_family", None) != "review_infrastructure":
+                return self._finalize_create_review_failure(
+                    exc,
+                    spec=spec,
+                    qa_warnings=qa_warnings,
+                    progress_cb=progress_cb,
+                    game_id=game_id,
+                    user_id=user_id,
+                )
             logger.warning(
-                "Structured review %s for non-showcase create; degrading to static/runtime QA only: %s",
-                "inconsistent" if family == "review_actionability" else "unavailable",
+                "Structured review unavailable after playable QA for game %s; retrying once on the same artifact: %s",
+                game_id,
                 exc,
             )
-            qa_warnings.append({
-                "type": degraded_type,
-                "message": (
-                    "Structured review stayed inconsistent after bounded reassessments; "
-                    "proceeding with static and runtime QA only."
-                    if family == "review_actionability"
-                    else "Structured code review unavailable; proceeding with static and runtime QA only."
-                ),
-                "details": {
-                    "failureFamily": family,
-                    "stage": exc.stage,
-                    "error": str(exc)[:500],
-                },
-            })
             self._notify(
                 progress_cb,
                 "code_review",
-                96,
-                "Structured review unavailable; using static and runtime QA only",
+                95,
+                "Retrying structured review on the playable artifact",
                 {
                     "gameId": game_id,
                     "userId": user_id,
-                    "failureFamily": family,
-                    "degraded": True,
+                    "failureFamily": "review_infrastructure",
+                    "reviewRetry": True,
                 },
             )
-            return LLMReviewResult(ran=False)
+            await asyncio.sleep(self._review_infrastructure_retry_backoff_s())
+            try:
+                return await self._resolve_concurrent_review(
+                    None,
+                    code,
+                    user_requirements=user_requirements,
+                )
+            except PipelineExecutionError as retry_exc:
+                return self._finalize_create_review_failure(
+                    retry_exc,
+                    spec=spec,
+                    qa_warnings=qa_warnings,
+                    progress_cb=progress_cb,
+                    game_id=game_id,
+                    user_id=user_id,
+                )
+
+    def _finalize_create_review_failure(
+        self,
+        exc: PipelineExecutionError,
+        *,
+        spec: GameSpec,
+        qa_warnings: list[dict[str, Any]],
+        progress_cb: ProgressCallback,
+        game_id: str,
+        user_id: str,
+    ) -> LLMReviewResult:
+        family = getattr(exc, "failure_family", None)
+        if (
+            family not in {"review_infrastructure", "review_actionability"}
+            or self._is_structured_review_required(spec)
+        ):
+            raise exc
+        degraded_type = (
+            "review_actionability_degraded"
+            if family == "review_actionability"
+            else "review_infrastructure_degraded"
+        )
+        logger.warning(
+            "Structured review %s for non-showcase create; degrading to static/runtime QA only: %s",
+            "inconsistent" if family == "review_actionability" else "unavailable",
+            exc,
+        )
+        qa_warnings.append({
+            "type": degraded_type,
+            "message": (
+                "Structured review stayed inconsistent after bounded reassessments; "
+                "proceeding with static and runtime QA only."
+                if family == "review_actionability"
+                else "Structured code review unavailable after a bounded retry; "
+                "proceeding with static and runtime QA only."
+            ),
+            "details": {
+                "failureFamily": family,
+                "stage": exc.stage,
+                "error": str(exc)[:500],
+            },
+        })
+        self._notify(
+            progress_cb,
+            "code_review",
+            96,
+            "Structured review unavailable; using static and runtime QA only",
+            {
+                "gameId": game_id,
+                "userId": user_id,
+                "failureFamily": family,
+                "degraded": True,
+            },
+        )
+        return LLMReviewResult(ran=False)
 
     async def _resolve_concurrent_review(
         self,
