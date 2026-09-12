@@ -159,22 +159,106 @@ def _unwrap_assessment_object(data: dict) -> dict:
     return data
 
 
+def _strip_json_comments_outside_strings(text: str) -> str:
+    """Remove // and /* */ comments that models insert outside JSON strings."""
+    out: list[str] = []
+    index = 0
+    n = len(text)
+    quote: str | None = None
+    escaped = False
+    while index < n:
+        ch = text[index]
+        nxt = text[index + 1] if index + 1 < n else ''
+        if quote:
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == '\\':
+                escaped = True
+            elif ch == quote:
+                quote = None
+            index += 1
+            continue
+        if ch in {'"', "'"}:
+            quote = ch
+            out.append(ch)
+            index += 1
+            continue
+        if ch == '/' and nxt == '/':
+            index += 2
+            while index < n and text[index] not in '\r\n':
+                index += 1
+            continue
+        if ch == '/' and nxt == '*':
+            index += 2
+            while index + 1 < n and text[index:index + 2] != '*/':
+                index += 1
+            index = min(n, index + 2)
+            continue
+        out.append(ch)
+        index += 1
+    return ''.join(out)
+
+
+def repair_json_like_text(text: str) -> str:
+    """Recover common LLM JSON syntax. Never inserts keys or score values."""
+    repaired = (
+        str(text or '')
+        .replace('\u201c', '"')
+        .replace('\u201d', '"')
+        .replace('\u2018', "'")
+        .replace('\u2019', "'")
+    )
+    repaired = _strip_json_comments_outside_strings(repaired)
+    repaired = re.sub(r',\s*([}\]])', r'\1', repaired)
+    repaired = re.sub(r"([{,]\s*)'([^'\\]+)'\s*:", r'\1"\2":', repaired)
+    repaired = re.sub(r"([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:", r'\1"\2":', repaired)
+
+    def _single_quoted_string(match: re.Match[str]) -> str:
+        body = match.group(1).replace('\\"', '"').replace("\\'", "'")
+        return json.dumps(body, ensure_ascii=False)
+
+    repaired = re.sub(r"(?<!\\)'((?:\\.|[^'\\])*)'", _single_quoted_string, repaired)
+    repaired = re.sub(r',\s*([}\]])', r'\1', repaired)
+    return repaired
+
+
+def _load_json_object(text: str) -> dict | None:
+    if not text:
+        return None
+    try:
+        data, _ = json.JSONDecoder().raw_decode(text)
+    except json.JSONDecodeError:
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+    return data if isinstance(data, dict) else None
+
+
 def _parse_assessment_json(raw: str) -> dict:
     """Recover a JSON object from a review payload without inventing fields."""
     cleaned = re.sub(r'^```(?:json)?\s*|\s*```$', '', str(raw or '').strip(), flags=re.I | re.M)
     start = cleaned.find('{')
     if start < 0:
         raise ValueError('json')
-    try:
-        data, _ = json.JSONDecoder().raw_decode(cleaned, start)
-    except json.JSONDecodeError:
-        end = cleaned.rfind('}')
-        if end <= start:
-            raise ValueError('json')
-        data = json.loads(cleaned[start:end + 1])
-    if not isinstance(data, dict):
-        raise ValueError('json')
-    return _unwrap_assessment_object(data)
+    blob = cleaned[start:]
+    end = cleaned.rfind('}')
+    sliced = cleaned[start:end + 1] if end > start else blob
+    light = re.sub(r',\s*([}\]])', r'\1', blob)
+    light_sliced = re.sub(r',\s*([}\]])', r'\1', sliced)
+    for candidate in (
+        blob,
+        sliced,
+        light,
+        light_sliced,
+        repair_json_like_text(blob),
+        repair_json_like_text(sliced),
+    ):
+        data = _load_json_object(candidate)
+        if data is not None:
+            return _unwrap_assessment_object(data)
+    raise ValueError('json')
 
 
 def _coerce_complete_flag(value: object) -> bool:

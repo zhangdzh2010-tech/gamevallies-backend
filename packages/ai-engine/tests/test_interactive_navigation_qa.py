@@ -5,7 +5,7 @@ from src.engine.interactive_browser_qa import (
 from src.engine.interactive_creation import (
     apply_preview_layout_compact, interactive_system_prompt,
     science_runtime_repair_guidance, should_apply_preview_layout_compact,
-    validate_interactive_html)
+    tool_runtime_repair_guidance, validate_interactive_html)
 
 
 @pytest.mark.parametrize('kwargs,expected', [
@@ -42,6 +42,9 @@ def test_science_contract_is_not_applied_to_tools_and_does_not_relax_qa():
     assert '不要把拖拽' in interactive_system_prompt('science')
     assert '非平衡' not in interactive_system_prompt('tool')
     assert '验收不会放宽' in interactive_system_prompt('science')
+    assert '换算器' in interactive_system_prompt('tool')
+    assert '<output>' in interactive_system_prompt('tool')
+    assert '换算器' not in interactive_system_prompt('science')
 
 
 def test_preview_layout_compact_shrinks_graphic_not_type():
@@ -65,6 +68,9 @@ def test_science_repair_guidance_is_tied_to_observed_runtime_defects():
     layout = science_runtime_repair_guidance(['1000×600 (visible) 核心图形/控件不完整：start。'])
     assert '1000×600' in layout
     assert science_runtime_repair_guidance(['未检测到可操作且能改变作品内容的交互控件。']) == ''
+    tool_hint = tool_runtime_repair_guidance(['未检测到可操作且能改变作品内容的交互控件。'])
+    assert '<output>' in tool_hint
+    assert '空壳' in tool_hint
 
 
 def tabbed_work(working=True):

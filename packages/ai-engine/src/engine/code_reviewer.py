@@ -29,6 +29,7 @@ from .quality_scorer import LLMReviewResult
 from .pipeline_errors import PipelineExecutionError, is_provider_transport_failure
 from .review_evidence import EVIDENCE_PROTOCOL, REVIEW_FLAGS, REVIEW_SCORES, validate_review_evidence, indexed_review_source
 from .review_recovery import recover_review, InvalidReviewEvidence
+from .artifact_quality import repair_json_like_text
 from ..services.llm_http_evidence import attach_transport_evidence, collect_transport_evidence, transport_error_message
 
 logger = logging.getLogger(__name__)
@@ -178,16 +179,24 @@ class CodeReviewer:
         start = cleaned.find("{")
         data = None
         if start != -1:
-            try:
-                data, _ = json.JSONDecoder().raw_decode(cleaned, start)
-            except json.JSONDecodeError:
-                # Last resort: first { to last }
-                end = cleaned.rfind("}")
-                if end > start:
+            blob = cleaned[start:]
+            end = cleaned.rfind("}")
+            sliced = cleaned[start:end + 1] if end > start else blob
+            light = re.sub(r",\s*([}\]])", r"\1", blob)
+            light_sliced = re.sub(r",\s*([}\]])", r"\1", sliced)
+            for candidate in (blob, sliced, light, light_sliced, repair_json_like_text(blob), repair_json_like_text(sliced)):
+                try:
+                    parsed, _ = json.JSONDecoder().raw_decode(candidate)
+                except json.JSONDecodeError:
                     try:
-                        data = json.loads(cleaned[start:end + 1])
-                    except json.JSONDecodeError as exc:
-                        logger.warning(f"JSON parse error in review: {exc} | raw: {raw[:200]}")
+                        parsed = json.loads(candidate)
+                    except json.JSONDecodeError:
+                        continue
+                if isinstance(parsed, dict):
+                    data = parsed
+                    break
+            if data is None:
+                logger.warning(f"JSON parse error in review | raw: {raw[:200]}")
 
         if not isinstance(data, dict):
             logger.warning(f"No JSON found in review response: {raw[:200]}")

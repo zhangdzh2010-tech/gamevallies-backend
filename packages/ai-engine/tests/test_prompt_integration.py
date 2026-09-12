@@ -687,6 +687,8 @@ class TestPromptIntegration(unittest.TestCase):
         self.assertIn("Math.min(scaleX, scaleY)", message)
         self.assertIn("14-20px", message)
         self.assertIn("CODE SAFETY CHECKLIST (FIRST PRIORITY):", message)
+        self.assertIn("ctx.beginPath()", message)
+        self.assertIn("ctxbeginPath()", message)
         self.assertIn("Centralize touch extraction", message)
         self.assertIn("CONTRACT IMPLEMENTATION CHECKLIST (CODE SHAPE, NOT JUST INTENT):", message)
         self.assertIn("gameplay state variable", message)

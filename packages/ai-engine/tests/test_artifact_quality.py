@@ -350,6 +350,54 @@ def test_invalid_schema_gets_a_bounded_reask_without_inventing_scores():
     assert 'Do not change the artifact' in calls[1]
 
 
+def test_science_review_repairs_trailing_comma_and_unquoted_keys_without_inventing_scores():
+    data = json.loads(review('science'))
+    raw = (
+        "审核如下：\n"
+        "{\n"
+        "  artifact_kind: 'science',\n"
+        "  complete: true,\n"
+        "  scores: " + json.dumps(data['scores']) + ",\n"
+        "  evidence: " + json.dumps(data['evidence']) + ",\n"
+        "  critical_issues: [],\n"
+        "  issues: [],\n"
+        "  findings: [],\n"
+        "}\n"
+        "以上为完整评分。"
+    )
+    result = assess_review(raw, 'science')
+    assert result['review_ran'] and result['passed']
+    assert result['score'] == 8
+
+
+def test_science_review_repairs_single_quoted_payload_matching_yield_parse_noise():
+    data = json.loads(review('science'))
+    raw = (
+        "{\n"
+        "  'artifact_kind': 'science',\n"
+        "  'complete': true,\n"
+        "  'scores': " + json.dumps(data['scores']) + ",\n"
+        "  'evidence': " + json.dumps(data['evidence']) + ",\n"
+        "  'critical_issues': [],\n"
+        "  'issues': [],\n"
+        "  'findings': [],\n"
+        "}\n"
+    )
+    result = assess_review(raw, 'science')
+    assert result['review_ran'] and result['passed']
+    assert result['score'] == 8
+
+
+def test_repaired_json_still_rejects_incomplete_scores():
+    data = json.loads(review('science'))
+    data.pop('scores')
+    raw = "{\n  artifact_kind: 'science',\n  complete: true,\n  evidence: " + json.dumps(data['evidence']) + ",\n}\n"
+    result = assess_review(raw, 'science')
+    assert not result['review_ran'] and not result['passed']
+    assert result['score'] == 0
+    assert '分类审核未返回完整、有效且有依据的评分。' in result['issues']
+
+
 def test_interactive_outcome_labels_mark_tool_and_science_seed_worthy():
     assessment = assess_review(review('science'), 'science')
     labels = interactive_outcome_labels(assessment, {'passed': True})

@@ -38,6 +38,47 @@ async def test_real_hex_rgb_conversion_passes_scoped_oracle():
     assert report['contractChecks'][0]['status'] == 'passed'
 
 
+def converter_work(*, live: bool, result_kind: str = 'input') -> str:
+    result = (
+        '<input id="result" readonly value="3.281">'
+        if result_kind == 'input' else
+        '<output id="result">3.281</output>'
+    )
+    handler = (
+        'onclick="result.value ? result.value=String((Number(value.value)||0)*3.28084) : result.textContent=String((Number(value.value)||0)*3.28084)"'
+        if live else 'onclick="void 0"'
+    )
+    return f'''<!doctype html><html><body>
+    <h1>米英尺换算</h1>
+    <label>数值 <input id="value" type="number" value="1"></label>
+    <button id="convert" {handler}>转换</button>
+    {result}
+    <script>void 0</script>
+    </body></html>'''
+
+
+@pytest.mark.asyncio
+async def test_unit_converter_result_input_counts_as_content_change():
+    report = await validate_interactive_html(converter_work(live=True, result_kind='input'))
+    assert report['contentChanged']
+    assert not any('未检测到可操作且能改变作品内容的交互控件' in issue for issue in report['issues'])
+    assert report['passed'], report['issues']
+
+
+@pytest.mark.asyncio
+async def test_unit_converter_output_node_still_passes():
+    report = await validate_interactive_html(converter_work(live=True, result_kind='output'))
+    assert report['passed'], report['issues']
+    assert report['contentChanged']
+
+
+@pytest.mark.asyncio
+async def test_inert_converter_shell_still_fails_interactive_validation():
+    report = await validate_interactive_html(converter_work(live=False, result_kind='input'))
+    assert not report['passed']
+    assert any('未检测到可操作且能改变作品内容的交互控件' in issue for issue in report['issues'])
+
+
 @pytest.mark.asyncio
 async def test_unrelated_hex_identifier_is_not_misclassified_as_rgb_converter():
     html = colour_work().replace('HEX 值', '订单编号').replace('4F7CFF','123456')

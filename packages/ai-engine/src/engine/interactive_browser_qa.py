@@ -124,10 +124,29 @@ p.stroke=function(){const a=paths.get(this)||[],w=this.canvas.width,h=this.canva
 OUTPUTS = """() => Array.from(document.querySelectorAll('output,[data-work-output],[id*="display" i],[id*="result" i]'))
  .filter(e=>!e.children.length && e.textContent.trim() && !/time|clock|timer|countdown/i.test(e.id))
  .map(e=>({key:e.id||e.tagName+':'+Array.from(document.querySelectorAll('output')).indexOf(e),text:e.textContent.trim()}))"""
-SIGNATURE = """() => document.body.innerText
- + Array.from(document.querySelectorAll('canvas')).map(c=>c.toDataURL()).join('')
- + Array.from(document.querySelectorAll('svg')).map(s=>s.outerHTML).join('')
- + document.querySelectorAll('input,textarea,select,dialog[open],[role=dialog]').length"""
+PAGE_SIGNATURE = """() => {
+ const fields = Array.from(document.querySelectorAll('input,textarea,select,output,[data-work-output]'))
+   .map(e => (e.id||e.name||e.tagName) + '=' + (('value' in e && e.tagName!=='OUTPUT') ? String(e.value) : String(e.textContent||'')))
+   .join('\\x1f');
+ return document.body.innerText
+  + Array.from(document.querySelectorAll('canvas')).map(c=>c.toDataURL()).join('')
+  + Array.from(document.querySelectorAll('svg')).map(s=>s.outerHTML).join('')
+  + document.querySelectorAll('input,textarea,select,dialog[open],[role=dialog]').length
+  + '\\x1e' + fields;
+}"""
+# Exclude the exercised control's own value so filling an input cannot self-pass.
+CONTROL_SIGNATURE = """el => {
+ const fields = Array.from(document.querySelectorAll('input,textarea,select,output,[data-work-output]'))
+   .filter(e => e !== el)
+   .map(e => (e.id||e.name||e.tagName) + '=' + (('value' in e && e.tagName!=='OUTPUT') ? String(e.value) : String(e.textContent||'')))
+   .join('\\x1f');
+ return document.body.innerText
+  + Array.from(document.querySelectorAll('canvas')).map(c=>c.toDataURL()).join('')
+  + Array.from(document.querySelectorAll('svg')).map(s=>s.outerHTML).join('')
+  + document.querySelectorAll('input,textarea,select,dialog[open],[role=dialog]').length
+  + '\\x1e' + fields;
+}"""
+SIGNATURE = PAGE_SIGNATURE
 
 LAYOUT = """() => {
  const viewport={width:innerWidth,height:innerHeight};
@@ -284,7 +303,8 @@ async def browser_report(code: str, *, brief: str = '') -> dict:
                 clicked_button = False
                 navigation = False
                 try:
-                    before = await frame.evaluate(SIGNATURE)
+                    before = await control.evaluate(CONTROL_SIGNATURE)
+                    before_page = await frame.evaluate(PAGE_SIGNATURE)
                     tag = await control.evaluate('e=>e.tagName')
                     input_type = await control.get_attribute('type') if tag == 'INPUT' else None
                     label = (await control.get_attribute('aria-label') or await control.get_attribute('id') or await control.inner_text()).strip()[:80]
@@ -336,7 +356,8 @@ async def browser_report(code: str, *, brief: str = '') -> dict:
                             # Start observations use an independent scenario.
                             frame, controls = await restore_controls()
                             control = controls.nth(index)
-                            before = await frame.evaluate(SIGNATURE)
+                            before = await control.evaluate(CONTROL_SIGNATURE)
+                            before_page = await frame.evaluate(PAGE_SIGNATURE)
                         await control.click(timeout=2000)
                         if navigation:
                             navigation_path.append((index, identity))
@@ -438,7 +459,10 @@ async def browser_report(code: str, *, brief: str = '') -> dict:
                     await host.wait_for_timeout(100)
                     angle_evidence.extend(await frame.evaluate('()=>window.__workAngleEvidence()'))
                     text_evidence.extend(await frame.evaluate('()=>window.__workTextEvidence()'))
-                    effect = before != await frame.evaluate(SIGNATURE)
+                    try:
+                        effect = before != await control.evaluate(CONTROL_SIGNATURE)
+                    except Exception:
+                        effect = before_page != await frame.evaluate(PAGE_SIGNATURE)
                     changed = changed or effect
                     control_checks.append({'control':label,'contentChanged':effect})
                     # Buttons commonly open editors, delete rows or replace
