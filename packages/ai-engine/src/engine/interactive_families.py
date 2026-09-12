@@ -356,7 +356,8 @@ _PARAM_FORMULA_JS = r"""
       if (recipe === 'gas_law'){
         var n = num('param-n', 1), T = num('param-T', 298), vol = Math.max(0.001, num('param-V', 0.024));
         var P = n * 8.314 * T / vol;
-        setReadout('P=' + P.toFixed(0) + ' Pa');
+        var nRT = n * 8.314 * T;
+        setReadout('P=' + P.toFixed(0) + ' Pa  PV=' + (P*vol).toFixed(0) + '  nRT=' + nRT.toFixed(0));
         return {kind:'gas', n:n, T:T, V:vol, P:P};
       }
       if (recipe === 'enzyme_temp'){
@@ -385,6 +386,7 @@ _PARAM_FORMULA_JS = r"""
       reset: function(){ phase = 0.2; compute(); },
       step: function(dt){ phase += dt; },
       draw: function(ctx, canvas){
+        if (!ctx || !canvas) return;
         var s = compute();
         var w = canvas.width, h = canvas.height;
         ctx.clearRect(0,0,w,h);
@@ -396,12 +398,28 @@ _PARAM_FORMULA_JS = r"""
           ctx.fillStyle = '#facc15';
           ctx.beginPath(); ctx.arc(w*(0.25+pulse), h*0.5, 8, 0, Math.PI*2); ctx.fill();
         } else if (s.kind === 'gas'){
-          var r = 6 + Math.min(18, s.P / 20000);
-          for (var i=0;i<8;i++){
-            ctx.beginPath();
-            ctx.arc(w*0.2+i*w*0.08, h*0.5 + 12*Math.sin(phase*2+i), r, 0, Math.PI*2);
-            ctx.stroke();
+          var vNorm = Math.min(1, Math.max(0, (s.V - 0.01) / 0.04));
+          var chamberH = h * (0.32 + 0.48 * vNorm);
+          var chamberW = w * 0.26;
+          var left = w * 0.08;
+          var top = h - 14 - chamberH;
+          ctx.strokeStyle = '#94a3b8';
+          ctx.strokeRect(left, top, chamberW, chamberH);
+          ctx.fillStyle = '#64748b';
+          ctx.fillRect(left - 6, top - 8, chamberW + 12, 10);
+          var count = Math.max(5, Math.round(s.n * 8));
+          var speed = Math.sqrt(Math.max(80, s.T) / 298);
+          var heat = Math.min(1, (s.T - 200) / 200);
+          ctx.fillStyle = 'rgb(' + Math.round(80+175*heat) + ',' + Math.round(180-80*heat) + ',80)';
+          for (var i=0;i<count;i++){
+            var px = left + 12 + (chamberW-24) * (0.5 + 0.46*Math.sin(phase*speed*3.1+i*1.7));
+            var py = top + 18 + (chamberH-30) * (0.5 + 0.46*Math.cos(phase*speed*2.4+i*1.3));
+            ctx.beginPath(); ctx.arc(px, py, 4, 0, Math.PI*2); ctx.fill();
           }
+          ctx.fillStyle = '#e2e8f0';
+          ctx.font = '12px sans-serif';
+          ctx.fillText('活塞体积 ∝ V', left + chamberW + 16, 28);
+          ctx.fillText('P=' + s.P.toFixed(0) + ' Pa', left + chamberW + 16, 48);
         } else if (s.kind === 'enzyme' || s.kind === 'photo'){
           var y = h - 20 - (s.rate * (s.kind==='photo'? h*0.6 : Math.min(h*0.7, s.rate*40)));
           ctx.beginPath(); ctx.moveTo(20,h-20);
@@ -468,6 +486,7 @@ _TIME_INTEGRATOR_JS = r"""
         }
       },
       draw: function(ctx, canvas){
+        if (!ctx || !canvas) return;
         var w = canvas.width, h = canvas.height;
         ctx.clearRect(0,0,w,h);
         ctx.fillStyle = '#0f172a'; ctx.fillRect(0,0,w,h);
@@ -508,6 +527,7 @@ _WAVE_JS = r"""
       reset: function(){ phi = 0.2; this.applyParams(); },
       step: function(dt){ phi += dt * 2.2; this.applyParams(); },
       draw: function(ctx, canvas){
+        if (!ctx || !canvas) return;
         var w = canvas.width, h = canvas.height;
         var A1 = num('param-A1',0.6), A2 = num('param-A2',0.6), lam = num('param-lambda',80);
         var A = Math.max(0.2, A1+A2);
@@ -533,6 +553,9 @@ _COMPARTMENT_JS = r"""
   window.WorkFamily = (function(){
     var recipe = "__RECIPE__";
     var vin = 0.45, vout = 0.45, x = 1.2, y = 0.6;
+    var hist = [];
+    var maxHist = 160;
+    var delta = 0.4;
     function num(id, fallback){
       var el = document.getElementById(id);
       return el ? +el.value : fallback;
@@ -541,21 +564,28 @@ _COMPARTMENT_JS = r"""
       var out = document.getElementById('work-readout');
       if (out) out.textContent = text;
     }
+    function record(){
+      hist.push([x, y]);
+      if (hist.length > maxHist) hist.shift();
+    }
     return {
       applyParams: function(){
         if (recipe === 'osmosis'){
           setReadout('Δc=' + (num('param-cin',0.8)-num('param-cout',0.2)).toFixed(2));
         } else {
-          setReadout('x=' + x.toFixed(2) + '  y=' + y.toFixed(2));
+          setReadout('猎物x=' + x.toFixed(2) + '  捕食者y=' + y.toFixed(2) + '  δ=' + delta.toFixed(2));
         }
       },
       onStart: function(){
         if (recipe === 'osmosis'){ vin = 0.35; vout = 0.55; }
-        if (recipe === 'population' && x < 0.2){ x = 1.2; y = 0.6; }
+        if (recipe === 'population'){
+          if (x < 0.2){ x = 1.2; y = 0.6; }
+          if (!hist.length) record();
+        }
       },
       reset: function(){
         if (recipe === 'osmosis'){ vin = 0.45; vout = 0.45; }
-        else { x = 1.2; y = 0.6; }
+        else { x = 1.2; y = 0.6; hist = []; record(); }
         this.applyParams();
       },
       step: function(dt){
@@ -568,13 +598,15 @@ _COMPARTMENT_JS = r"""
         } else {
           var a = num('param-alpha',0.8), b = num('param-beta',0.5), g = num('param-gamma',0.4);
           var dx = x * (a - b*y);
-          var dy = y * (0.4*x - g);
-          x = Math.max(0.05, x + dx*dt);
-          y = Math.max(0.05, y + dy*dt);
-          setReadout('x=' + x.toFixed(2) + '  y=' + y.toFixed(2));
+          var dy = y * (delta*x - g);
+          x = Math.max(0.02, x + dx*dt);
+          y = Math.max(0.02, y + dy*dt);
+          record();
+          setReadout('猎物x=' + x.toFixed(2) + '  捕食者y=' + y.toFixed(2));
         }
       },
       draw: function(ctx, canvas){
+        if (!ctx || !canvas) return;
         var w = canvas.width, h = canvas.height;
         ctx.clearRect(0,0,w,h);
         ctx.fillStyle = '#0f172a'; ctx.fillRect(0,0,w,h);
@@ -583,8 +615,40 @@ _COMPARTMENT_JS = r"""
           ctx.fillStyle = '#14b8a6'; ctx.fillRect(w*0.55, h*(1-vout), w*0.35, h*vout);
           ctx.strokeStyle = '#f8fafc'; ctx.strokeRect(w*0.47, 10, 8, h-20);
         } else {
-          ctx.fillStyle = '#22c55e'; ctx.fillRect(40, h - x*40, 24, Math.min(h-20, x*40));
-          ctx.fillStyle = '#f97316'; ctx.fillRect(100, h - y*50, 24, Math.min(h-20, y*50));
+          var pad = 22, mid = Math.floor(w * 0.58);
+          ctx.font = '12px sans-serif';
+          ctx.fillStyle = '#22c55e'; ctx.fillRect(pad, 6, 8, 8);
+          ctx.fillStyle = '#e2e8f0'; ctx.fillText('猎物 x', pad + 12, 14);
+          ctx.fillStyle = '#f97316'; ctx.fillRect(pad + 80, 6, 8, 8);
+          ctx.fillStyle = '#e2e8f0'; ctx.fillText('捕食者 y', pad + 92, 14);
+          ctx.strokeStyle = '#334155';
+          ctx.beginPath(); ctx.moveTo(pad, h-pad); ctx.lineTo(mid-10, h-pad); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(mid, h-pad); ctx.lineTo(w-12, h-pad); ctx.stroke();
+          if (hist.length){
+            var maxX = 0.2, maxY = 0.2, i, px, py;
+            for (i=0;i<hist.length;i++){ if (hist[i][0]>maxX) maxX=hist[i][0]; if (hist[i][1]>maxY) maxY=hist[i][1]; }
+            maxX *= 1.2; maxY *= 1.2;
+            ctx.strokeStyle = '#22c55e'; ctx.beginPath();
+            for (i=0;i<hist.length;i++){
+              px = pad + (mid-10-pad) * (i / Math.max(1, maxHist-1));
+              py = h-pad - (h-2*pad) * (hist[i][0]/maxX);
+              if (i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
+            }
+            ctx.stroke();
+            ctx.strokeStyle = '#f97316'; ctx.beginPath();
+            for (i=0;i<hist.length;i++){
+              px = pad + (mid-10-pad) * (i / Math.max(1, maxHist-1));
+              py = h-pad - (h-2*pad) * (hist[i][1]/maxY);
+              if (i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
+            }
+            ctx.stroke();
+            ctx.fillStyle = '#38bdf8';
+            for (i=0;i<hist.length;i++){
+              px = mid + (w-12-mid) * (hist[i][0]/maxX);
+              py = h-pad - (h-2*pad) * (hist[i][1]/maxY);
+              ctx.fillRect(px, py, 2, 2);
+            }
+          }
         }
       }
     };

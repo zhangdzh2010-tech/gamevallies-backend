@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -12,7 +13,12 @@ from src.engine.desktop_runtime_shell import (
     accumulate_sim_time,
     shell_time_advance_contract_errors,
 )
-from src.engine.interactive_creation import normalize_interactive_request, run_interactive
+from src.engine.interactive_creation import (
+    ensure_full_path_chrome,
+    normalize_interactive_request,
+    run_interactive,
+    validate_interactive_html,
+)
 from src.engine.interactive_diversity import (
     DiversityLedger,
     fingerprints_near_duplicate,
@@ -24,6 +30,7 @@ from src.engine.interactive_short_path import (
     assemble_short_path_document,
     default_slots,
     extract_fill_payload,
+    looks_like_full_html,
 )
 from src.engine.template_registry import TemplateRegistry
 
@@ -274,6 +281,188 @@ class YieldLedgerEfficiency(unittest.TestCase):
         self.assertEqual(row["elapsed_s"], 11.2)
         self.assertTrue(is_infra_yield_row({"finalStatus": "failed", "failureFamily": "infra_maintenance"}))
         self.assertGreater(len(ALL_CASES), 8)
+
+
+def _assemble_recipe(recipe_id: str, brief: str = "") -> str:
+    recipe = get_recipe(recipe_id)
+    plan = plan_interactive_diversity(
+        family_id=recipe.family_id,
+        recipe_id=recipe.id,
+        title=recipe.title,
+        formula=recipe.formula,
+        variation_seed=f"assemble-{recipe_id}",
+        ledger=DiversityLedger(),
+    )
+    return assemble_short_path_document(
+        recipe=recipe,
+        slots=default_slots(recipe, plan, brief or recipe.title),
+        plan=plan,
+    )
+
+
+def _has_executable_script(html: str) -> bool:
+    return bool(re.search(r"<script\b|\son(?:click|input|change|submit|keydown|keyup)\s*=", html, re.I))
+
+
+class ShortPathShellRegressions(unittest.IsolatedAsyncioTestCase):
+    def test_fill_html_is_not_used_as_slots_and_shell_still_assembles(self):
+        broken = (
+            "<!DOCTYPE html><html><head></head><body><h1>broken gas</h1>"
+            "<script>document.getElementById('missing').getContext('2d');</script></body></html>"
+        )
+        self.assertTrue(looks_like_full_html(broken))
+        self.assertIsNone(extract_fill_payload(broken))
+        html = _assemble_recipe("gas_law", "理想气体状态方程")
+        self.assertIn('id="work-canvas"', html)
+        self.assertTrue(_has_executable_script(html))
+        self.assertLess(html.lower().find('id="work-canvas"'), html.find("getContext"))
+        self.assertNotIn("getElementById('missing')", html)
+        self.assertEqual(shell_time_advance_contract_errors(html), [])
+
+    def test_extract_slots_from_html_wrapped_json(self):
+        wrapped = (
+            "<!DOCTYPE html><html><body><p>ignore</p>"
+            '{"title":"课堂气体","summary":"PV=nRT 示意"}'
+            "</body></html>"
+        )
+        payload = extract_fill_payload(wrapped)
+        self.assertEqual(payload["title"], "课堂气体")
+
+    def test_full_path_chrome_injects_title_without_inventing_controls(self):
+        bare = "<!DOCTYPE html><html><head></head><body><p></p><script>1</script></body></html>"
+        repaired = ensure_full_path_chrome(
+            bare, "作品类型：工具。制作摄氏和华氏双向温度转换器。"
+        )
+        self.assertIn("<title>", repaired)
+        self.assertIn("<h1", repaired)
+        self.assertIn("温度转换", repaired)
+        self.assertNotIn("<input", repaired)
+
+    def test_assembled_gas_and_population_have_executable_script_and_canvas(self):
+        for recipe_id in ("gas_law", "population"):
+            html = _assemble_recipe(recipe_id)
+            self.assertTrue(re.search(r"</html\s*>\s*$", html, re.I), recipe_id)
+            self.assertTrue(_has_executable_script(html), recipe_id)
+            self.assertIn('id="work-canvas"', html)
+            self.assertIn("getContext", html)
+            self.assertLess(
+                html.lower().find('id="work-canvas"'),
+                html.find("getContext"),
+                recipe_id,
+            )
+            self.assertEqual(shell_time_advance_contract_errors(html), [], recipe_id)
+
+    async def test_assembled_gas_law_params_change_readout_and_canvas_context_works(self):
+        html = _assemble_recipe(
+            "gas_law",
+            "作品类型：科学演示。制作理想气体状态方程，可调n、T、V，按PV=nRT显示压强。",
+        )
+        report = await validate_interactive_html(html)
+        self.assertFalse(report.get("js_errors"), report)
+        self.assertTrue(report["passed"], report["issues"])
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            page = await browser.new_page()
+            await page.set_content(html)
+            probe = await page.evaluate(
+                """() => {
+                  const canvas = document.getElementById('work-canvas');
+                  const ctx = canvas && canvas.getContext('2d');
+                  const readout = document.getElementById('work-readout');
+                  const before = readout ? readout.textContent : '';
+                  const vol = document.getElementById('param-V');
+                  vol.value = vol.max;
+                  vol.dispatchEvent(new Event('input', {bubbles:true}));
+                  const after = readout ? readout.textContent : '';
+                  return {
+                    hasCanvas: !!canvas,
+                    hasCtx: !!(ctx && ctx.fillRect),
+                    before: before,
+                    after: after,
+                    changed: before !== after
+                  };
+                }"""
+            )
+            await browser.close()
+        self.assertTrue(probe["hasCanvas"])
+        self.assertTrue(probe["hasCtx"])
+        self.assertTrue(probe["changed"], probe)
+
+    async def test_assembled_population_start_advances_sim_and_script_executes(self):
+        html = _assemble_recipe("population", "做一个捕食者与猎物的种群变化模型。")
+        self.assertTrue(_has_executable_script(html))
+        report = await validate_interactive_html(html)
+        self.assertFalse(report.get("js_errors"), report)
+        self.assertTrue(report["passed"], report["issues"])
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            page = await browser.new_page()
+            await page.set_content(html)
+            before = await page.evaluate(
+                """() => ({
+                  t: window.WorkRuntime.simTime(),
+                  readout: document.getElementById('work-readout').textContent,
+                  ctx: !!document.getElementById('work-canvas').getContext('2d')
+                })"""
+            )
+            await page.click("#btn-start")
+            await page.wait_for_timeout(180)
+            after = await page.evaluate(
+                """() => ({
+                  t: window.WorkRuntime.simTime(),
+                  readout: document.getElementById('work-readout').textContent
+                })"""
+            )
+            await browser.close()
+        self.assertTrue(before["ctx"])
+        self.assertGreater(after["t"], before["t"])
+        self.assertNotEqual(after["readout"], before["readout"])
+
+    async def test_short_path_ignores_broken_fill_html_for_gas_law(self):
+        request = normalize_interactive_request(RunPipelineV2Request(
+            game_id="game", user_id="user", timeout_s=1800, artifact_kind="science",
+            raw_user_input="作品类型：科学演示。制作理想气体状态方程，可调n、T、V，按PV=nRT显示压强。",
+            source_spec=GameSpec(
+                game_type="interactive_experience",
+                artifact_kind="science",
+                source_description="作品类型：科学演示。制作理想气体状态方程，可调n、T、V，按PV=nRT显示压强。",
+            ),
+        ))
+        broken = (
+            "<!DOCTYPE html><html><head></head><body><h1>broken</h1>"
+            "<script>document.getElementById('missing').getContext('2d');</script></body></html>"
+        )
+        review = json.dumps({
+            "artifact_kind": "science", "complete": True, "critical_issues": [],
+            "scores": {k: 8 for k in ["scientific_correctness", "parameter_fidelity", "explanation_integrity", "visual_clarity"]},
+            "evidence": {k: "Fixture assertion for routing test" for k in ["scientific_correctness", "parameter_fidelity", "explanation_integrity", "visual_clarity"]},
+            "issues": [],
+        })
+
+        async def llm_side_effect(**kwargs):
+            if kwargs.get("step_key") == "code_review":
+                return review
+            return broken
+
+        with patch(
+            "src.engine.interactive_creation.LLMClient.complete_with_truncation_retry",
+            new=AsyncMock(side_effect=llm_side_effect),
+        ) as llm, patch(
+            "src.engine.interactive_creation.validate_interactive_html",
+            new=AsyncMock(return_value={"ran": True, "passed": True, "issues": []}),
+        ):
+            result = await run_interactive(request)
+        self.assertEqual(llm.call_args_list[0].kwargs["step_key"], "code_generate.template_fill")
+        self.assertIn('id="work-canvas"', result.html_code)
+        self.assertIn('data-recipe="gas_law"', result.html_code)
+        self.assertTrue(_has_executable_script(result.html_code))
+        self.assertNotIn("getElementById('missing')", result.html_code)
+        self.assertEqual(result.quality_breakdown["template_route"], "HIT")
+        self.assertEqual(result.runtime_qa_report["generationAttempts"]["fullGenerationCalls"], 0)
 
 
 if __name__ == "__main__":

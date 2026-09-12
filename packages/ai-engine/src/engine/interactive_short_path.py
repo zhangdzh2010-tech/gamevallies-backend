@@ -1,8 +1,10 @@
 """HIT/SOFT short path: fill L3 presentation slots, then assemble the shell.
 
-The LLM is asked for JSON/fragment copy, not a full HTML document. If the
-model still returns a complete HTML page (legacy mocks / fallback), that
-document is accepted unchanged so quality gates stay on the same path.
+The LLM is asked for JSON/fragment copy, not a full HTML document. Fill
+output is never used as the playable page — even when the model returns a
+complete HTML document — so gas_law/population cannot ship a canvas-less or
+script-less artifact. JSON slots are merged when present; otherwise recipe
+defaults are assembled.
 """
 from __future__ import annotations
 
@@ -43,22 +45,33 @@ def default_slots(recipe: Recipe, plan: DiversityPlan, brief: str) -> Dict[str, 
 
 
 def extract_fill_payload(text: str) -> Optional[Dict[str, Any]]:
-    if not text or looks_like_full_html(text):
+    if not text:
         return None
     blob = text.strip()
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", blob, re.S)
     if fenced:
-        blob = fenced.group(1)
+        parsed = _parse_slot_object(fenced.group(1))
+        if parsed:
+            return parsed
+    for match in re.finditer(r"\{[^{}]{0,4000}\}", blob):
+        parsed = _parse_slot_object(match.group(0))
+        if parsed and any(key in parsed for key in SLOT_KEYS):
+            return parsed
     start, end = blob.find("{"), blob.rfind("}")
     if start < 0 or end <= start:
         return None
+    parsed = _parse_slot_object(blob[start : end + 1])
+    if parsed and any(key in parsed for key in SLOT_KEYS):
+        return parsed
+    return None
+
+
+def _parse_slot_object(blob: str) -> Optional[Dict[str, Any]]:
     try:
-        payload = json.loads(blob[start : end + 1])
+        payload = json.loads(blob)
     except json.JSONDecodeError:
         return None
-    if not isinstance(payload, dict):
-        return None
-    return payload
+    return payload if isinstance(payload, dict) else None
 
 
 def looks_like_full_html(text: str) -> bool:
