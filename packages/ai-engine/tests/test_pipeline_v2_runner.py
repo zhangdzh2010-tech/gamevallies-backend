@@ -3878,7 +3878,7 @@ def test_run_iterate_impl_attaches_quality_fields_when_assessment_succeeds():
     assert mock_compute.call_args.kwargs["review"] is review
 
 
-def test_run_iterate_impl_succeeds_without_quality_fields_when_review_raises():
+def test_run_iterate_impl_keeps_route_labels_when_review_raises():
     runner = V2PipelineRunner()
     request, spec, runtime_contract, qa_success, runtime_qa = _build_iterate_quality_fixtures()
 
@@ -3907,7 +3907,7 @@ def test_run_iterate_impl_succeeds_without_quality_fields_when_review_raises():
     assert mock_compute.call_count == 0
 
 
-def test_run_iterate_impl_abandons_quality_assessment_on_timeout():
+def test_run_iterate_impl_keeps_route_labels_when_quality_assessment_times_out():
     runner = V2PipelineRunner()
     request, spec, runtime_contract, qa_success, runtime_qa = _build_iterate_quality_fixtures()
 
@@ -3940,7 +3940,7 @@ def test_run_iterate_impl_abandons_quality_assessment_on_timeout():
     assert mock_compute.call_count == 0
 
 
-def test_run_iterate_impl_skips_quality_assessment_when_flag_disabled():
+def test_run_iterate_impl_keeps_route_labels_when_quality_review_disabled():
     runner = V2PipelineRunner()
     request, spec, runtime_contract, qa_success, runtime_qa = _build_iterate_quality_fixtures()
 
