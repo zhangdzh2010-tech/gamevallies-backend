@@ -946,16 +946,22 @@ class PipelineV2QualityPolicyMixin:
         if any(token in normalized_issue_blob for token in (
             "declare or inline `resize`",
             "declare or inline `loop`",
+            "declare or inline `update`",
+            "declare or inline `resetgame`",
+            "declare or inline `restartgame`",
             "declare or inline resize",
             "declare or inline loop",
+            "referenced as a function call",
             "tdz_symbol:",
             "temporal dead zone",
             "const name = () =>",
         )):
             _append_recipe(
                 "- Declare helpers as hoisted function declarations in the same script. "
-                "Convert `const name = () => {}` / `let name = function () {}` to `function name() {}` "
-                "so `init()`, listeners, and `requestAnimationFrame` cannot hit TDZ."
+                "Convert `const name = () => {}` / `let name = function () {}` / object-method "
+                "shorthand (`resetGame() {` inside `{ ... }`) / `this.resetGame = () => {}` to "
+                "`function name() {}` so `init()`, listeners, and `requestAnimationFrame` cannot "
+                "hit TDZ and free calls such as `resetGame()` / `update()` / `loop()` resolve."
             )
         if any(token in normalized_issue_blob for token in (
             "declare or inline `nc`",
@@ -974,6 +980,14 @@ class PipelineV2QualityPolicyMixin:
                 "For incrementing scores write `let combo = 0;` (or the reported name) before "
                 "`name++` / `name += 1` / `updateHud(name)`. Never read an undeclared identifier "
                 "as a live expression."
+            )
+        if re.search(r"declare or inline `[a-z]{1,2}`", normalized_issue_blob) or (
+            "declare or inline `t`" in normalized_issue_blob
+        ):
+            _append_recipe(
+                "- Short live aliases such as `t` / `dt` must be parameters or declared locals. "
+                "Write `function loop(t)` or `function update(t)` so the rAF timestamp is a parameter, "
+                "or `let t = 0;` before `update(t)` / `if (t > last)`. Do not read an implicit global `t`."
             )
         if "returns unless the game is already in `playing`" in normalized_issue_blob or "returns unless the game is already in 'playing'" in normalized_issue_blob:
             _append_recipe(

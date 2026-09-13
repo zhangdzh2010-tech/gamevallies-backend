@@ -265,6 +265,211 @@ def test_code_preflight_hoists_tdz_resize_and_loop_bindings():
     assert "temporal dead zone" in " ".join(issue.message for issue in issues) or "function declarations" in guidance
 
 
+def test_code_preflight_hoists_resetgame_update_const_bindings_like_resize_loop():
+    validator = CodePreflightValidator()
+    html = _preflight_canvas_html(
+        """
+          init();
+          const resetGame = () => {
+            score = 0;
+          };
+          const update = (t) => {
+            score += 1;
+            return t;
+          };
+          function init() {
+            resetGame();
+            update(0);
+          }
+        """
+    )
+    issues = validator.validate(html, runtime_contract=GameRuntimeContract())
+    assert {issue.code for issue in issues} >= {"tdz_symbol:resetGame", "tdz_symbol:update"}
+    repaired = validator.auto_repair(html, issues=issues)
+    assert "function resetGame(" in repaired
+    assert "function update(" in repaired
+    assert "const resetGame =" not in repaired
+    assert "const update =" not in repaired
+    remaining = validator.validate(repaired, runtime_contract=GameRuntimeContract())
+    assert not any(
+        issue.code in {
+            "tdz_symbol:resetGame",
+            "tdz_symbol:update",
+            "undefined_symbol:resetGame",
+            "undefined_symbol:update",
+        }
+        for issue in remaining
+    )
+
+
+def test_code_preflight_ignores_object_method_shorthand_definitions_as_calls():
+    validator = CodePreflightValidator()
+    html = _preflight_canvas_html(
+        """
+          const game = {
+            resetGame() {
+              this.score = 0;
+            },
+            update() {
+              this.score += 1;
+            },
+            loop(t) {
+              this.update();
+              requestAnimationFrame((now) => this.loop(now));
+            }
+          };
+          game.resetGame();
+          game.loop(0);
+        """
+    )
+    issues = validator.validate(html, runtime_contract=GameRuntimeContract())
+    assert not any(
+        issue.code in {
+            "undefined_symbol:resetGame",
+            "undefined_symbol:update",
+            "undefined_symbol:loop",
+            "undefined_symbol:t",
+        }
+        for issue in issues
+    )
+
+
+def test_code_preflight_hoists_object_methods_used_as_free_calls():
+    validator = CodePreflightValidator()
+    html = _preflight_canvas_html(
+        """
+          const game = {
+            resetGame() { score = 0; },
+            update() { score += 1; },
+            loop(t) { update(); requestAnimationFrame(loop); }
+          };
+          resetGame();
+          requestAnimationFrame(loop);
+        """
+    )
+    issues = validator.validate(html, runtime_contract=GameRuntimeContract())
+    assert {issue.code for issue in issues} >= {
+        "undefined_symbol:resetGame",
+        "undefined_symbol:update",
+        "undefined_symbol:loop",
+    }
+    repaired = validator.auto_repair(html, issues=issues)
+    assert "function resetGame(" in repaired
+    assert "function update(" in repaired
+    assert "function loop(" in repaired
+    remaining = validator.validate(repaired, runtime_contract=GameRuntimeContract())
+    assert not any(
+        issue.code in {
+            "undefined_symbol:resetGame",
+            "undefined_symbol:update",
+            "undefined_symbol:loop",
+        }
+        for issue in remaining
+    )
+
+
+def test_code_preflight_hoists_this_and_window_function_assigns():
+    validator = CodePreflightValidator()
+    html = _preflight_canvas_html(
+        """
+          function init() {
+            resetGame();
+            update();
+          }
+          this.resetGame = function() { score = 0; };
+          window.update = () => { score += 1; };
+          init();
+        """
+    )
+    issues = validator.validate(html, runtime_contract=GameRuntimeContract())
+    assert {issue.code for issue in issues} >= {
+        "undefined_symbol:resetGame",
+        "undefined_symbol:update",
+    }
+    repaired = validator.auto_repair(html, issues=issues)
+    assert "function resetGame(" in repaired
+    assert "function update(" in repaired
+    remaining = validator.validate(repaired, runtime_contract=GameRuntimeContract())
+    assert not any(
+        issue.code in {"undefined_symbol:resetGame", "undefined_symbol:update"}
+        for issue in remaining
+    )
+
+
+def test_code_preflight_declares_short_live_raf_timestamp_t():
+    validator = CodePreflightValidator()
+    html = _preflight_canvas_html(
+        """
+          let last = 0;
+          function resetGame() { last = 0; }
+          function update() {}
+          function loop() {
+            if (t > last + 16) {
+              last = t;
+              update();
+            }
+            requestAnimationFrame(loop);
+          }
+          resetGame();
+          requestAnimationFrame(loop);
+        """
+    )
+    issues = validator.validate(html, runtime_contract=GameRuntimeContract())
+    assert any(issue.code == "undefined_symbol:t" for issue in issues)
+    assert any("live expression" in issue.message for issue in issues if issue.code == "undefined_symbol:t")
+    repaired = validator.auto_repair(html, issues=issues)
+    assert "let t = 0;" in repaired
+    remaining = validator.validate(repaired, runtime_contract=GameRuntimeContract())
+    assert not any(issue.code == "undefined_symbol:t" for issue in remaining)
+    guidance = validator.render_guidance(issues)
+    assert "function loop(t)" in guidance
+    assert "`t`" in guidance
+
+
+def test_code_preflight_declares_t_used_as_update_argument():
+    validator = CodePreflightValidator()
+    html = _preflight_canvas_html(
+        """
+          function resetGame() {}
+          function update(dt) { return dt; }
+          function loop() {
+            update(t);
+            requestAnimationFrame(loop);
+          }
+          resetGame();
+          requestAnimationFrame(loop);
+        """
+    )
+    issues = validator.validate(html, runtime_contract=GameRuntimeContract())
+    assert any(issue.code == "undefined_symbol:t" for issue in issues)
+    repaired = validator.auto_repair(html, issues=issues)
+    assert "let t = 0;" in repaired
+    remaining = validator.validate(repaired, runtime_contract=GameRuntimeContract())
+    assert not any(issue.code == "undefined_symbol:t" for issue in remaining)
+
+
+def test_code_preflight_guidance_names_resetgame_update_as_function_declarations():
+    guidance = CodePreflightValidator().render_guidance(
+        [
+            CodePreflightIssue(
+                code="undefined_symbol:resetGame",
+                message="Declare or inline `resetGame` before use; it is referenced as a function call.",
+            ),
+            CodePreflightIssue(
+                code="undefined_symbol:update",
+                message="Declare or inline `update` before use; it is referenced as a function call.",
+            ),
+            CodePreflightIssue(
+                code="undefined_symbol:t",
+                message="Declare or inline `t` before use; it is referenced as a live expression.",
+            ),
+        ]
+    )
+    assert "function resetGame()" in guidance
+    assert "function declarations" in guidance
+    assert "function loop(t)" in guidance
+
+
 def test_code_preflight_hoists_tdz_helper_beyond_hardcoded_resize_loop():
     validator = CodePreflightValidator()
     html = """

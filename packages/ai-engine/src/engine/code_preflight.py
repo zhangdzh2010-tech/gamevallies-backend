@@ -87,6 +87,21 @@ _BARE_FUNCTION_ASSIGN_RE = re.compile(
     rf"(?P<prefix>async\s+)?(?P<body>function\b|\([^)]*\)\s*=>|(?P<single>{_IDENTIFIER_RE})\s*=>)",
     re.MULTILINE,
 )
+_MEMBER_FUNCTION_ASSIGN_RE = re.compile(
+    rf"(?<![\w$])(?:this|window|self|globalThis|{_IDENTIFIER_RE})\s*\.\s*"
+    rf"(?P<name>{_IDENTIFIER_RE})\s*=\s*"
+    rf"(?P<prefix>async\s+)?(?P<body>function\b|\([^)]*\)\s*=>|(?P<single>{_IDENTIFIER_RE})\s*=>)",
+    re.MULTILINE,
+)
+_METHOD_SHORTHAND_RE = re.compile(
+    rf"(?:^|[{{,;])\s*(?:async\s+)?(?P<name>{_IDENTIFIER_RE})\s*"
+    rf"\((?P<params>[^)]*)\)\s*\{{",
+    re.MULTILINE,
+)
+_CONTROL_STATEMENT_NAMES = frozenset(
+    {"if", "for", "while", "switch", "catch", "function", "class", "with", "do"}
+)
+_SHORT_LIVE_ALIAS_MAX_LEN = 2
 _BARE_ASSIGNMENT_RE = re.compile(
     rf"(?<![\w$.])(?P<name>{_IDENTIFIER_RE})\s*(?:[+\-*/%]=|=(?!=))"
 )
@@ -442,6 +457,7 @@ class CodePreflightValidator:
         seen_codes = set()
         undefined_symbols: set[str] = set()
         tdz_symbols: set[str] = set()
+        call_undefined: set[str] = set()
         nullable_objects: set[str] = set()
         raw_messages: list[str] = []
         for issue in issues:
@@ -452,7 +468,10 @@ class CodePreflightValidator:
             seen_codes.add(issue.code)
             raw_messages.append(issue.message)
             if issue.code.startswith("undefined_symbol:"):
-                undefined_symbols.add(issue.code.split(":", 1)[1])
+                name = issue.code.split(":", 1)[1]
+                undefined_symbols.add(name)
+                if "function call" in issue.message:
+                    call_undefined.add(name)
             if issue.code.startswith("tdz_symbol:"):
                 tdz_symbols.add(issue.code.split(":", 1)[1])
             if issue.code.startswith("nullable_runtime_object:"):
@@ -552,14 +571,23 @@ class CodePreflightValidator:
                 "- Declare `render()` and `update()` before the first direct call or loop bootstrap that invokes them; "
                 "do not call them from `loop()` until both functions are defined in scope."
             )
-        hoist_names = tdz_symbols | (undefined_symbols & {"resize", "loop", "update", "render", "init"})
+        if {"resetGame", "restartGame", "startGame"} & undefined_symbols:
+            visible.append(
+                "- Declare `resetGame()` / `restartGame()` / `startGame()` as function declarations "
+                "in the same script (`function resetGame() { ... }`). Object-method shorthand "
+                "(`resetGame() {` inside `{ ... }`) and `this.resetGame = () => {}` do not bind a "
+                "free `resetGame()` call."
+            )
+        hoist_names = tdz_symbols | call_undefined | (
+            undefined_symbols & {"resize", "loop", "update", "render", "init", "resetGame", "restartGame", "startGame"}
+        )
         if tdz_symbols or hoist_names:
             helpers = ", ".join(f"`{name}`" for name in sorted(tdz_symbols or hoist_names))
             visible.append(
                 f"- Declare {helpers} as function declarations "
-                "(not `const name = () =>` / `let name = function`). Function declarations hoist; "
-                "`const`/`let` arrows throw TDZ when `init()` or a listener/rAF path runs "
-                "before the binding is initialized."
+                "(not `const name = () =>` / `let name = function` / object-method shorthand). "
+                "Function declarations hoist; `const`/`let` arrows throw TDZ when `init()` or a "
+                "listener/rAF path runs before the binding is initialized."
             )
             visible.append(
                 "- Register `addEventListener` and `requestAnimationFrame` callbacks only after "
@@ -589,6 +617,17 @@ class CodePreflightValidator:
                 "For incrementing scores write `let combo = 0;` (or the reported name) "
                 "before `name++` / `name += 1` / `updateHud(name)`. Never read an undeclared "
                 "identifier as a live expression."
+            )
+        short_live = {
+            name
+            for name in remaining_live | short_aliases
+            if len(name) <= _SHORT_LIVE_ALIAS_MAX_LEN
+        }
+        if short_live or "t" in undefined_symbols:
+            visible.append(
+                "- Short live aliases such as `t` / `dt` must be parameters or declared locals. "
+                "Write `function loop(t)` / `function update(t)` so the rAF timestamp is a parameter, "
+                "or `let t = 0;` before `update(t)` / `if (t > last)`. Do not read an implicit global `t`."
             )
         if "line" in undefined_symbols:
             visible.append(
@@ -1111,6 +1150,8 @@ class CodePreflightValidator:
             prefix = scan_script[max(0, match.start() - 6):match.start()]
             if prefix.rstrip().endswith("new"):
                 continue
+            if self._is_function_like_definition(scan_script, match):
+                continue
             if self._should_ignore_symbol(name, declared):
                 continue
             _append_issue(name, suffix="a function call")
@@ -1166,8 +1207,128 @@ class CodePreflightValidator:
                 continue
             if re.match(r"\s*=(?!=)", script[match.end():]):
                 continue
+            if self._identifier_is_function_definition(script, match.start(), match.end()):
+                continue
             positions.append(match.start())
         return min(positions) if positions else None
+
+    @classmethod
+    def _identifier_is_function_definition(
+        cls,
+        script: str,
+        name_start: int,
+        name_end: int,
+    ) -> bool:
+        """True when this identifier starts a function/method definition."""
+        name = script[name_start:name_end]
+        if name.lower() in _CONTROL_STATEMENT_NAMES:
+            return False
+        prefix = script[max(0, name_start - 32):name_start]
+        if re.search(r"(?:async\s+)?function\s+$", prefix):
+            return True
+        after_name = script[name_end:]
+        opener = re.match(r"\s*\(", after_name)
+        if not opener:
+            return False
+        rest = after_name[opener.end():]
+        depth = 1
+        index = 0
+        quote: str | None = None
+        escaped = False
+        while index < len(rest) and depth:
+            ch = rest[index]
+            if quote:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == quote:
+                    quote = None
+                index += 1
+                continue
+            if ch in {"'", '"', "`"}:
+                quote = ch
+            elif ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            index += 1
+        if depth != 0:
+            return False
+        after_paren = rest[index:].lstrip()
+        if not after_paren.startswith("{"):
+            return False
+        return bool(re.search(r"(?:^|[{,;])\s*(?:async\s+)?$", prefix, re.MULTILINE))
+
+    @classmethod
+    def _is_function_like_definition(cls, script: str, match: re.Match[str]) -> bool:
+        """True when a _CALL_RE match is actually a function/method definition."""
+        name = match.group("name") or ""
+        return cls._identifier_is_function_definition(script, match.start(), match.start() + len(name))
+
+    def _has_free_function_call(self, script: str, name: str) -> bool:
+        for match in _CALL_RE.finditer(script):
+            if match.group("name") != name:
+                continue
+            prefix = script[max(0, match.start() - 6):match.start()]
+            if prefix.rstrip().endswith("new"):
+                continue
+            if self._is_function_like_definition(script, match):
+                continue
+            return True
+        return False
+
+    def _iter_method_shorthand_bindings(self, script: str):
+        for match in _METHOD_SHORTHAND_RE.finditer(script):
+            name = match.group("name")
+            if (
+                not name
+                or name.lower() in _CONTROL_STATEMENT_NAMES
+                or name in _RESERVED_IDENTIFIERS
+            ):
+                continue
+            body, body_end = self._consume_balanced_block(script, match.end())
+            if body is None:
+                continue
+            yield name, match.group("params") or "", body, match.start("name"), body_end
+
+    def _hoist_method_and_member_functions(
+        self,
+        script: str,
+        names: set[str] | None,
+    ) -> str:
+        """Copy object/class methods and this/window assigns into function declarations."""
+        extras: list[str] = []
+        seen: set[str] = set()
+
+        def _want(name: str, *, free_call_required: bool) -> bool:
+            if not name or name in seen or name in _RESERVED_IDENTIFIERS:
+                return False
+            if re.search(rf"\bfunction\s+{re.escape(name)}\s*\(", script):
+                return False
+            if names is not None:
+                return name in names
+            return (not free_call_required) or self._has_free_function_call(script, name)
+
+        for name, params, body, _start, _end in self._iter_method_shorthand_bindings(script):
+            if not _want(name, free_call_required=True):
+                continue
+            extras.append(f"function {name}({params}) {{{body}}}")
+            seen.add(name)
+
+        for match in _MEMBER_FUNCTION_ASSIGN_RE.finditer(script):
+            name = match.group("name")
+            if not _want(name, free_call_required=True):
+                continue
+            rewritten = self._rewrite_function_binding(script, match)
+            if rewritten is None:
+                continue
+            extras.append(rewritten[0])
+            seen.add(name)
+
+        if not extras:
+            return script
+        return "\n".join(extras) + "\n" + script.lstrip()
 
     def _repair_declare_before_use(
         self,
@@ -1179,6 +1340,7 @@ class CodePreflightValidator:
         def script_block(block):
             script = block.group("body")
             repaired = self._hoist_function_bindings(script, names)
+            repaired = self._hoist_method_and_member_functions(repaired, names)
             repaired = self._declare_assigned_symbols(
                 repaired,
                 names,
@@ -1251,9 +1413,17 @@ class CodePreflightValidator:
         assigned = self._collect_assigned_symbols(scan_script) | set(extra_assigned or ())
         incremented = self._collect_incremented_symbols(scan_script)
         compared = self._collect_literal_compared_symbols(scan_script)
+        short_live = {
+            name
+            for name in self._collect_live_expression_symbols(scan_script)
+            if len(name) <= _SHORT_LIVE_ALIAS_MAX_LEN
+            and name not in declared
+            and name not in _RESERVED_IDENTIFIERS
+            and name.lower() not in _CONTROL_STATEMENT_NAMES
+        }
         targets = {
             name
-            for name in assigned | incremented | compared
+            for name in assigned | incremented | compared | short_live
             if name not in declared
             and name not in _RESERVED_IDENTIFIERS
             and (names is None or name in names)
@@ -1261,7 +1431,11 @@ class CodePreflightValidator:
         }
         if not targets:
             return script
-        increment_only = sorted(name for name in targets if name in incremented and name not in assigned)
+        increment_only = sorted(
+            name
+            for name in targets
+            if (name in incremented or name in short_live) and name not in assigned
+        )
         assigned_only = sorted(name for name in targets if name not in increment_only)
         prefix_parts: list[str] = []
         if increment_only:
@@ -1284,6 +1458,16 @@ class CodePreflightValidator:
                 return block[0]
             return block[1] + repaired + block[3]
         return _SCRIPT_BLOCK_RE.sub(script_block, html_code)
+
+    @staticmethod
+    def _collect_live_expression_symbols(script: str) -> set[str]:
+        names: set[str] = set()
+        for pattern in _VALUE_REFS:
+            for match in pattern.finditer(script):
+                name = match.group("name")
+                if name:
+                    names.add(name)
+        return names
 
     @staticmethod
     def _collect_literal_compared_symbols(script: str) -> set[str]:
@@ -1505,6 +1689,15 @@ class CodePreflightValidator:
             name = (match.group("name") or "").strip()
             if re.fullmatch(_IDENTIFIER_RE, name):
                 declared.add(name)
+        for match in _METHOD_SHORTHAND_RE.finditer(script):
+            name = (match.group("name") or "").strip()
+            if name.lower() in _CONTROL_STATEMENT_NAMES:
+                continue
+            for raw_part in (match.group("params") or "").split(","):
+                part = raw_part.strip()
+                if not part:
+                    continue
+                declared.update(CodePreflightValidator._extract_binding_identifiers(part))
         return declared
 
     @staticmethod

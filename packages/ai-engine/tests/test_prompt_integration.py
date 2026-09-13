@@ -118,6 +118,9 @@ class TestPromptIntegration(unittest.TestCase):
         self.assertIn("`cell.fruit`", block)
         self.assertIn("XMLHttpRequest", block)
         self.assertIn("WebSocket", block)
+        self.assertIn("function resetGame() {}", block)
+        self.assertIn("function update() {}", block)
+        self.assertIn("function loop(t)", block)
 
     def test_full_generation_keeps_provider_failover_disabled_but_allows_single_cancel_retry(self):
         generator = CodeGenerator(llm_mode="real")
