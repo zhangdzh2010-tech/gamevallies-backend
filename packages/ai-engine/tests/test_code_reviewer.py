@@ -113,6 +113,9 @@ def test_review_receives_original_desktop_requirements_and_evidence_rules():
     assert 'Do not require touch gestures or haptics for desktop games' in call['system']
     assert 'concrete code-supported defect' in call['system']
     assert '<html>game</html>' in call['messages'][0]['content']
+    assert 'findings is required and must have the same length and order as issues' in call['system']
+    assert 'source_ref is required on every finding' in call['system']
+    assert 'Do not list issues without findings' in call['system']
 
 
 def test_scoring_rubric_separates_required_behavior_from_optional_polish():
@@ -159,7 +162,11 @@ def test_missing_citation_corrects_assessment_without_changing_artifact():
     assert client.await_count == 2
     correction = client.await_args.kwargs
     assert SOURCE in correction['messages'][0]['content']
-    assert 'Remove contradicted claims' in correction['messages'][0]['content']
+    assert 'findings must provide source evidence for every issue' in correction['messages'][0]['content']
+    assert 'source_ref' in correction['messages'][0]['content']
+    assert 'issues and findings must have the same length' in correction['messages'][0]['content']
+    assert 'Do not change the artifact' in correction['messages'][0]['content']
+    assert 'Never invent or inflate scores' in correction['messages'][0]['content']
     assert correction['step_key'] == 'code_review'
 
 
@@ -316,6 +323,74 @@ def test_review_outage_is_not_an_optional_review_success(responses):
     if report['assessments']:
         assert report['assessments'][0]['assessment']['ran'] is False
         assert report['assessments'][0]['validation_errors'] == ['invalid review schema']
+
+
+def test_missing_finding_evidence_recovers_on_third_reassessment():
+    unsupported = PASSING | dict(is_complete_game=False, issues=[FINDING['issue']])
+    result, client = run_review_responses([
+        json.dumps(unsupported),
+        json.dumps(unsupported),
+        json.dumps(PASSING),
+    ])
+    assert result.evidence_verified
+    assert result.is_complete_game
+    assert result.issues == []
+    assert client.await_count == 3
+    correction = client.await_args.kwargs['messages'][0]['content']
+    assert 'findings must provide source evidence for every issue' in correction
+    assert 'source_ref' in correction
+    assert 'Do not change the artifact' in correction
+
+
+def test_missing_finding_evidence_exhaustion_fails_closed_without_auto_pass():
+    unsupported = PASSING | dict(is_complete_game=False, issues=['click bound missing'])
+    with pytest.raises(PipelineExecutionError) as caught:
+        run_review_responses([json.dumps(unsupported)] * 3)
+    assert caught.value.failure_family == 'review_evidence'
+    assert 'findings must provide source evidence for every issue' in str(caught.value)
+    assert caught.value.artifacts[0]['payload'] == SOURCE
+    report = caught.value.artifacts[1]['payload']
+    assert report['failure_family'] == 'review_evidence'
+    assert [a['attempt'] for a in report['assessments']] == [1, 2, 3]
+    assert all(
+        'findings must provide source evidence for every issue' in a['validation_errors']
+        for a in report['assessments']
+    )
+
+
+def test_finding_source_aliases_are_accepted_without_retry():
+    from src.engine.review_evidence import source_reference_catalog
+    source = SOURCE
+    reference = next(iter(source_reference_catalog(source)))
+    aliased = {key: value for key, value in FINDING.items() if key != 'code_excerpt'}
+    aliased['sourceRef'] = reference
+    result, client = run_review_responses([json.dumps(
+        PASSING | dict(is_complete_game=False, issues=[aliased['issue']], findings=[aliased])
+    )], source)
+    assert result.evidence_verified
+    assert not result.is_complete_game
+    assert result.findings[0]['source_ref'] == reference
+    assert result.findings[0]['code_excerpt'] == source_reference_catalog(source)[reference]
+    assert client.await_count == 1
+
+
+def test_single_finding_object_is_coerced_to_a_list():
+    result, client = run_review_responses([json.dumps(
+        PASSING | dict(is_complete_game=False, issues=[FINDING['issue']], findings=FINDING)
+    )])
+    assert result.evidence_verified
+    assert result.findings == [FINDING]
+    assert client.await_count == 1
+
+
+def test_issue_objects_are_promoted_to_findings_when_findings_omitted():
+    result, client = run_review_responses([json.dumps(
+        PASSING | dict(is_complete_game=False, issues=[FINDING])
+    )])
+    assert result.evidence_verified
+    assert result.issues == [FINDING['issue']]
+    assert result.findings == [FINDING]
+    assert client.await_count == 1
 
 
 def test_review_403_persists_transport_evidence_and_stays_non_creative():
