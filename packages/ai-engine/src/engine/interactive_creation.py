@@ -216,7 +216,9 @@ TOOL_RUNTIME_GUIDANCE = '''
 换算器、计算器、表单工具必须提供可见且可操作的输入（number/text/select）以及能改变作品内容的操作。
 每次有效输入、单位切换或点击转换后，必须把新结果写到可见文本节点（<output>、[data-work-output] 或结果区域的 textContent）。
 不要只把结果写进另一个 input 的 value 而不更新可见文字；不要只改按钮文案；不要输出没有真实换算的空壳。
-单位换算至少要有数值输入和可切换的单位，输入或转换后结果区域立即变化。无效输入用页面内提示，禁止 alert。'''
+单位换算至少要有数值输入和可切换的单位，以及 id="convertBtn" 与 id="resetBtn" 的可见按钮。
+输入或转换后结果区域立即变化；重置恢复完整初态。无效输入用页面内提示，禁止 alert。
+首屏用 flex-wrap 排列核心控件，body padding不超过8px。根字号增大12.5%后1000×600核心控件仍须完整可见；只能压缩空白或响应式重排，禁止缩小字号或隐藏主操作。'''
 
 
 def interactive_system_prompt(kind: str) -> str:
@@ -230,13 +232,21 @@ def interactive_system_prompt(kind: str) -> str:
 
 def tool_runtime_repair_guidance(issues: list[str]) -> str:
     text = '\n'.join(issues)
+    hints = []
     if re.search(r'未检测到可操作且能改变作品内容的交互控件', text):
-        return (
+        hints.append(
             '为工具补上可操作的 number/select/button，并把换算或计算结果写到 '
             '<output> 或 [data-work-output] 的 textContent，使输入后可见内容变化。'
-            '不要只改只读 input 的 value，不要空壳页面。'
+            '换算器保留 id="convertBtn" 与 id="resetBtn"。不要只改只读 input 的 value，不要空壳页面。'
         )
-    return ''
+    if re.search(r'核心图形/控件不完整|字号容差|横向溢出|convertBtn|resetBtn', text):
+        hints.append(
+            '换算器把 convertBtn、resetBtn、数值输入和单位选择留在1000×600首屏；'
+            'flex-wrap 排列，body padding≤8px。不要缩小字号或隐藏核心控件。'
+            '定向补丁的 search 必须是当前 HTML 中已存在的精确片段，'
+            '例如 #convertBtn,#resetBtn 或 <button type="button" id="convertBtn">。'
+        )
+    return '\n'.join(hints)
 
 
 def interactive_repair_guidance(kind: str, issues: list[str]) -> str:
@@ -291,8 +301,10 @@ PREVIEW_LAYOUT_COMPACT_STYLE = (
     'max-height:min(38vh,240px) !important;width:auto !important;height:auto !important}'
     'button,input,select,label,output{display:inline-block !important;max-width:100%;'
     'margin:4px 6px !important;padding:6px 8px !important;vertical-align:middle}'
-    'form,.toolbar,[data-work-controls]{display:flex !important;flex-wrap:wrap !important;'
-    'gap:6px;align-items:center}'
+    'form,.toolbar,[data-work-controls],[data-work-converter-controls]{display:flex !important;'
+    'flex-wrap:wrap !important;gap:6px;align-items:center}'
+    '#convertBtn,#resetBtn{display:inline-flex !important;max-width:100%;margin:4px 6px !important;'
+    'padding:6px 8px !important;flex:0 1 auto}'
     '</style>'
 )
 
@@ -373,7 +385,7 @@ async def run_interactive(request, progress_cb=None):
         nonlocal full_generations
         full_generations += 1
         remaining = max(1, int(deadline-time.time()))
-        repair_hint = science_runtime_repair_guidance(issues) if issues else ''
+        repair_hint = interactive_repair_guidance(kind, issues) if issues else ''
         user_content = prompt + ('\n\n请修复以下运行检查问题，返回完整作品：\n'+'\n'.join(issues)
             + (('\n'+repair_hint) if repair_hint else '') if issues else '')
         telemetry.start('logic_generate')

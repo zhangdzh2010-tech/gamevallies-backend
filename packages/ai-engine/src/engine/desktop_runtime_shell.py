@@ -11,6 +11,9 @@ import re
 from typing import Any
 
 SHELL_VERSION = "desktop-runtime-v1"
+CONVERTER_SHELL_VERSION = "converter-runtime-v1"
+# Exact CSS selector kept in the assembled source so layout repair search hits.
+CONVERTER_CONTROL_SEARCH = "#convertBtn,#resetBtn"
 
 # Leftover-accumulator contract: never floor a sub-step dt to zero.
 # Python mirror of the in-page loop so unit tests can prove the guarantee
@@ -75,6 +78,28 @@ def shell_time_advance_contract_errors(html: str) -> list[str]:
     return errors
 
 
+def converter_shell_contract_errors(html: str) -> list[str]:
+    """Static contract: converter tools keep operable convert/reset on the first screen."""
+    errors: list[str] = []
+    if f'data-work-shell="{CONVERTER_SHELL_VERSION}"' not in html:
+        errors.append("missing converter shell marker")
+    if not re.search(r'id=["\']convertBtn["\']', html):
+        errors.append("missing convertBtn")
+    if not re.search(r'id=["\']resetBtn["\']', html):
+        errors.append("missing resetBtn")
+    if not re.search(r'id=["\']valueInput["\']', html):
+        errors.append("missing valueInput")
+    if not re.search(r'id=["\']fromUnit["\']', html) or not re.search(r'id=["\']toUnit["\']', html):
+        errors.append("missing unit selectors")
+    if not re.search(r'<output\b[^>]*id=["\']convertResult["\']', html, re.I):
+        errors.append("missing convertResult output")
+    if CONVERTER_CONTROL_SEARCH not in html:
+        errors.append("missing convertBtn/resetBtn layout search target")
+    if re.search(r"\balert\s*\(", html):
+        errors.append("uses alert")
+    return errors
+
+
 def render_shell(
     *,
     title: str,
@@ -118,6 +143,46 @@ def render_shell(
     return html
 
 
+def render_converter_shell(
+    *,
+    title: str,
+    summary: str,
+    formula: str,
+    assumptions: str,
+    limits: str,
+    converter_controls_html: str,
+    family_script: str,
+    visual_css: str = "",
+    family_id: str = "",
+    recipe_id: str = "",
+    subject: str = "",
+    visual_pack_id: str = "",
+    variation_seed: str = "",
+) -> str:
+    """Compact tool shell: convert/reset stay on the 1000×600 first screen."""
+    css = (visual_css or _DEFAULT_VISUAL_CSS) + _CONVERTER_LAYOUT_CSS
+    replacements = {
+        "{{TITLE}}": _escape(title),
+        "{{SUMMARY}}": _escape(summary),
+        "{{FORMULA}}": _escape(formula),
+        "{{ASSUMPTIONS}}": _escape(assumptions),
+        "{{LIMITS}}": _escape(limits),
+        "{{CONVERTER_CONTROLS}}": converter_controls_html,
+        "{{FAMILY_SCRIPT}}": family_script,
+        "{{VISUAL_CSS}}": css,
+        "{{FAMILY_ID}}": _escape(family_id),
+        "{{RECIPE_ID}}": _escape(recipe_id),
+        "{{SUBJECT}}": _escape(subject),
+        "{{VISUAL_PACK_ID}}": _escape(visual_pack_id),
+        "{{VARIATION_SEED}}": _escape(variation_seed),
+        "{{SHELL_VERSION}}": CONVERTER_SHELL_VERSION,
+    }
+    html = _CONVERTER_SHELL_HTML
+    for token, value in replacements.items():
+        html = html.replace(token, str(value))
+    return html
+
+
 def _escape(value: Any) -> str:
     text = str(value or "")
     return (
@@ -137,6 +202,76 @@ canvas{display:block;max-width:100%;max-height:min(38vh,240px);width:100%;height
 form[data-work-controls]{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:8px}
 button,input,label,output{margin:4px 6px;padding:6px 8px;vertical-align:middle}
 details{margin:4px 0}
+"""
+
+# Keep the selector literal identical to CONVERTER_CONTROL_SEARCH.
+_CONVERTER_LAYOUT_CSS = """
+#convertBtn,#resetBtn{display:inline-flex;align-items:center;margin:4px 6px;padding:6px 10px;max-width:100%;flex:0 1 auto}
+[data-work-converter-controls]{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:6px}
+#valueInput,#fromUnit,#toUnit,#convertResult{max-width:100%;margin:4px 6px;padding:6px 8px}
+#convertHint{margin:4px 0}
+"""
+
+_CONVERTER_SHELL_HTML = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{TITLE}}</title>
+<style data-work-shell-style="true" data-work-converter-style="true">{{VISUAL_CSS}}</style>
+</head>
+<body data-work-shell="{{SHELL_VERSION}}" data-family="{{FAMILY_ID}}" data-recipe="{{RECIPE_ID}}" data-subject="{{SUBJECT}}" data-visual-pack="{{VISUAL_PACK_ID}}" data-variation-seed="{{VARIATION_SEED}}">
+<h1 id="work-title">{{TITLE}}</h1>
+<p id="work-summary">{{SUMMARY}}</p>
+<form data-work-controls data-work-converter-controls onsubmit="return false">
+{{CONVERTER_CONTROLS}}
+</form>
+<details id="work-model"><summary>换算关系与限制</summary>
+<p id="work-formula">{{FORMULA}}</p>
+<p id="work-assumptions">{{ASSUMPTIONS}}</p>
+<p id="work-limits">{{LIMITS}}</p>
+</details>
+<script>
+(function(){
+  {{FAMILY_SCRIPT}}
+  var valueInput = document.getElementById('valueInput');
+  var fromUnit = document.getElementById('fromUnit');
+  var toUnit = document.getElementById('toUnit');
+  var result = document.getElementById('convertResult');
+  var hint = document.getElementById('convertHint');
+  var convertBtn = document.getElementById('convertBtn');
+  var resetBtn = document.getElementById('resetBtn');
+  function show(){
+    var rawText = valueInput ? String(valueInput.value || '').trim() : '';
+    var raw = Number(rawText);
+    var converted = window.WorkFamily && WorkFamily.convert
+      ? WorkFamily.convert(raw, fromUnit && fromUnit.value, toUnit && toUnit.value)
+      : null;
+    if (!rawText || converted == null || !isFinite(raw)){
+      if (hint){ hint.hidden = false; hint.textContent = '请输入有效数字'; }
+      if (result) result.textContent = '无效输入';
+      return;
+    }
+    if (hint){ hint.hidden = true; hint.textContent = ''; }
+    if (result) result.textContent = WorkFamily.format(converted, fromUnit.value, toUnit.value);
+  }
+  function reset(){
+    var initial = window.WorkFamily && WorkFamily.reset ? WorkFamily.reset() : null;
+    if (valueInput) valueInput.value = initial ? initial.value : (WorkFamily && WorkFamily.initialValue) || '1';
+    if (fromUnit) fromUnit.value = initial ? initial.from : (WorkFamily && WorkFamily.initialFrom) || 'm';
+    if (toUnit) toUnit.value = initial ? initial.to : (WorkFamily && WorkFamily.initialTo) || 'ft';
+    show();
+  }
+  if (convertBtn) convertBtn.addEventListener('click', show);
+  if (resetBtn) resetBtn.addEventListener('click', reset);
+  if (valueInput) valueInput.addEventListener('input', show);
+  if (fromUnit) fromUnit.addEventListener('change', show);
+  if (toUnit) toUnit.addEventListener('change', show);
+  reset();
+})();
+</script>
+</body>
+</html>
 """
 
 

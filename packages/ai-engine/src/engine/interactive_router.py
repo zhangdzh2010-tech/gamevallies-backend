@@ -72,8 +72,9 @@ def route_interactive_template(
     blob = normalize_brief(brief)
     if kind not in {"science", "tool"}:
         return RouteDecision(route="MISS", reason="not_interactive_kind")
-    # Tools share the shell only when the brief is clearly a formula/model
-    # family. Counters and converters stay on full generate.
+    # Tools share a short-path shell only for a strong recipe match.
+    # Bidirectional converters have their own compact HIT shell; other
+    # counters stay on full generate.
 
     recipe_scores: List[Tuple[float, Recipe]] = []
     for recipe in RECIPES.values():

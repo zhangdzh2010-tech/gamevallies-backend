@@ -18,7 +18,10 @@ FAMILY_IDS = (
     "field_or_wave_2d",
     "compartment_flow",
     "geometric_ray_2d",
+    "bidirectional_converter",
 )
+CONVERTER_FAMILY_ID = "bidirectional_converter"
+M_TO_FT = 3.280839895
 # Arcade path is out of scope; stub so the registry has a stable slot.
 GAME_FAMILY_STUBS = ("arcade_loop",)
 
@@ -119,6 +122,16 @@ FAMILIES: Dict[str, Family] = {
         ),
         subjects=("physics",),
         interaction="labeled angle drives incident and reflected rays",
+    ),
+    "bidirectional_converter": Family(
+        id="bidirectional_converter",
+        label="双向换算",
+        keywords=(
+            "转换器", "换算", "converter", "单位换算", "单位转换",
+            "摄氏", "华氏", "英尺", "celsius", "fahrenheit", "米与英尺",
+        ),
+        subjects=("physics",),
+        interaction="bidirectional unit conversion with convert and reset",
     ),
 }
 
@@ -308,6 +321,32 @@ RECIPES: Dict[str, Recipe] = {
         units={"x": "prey", "y": "pred"},
         required_any=("种群", "捕食", "猎物", "lotka", "volterra"),
     ),
+    "length_m_ft": Recipe(
+        id="length_m_ft",
+        family_id="bidirectional_converter",
+        subject="physics",
+        title="米与英尺换算",
+        formula="1 m = 3.28084 ft",
+        keywords=("米", "英尺", "单位换算", "单位转换", "unit converter", "feet", "meter", "双向"),
+        params=(),
+        assumptions="标准换算，1 米 = 3.28084 英尺。",
+        limits="只处理米与英尺；无效输入用页内提示。",
+        units={"m": "m", "ft": "ft"},
+        required_any=("米", "英尺", "feet", "meter", "单位换算", "米与英尺"),
+    ),
+    "temp_c_f": Recipe(
+        id="temp_c_f",
+        family_id="bidirectional_converter",
+        subject="physics",
+        title="摄氏华氏换算",
+        formula="F = C × 9/5 + 32",
+        keywords=("摄氏", "华氏", "温度转换", "温度换算", "celsius", "fahrenheit", "双向"),
+        params=(),
+        assumptions="线性温标换算，允许负数与小数。",
+        limits="只处理摄氏与华氏；无效输入用页内提示。",
+        units={"C": "°C", "F": "°F"},
+        required_any=("摄氏", "华氏", "celsius", "fahrenheit", "温度转换", "温度换算"),
+    ),
 }
 
 
@@ -334,6 +373,49 @@ def normalize_brief(text: str) -> str:
     return (text or "").strip().lower()
 
 
+CONVERTER_UNIT_PAIRS: Dict[str, Tuple[Tuple[str, str], Tuple[str, str]]] = {
+    "length_m_ft": (("m", "米"), ("ft", "英尺")),
+    "temp_c_f": (("C", "摄氏°C"), ("F", "华氏°F")),
+}
+
+
+def is_converter_family(family_id: str) -> bool:
+    return family_id == CONVERTER_FAMILY_ID
+
+
+def converter_defaults(recipe_id: str) -> Dict[str, str]:
+    if recipe_id == "temp_c_f":
+        return {"value": "0", "from": "C", "to": "F"}
+    return {"value": "1", "from": "m", "to": "ft"}
+
+
+def convert_bidirectional(recipe_id: str, value: float, from_unit: str, to_unit: str) -> float:
+    """Oracle for the assembled converter plugin."""
+    if from_unit == to_unit:
+        return float(value)
+    if recipe_id == "temp_c_f":
+        if from_unit == "C" and to_unit == "F":
+            return float(value) * 9.0 / 5.0 + 32.0
+        if from_unit == "F" and to_unit == "C":
+            return (float(value) - 32.0) * 5.0 / 9.0
+    else:
+        if from_unit == "m" and to_unit == "ft":
+            return float(value) * M_TO_FT
+        if from_unit == "ft" and to_unit == "m":
+            return float(value) / M_TO_FT
+    raise ValueError(f"unsupported conversion {recipe_id}:{from_unit}->{to_unit}")
+
+
+def _escape_attr(value: Any) -> str:
+    return (
+        str(value or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
 def render_param_controls(params: Sequence[Dict[str, Any]]) -> str:
     parts: List[str] = []
     for spec in params:
@@ -353,6 +435,36 @@ def render_param_controls(params: Sequence[Dict[str, Any]]) -> str:
     return "".join(parts)
 
 
+def render_converter_controls(recipe: Recipe) -> str:
+    units = CONVERTER_UNIT_PAIRS.get(recipe.id, CONVERTER_UNIT_PAIRS["length_m_ft"])
+    defaults = converter_defaults(recipe.id)
+
+    def options(selected: str) -> str:
+        return "".join(
+            '<option value="{code}"{sel}>{label}</option>'.format(
+                code=_escape_attr(code),
+                sel=" selected" if code == selected else "",
+                label=_escape_attr(label),
+            )
+            for code, label in units
+        )
+
+    return (
+        '<label>数值 <input id="valueInput" name="value" type="number" step="any" '
+        'value="{value}" aria-label="换算数值"></label>'
+        '<label>从 <select id="fromUnit" aria-label="原单位">{from_opts}</select></label>'
+        '<label>到 <select id="toUnit" aria-label="目标单位">{to_opts}</select></label>'
+        '<button type="button" id="convertBtn">转换</button>'
+        '<button type="button" id="resetBtn">重置</button>'
+        '<output id="convertResult" data-work-output></output>'
+        '<p id="convertHint" data-work-secondary hidden></p>'
+    ).format(
+        value=_escape_attr(defaults["value"]),
+        from_opts=options(defaults["from"]),
+        to_opts=options(defaults["to"]),
+    )
+
+
 def family_plugin_js(family_id: str, recipe: Recipe) -> str:
     """Deterministic model plugin. Presentation copy is filled around it."""
     plugins = {
@@ -361,6 +473,7 @@ def family_plugin_js(family_id: str, recipe: Recipe) -> str:
         "field_or_wave_2d": _WAVE_JS,
         "compartment_flow": _COMPARTMENT_JS,
         "geometric_ray_2d": _RAY_OPTICS_JS,
+        "bidirectional_converter": _CONVERTER_JS,
     }
     template = plugins.get(family_id, _PARAM_FORMULA_JS)
     return template.replace("__RECIPE__", recipe.id)
@@ -970,6 +1083,43 @@ _COMPARTMENT_JS = r"""
           }
         }
       }
+    };
+  })();
+"""
+
+
+_CONVERTER_JS = r"""
+  window.WorkFamily = (function(){
+    var recipe = "__RECIPE__";
+    var M_TO_FT = 3.280839895;
+    var initialValue = recipe === "temp_c_f" ? "0" : "1";
+    var initialFrom = recipe === "temp_c_f" ? "C" : "m";
+    var initialTo = recipe === "temp_c_f" ? "F" : "ft";
+    function convert(value, from, to){
+      if (!isFinite(value)) return null;
+      if (from === to) return value;
+      if (recipe === "temp_c_f"){
+        if (from === "C" && to === "F") return value * 9 / 5 + 32;
+        if (from === "F" && to === "C") return (value - 32) * 5 / 9;
+        return null;
+      }
+      if (from === "m" && to === "ft") return value * M_TO_FT;
+      if (from === "ft" && to === "m") return value / M_TO_FT;
+      return null;
+    }
+    function format(value, from, to){
+      var n = Number(value);
+      if (!isFinite(n)) return "无效输入";
+      var rounded = Math.abs(n) >= 1000 ? n.toFixed(2) : n.toFixed(4);
+      return rounded.replace(/\.?0+$/, "") + " " + to + "  ← " + from;
+    }
+    return {
+      initialValue: initialValue,
+      initialFrom: initialFrom,
+      initialTo: initialTo,
+      convert: convert,
+      format: format,
+      reset: function(){ return {value: initialValue, from: initialFrom, to: initialTo}; }
     };
   })();
 """

@@ -44,6 +44,8 @@ def test_science_contract_is_not_applied_to_tools_and_does_not_relax_qa():
     assert '验收不会放宽' in interactive_system_prompt('science')
     assert '换算器' in interactive_system_prompt('tool')
     assert '<output>' in interactive_system_prompt('tool')
+    assert 'convertBtn' in interactive_system_prompt('tool')
+    assert 'resetBtn' in interactive_system_prompt('tool')
     assert '换算器' not in interactive_system_prompt('science')
 
 
@@ -75,6 +77,13 @@ def test_science_repair_guidance_is_tied_to_observed_runtime_defects():
     tool_hint = tool_runtime_repair_guidance(['未检测到可操作且能改变作品内容的交互控件。'])
     assert '<output>' in tool_hint
     assert '空壳' in tool_hint
+    assert 'convertBtn' in tool_hint
+    layout_hint = tool_runtime_repair_guidance(
+        ['1000×600 (visible) 核心图形/控件不完整：convertBtn, resetBtn。',
+         '1000×600 字号容差检查（根字号+12.5%）核心图形/控件溢出。'])
+    assert 'convertBtn' in layout_hint and 'resetBtn' in layout_hint
+    assert '#convertBtn,#resetBtn' in layout_hint
+    assert '1000×600' in layout_hint
 
 
 def tabbed_work(working=True):
