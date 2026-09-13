@@ -195,6 +195,85 @@ def _first_present(mapping: dict[str, Any], *keys: str) -> Any:
     return None
 
 
+def _route_field(mapping: dict[str, Any], *keys: str) -> Any:
+    value = _first_present(mapping, *keys)
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    return value
+
+
+def _collect_route_sources(mapping: dict[str, Any]) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = [mapping]
+    for key in (
+        "qualityBreakdown",
+        "quality_breakdown",
+        "generation_efficiency",
+        "generationEfficiency",
+        "task_meta",
+        "taskMeta",
+        "resultSummary",
+        "result_summary",
+    ):
+        nested = mapping.get(key)
+        if isinstance(nested, dict):
+            sources.append(nested)
+            for inner_key in (
+                "qualityBreakdown",
+                "quality_breakdown",
+                "generation_efficiency",
+                "generationEfficiency",
+                "task_meta",
+                "taskMeta",
+            ):
+                inner = nested.get(inner_key)
+                if isinstance(inner, dict):
+                    sources.append(inner)
+    return sources
+
+
+def _extract_route_fields(*mappings: dict[str, Any]) -> dict[str, Any]:
+    template_route = None
+    family_id = None
+    recipe_id = None
+    prompt_tokens = None
+    completion_tokens = None
+    runtime_profile = None
+    for mapping in mappings:
+        if not isinstance(mapping, dict):
+            continue
+        for source in _collect_route_sources(mapping):
+            template_route = template_route or _route_field(source, "template_route", "templateRoute")
+            family_id = family_id or _route_field(
+                source, "family_id", "familyId", "template_family", "templateFamily"
+            )
+            recipe_id = recipe_id or _route_field(
+                source,
+                "recipe_id",
+                "recipeId",
+                "template_recipe",
+                "templateRecipe",
+                "mechanic_id",
+                "mechanicId",
+            )
+            if prompt_tokens is None:
+                prompt_tokens = _first_present(source, "prompt_tokens", "promptTokens")
+            if completion_tokens is None:
+                completion_tokens = _first_present(source, "completion_tokens", "completionTokens")
+            if runtime_profile is None:
+                runtime_profile = _route_field(source, "runtime_profile", "runtimeProfile")
+    interactive_profile = str(runtime_profile or "").strip() == "interactive_experience"
+    if family_id is None and runtime_profile and not interactive_profile:
+        family_id = runtime_profile
+    return {
+        "template_route": template_route,
+        "family_id": family_id,
+        "recipe_id": recipe_id,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+    }
+
+
 def extract_quality_outcome(*payloads: Any) -> dict[str, Any]:
     """Pull seed-worthiness labels out of generation-status or admin diagnostics."""
     quality_breakdown: dict[str, Any] | None = None
@@ -205,6 +284,7 @@ def extract_quality_outcome(*payloads: Any) -> dict[str, Any]:
     review_visual = None
     review_character = None
     final_score = None
+    route_sources: list[dict[str, Any]] = []
 
     def _ingest(raw: Any) -> None:
         nonlocal quality_breakdown, seed_worthy, seed_worthy_reason
@@ -212,6 +292,7 @@ def extract_quality_outcome(*payloads: Any) -> dict[str, Any]:
         mapping = _unwrap_data(raw)
         if not mapping:
             return
+        route_sources.append(mapping)
         summary = mapping.get("resultSummary")
         if isinstance(summary, dict):
             _ingest(summary)
@@ -219,6 +300,9 @@ def extract_quality_outcome(*payloads: Any) -> dict[str, Any]:
         if isinstance(breakdown, dict):
             quality_breakdown = breakdown
             _ingest(breakdown)
+        meta = mapping.get("task_meta") or mapping.get("taskMeta")
+        if isinstance(meta, dict):
+            route_sources.append(meta)
         if seed_worthy is None:
             value = _first_present(mapping, "seedWorthy", "seed_worthy")
             if value is not None:
@@ -273,24 +357,7 @@ def extract_quality_outcome(*payloads: Any) -> dict[str, Any]:
             continue
         _ingest(payload)
 
-    template_route = None
-    family_id = None
-    recipe_id = None
-    prompt_tokens = None
-    completion_tokens = None
-    if isinstance(quality_breakdown, dict):
-        template_route = quality_breakdown.get("template_route") or quality_breakdown.get("templateRoute")
-        family_id = quality_breakdown.get("family_id") or quality_breakdown.get("familyId")
-        recipe_id = quality_breakdown.get("recipe_id") or quality_breakdown.get("recipeId")
-        prompt_tokens = quality_breakdown.get("prompt_tokens") or quality_breakdown.get("promptTokens")
-        completion_tokens = quality_breakdown.get("completion_tokens") or quality_breakdown.get("completionTokens")
-        efficiency = quality_breakdown.get("generation_efficiency") or {}
-        if isinstance(efficiency, dict):
-            template_route = template_route or efficiency.get("template_route")
-            family_id = family_id or efficiency.get("family_id")
-            recipe_id = recipe_id or efficiency.get("recipe_id")
-            prompt_tokens = prompt_tokens if prompt_tokens is not None else efficiency.get("prompt_tokens")
-            completion_tokens = completion_tokens if completion_tokens is not None else efficiency.get("completion_tokens")
+    route_fields = _extract_route_fields(*(route_sources + ([quality_breakdown] if quality_breakdown else [])))
 
     return {
         "seedWorthy": seed_worthy,
@@ -301,11 +368,7 @@ def extract_quality_outcome(*payloads: Any) -> dict[str, Any]:
         "reviewVisualPolishScore": review_visual,
         "reviewCharacterQualityScore": review_character,
         "finalScore": final_score,
-        "template_route": template_route,
-        "family_id": family_id,
-        "recipe_id": recipe_id,
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
+        **route_fields,
     }
 
 

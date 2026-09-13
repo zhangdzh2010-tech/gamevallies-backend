@@ -44,6 +44,7 @@ from .prompt_store import require_prompt
 from .qa_pipeline import QAPipeline
 from .quality_scorer import LLMReviewResult, QAStaticResult, QualityScorer, RuntimeQAResult
 from .runtime_profile_ids import normalize_runtime_profile_id
+from .game_path_telemetry import game_path_yield_fields, merge_game_path_telemetry
 from .interactive_creation import is_interactive_request, normalize_interactive_request, run_interactive
 from .runtime_qa import run_runtime_qa
 # P1.3 PR-11 wire-up: optional fire-and-forget scheduler for runtime_qa.
@@ -400,6 +401,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
             self._current_task_id(),
             f"Selected runtime profile {runtime_profile}",
         )
+        await self._persist_game_path_telemetry(spec=spec, runtime_profile=runtime_profile)
 
         self._notify(progress_cb, "contract_compose", 40, "Composing runtime contract", {
             "gameId": request.game_id,
@@ -1029,21 +1031,25 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
             contract_version=runtime_contract.version,
             qa_warnings=qa_warnings,
             runtime_qa_report=self._serialize_runtime_qa(runtime_qa, []),
-            quality_breakdown=quality.details | {
-                "qa_penalty": quality.qa_penalty,
-                "strategy_bonus": quality.strategy_bonus,
-                "size_bonus": quality.size_bonus,
-                "retry_penalty": quality.retry_penalty,
-                "runtime_bonus": quality.runtime_bonus,
-                "review_bonus": quality.review_bonus,
-                "gameplay_depth_bonus": quality.gameplay_depth_bonus,
-                "runtime_profile": runtime_profile,
-                "contract_version": runtime_contract.version,
-                "reviewRan": outcome_labels["review_ran"],
-                "pipeline_success": outcome_labels["pipeline_success"],
-                "seed_worthy": outcome_labels["seed_worthy"],
-                "seed_worthy_reason": outcome_labels["seed_worthy_reason"],
-            },
+            quality_breakdown=merge_game_path_telemetry(
+                quality.details | {
+                    "qa_penalty": quality.qa_penalty,
+                    "strategy_bonus": quality.strategy_bonus,
+                    "size_bonus": quality.size_bonus,
+                    "retry_penalty": quality.retry_penalty,
+                    "runtime_bonus": quality.runtime_bonus,
+                    "review_bonus": quality.review_bonus,
+                    "gameplay_depth_bonus": quality.gameplay_depth_bonus,
+                    "runtime_profile": runtime_profile,
+                    "contract_version": runtime_contract.version,
+                    "reviewRan": outcome_labels["review_ran"],
+                    "pipeline_success": outcome_labels["pipeline_success"],
+                    "seed_worthy": outcome_labels["seed_worthy"],
+                    "seed_worthy_reason": outcome_labels["seed_worthy_reason"],
+                },
+                runtime_profile=runtime_profile,
+                spec=spec,
+            ),
         )
 
     async def _run_iterate_impl(
@@ -1088,6 +1094,7 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
             self._current_task_id(),
             f"Selected runtime profile {runtime_profile}",
         )
+        await self._persist_game_path_telemetry(spec=spec, runtime_profile=runtime_profile)
 
         self._notify(progress_cb, "contract_compose", 40, "Refreshing runtime contract", {
             "gameId": request.game_id,
@@ -1207,8 +1214,45 @@ class V2PipelineRunner(PipelineV2QualityPolicyMixin, PipelineV2SpecificationMixi
             qa_warnings=qa_warnings,
             runtime_qa_report=self._serialize_runtime_qa(runtime_qa, []),
             quality_score=quality_score,
-            quality_breakdown=quality_breakdown,
+            quality_breakdown=merge_game_path_telemetry(
+                quality_breakdown,
+                runtime_profile=runtime_profile,
+                spec=spec,
+            ),
         )
+
+    async def _persist_game_path_telemetry(self, *, spec: GameSpec, runtime_profile: str) -> None:
+        fields = game_path_yield_fields(runtime_profile=runtime_profile, spec=spec)
+        try:
+            await task_memory.update_meta(
+                self._current_task_id(),
+                template_route=fields["template_route"],
+                template_family=fields["family_id"],
+                template_recipe=fields["recipe_id"],
+                template_subject=fields.get("artifact_kind") or "game",
+                mechanic_id=fields.get("mechanic_id"),
+                route_reason=fields.get("route_reason"),
+            )
+            await task_memory.append_decision(
+                self._current_task_id(),
+                (
+                    f"template_route={fields['template_route']} "
+                    f"family={fields['family_id']} recipe={fields['recipe_id']}"
+                ),
+            )
+        except Exception:  # noqa: BLE001 - telemetry must never crash runner
+            pass
+        try:
+            _p2_emit(
+                "game_template_route",
+                route=fields["template_route"],
+                family=fields["family_id"],
+                recipe=fields["recipe_id"],
+                mechanic=fields.get("mechanic_id"),
+                reason=fields.get("route_reason"),
+            )
+        except Exception:  # noqa: BLE001 - telemetry must never crash runner
+            pass
 
     async def _run_interactive_with_stage(self, request, progress_cb, stage_context):
         def progress(stage, percent, message, details=None):

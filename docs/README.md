@@ -8,6 +8,9 @@
   User-approved science/tool short-path design: DesktopRuntimeShell, four
   interaction families, HIT/SOFT/MISS router, telemetry, and staging-only
   template mining. Quality bars unchanged.
+- [`architecture/game-path-telemetry-and-hit-soft.md`](./architecture/game-path-telemetry-and-hit-soft.md)
+  Arcade/game full-path telemetry (`MISS` + runtime-profile `family_id`) and
+  per-family HIT/SOFT stay-FULL assessment. Diversity gate unchanged.
 
 ## Top-Level Plans
 
