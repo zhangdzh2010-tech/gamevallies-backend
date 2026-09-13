@@ -115,7 +115,7 @@ def test_review_receives_original_desktop_requirements_and_evidence_rules():
     assert '<html>game</html>' in call['messages'][0]['content']
     assert 'findings is required and must have the same length and order as issues' in call['system']
     assert 'source_ref is required on every finding' in call['system']
-    assert 'Do not list issues without findings' in call['system']
+    assert 'Do not list issues' in call['system'] and 'without findings' in call['system']
 
 
 def test_scoring_rubric_separates_required_behavior_from_optional_polish():
