@@ -95,6 +95,37 @@ def test_patch_cannot_emit_incomplete_html_when_source_was_complete():
         }))
 
 
+PHOTO_SOURCE = '''<!DOCTYPE html><html><body>
+<canvas id="work-canvas"></canvas>
+<button id="btn-start">开始</button>
+<script data-work-family-script="true">
+window.WorkFamily = {step: function(dt){ phase += dt; }};
+var phase = 0;
+</script>
+<script data-work-runtime-script="true">var running = false;</script>
+</body></html>'''
+
+
+def test_patch_salvages_spliced_if_into_valid_statement():
+    raw = json.dumps({'patches':[{
+        'search': 'phase += dt;',
+        'replace': "phase += dt if (window.WorkRuntime) phase += dt;",
+    }]})
+    result = apply_interactive_patch(PHOTO_SOURCE, raw)
+    assert 'Unexpected token' not in result
+    assert 'dt if (' not in result
+    assert 'dt; if (' in result or 'dt;if (' in result or 'dt; if(' in result
+
+
+def test_patch_rejects_unsalvageable_unexpected_token_if():
+    raw = json.dumps({'patches':[{
+        'search': 'phase += dt;',
+        'replace': 'const broken = if (true) 1;',
+    }]})
+    with pytest.raises(ValueError, match=r'Unexpected token.*if|JavaScript syntax error'):
+        apply_interactive_patch(PHOTO_SOURCE, raw)
+
+
 def test_failed_layout_does_not_erase_prior_runtime_invariants():
     from src.engine.candidate_checkpoint import CandidateCheckpoint
     baseline = {'ran':True,'passed':False,'issues':['layout overflow'],

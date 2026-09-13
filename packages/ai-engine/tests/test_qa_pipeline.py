@@ -1288,3 +1288,38 @@ def test_salvage_script_syntax_does_not_invent_missing_statements():
     broken = "const combo = function;"
     assert QAPipeline.salvage_script_syntax(broken) is None
     assert not QAPipeline._script_has_valid_syntax(broken)
+
+
+def test_salvage_script_syntax_inserts_semicolon_before_unexpected_if():
+    broken = "var phase = 0;\nfunction step(dt){ phase += dt if (dt > 0) phase += 0; }\n"
+    assert not QAPipeline._script_has_valid_syntax(broken)
+    salvaged = QAPipeline.salvage_script_syntax(broken)
+    assert salvaged is not None
+    assert QAPipeline._script_has_valid_syntax(salvaged)
+    assert "dt if (" not in salvaged
+    assert "if (dt > 0)" in salvaged
+
+
+def test_salvage_html_script_syntax_fixes_isolated_family_if_token():
+    from src.engine.section_patch import iter_script_blocks
+
+    html = (
+        "<!DOCTYPE html><html><body>"
+        "<script data-work-family-script='true'>\n"
+        "window.WorkFamily={step:function(dt){ phase += dt if (dt>0) phase += 0; }};\n"
+        "var phase=0;\n"
+        "</script>"
+        "<script data-work-runtime-script='true'>var running=true;</script>"
+        "</body></html>"
+    )
+    repaired = QAPipeline.salvage_html_script_syntax(html)
+    scripts = [match.group(2) for match in iter_script_blocks(repaired)]
+    assert all(QAPipeline._script_has_valid_syntax(script) for script in scripts)
+    assert not any("dt if (" in script for script in scripts)
+    assert any("if (dt>0)" in script or "if (dt > 0)" in script for script in scripts)
+
+
+def test_salvage_script_syntax_does_not_invent_if_expression():
+    broken = "const broken = if (true) 1;"
+    assert QAPipeline.salvage_script_syntax(broken) is None
+    assert not QAPipeline._script_has_valid_syntax(broken)

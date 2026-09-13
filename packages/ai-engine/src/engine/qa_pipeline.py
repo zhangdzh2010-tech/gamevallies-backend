@@ -46,6 +46,7 @@ from .section_patch import (
     extract_script_content,
     find_incomplete_structured_markers,
     has_structured_section_markers,
+    iter_script_blocks,
     replace_script_content,
 )
 from .terminal_state import has_required_state_presence, has_terminal_state_transition
@@ -512,15 +513,34 @@ class QAPipeline:
         """
         if cls._script_has_valid_syntax(script):
             return script
-        line, description = cls._parse_script_syntax_error(script)
-        if line is None or not re.search(r"Unexpected token\s*(\}|\)|\])", description, re.I):
+        raw = script or ""
+        body = raw.strip()
+        prefix_ws = raw[: len(raw) - len(raw.lstrip())] if raw else ""
+        suffix_ws = raw[len(raw.rstrip()):] if raw else ""
+        line, description = cls._parse_script_syntax_error(body)
+        if line is None:
             return None
-        closer_match = re.search(r"Unexpected token\s*(\}|\)|\])", description, re.I)
-        closer = closer_match.group(1) if closer_match else "}"
-        lines = (script or "").splitlines()
+        lines = body.splitlines()
         if not lines or line < 1 or line > len(lines):
             return None
         original_line = lines[line - 1]
+        if re.search(r"Unexpected token\s*['\"]?if['\"]?", description, re.I):
+            keyword = re.search(r"(?<![\w$])if\b", original_line)
+            if not keyword or keyword.start() == 0:
+                return None
+            prefix = original_line[: keyword.start()].rstrip()
+            if not prefix or prefix.endswith((";", "{", "}", "else", ":")):
+                return None
+            suffix = "\n" if original_line.endswith("\n") else ""
+            updated = prefix + "; " + original_line[keyword.start():].lstrip() + suffix
+            candidate = prefix_ws + "\n".join(lines[: line - 1] + [updated] + lines[line:]) + suffix_ws
+            if not cls._script_has_valid_syntax(candidate):
+                return None
+            return candidate
+        if not re.search(r"Unexpected token\s*(\}|\)|\])", description, re.I):
+            return None
+        closer_match = re.search(r"Unexpected token\s*(\}|\)|\])", description, re.I)
+        closer = closer_match.group(1) if closer_match else "}"
         stripped = original_line.strip()
         if stripped in {closer, closer + ";", closer + ","}:
             candidate_lines = lines[: line - 1] + lines[line:]
@@ -539,21 +559,29 @@ class QAPipeline:
                 candidate_lines = lines[: line - 1] + [indent + updated + suffix] + lines[line:]
         else:
             return None
-        candidate = "\n".join(candidate_lines)
+        candidate = prefix_ws + "\n".join(candidate_lines) + suffix_ws
         if not cls._script_has_valid_syntax(candidate):
             return None
         return candidate
 
     @classmethod
     def salvage_html_script_syntax(cls, html_code: str) -> str:
-        """Keep a patched document only when a local closer salvage restores parse."""
-        script = extract_script_content(html_code or "")
-        if not script or cls._script_has_valid_syntax(script):
+        """Keep a patched document only when a local closer/if salvage restores parse."""
+        updated = html_code or ""
+        matches = list(iter_script_blocks(updated))
+        if not matches:
             return html_code
-        salvaged = cls.salvage_script_syntax(script)
-        if not salvaged:
+        if all(cls._script_has_valid_syntax(match.group(2)) for match in matches if (match.group(2) or "").strip()):
             return html_code
-        return replace_script_content(html_code, salvaged)
+        for match in reversed(matches):
+            script = match.group(2) or ""
+            if not script.strip() or cls._script_has_valid_syntax(script):
+                continue
+            salvaged = cls.salvage_script_syntax(script)
+            if not salvaged:
+                continue
+            updated = updated[: match.start(2)] + salvaged + updated[match.end(2):]
+        return updated
 
     def _extract_input_handlers(self, code: str) -> Dict[str, List[str]]:
         detected: Dict[str, set[str]] = {

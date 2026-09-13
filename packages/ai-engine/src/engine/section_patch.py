@@ -136,6 +136,11 @@ def extract_script_content(html: str) -> Optional[str]:
     return content if content.strip() else None
 
 
+def iter_script_blocks(html: str) -> List[re.Match[str]]:
+    """Every <script> body, including isolated family plugins."""
+    return [match for match in _SCRIPT_BLOCK_RE.finditer(html or "") if match.group(2) is not None]
+
+
 def replace_style_content(html: str, new_style: str) -> str:
     match = _STYLE_BLOCK_RE.search(html or "")
     if not match:

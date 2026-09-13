@@ -40,6 +40,7 @@ from src.engine.interactive_families import (
     family_plugin_js,
     get_recipe,
     osmosis_volume_step,
+    photosynthesis_oxygen_rate,
     plane_mirror_rays,
     recipes_for_family,
     wave_superposition,
@@ -66,6 +67,7 @@ class RouterFamilies(unittest.TestCase):
             ("作品类型：科学演示。制作平面镜反射光学演示，可调入射角，入射光指向镜面交点、反射光离开交点，显示反射定律。", "HIT", "geometric_ray_2d", "mirror_optics", "physics"),
             ("作品类型：科学演示。制作半透膜渗透实验，两侧浓度可调，水流按浓度差流动。", "HIT", "compartment_flow", "osmosis", "bio"),
             ("作品类型：科学演示。制作酶活性随温度变化的示意曲线，可调温度和活化能。", "HIT", "param_formula_panel", "enzyme_temp", "bio"),
+            ("作品类型：科学演示。做一个光合作用实验，可调光照强度和二氧化碳浓度，观察氧气产生速率，展示简化公式和假设。不要游戏闯关。", "HIT", "param_formula_panel", "photosynthesis_rate", "bio"),
             ("做一个捕食者与猎物的种群变化模型。", "HIT", "compartment_flow", "population", "bio"),
         ]
         for brief, route, family, recipe, subject in cases:
@@ -172,6 +174,15 @@ class ShellTimeAdvance(unittest.TestCase):
         self.assertIn("acc +=", html)
         self.assertIn("btn-start", html)
         self.assertIn("WorkRuntime", html)
+        inlined = html.replace(' data-work-family-script="true"', '', 1).replace('id="work-sim-time"', 'id="clock"', 1)
+        self.assertTrue(shell_time_advance_contract_errors(inlined))
+        self.assertIn('data-work-family-script="true"', html)
+        self.assertIn('data-work-runtime-script="true"', html)
+        self.assertIn('id="work-sim-time"', html)
+        family_at = html.find('data-work-family-script="true"')
+        runtime_at = html.find('data-work-runtime-script="true"')
+        self.assertLess(family_at, runtime_at)
+        self.assertGreater(family_at, html.find('id="work-canvas"'))
 
 
 class DiversityFallback(unittest.TestCase):
@@ -390,7 +401,7 @@ class ShortPathShellRegressions(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("<input", repaired)
 
     def test_assembled_gas_and_population_have_executable_script_and_canvas(self):
-        for recipe_id in ("gas_law", "population"):
+        for recipe_id in ("gas_law", "population", "photosynthesis_rate"):
             html = _assemble_recipe(recipe_id)
             self.assertTrue(re.search(r"</html\s*>\s*$", html, re.I), recipe_id)
             self.assertTrue(_has_executable_script(html), recipe_id)
@@ -831,6 +842,132 @@ class ResidualFamilyContracts(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Vout=", after["readout"])
         self.assertTrue(after["snap"] != before["snap"] or after["readout"] != before["readout"])
         self.assertIs(after["nullSafe"], True)
+
+    def test_photosynthesis_rate_saturates_and_plugin_tracks_time(self):
+        dark = photosynthesis_oxygen_rate(0, 400)
+        dim = photosynthesis_oxygen_rate(10, 400)
+        mid = photosynthesis_oxygen_rate(40, 400)
+        bright = photosynthesis_oxygen_rate(100, 400)
+        low_co2 = photosynthesis_oxygen_rate(40, 100)
+        high_co2 = photosynthesis_oxygen_rate(40, 800)
+        self.assertEqual(dark, 0.0)
+        self.assertGreater(mid, dim)
+        self.assertGreater(bright, mid)
+        self.assertGreater(high_co2, low_co2)
+        self.assertLess(bright, 1.0)
+        plugin = family_plugin_js("param_formula_panel", get_recipe("photosynthesis_rate"))
+        self.assertIn("photosynthesis_rate", plugin)
+        self.assertIn("ΣO₂", plugin)
+        self.assertIn("t=' + phase.toFixed(2)", plugin)
+        self.assertIn("oxygen += compute().rate * dt", plugin)
+        self.assertIn("ellipse", plugin)
+        prompt = fill_prompt(
+            kind="science",
+            brief="光合作用实验",
+            recipe=get_recipe("photosynthesis_rate"),
+            plan=plan_interactive_diversity(
+                family_id="param_formula_panel",
+                recipe_id="photosynthesis_rate",
+                title="光合",
+                formula=get_recipe("photosynthesis_rate").formula,
+                variation_seed="photo-fill",
+                ledger=DiversityLedger(),
+            ),
+            route=route_interactive_template(
+                "science",
+                "作品类型：科学演示。做一个光合作用实验，可调光照强度和二氧化碳浓度，观察氧气产生速率。",
+            ),
+        )
+        self.assertIn("饱和型", prompt)
+
+    async def test_assembled_photosynthesis_start_advances_sim_readout_and_canvas(self):
+        brief = (
+            "作品类型：科学演示。做一个光合作用实验，可调光照强度和二氧化碳浓度，"
+            "观察氧气产生速率，展示简化公式和假设。不要游戏闯关。"
+        )
+        html = _assemble_recipe("photosynthesis_rate", brief)
+        self.assertEqual(shell_time_advance_contract_errors(html), [])
+        self.assertIn('data-recipe="photosynthesis_rate"', html)
+        self.assertIn('id="param-I"', html)
+        self.assertIn('id="param-C"', html)
+        report = await validate_interactive_html(html)
+        self.assertFalse(report.get("js_errors"), report)
+        self.assertTrue(report["passed"], report["issues"])
+        motion = [item for item in report.get("motionChecks") or [] if item.get("advances")]
+        self.assertTrue(motion, report.get("motionChecks"))
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            page = await browser.new_page()
+            await page.set_content(html)
+            before = await page.evaluate(
+                """() => ({
+                  t: window.WorkRuntime.simTime(),
+                  clock: document.getElementById('work-sim-time').textContent,
+                  readout: document.getElementById('work-readout').textContent,
+                  snap: document.getElementById('work-canvas').toDataURL(),
+                  rate: WorkFamily.applyParams().rate
+                })"""
+            )
+            await page.click("#btn-start")
+            await page.wait_for_timeout(220)
+            after = await page.evaluate(
+                """() => ({
+                  t: window.WorkRuntime.simTime(),
+                  clock: document.getElementById('work-sim-time').textContent,
+                  readout: document.getElementById('work-readout').textContent,
+                  snap: document.getElementById('work-canvas').toDataURL(),
+                  running: window.WorkRuntime.isRunning()
+                })"""
+            )
+            await browser.close()
+        self.assertGreater(before["rate"], 0)
+        self.assertGreater(after["t"], before["t"])
+        self.assertNotEqual(after["clock"], before["clock"])
+        self.assertNotEqual(after["readout"], before["readout"])
+        self.assertIn("t=", after["readout"])
+        self.assertIn("ΣO₂", after["readout"])
+        self.assertTrue(after["snap"] != before["snap"] or after["readout"] != before["readout"])
+        self.assertTrue(after["running"])
+
+    async def test_broken_family_if_token_does_not_stop_runtime_sim_time(self):
+        html = _assemble_recipe(
+            "photosynthesis_rate",
+            "作品类型：科学演示。做一个光合作用实验，可调光照和二氧化碳浓度。",
+        )
+        broken = html.replace(
+            "phase += dt;",
+            "phase += dt if (recipe === 'photosynthesis_rate') oxygen += 0.01;",
+            1,
+        )
+        self.assertIn("dt if (", broken)
+        self.assertIn('data-work-family-script="true"', broken)
+        self.assertIn('data-work-runtime-script="true"', broken)
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch()
+            page = await browser.new_page()
+            page_errors = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            await page.set_content(broken)
+            before = await page.evaluate("() => window.WorkRuntime && window.WorkRuntime.simTime()")
+            await page.click("#btn-start")
+            await page.wait_for_timeout(200)
+            after = await page.evaluate(
+                """() => ({
+                  t: window.WorkRuntime && window.WorkRuntime.simTime(),
+                  clock: document.getElementById('work-sim-time').textContent,
+                  running: window.WorkRuntime && window.WorkRuntime.isRunning()
+                })"""
+            )
+            await browser.close()
+        self.assertTrue(any("Unexpected token" in item and "if" in item for item in page_errors), page_errors)
+        self.assertIsNotNone(before)
+        self.assertGreater(after["t"], before)
+        self.assertNotEqual(after["clock"], "0.000")
+        self.assertTrue(after["running"])
 
 
 class ConverterDesktopResidual(unittest.IsolatedAsyncioTestCase):

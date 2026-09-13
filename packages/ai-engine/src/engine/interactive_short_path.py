@@ -175,6 +175,8 @@ def fill_prompt(
         + (
             "酶活性文案须写明先升后降与热变性，不要写成随温度单调上升。"
             if recipe.id == "enzyme_temp"
+            else "光合文案须写明饱和型示意速率 rate∝I/(kI+I)·C/(kC+C)，光照与CO₂进入模型，氧气产率随开始后的模拟时间累积；不要写成线性产氧或实验测得数据。"
+            if recipe.id == "photosynthesis_rate"
             else "渗透文案须标明内侧、外侧与半透膜，水流由浓度差驱动。"
             if recipe.id == "osmosis"
             else "换算器保留 convertBtn 与 resetBtn 的 id，不要改成游戏开始/暂停；公式与单位对必须与配方一致。"
