@@ -6,7 +6,7 @@
 
 前端必须兼容的重点只有两类：
 
-- 链接域名统一切换为 `https://gamevallies.com`
+- 链接域名统一切换为 `https://www.zlspace.ai`
 - 作者态和后台态返回的 `previewUrl` / `gameUrl` 可能带 `previewToken`，前端必须原样使用，不能丢失 query string
 
 除这两点外，`generate`、`iterate`、`publish` 的请求体都没有新增必填字段。
@@ -35,16 +35,16 @@
 - 作者态 / admin 态的预览链接可能带 `previewToken`
 - 未发布或私有游戏如果丢失 token，会重新变成 `404`
 
-### 2.2 域名要兼容 apex
+### 2.2 域名以 www 为 canonical
 
 当前 canonical 域名是：
 
-- `https://gamevallies.com`
+- `https://www.zlspace.ai`
 
 前端要求：
 
-- 去掉对 `www.gamevallies.com` 的强依赖
-- 如果前端有域名白名单、iframe allowlist、分享域名判断、CSP allowlist，也要加入 `gamevallies.com`
+- 公开站点优先使用 `www.zlspace.ai`，不要再依赖 `gamevallies.com`
+- 如果前端有域名白名单、iframe allowlist、分享域名判断、CSP allowlist，加入 `www.zlspace.ai`（以及必要时的 apex `zlspace.ai`）
 
 ---
 
@@ -88,8 +88,8 @@
   "version": 1,
   "pipelineVersion": "v2",
   "runtimeProfile": "lane_runner",
-  "previewUrl": "https://gamevallies.com/games/game_xxx/preview?previewToken=...",
-  "gameUrl": "https://gamevallies.com/games/game_xxx/index.html?previewToken=...",
+  "previewUrl": "https://www.zlspace.ai/games/game_xxx/preview?previewToken=...",
+  "gameUrl": "https://www.zlspace.ai/games/game_xxx/index.html?previewToken=...",
   "title": "小猪快跑",
   "description": "做一个竖屏跑酷小游戏",
   "statusText": "generating",
@@ -142,8 +142,8 @@
   "version": 3,
   "pipelineVersion": "v2",
   "runtimeProfile": "lane_runner",
-  "previewUrl": "https://gamevallies.com/games/game_xxx/preview?previewToken=...",
-  "gameUrl": "https://gamevallies.com/games/game_xxx/index.html?previewToken=...",
+  "previewUrl": "https://www.zlspace.ai/games/game_xxx/preview?previewToken=...",
+  "gameUrl": "https://www.zlspace.ai/games/game_xxx/index.html?previewToken=...",
   "statusText": "iterating",
   "generationTask": {}
 }
@@ -170,8 +170,8 @@
   "stage": "queued|spec_build|code_generating|qa_checking|completed|failed",
   "gameId": "game_xxx",
   "version": 1,
-  "previewUrl": "https://gamevallies.com/games/game_xxx/preview?previewToken=...",
-  "gameUrl": "https://gamevallies.com/games/game_xxx/index.html?previewToken=...",
+  "previewUrl": "https://www.zlspace.ai/games/game_xxx/preview?previewToken=...",
+  "gameUrl": "https://www.zlspace.ai/games/game_xxx/index.html?previewToken=...",
   "gameStatus": "generating|draft|published|failed",
   "canPlay": true,
   "requireSubscription": false,
@@ -254,7 +254,7 @@
 兼容说明：
 
 - 字段 shape 没变
-- 返回链接统一以 `https://gamevallies.com` 为 canonical
+- 返回链接统一以 `https://www.zlspace.ai` 为 canonical
 - `unlisted` 游戏不会出现在公共详情和公开列表中
 
 ---
@@ -286,8 +286,8 @@
     "version": 2,
     "metadata": {}
   },
-  "previewUrl": "https://gamevallies.com/games/game_xxx/preview?previewToken=...",
-  "gameUrl": "https://gamevallies.com/games/game_xxx/index.html?previewToken=..."
+  "previewUrl": "https://www.zlspace.ai/games/game_xxx/preview?previewToken=...",
+  "gameUrl": "https://www.zlspace.ai/games/game_xxx/index.html?previewToken=..."
 }
 ```
 
@@ -395,7 +395,7 @@
 
 ## 6. 前端适配清单
 
-- 全局搜索是否写死了 `www.gamevallies.com`
+- 全局搜索是否写死了 `gamevallies.com` / `www.gamevallies.com`，应改为 `https://www.zlspace.ai`
 - 全局搜索是否有手动拼 `/games/${id}/preview`
 - 全局搜索是否把 `previewUrl` 自己替换成 `/index.html`
 - 检查路由跳转、分享卡片、iframe、H5 打开页是否保留 query string

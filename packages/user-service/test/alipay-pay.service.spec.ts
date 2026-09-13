@@ -47,7 +47,7 @@ describe('AlipayPayService', () => {
       outTradeNo: 'gv202604050001',
       amount: 990,
       notifyUrl: 'https://example.com/api/v1/subscription/alipay/notify',
-      returnUrl: 'https://gamevallies.com/payment/result',
+      returnUrl: 'https://www.zlspace.ai/payment/result',
     });
 
     expect(result.payment.provider).toBe('alipay');

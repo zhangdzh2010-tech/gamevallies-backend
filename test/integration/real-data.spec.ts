@@ -57,7 +57,7 @@ describe('用户数据验证', () => {
     const user = await prisma.user.findUnique({ where: { username: 'alice' } });
     expect(user).not.toBeNull();
     expect(user!.role).toBe('creator');
-    expect(user!.email).toBe('alice@gamevallies.com');
+    expect(user!.email).toBe('alice@zlspace.ai');
     expect(user!.followerCount).toBeGreaterThan(0);
     expect(user!.gameCount).toBeGreaterThan(0);
   });
@@ -81,7 +81,7 @@ describe('用户数据验证', () => {
   });
 
   test('通过 email 或 username 均可查找用户 (login 场景)', async () => {
-    const account = 'alice@gamevallies.com';
+    const account = 'alice@zlspace.ai';
     const user = await prisma.user.findFirst({
       where: {
         OR: [{ email: account }, { username: account }],

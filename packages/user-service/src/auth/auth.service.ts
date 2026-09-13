@@ -235,7 +235,7 @@ export class AuthService {
       || this.configService.get<string>('PUBLIC_API_BASE_URL')
       || process.env.PUBLIC_WEB_BASE_URL
       || process.env.PUBLIC_API_BASE_URL
-      || 'https://gamevallies.com'
+      || 'https://www.zlspace.ai'
     ).replace(/\/$/, '');
 
     try {

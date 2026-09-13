@@ -118,10 +118,10 @@ export class WechatPayService {
         prepayId: null,
         rawResponse: {
           mock: true,
-          h5_url: `https://pay.mock.gamevallies.com/wechat/${input.outTradeNo}`,
+          h5_url: `https://pay.mock.zlspace.ai/wechat/${input.outTradeNo}`,
         },
         payment: {
-          mwebUrl: `https://pay.mock.gamevallies.com/wechat/${input.outTradeNo}`,
+          mwebUrl: `https://pay.mock.zlspace.ai/wechat/${input.outTradeNo}`,
         },
       };
     }
@@ -189,7 +189,7 @@ export class WechatPayService {
         h5_info: {
           type: input.h5Info?.type || 'Wap',
           app_name: input.h5Info?.appName || 'GameVallies',
-          app_url: input.h5Info?.appUrl || this.configService.get<string>('PUBLIC_WEB_BASE_URL') || 'https://gamevallies.com',
+          app_url: input.h5Info?.appUrl || this.configService.get<string>('PUBLIC_WEB_BASE_URL') || 'https://www.zlspace.ai',
         },
       };
     }

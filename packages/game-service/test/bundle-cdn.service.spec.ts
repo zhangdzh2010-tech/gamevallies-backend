@@ -7,7 +7,7 @@ const ENABLED_ENV: Record<string, string> = {
   VOLCENGINE_SECRET_KEY: 'test-sk',
   VOLCENGINE_REGION: 'cn-shanghai',
   BUNDLE_CDN_TOS_BUCKET: 'bundle-bucket',
-  BUNDLE_CDN_PUBLIC_BASE_URL: 'https://cdn.gamevallies.com',
+  BUNDLE_CDN_PUBLIC_BASE_URL: 'https://cdn.zlspace.ai',
 };
 
 function createConfigService(values: Record<string, string>): ConfigService {
@@ -66,7 +66,7 @@ describe('BundleCdnService', () => {
         gameId: 'game-1',
         version: 3,
         htmlCode: '<html><body>hi</body></html>',
-        metadata: { coverUrl: 'https://api.gamevallies.com/api/v1/games/game-1/cover', qaPassed: true },
+        metadata: { coverUrl: 'https://api.zlspace.ai/api/v1/games/game-1/cover', qaPassed: true },
       });
 
       const uploaded = await service.syncBundleToCdn('game-1');
@@ -81,9 +81,9 @@ describe('BundleCdnService', () => {
         'game-1',
         3,
         expect.objectContaining({
-          coverUrl: 'https://api.gamevallies.com/api/v1/games/game-1/cover',
+          coverUrl: 'https://api.zlspace.ai/api/v1/games/game-1/cover',
           qaPassed: true,
-          cdnUrl: 'https://cdn.gamevallies.com/game-bundles/game-1/3/index.html',
+          cdnUrl: 'https://cdn.zlspace.ai/game-bundles/game-1/3/index.html',
           cdnUploadedAt: expect.any(String),
         }),
       );
@@ -199,7 +199,7 @@ describe('BundleCdnService', () => {
     it('returns the cdnUrl for a published public game whose latest bundle has one', async () => {
       const service = createService();
       prisma.gameBundle.findFirst.mockResolvedValue({
-        metadata: { cdnUrl: 'https://cdn.gamevallies.com/game-bundles/game-1/3/index.html' },
+        metadata: { cdnUrl: 'https://cdn.zlspace.ai/game-bundles/game-1/3/index.html' },
       });
 
       const url = await service.resolvePublicCdnUrl({
@@ -208,7 +208,7 @@ describe('BundleCdnService', () => {
         visibility: 'public',
       });
 
-      expect(url).toBe('https://cdn.gamevallies.com/game-bundles/game-1/3/index.html');
+      expect(url).toBe('https://cdn.zlspace.ai/game-bundles/game-1/3/index.html');
       expect(prisma.gameBundle.findFirst).toHaveBeenCalledWith(expect.objectContaining({
         where: { gameId: 'game-1' },
         orderBy: { version: 'desc' },
@@ -273,7 +273,7 @@ describe('BundleCdnService', () => {
     it('buildCdnUrlPatch returns {} when no cdn url applies and { cdnUrl } when it does', async () => {
       const service = createService();
       prisma.gameBundle.findFirst.mockResolvedValue({
-        metadata: { cdnUrl: 'https://cdn.gamevallies.com/game-bundles/game-1/3/index.html' },
+        metadata: { cdnUrl: 'https://cdn.zlspace.ai/game-bundles/game-1/3/index.html' },
       });
 
       await expect(service.buildCdnUrlPatch({
@@ -286,7 +286,7 @@ describe('BundleCdnService', () => {
         status: 'published',
         visibility: 'public',
       })).resolves.toEqual({
-        cdnUrl: 'https://cdn.gamevallies.com/game-bundles/game-1/3/index.html',
+        cdnUrl: 'https://cdn.zlspace.ai/game-bundles/game-1/3/index.html',
       });
     });
   });

@@ -1306,7 +1306,7 @@ fork 会话最终发起的不是 `pipeline_run`，而是：
     "gameId": "uuid",
     "taskId": "uuid",
     "status": "ready",
-    "previewUrl": "https://www.gamevallies.com/games/uuid/preview",
+    "previewUrl": "https://www.zlspace.ai/games/uuid/preview",
     "canPlay": false,
     "requireSubscription": true
   }

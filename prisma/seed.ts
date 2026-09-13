@@ -593,7 +593,7 @@ async function main() {
       create: {
         id: randomUUID(),
         username: 'alice',
-        email: 'alice@gamevallies.com',
+        email: 'alice@zlspace.ai',
         displayName: 'Alice Chen',
         passwordHash,
         bio: '独立游戏开发者，热爱创造有趣的游戏体验',
@@ -612,7 +612,7 @@ async function main() {
       create: {
         id: randomUUID(),
         username: 'bobgamer',
-        email: 'bob@gamevallies.com',
+        email: 'bob@zlspace.ai',
         displayName: 'Bob Johnson',
         passwordHash,
         bio: '休闲玩家，最爱益智解谜游戏',
@@ -630,7 +630,7 @@ async function main() {
       create: {
         id: randomUUID(),
         username: 'caroldev',
-        email: 'carol@gamevallies.com',
+        email: 'carol@zlspace.ai',
         displayName: 'Carol Adams',
         passwordHash,
         bio: 'AI游戏设计师，探索人机协作的无限可能',
@@ -649,7 +649,7 @@ async function main() {
       create: {
         id: randomUUID(),
         username: 'davidy',
-        email: 'david@gamevallies.com',
+        email: 'david@zlspace.ai',
         displayName: 'David Lee',
         passwordHash,
         bio: '动作游戏爱好者',
@@ -667,7 +667,7 @@ async function main() {
       create: {
         id: randomUUID(),
         username: 'emmacraft',
-        email: 'emma@gamevallies.com',
+        email: 'emma@zlspace.ai',
         displayName: 'Emma Wilson',
         passwordHash,
         bio: '策略游戏达人，喜欢挑战脑力极限',
@@ -1025,11 +1025,11 @@ async function main() {
 ║  通知数:      ${String(notifCnt).padEnd(26)}║
 ╠══════════════════════════════════════════╣
 ║  测试账号 (密码均为 password123):         ║
-║  alice@gamevallies.com    (creator)      ║
-║  bob@gamevallies.com      (user)         ║
-║  carol@gamevallies.com    (creator)      ║
-║  david@gamevallies.com    (user)         ║
-║  emma@gamevallies.com     (creator)      ║
+║  alice@zlspace.ai         (creator)      ║
+║  bob@zlspace.ai           (user)         ║
+║  carol@zlspace.ai         (creator)      ║
+║  david@zlspace.ai         (user)         ║
+║  emma@zlspace.ai          (creator)      ║
 ╚══════════════════════════════════════════╝
 `);
 }

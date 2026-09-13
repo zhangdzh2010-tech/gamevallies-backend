@@ -150,8 +150,8 @@ describe("AdminService", () => {
         const values: Record<string, string> = {
           AI_ENGINE_URL: "http://ai-engine.test",
           AI_ENGINE_URL_CN_SHANGHAI: "https://ai-cn.test",
-          PUBLIC_API_BASE_URL: "https://gamevallies.com",
-          APP_URL: "https://gamevallies.com",
+          PUBLIC_API_BASE_URL: "https://www.zlspace.ai",
+          APP_URL: "https://www.zlspace.ai",
         };
         return values[key] ?? defaultValue;
       }),
@@ -162,8 +162,8 @@ describe("AdminService", () => {
       terminateTask: jest.fn(),
       refreshTimeoutConfigCache: jest.fn(),
       buildAdminPreviewUrls: jest.fn((gameId: string) => ({
-        previewUrl: `https://gamevallies.com/games/${gameId}/preview?previewToken=admin`,
-        gameUrl: `https://gamevallies.com/games/${gameId}/index.html?previewToken=admin`,
+        previewUrl: `https://www.zlspace.ai/games/${gameId}/preview?previewToken=admin`,
+        gameUrl: `https://www.zlspace.ai/games/${gameId}/index.html?previewToken=admin`,
       })),
     };
 
@@ -965,7 +965,7 @@ describe("AdminService", () => {
         generationTasks: [
           {
             id: "task-legacy",
-            previewUrl: "https://gamevallies.com/games/game-legacy/preview",
+            previewUrl: "https://www.zlspace.ai/games/game-legacy/preview",
             createdAt: legacyCreatedAt,
           },
         ],
@@ -990,7 +990,7 @@ describe("AdminService", () => {
           {
             id: "task-tokenized",
             previewUrl:
-              "https://gamevallies.com/games/game-tokenized/preview?previewToken=admin",
+              "https://www.zlspace.ai/games/game-tokenized/preview?previewToken=admin",
             createdAt: legacyCreatedAt,
           },
         ],
@@ -1177,7 +1177,7 @@ describe("AdminService", () => {
         metadata: expect.objectContaining({
           coverArtifactId: "artifact-cover-backfill",
           coverUrl:
-            "https://gamevallies.com/api/v1/games/game-cover-backfill/cover?v=1",
+            "https://www.zlspace.ai/api/v1/games/game-cover-backfill/cover?v=1",
         }),
       },
     });
@@ -1185,7 +1185,7 @@ describe("AdminService", () => {
       where: { id: "game-cover-backfill" },
       data: {
         thumbnailUrl:
-          "https://gamevallies.com/api/v1/games/game-cover-backfill/cover?v=1",
+          "https://www.zlspace.ai/api/v1/games/game-cover-backfill/cover?v=1",
       },
     });
     expect(invalidateFeedCacheSpy).toHaveBeenCalledTimes(1);
@@ -1406,9 +1406,9 @@ describe("AdminService", () => {
         qualityScore: 0.91,
         version: 3,
         previewUrl:
-          "https://gamevallies.com/games/game-1/preview?previewToken=admin",
+          "https://www.zlspace.ai/games/game-1/preview?previewToken=admin",
         gameUrl:
-          "https://gamevallies.com/games/game-1/index.html?previewToken=admin",
+          "https://www.zlspace.ai/games/game-1/index.html?previewToken=admin",
         createdAt: taskCreatedAt,
         updatedAt: taskCompletedAt,
         lastErrorAt: null,
@@ -1933,9 +1933,9 @@ describe("AdminService", () => {
           htmlCode: "<html><body>runner</body></html>",
         }),
         previewUrl:
-          "https://gamevallies.com/games/game-1/preview?previewToken=admin",
+          "https://www.zlspace.ai/games/game-1/preview?previewToken=admin",
         gameUrl:
-          "https://gamevallies.com/games/game-1/index.html?previewToken=admin",
+          "https://www.zlspace.ai/games/game-1/index.html?previewToken=admin",
         game: expect.objectContaining({
           id: "game-1",
           description: "build a runner game",
@@ -2477,7 +2477,7 @@ describe("AdminService", () => {
       expect.objectContaining({
         id: "game-1",
         coverUrl:
-          "https://gamevallies.com/api/v1/games/game-1/cover?v=3&previewToken=admin",
+          "https://www.zlspace.ai/api/v1/games/game-1/cover?v=3&previewToken=admin",
       }),
     );
   });
@@ -2513,7 +2513,7 @@ describe("AdminService", () => {
         avgPlayTime: 0,
         qualityScore: 0,
         version: 4,
-        thumbnailUrl: "https://gamevallies.com/api/v1/games/game-1/cover?v=4",
+        thumbnailUrl: "https://www.zlspace.ai/api/v1/games/game-1/cover?v=4",
         author: {
           id: "user-1",
           username: "cover_user",
@@ -2525,7 +2525,7 @@ describe("AdminService", () => {
             version: 4,
             metadata: {
               coverArtifactId: "artifact-cover-upload",
-              coverUrl: "https://gamevallies.com/api/v1/games/game-1/cover?v=4",
+              coverUrl: "https://www.zlspace.ai/api/v1/games/game-1/cover?v=4",
             },
           },
         ],
@@ -2566,7 +2566,7 @@ describe("AdminService", () => {
       data: {
         metadata: expect.objectContaining({
           coverArtifactId: "artifact-cover-upload",
-          coverUrl: "https://gamevallies.com/api/v1/games/game-1/cover?v=4",
+          coverUrl: "https://www.zlspace.ai/api/v1/games/game-1/cover?v=4",
           manualCover: true,
           manualCoverSource: "admin_upload",
         }),
@@ -2575,7 +2575,7 @@ describe("AdminService", () => {
     expect(prisma.game.update).toHaveBeenCalledWith({
       where: { id: "game-1" },
       data: {
-        thumbnailUrl: "https://gamevallies.com/api/v1/games/game-1/cover?v=4",
+        thumbnailUrl: "https://www.zlspace.ai/api/v1/games/game-1/cover?v=4",
       },
     });
     expect(invalidateFeedCacheSpy).toHaveBeenCalledTimes(1);
@@ -2583,7 +2583,7 @@ describe("AdminService", () => {
       expect.objectContaining({
         id: "game-1",
         coverUrl:
-          "https://gamevallies.com/api/v1/games/game-1/cover?v=4&previewToken=admin",
+          "https://www.zlspace.ai/api/v1/games/game-1/cover?v=4&previewToken=admin",
       }),
     );
   });

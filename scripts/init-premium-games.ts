@@ -130,7 +130,7 @@ async function initPremiumGames() {
   // Step 1: 确保系统种子创作者存在
   const SEED_USER = {
     username: 'seed_creator',
-    email: 'seed@gamevallies.com',
+    email: 'seed@zlspace.ai',
     displayName: '平台精选游戏',
     bio: '平台官方精选游戏，汇聚多款经典 HTML5 小游戏。',
   };

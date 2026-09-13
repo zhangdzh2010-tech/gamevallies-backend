@@ -5,8 +5,8 @@ describe('presentGame', () => {
   const originalAppUrl = process.env.APP_URL;
 
   beforeEach(() => {
-    process.env.PUBLIC_API_BASE_URL = 'https://gamevallies.com';
-    process.env.APP_URL = 'https://gamevallies.com';
+    process.env.PUBLIC_API_BASE_URL = 'https://www.zlspace.ai';
+    process.env.APP_URL = 'https://www.zlspace.ai';
   });
 
   afterAll(() => {
@@ -19,7 +19,7 @@ describe('presentGame', () => {
       id: 'game-cdn-cover',
       title: 'CDN Cover',
       status: 'published',
-      previewUrl: 'https://gamevallies.com/games/game-cdn-cover/preview',
+      previewUrl: 'https://www.zlspace.ai/games/game-cdn-cover/preview',
       thumbnailUrl: 'https://cdn.example.com/covers/game-cdn-cover.webp?sig=123',
     });
 
@@ -31,12 +31,12 @@ describe('presentGame', () => {
       id: 'game-local-cover',
       title: 'Local Cover',
       status: 'draft',
-      previewUrl: 'https://gamevallies.com/games/game-local-cover/preview?previewToken=token-123',
+      previewUrl: 'https://www.zlspace.ai/games/game-local-cover/preview?previewToken=token-123',
       thumbnailUrl: 'https://old-host.test/games/game-local-cover/cover?taskId=task-local&v=2',
     });
 
     expect(presented.coverUrl).toBe(
-      'https://gamevallies.com/api/v1/games/game-local-cover/cover?taskId=task-local&v=2&previewToken=token-123',
+      'https://www.zlspace.ai/api/v1/games/game-local-cover/cover?taskId=task-local&v=2&previewToken=token-123',
     );
   });
 
@@ -45,12 +45,12 @@ describe('presentGame', () => {
       id: 'game-cover-fallback',
       title: 'Fallback Cover',
       status: 'draft',
-      previewUrl: 'https://gamevallies.com/games/game-cover-fallback/preview?previewToken=token-456',
+      previewUrl: 'https://www.zlspace.ai/games/game-cover-fallback/preview?previewToken=token-456',
       thumbnailUrl: null,
     });
 
     expect(presented.coverUrl).toBe(
-      'https://gamevallies.com/api/v1/games/game-cover-fallback/cover?previewToken=token-456',
+      'https://www.zlspace.ai/api/v1/games/game-cover-fallback/cover?previewToken=token-456',
     );
   });
 
@@ -61,7 +61,7 @@ describe('presentGame', () => {
       description: 'a simple endless runner',
       gameType: 'runner',
       status: 'published',
-      previewUrl: 'https://gamevallies.com/games/game-runner/preview',
+      previewUrl: 'https://www.zlspace.ai/games/game-runner/preview',
     });
 
     expect(presented.type).toBe('casual');
@@ -76,7 +76,7 @@ describe('presentGame', () => {
       description:
         '一只猫在跳房子\nGame Type: casual\nCore Mechanic: tap to jump\nWin Condition: reach 10',
       status: 'published',
-      previewUrl: 'https://gamevallies.com/games/game-h511/preview',
+      previewUrl: 'https://www.zlspace.ai/games/game-h511/preview',
     });
 
     expect(presented.description).toBe('一只猫在跳房子');
@@ -92,7 +92,7 @@ describe('presentGame', () => {
       description:
         '一只猫在跳房子\n请把这条想法整理成 GameSpec\nGame Type: casual',
       status: 'published',
-      previewUrl: 'https://gamevallies.com/games/game-legacy/preview',
+      previewUrl: 'https://www.zlspace.ai/games/game-legacy/preview',
     });
 
     expect(presented.description).toBe('一只猫在跳房子');
@@ -104,7 +104,7 @@ describe('presentGame', () => {
       id: 'game-h711',
       title: 'H.7.1',
       status: 'published',
-      previewUrl: 'https://gamevallies.com/games/game-h711/preview',
+      previewUrl: 'https://www.zlspace.ai/games/game-h711/preview',
       author: {
         id: '1234abcd-aaaa-bbbb-cccc-deadbeef0001',
         username: 'wx_oabcdef123',
@@ -122,7 +122,7 @@ describe('presentGame', () => {
       id: 'game-realname',
       title: 'Real',
       status: 'published',
-      previewUrl: 'https://gamevallies.com/games/game-realname/preview',
+      previewUrl: 'https://www.zlspace.ai/games/game-realname/preview',
       author: {
         id: 'ffffaaaa-1111-2222-3333-444455556666',
         username: 'wx_oabcdef123',
