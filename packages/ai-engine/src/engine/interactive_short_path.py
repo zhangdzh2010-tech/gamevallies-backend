@@ -13,9 +13,20 @@ import re
 from typing import Any, Dict, Optional
 
 from .contract_digest import contract_digest
-from .desktop_runtime_shell import render_shell, shell_time_advance_contract_errors
+from .desktop_runtime_shell import (
+    converter_shell_contract_errors,
+    render_converter_shell,
+    render_shell,
+    shell_time_advance_contract_errors,
+)
 from .interactive_diversity import DiversityPlan, visual_css_from_pack
-from .interactive_families import Recipe, family_plugin_js, render_param_controls
+from .interactive_families import (
+    Recipe,
+    family_plugin_js,
+    is_converter_family,
+    render_converter_controls,
+    render_param_controls,
+)
 from .interactive_router import RouteDecision
 
 FILL_STEP_KEY = "code_generate.template_fill"
@@ -98,6 +109,27 @@ def assemble_short_path_document(
     slots: Dict[str, str],
     plan: DiversityPlan,
 ) -> str:
+    pack_css = visual_css_from_pack(plan.visual_pack, plan.anchor)
+    if is_converter_family(recipe.family_id):
+        html = render_converter_shell(
+            title=slots.get("title") or recipe.title,
+            summary=slots.get("summary") or recipe.title,
+            formula=slots.get("formula") or recipe.formula,
+            assumptions=slots.get("assumptions") or recipe.assumptions,
+            limits=slots.get("limits") or recipe.limits,
+            converter_controls_html=render_converter_controls(recipe),
+            family_script=family_plugin_js(recipe.family_id, recipe),
+            visual_css=pack_css,
+            family_id=recipe.family_id,
+            recipe_id=recipe.id,
+            subject=recipe.subject,
+            visual_pack_id=plan.visual_pack_id,
+            variation_seed=plan.variation_seed,
+        )
+        errors = converter_shell_contract_errors(html)
+        if errors:
+            raise ValueError("assembled converter shell failed contract: " + "; ".join(errors))
+        return html
     html = render_shell(
         title=slots.get("title") or recipe.title,
         summary=slots.get("summary") or recipe.title,
@@ -106,7 +138,7 @@ def assemble_short_path_document(
         limits=slots.get("limits") or recipe.limits,
         param_controls_html=render_param_controls(recipe.params),
         family_script=family_plugin_js(recipe.family_id, recipe),
-        visual_css=visual_css_from_pack(plan.visual_pack, plan.anchor),
+        visual_css=pack_css,
         family_id=recipe.family_id,
         recipe_id=recipe.id,
         subject=recipe.subject,
@@ -145,6 +177,8 @@ def fill_prompt(
             if recipe.id == "enzyme_temp"
             else "渗透文案须标明内侧、外侧与半透膜，水流由浓度差驱动。"
             if recipe.id == "osmosis"
+            else "换算器保留 convertBtn 与 resetBtn 的 id，不要改成游戏开始/暂停；公式与单位对必须与配方一致。"
+            if is_converter_family(recipe.family_id)
             else ""
         )
     )

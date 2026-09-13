@@ -10,7 +10,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "sc
 
 from src.api.models import GameSpec, RunPipelineV2Request
 from src.engine.desktop_runtime_shell import (
+    CONVERTER_CONTROL_SEARCH,
     accumulate_sim_time,
+    converter_shell_contract_errors,
     shell_time_advance_contract_errors,
 )
 from src.engine.interactive_creation import (
@@ -25,12 +27,14 @@ from src.engine.interactive_diversity import (
     plan_interactive_diversity,
 )
 from src.engine.interactive_families import (
+    CONVERTER_FAMILY_ID,
     ENZYME_DEFAULT_EA_KJ,
     ENZYME_TEMP_MAX_C,
     ENZYME_TEMP_MIN_C,
     OSMOSIS_START_VIN,
     OSMOSIS_START_VOUT,
     RECIPES,
+    convert_bidirectional,
     enzyme_activity_peak_celsius,
     enzyme_activity_rate,
     family_plugin_js,
@@ -82,10 +86,29 @@ class RouterFamilies(unittest.TestCase):
         self.assertIn(decision.reason, {"no_family_match", "ambiguous_family"})
         self.assertIsNone(decision.family_id)
 
-    def test_tool_converter_does_not_force_enzyme_family(self):
+    def test_tool_converter_hits_converter_family_not_enzyme(self):
+        cases = [
+            (
+                "作品类型：工具。制作摄氏和华氏双向温度转换器，输入值和单位后点击转换，正确处理负数、小数及无效输入。",
+                "temp_c_f",
+            ),
+            (
+                "作品类型：工具。制作米与英尺双向单位换算工具，输入数值后转换，处理小数和无效输入，不要游戏玩法。",
+                "length_m_ft",
+            ),
+        ]
+        for brief, recipe_id in cases:
+            decision = route_interactive_template("tool", brief)
+            self.assertEqual(decision.route, "HIT", brief)
+            self.assertEqual(decision.family_id, CONVERTER_FAMILY_ID, brief)
+            self.assertEqual(decision.recipe_id, recipe_id, brief)
+            self.assertTrue(decision.uses_short_path, brief)
+            self.assertNotEqual(decision.recipe_id, "enzyme_temp", brief)
+
+    def test_tool_counter_still_requires_strong_recipe(self):
         decision = route_interactive_template(
             "tool",
-            "作品类型：工具。制作摄氏和华氏双向温度转换器。",
+            "作品类型：工具。制作一个可加减的计数器，有重置。",
         )
         self.assertEqual(decision.route, "MISS")
         self.assertEqual(decision.reason, "tool_requires_strong_recipe")
@@ -112,6 +135,7 @@ class RouterFamilies(unittest.TestCase):
         self.assertTrue(recipes_for_family("field_or_wave_2d"))
         self.assertTrue(recipes_for_family("compartment_flow"))
         self.assertTrue(recipes_for_family("geometric_ray_2d"))
+        self.assertTrue(recipes_for_family("bidirectional_converter"))
 
 
 class ShellTimeAdvance(unittest.TestCase):
@@ -270,6 +294,10 @@ class YieldLedgerEfficiency(unittest.TestCase):
         self.assertIn("compartment_flow", families)
         self.assertIn("geometric_ray_2d", families)
         self.assertIn("field_or_wave_2d", families)
+        self.assertIn("bidirectional_converter", families)
+        names = {case["name"] for case in EXTRA_CASES}
+        self.assertIn("unit_converter_cn", names)
+        self.assertIn("temp_converter_cn", names)
 
         outcome = extract_quality_outcome({
             "qualityBreakdown": {
@@ -803,6 +831,139 @@ class ResidualFamilyContracts(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Vout=", after["readout"])
         self.assertTrue(after["snap"] != before["snap"] or after["readout"] != before["readout"])
         self.assertIs(after["nullSafe"], True)
+
+
+class ConverterDesktopResidual(unittest.IsolatedAsyncioTestCase):
+    UNIT_BRIEF = "作品类型：工具。制作米与英尺双向单位换算工具，输入数值后转换，处理小数和无效输入，不要游戏玩法。"
+    TEMP_BRIEF = "作品类型：工具。制作摄氏和华氏双向温度转换器，输入值和单位后点击转换，正确处理负数、小数及无效输入。"
+
+    def test_conversion_oracle_covers_decimals_negatives_and_identity(self):
+        self.assertAlmostEqual(convert_bidirectional("length_m_ft", 1, "m", "ft"), 3.280839895)
+        self.assertAlmostEqual(convert_bidirectional("length_m_ft", 3.280839895, "ft", "m"), 1)
+        self.assertAlmostEqual(convert_bidirectional("length_m_ft", 2.5, "m", "m"), 2.5)
+        self.assertAlmostEqual(convert_bidirectional("temp_c_f", 0, "C", "F"), 32)
+        self.assertAlmostEqual(convert_bidirectional("temp_c_f", -40, "C", "F"), -40)
+        self.assertAlmostEqual(convert_bidirectional("temp_c_f", 98.6, "F", "C"), 37.0, places=4)
+
+    def test_assembled_unit_converter_keeps_search_targets_and_no_science_chrome(self):
+        html = _assemble_recipe("length_m_ft", self.UNIT_BRIEF)
+        self.assertEqual(converter_shell_contract_errors(html), [])
+        self.assertIn(CONVERTER_CONTROL_SEARCH, html)
+        self.assertIn('id="convertBtn"', html)
+        self.assertIn('id="resetBtn"', html)
+        self.assertIn('id="valueInput"', html)
+        self.assertNotIn('id="btn-start"', html)
+        self.assertNotIn('id="work-canvas"', html)
+        self.assertIn("convertBtn", fill_prompt(
+            kind="tool",
+            brief=self.UNIT_BRIEF,
+            recipe=get_recipe("length_m_ft"),
+            plan=plan_interactive_diversity(
+                family_id=CONVERTER_FAMILY_ID,
+                recipe_id="length_m_ft",
+                title="米与英尺换算",
+                formula=get_recipe("length_m_ft").formula,
+                variation_seed="unit-fill",
+                ledger=DiversityLedger(),
+            ),
+            route=route_interactive_template("tool", self.UNIT_BRIEF),
+        ))
+
+    async def test_assembled_converters_pass_desktop_qa_and_stay_operable(self):
+        from playwright.async_api import async_playwright
+
+        cases = (
+            ("length_m_ft", self.UNIT_BRIEF, "2", "6.5617"),
+            ("temp_c_f", self.TEMP_BRIEF, "-40", "-40"),
+        )
+        for recipe_id, brief, typed, expected_fragment in cases:
+            html = _assemble_recipe(recipe_id, brief)
+            self.assertEqual(converter_shell_contract_errors(html), [], recipe_id)
+            report = await validate_interactive_html(html, brief=brief)
+            self.assertFalse(report.get("js_errors"), report)
+            self.assertTrue(report["passed"], (recipe_id, report["issues"]))
+            self.assertTrue(report.get("contentChanged"), recipe_id)
+            self.assertFalse(report.get("layoutIssues"), (recipe_id, report.get("layoutIssues")))
+            layout_text = " ".join(report.get("layoutIssues") or [])
+            self.assertNotIn("convertBtn", layout_text)
+            self.assertNotIn("resetBtn", layout_text)
+
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.launch(headless=True, args=["--no-sandbox"])
+                page = await browser.new_page(viewport={"width": 1000, "height": 600})
+                await page.set_content(html)
+                await page.evaluate(
+                    "() => document.documentElement.style.setProperty('font-size',"
+                    "parseFloat(getComputedStyle(document.documentElement).fontSize)*1.125+'px','important')"
+                )
+                probe = await page.evaluate(
+                    """() => {
+                      const ids = ['convertBtn','resetBtn','valueInput','fromUnit','toUnit','convertResult'];
+                      const viewport = {w: innerWidth, h: innerHeight};
+                      const nodes = {};
+                      for (const id of ids) {
+                        const el = document.getElementById(id);
+                        if (!el) { nodes[id] = null; continue; }
+                        const r = el.getBoundingClientRect();
+                        const s = getComputedStyle(el);
+                        nodes[id] = {
+                          visible: r.width>0 && r.height>0 && s.visibility!=='hidden' && s.display!=='none',
+                          inView: r.top>=-2 && r.left>=-2 && r.bottom<=viewport.h+2 && r.right<=viewport.w+2,
+                        };
+                      }
+                      return {nodes, overflow: document.documentElement.scrollWidth > innerWidth+2};
+                    }"""
+                )
+                before = await page.locator("#convertResult").inner_text()
+                await page.fill("#valueInput", typed)
+                await page.click("#convertBtn")
+                after = await page.locator("#convertResult").inner_text()
+                await page.click("#resetBtn")
+                restored = await page.locator("#convertResult").inner_text()
+                restored_value = await page.input_value("#valueInput")
+                await browser.close()
+            self.assertFalse(probe["overflow"], (recipe_id, probe))
+            for control_id, info in probe["nodes"].items():
+                self.assertIsNotNone(info, (recipe_id, control_id))
+                self.assertTrue(info["visible"], (recipe_id, control_id, info))
+                self.assertTrue(info["inView"], (recipe_id, control_id, info))
+            self.assertNotEqual(after, before, recipe_id)
+            self.assertIn(expected_fragment, after, (recipe_id, after))
+            self.assertEqual(after != restored or restored_value != typed, True, recipe_id)
+            self.assertNotEqual(restored_value, typed, recipe_id)
+
+    async def test_tall_converter_fixture_keeps_buttons_after_compact(self):
+        from src.engine.interactive_creation import apply_preview_layout_compact
+
+        tall = '''<!doctype html><html><head><meta charset="utf-8">
+        <style>body{margin:24px;font:16px/1.4 sans-serif}
+        canvas{width:960px;height:520px;display:block}</style></head>
+        <body><h1>米英尺换算</h1>
+        <p>输入数值后转换。</p>
+        <canvas id="art" width="960" height="520"></canvas>
+        <label>数值 <input id="valueInput" type="number" value="1"></label>
+        <select id="fromUnit"><option value="m" selected>米</option><option value="ft">英尺</option></select>
+        <select id="toUnit"><option value="m">米</option><option value="ft" selected>英尺</option></select>
+        <button type="button" id="convertBtn"
+          onclick="convertResult.textContent=String((Number(valueInput.value)||0)*3.28084)">转换</button>
+        <button type="button" id="resetBtn"
+          onclick="valueInput.value='1';convertResult.textContent='3.2808'">重置</button>
+        <output id="convertResult">3.2808</output>
+        <script>void 0</script>
+        </body></html>'''
+        original = await validate_interactive_html(tall)
+        self.assertTrue(
+            any("字号容差" in issue or "核心图形" in issue or "convertBtn" in issue or "resetBtn" in issue
+                for issue in original["issues"]),
+            original["issues"],
+        )
+        compact = apply_preview_layout_compact(tall)
+        self.assertIn('id="convertBtn"', compact)
+        self.assertIn('id="resetBtn"', compact)
+        self.assertIn("#convertBtn,#resetBtn", compact)
+        repaired = await validate_interactive_html(compact)
+        self.assertTrue(repaired["passed"], repaired["issues"])
+        self.assertFalse(repaired.get("layoutIssues"), repaired.get("layoutIssues"))
 
 
 if __name__ == "__main__":

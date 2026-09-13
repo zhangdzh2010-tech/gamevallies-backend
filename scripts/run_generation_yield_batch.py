@@ -81,6 +81,8 @@ EXTRA_CASES: list[dict[str, str]] = [
         "description": "作品类型：工具。制作摄氏和华氏双向温度转换器，输入值和单位后点击转换，正确处理负数、小数及无效输入。",
         "orientation": "landscape",
         "artifact_kind": "tool",
+        "expected_family": "bidirectional_converter",
+        "expected_subject": "physics",
     },
     {
         "name": "unit_converter_cn",
@@ -88,6 +90,8 @@ EXTRA_CASES: list[dict[str, str]] = [
         "description": "作品类型：工具。制作米与英尺双向单位换算工具，输入数值后转换，处理小数和无效输入，不要游戏玩法。",
         "orientation": "landscape",
         "artifact_kind": "tool",
+        "expected_family": "bidirectional_converter",
+        "expected_subject": "physics",
     },
     {
         "name": "snake_classic_cn",
