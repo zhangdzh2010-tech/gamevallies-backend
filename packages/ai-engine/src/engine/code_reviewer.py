@@ -27,7 +27,16 @@ from .prompt_format import safe_format_prompt
 from .prompt_store import require_prompt
 from .quality_scorer import LLMReviewResult
 from .pipeline_errors import PipelineExecutionError, is_provider_transport_failure
-from .review_evidence import EVIDENCE_PROTOCOL, REVIEW_FLAGS, REVIEW_SCORES, validate_review_evidence, indexed_review_source
+from .review_evidence import (
+    EVIDENCE_PROTOCOL,
+    REVIEW_FLAGS,
+    REVIEW_SCORES,
+    coerce_review_findings,
+    coerce_review_issues,
+    promote_issue_objects_to_findings,
+    validate_review_evidence,
+    indexed_review_source,
+)
 from .review_recovery import recover_review, InvalidReviewEvidence
 from .artifact_quality import repair_json_like_text
 from ..services.llm_http_evidence import attach_transport_evidence, collect_transport_evidence, transport_error_message
@@ -207,9 +216,13 @@ class CodeReviewer:
         if any(type(data.get(key)) not in (int, float) or not math.isfinite(data[key])
                or not 1 <= data[key] <= 10 for key in REVIEW_SCORES):
             return LLMReviewResult(ran=False)
-        issues = data.get('issues')
-        if not isinstance(issues, list) or len(issues) > 10 or any(not isinstance(x, str) or not x.strip() for x in issues):
+        issues = coerce_review_issues(data.get('issues'))
+        if issues is None:
             return LLMReviewResult(ran=False)
+        findings = coerce_review_findings(data.get('findings', []))
+        if findings is None:
+            return LLMReviewResult(ran=False)
+        findings = promote_issue_objects_to_findings(data.get('issues'), findings)
 
         result = LLMReviewResult(
             ran=True,
@@ -220,7 +233,7 @@ class CodeReviewer:
             visual_polish_score=float(data['visual_polish_score']),
             character_quality_score=float(data['character_quality_score']),
             issues=issues,
-            findings=data.get('findings', []),
+            findings=findings,
         )
         logger.info(
             f"Code review: complete={result.is_complete_game}, "
