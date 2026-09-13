@@ -126,6 +126,8 @@ _CONTROL_STATEMENT_NAMES = frozenset(
     }
 )
 _SHORT_LIVE_ALIAS_MAX_LEN = 2
+_GRID_DIMENSION_ALIASES = frozenset({"cols", "rows"})
+_SAFE_GRID_HELPER_DECL_RE = re.compile(r"\bfunction\s+__safeGridCell\s*\(")
 _BARE_ASSIGNMENT_RE = re.compile(
     rf"(?<![\w$.])(?P<name>{_IDENTIFIER_RE})\s*(?:[+\-*/%]=|=(?!=))"
 )
@@ -647,7 +649,15 @@ class CodePreflightValidator:
                 "`let nr, nc;` then `nr = r + dr; nc = c + dc;`, or "
                 "`const [nr, nc] = [r + dr, c + dc];`. Do not read `nr` / `nc` as implicit globals."
             )
-        remaining_live = live_aliases - {"nr", "nc", "dr", "dc", "gc", "sc", "line", "dot", "star", "type"}
+        remaining_live = live_aliases - {
+            "nr", "nc", "dr", "dc", "gc", "sc", "line", "dot", "star", "type", "cols", "rows",
+        }
+        if {"cols", "rows"} & undefined_symbols:
+            visible.append(
+                "- Declare puzzle grid dimensions before use. Write `let rows = 0; let cols = 0;` "
+                "(or bind them from the board size) before `row < rows` / `col < cols` loops. "
+                "Do not read undeclared `rows` / `cols` as live expressions."
+            )
         if remaining_live:
             examples = ", ".join(f"`{name}`" for name in sorted(remaining_live)[:6])
             visible.append(
@@ -753,7 +763,7 @@ class CodePreflightValidator:
         def _replace(match: re.Match[str]) -> str:
             nonlocal replaced_any
             suffix = script[match.end(): match.end() + 4]
-            if re.match(r"\s*=", suffix):
+            if re.match(r"\s*=(?!=)", suffix):
                 return match.group(0)
             row_expr = (match.group("row") or "").strip()
             col_expr = (match.group("col") or "").strip()
@@ -764,9 +774,12 @@ class CodePreflightValidator:
             return f"(__safeGridCell(grid, {row_expr}, {col_expr})?.{prop_name})"
 
         repaired_script = _GRID_CELL_PROPERTY_READ_RE.sub(_replace, script)
-        if not replaced_any:
+        missing_helper = not _SAFE_GRID_HELPER_DECL_RE.search(repaired_script)
+        needs_helper = missing_helper and "__safeGridCell(" in repaired_script
+        if not replaced_any and not needs_helper:
             return html_code
-        if "__safeGridCell(" not in repaired_script:
+        if needs_helper:
+            # Call sites from this rewrite (or a prior partial repair) are not a definition.
             repaired_script = self._SAFE_GRID_HELPER + repaired_script.lstrip()
         return replace_script_content(html_code, repaired_script)
 
@@ -1142,6 +1155,9 @@ class CodePreflightValidator:
 
         issues: List[CodePreflightIssue] = []
         for match in _GRID_CELL_PROPERTY_READ_RE.finditer(script):
+            suffix = script[match.end(): match.end() + 4]
+            if re.match(r"\s*=(?!=)", suffix):
+                continue
             row_expr = re.sub(r"\s+", "", match.group("row") or "")
             col_expr = re.sub(r"\s+", "", match.group("col") or "")
             prop_name = match.group("prop") or "value"
@@ -1474,7 +1490,10 @@ class CodePreflightValidator:
         short_live = {
             name
             for name in self._collect_live_expression_symbols(scan_script)
-            if len(name) <= _SHORT_LIVE_ALIAS_MAX_LEN
+            if (
+                len(name) <= _SHORT_LIVE_ALIAS_MAX_LEN
+                or name in _GRID_DIMENSION_ALIASES
+            )
             and name not in declared
             and name not in _RESERVED_IDENTIFIERS
             and name.lower() not in _CONTROL_STATEMENT_NAMES
