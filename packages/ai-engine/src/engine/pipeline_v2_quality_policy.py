@@ -959,9 +959,11 @@ class PipelineV2QualityPolicyMixin:
             _append_recipe(
                 "- Declare helpers as hoisted function declarations in the same script. "
                 "Convert `const name = () => {}` / `let name = function () {}` / object-method "
-                "shorthand (`resetGame() {` inside `{ ... }`) / `this.resetGame = () => {}` to "
+                "shorthand (`resetGame() {` / `initGrid() {` inside `{ ... }`) / "
+                "`name: () => {}` / `name: function () {}` / `this.resetGame = () => {}` to "
                 "`function name() {}` so `init()`, listeners, and `requestAnimationFrame` cannot "
-                "hit TDZ and free calls such as `resetGame()` / `update()` / `loop()` resolve."
+                "hit TDZ and free calls such as `resetGame()` / `update()` / `loop()` / "
+                "`initGrid()` / `getEventPos()` / `getCellAt()` / `isAdjacent()` resolve."
             )
         if any(token in normalized_issue_blob for token in (
             "declare or inline `nc`",

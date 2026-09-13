@@ -119,6 +119,7 @@ class TestPromptIntegration(unittest.TestCase):
         self.assertIn("XMLHttpRequest", block)
         self.assertIn("WebSocket", block)
         self.assertIn("function resetGame() {}", block)
+        self.assertIn("function initGrid() {}", block)
         self.assertIn("function update() {}", block)
         self.assertIn("function loop(t)", block)
 

@@ -2781,7 +2781,18 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
         this.buildPromptBundleSnapshot('create', undefined, requestedGenerationTier),
         this.buildDefaultRuntimeContract('create', undefined, requestedOrientation, requestedGenerationTier),
       ]);
-      const { access, task } = await this.prisma.$transaction(async (tx) => {
+      const maxQuotaAttempts = 3;
+      let access: {
+        canPlay: boolean;
+        requireSubscription: boolean;
+        quotaRemaining: number;
+        accessGrantSource: GameAccessGrantSource;
+        accessGrantSubscriptionId: string | null;
+      } | undefined;
+      let task: any;
+      for (let quotaAttempt = 1; quotaAttempt <= maxQuotaAttempts; quotaAttempt += 1) {
+        try {
+          ({ access, task } = await this.prisma.$transaction(async (tx) => {
         await this.markExpiredSubscriptions(tx, userId);
         const quota = await this.ensureUserQuota(tx, userId);
         const subscription = await this.findActiveSubscription(tx, userId);
@@ -2891,7 +2902,22 @@ export class GameService implements OnModuleInit, OnModuleDestroy {
           },
           task,
         };
-      });
+      }));
+          break;
+        } catch (error) {
+          if (error?.code === 'P2025' && quotaAttempt < maxQuotaAttempts) {
+            this.logger.warn(
+              `Generation quota changed concurrently for user ${userId}; retrying (${quotaAttempt}/${maxQuotaAttempts - 1})`,
+            );
+            await new Promise((resolve) => setTimeout(resolve, 25 * quotaAttempt));
+            continue;
+          }
+          throw error;
+        }
+      }
+      if (!access || !task) {
+        throw new ConflictException('Generation quota changed concurrently; please retry');
+      }
 
       if (initialIntentBuild.frozenSpec) {
         await Promise.resolve(this.generationTaskService.createArtifact({

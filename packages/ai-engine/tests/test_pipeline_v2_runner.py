@@ -2293,11 +2293,15 @@ def test_quality_regeneration_guidance_adds_generic_tdz_and_grid_alias_recipes()
         message=(
             "Generated code failed preflight: Declare or inline `resetGame` before use; "
             "it is referenced as a function call.; Declare or inline `update` before use; "
+            "it is referenced as a function call.; Declare or inline `initGrid` before use; "
+            "it is referenced as a function call.; Declare or inline `getCellAt` before use; "
             "it is referenced as a function call."
         ),
     )
     assert "function name() {}" in helpers
     assert "resetGame()" in helpers
+    assert "initGrid()" in helpers
+    assert "getCellAt()" in helpers
     assert "cannot hit TDZ" in helpers
 
     timestamp = V2PipelineRunner._build_quality_regeneration_guidance(

@@ -34,6 +34,7 @@ from run_live_generation_e2e import (
     load_env,
     login,
     now_iso,
+    request_json_with_quota_conflict_retry,
     wait_for_terminal_status,
 )
 
@@ -394,7 +395,7 @@ def run_single(
     }
     if case.get("orientation") in {"portrait", "landscape"}:
         create_payload["orientation"] = case["orientation"]
-    create_response = http_json(
+    create_response = request_json_with_quota_conflict_retry(
         "POST",
         f"{base_url}/api/v1/games/generate",
         payload=create_payload,

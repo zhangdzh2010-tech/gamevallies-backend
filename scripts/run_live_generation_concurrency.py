@@ -37,6 +37,7 @@ from run_live_generation_e2e import (
     load_env,
     login,
     now_iso,
+    request_json_with_quota_conflict_retry,
 )
 
 
@@ -569,7 +570,7 @@ def run_generate_worker(
 
         started_at = now_iso()
         submission_started = time.perf_counter()
-        create_response = http_json(
+        create_response = request_json_with_quota_conflict_retry(
             "POST",
             f"{base_url}/api/v1/games/generate",
             payload={
