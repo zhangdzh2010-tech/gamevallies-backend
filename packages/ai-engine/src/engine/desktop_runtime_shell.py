@@ -75,6 +75,10 @@ def shell_time_advance_contract_errors(html: str) -> list[str]:
         errors.append("missing leftover time accumulator")
     if "Math.floor" in html and re.search(r"Math\.floor\([^)]*elapsed", html):
         errors.append("floors per-frame elapsed instead of accumulating leftover")
+    if not re.search(r'data-work-family-script\s*=', html):
+        errors.append("family plugin shares the runtime script; isolate it so a plugin syntax error cannot kill Start/simTime")
+    if not re.search(r'id=["\']work-sim-time["\']|data-work-sim-time', html):
+        errors.append("missing sim-time output that Start must keep updating")
     return errors
 
 
@@ -298,8 +302,12 @@ _SHELL_HTML = """<!DOCTYPE html>
 <button type="button" id="btn-reset">重置</button>
 {{PARAM_CONTROLS}}
 {{READOUT}}
+<output id="work-sim-time" data-work-sim-time data-work-output hidden aria-hidden="true">0.000</output>
 </form>
-<script>
+<script data-work-family-script="true">
+{{FAMILY_SCRIPT}}
+</script>
+<script data-work-runtime-script="true">
 (function(){
   var FIXED = 1/60;
   var MAX_DT = 0.05;
@@ -324,7 +332,12 @@ _SHELL_HTML = """<!DOCTYPE html>
   var last = 0;
   var simTime = 0;
   var raf = 0;
+  function publishTime(){
+    var clock = document.getElementById('work-sim-time');
+    if (clock) clock.textContent = simTime.toFixed(3);
+  }
   function paint(){
+    publishTime();
     if (ctx && window.WorkFamily && WorkFamily.draw) WorkFamily.draw(ctx, canvas, simTime);
   }
   function resize(){
@@ -356,7 +369,11 @@ _SHELL_HTML = """<!DOCTYPE html>
     raf = requestAnimationFrame(frame);
   }
   window.WorkRuntime = {
-    start: function(){ running = true; if (window.WorkFamily && WorkFamily.onStart) WorkFamily.onStart(); },
+    start: function(){
+      running = true;
+      if (window.WorkFamily && WorkFamily.onStart) WorkFamily.onStart();
+      publishTime();
+    },
     pause: function(){ running = false; },
     reset: function(){
       running = false; acc = 0; last = 0; simTime = 0;
@@ -387,7 +404,6 @@ _SHELL_HTML = """<!DOCTYPE html>
     if (ev.key === ' '){ ev.preventDefault(); running ? WorkRuntime.pause() : WorkRuntime.start(); }
     if (ev.key === 'r' || ev.key === 'R') WorkRuntime.reset();
   });
-  {{FAMILY_SCRIPT}}
   resize();
   if (window.WorkFamily && WorkFamily.reset) WorkFamily.reset();
   paint();

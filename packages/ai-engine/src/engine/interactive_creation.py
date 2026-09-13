@@ -288,6 +288,11 @@ def science_runtime_repair_guidance(issues: list[str]) -> str:
         hints.append(
             '渗透：开始时两侧体积必须不等（vin≠vout）；点击开始后体积与水流粒子持续变化。'
             '绘制前判断 ctx/canvas 再设置 strokeStyle。标注内侧、外侧与半透膜。')
+    if re.search(r'光合|photosynthesis|产氧|光照', text, re.I):
+        hints.append(
+            '光合：保留饱和型 rate∝I/(kI+I)·C/(kC+C)。点击开始后必须推进 phase/simTime，'
+            '更新 O₂ rate、t= 与 ΣO₂ 读数，并重绘气泡/叶片，不要只改标签。'
+            '补丁须替换完整语句；不要把 if 拼进 phase += dt 等表达式中间，避免 Unexpected token if。')
     return '\n'.join(hints)
 
 

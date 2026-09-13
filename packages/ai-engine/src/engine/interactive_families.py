@@ -520,6 +520,16 @@ OSMOSIS_START_VIN = 0.32
 OSMOSIS_START_VOUT = 0.58
 OSMOSIS_FLUX_SCALE = 1.2
 
+PHOTOSYNTHESIS_K_LIGHT = 20.0
+PHOTOSYNTHESIS_K_CO2 = 200.0
+
+
+def photosynthesis_oxygen_rate(light_pct: float, co2_ppm: float) -> float:
+    """Saturating schematic: rate ∝ I/(kI+I) · C/(kC+C)."""
+    light = max(0.0, float(light_pct))
+    co2 = max(0.0, float(co2_ppm))
+    return (light / (PHOTOSYNTHESIS_K_LIGHT + light)) * (co2 / (PHOTOSYNTHESIS_K_CO2 + co2))
+
 
 def enzyme_activity_rate(temp_c: float, ea_kj_mol: float = ENZYME_DEFAULT_EA_KJ) -> float:
     """rate = exp(-Ea/R·(1/T-1/Tref)) / (1+exp((T-Td)/w))."""
@@ -571,7 +581,8 @@ def osmosis_volume_step(
 _PARAM_FORMULA_JS = r"""
   window.WorkFamily = (function(){
     var recipe = "__RECIPE__";
-    var phase = 0;
+    var phase = 0.2;
+    var oxygen = 0.15;
     function num(id, fallback){
       var el = document.getElementById(id);
       return el ? +el.value : fallback;
@@ -610,7 +621,7 @@ _PARAM_FORMULA_JS = r"""
       if (recipe === 'photosynthesis_rate'){
         var I = num('param-I', 40), C = num('param-C', 400);
         var rate = (I / (20 + I)) * (C / (200 + C));
-        setReadout('O₂ rate=' + rate.toFixed(3) + ' a.u.');
+        setReadout('O₂ rate=' + rate.toFixed(3) + ' a.u.  t=' + phase.toFixed(2) + ' s  ΣO₂=' + oxygen.toFixed(2));
         return {kind:'photo', I:I, C:C, rate:rate};
       }
       var F = num('param-F', 10), m = Math.max(0.1, num('param-m', 2));
@@ -620,9 +631,24 @@ _PARAM_FORMULA_JS = r"""
     }
     return {
       applyParams: compute,
-      onStart: function(){ if (phase < 0.05) phase = 0.2; compute(); },
-      reset: function(){ phase = 0.2; compute(); },
-      step: function(dt){ phase += dt; if (recipe === 'enzyme_temp') compute(); },
+      onStart: function(){
+        if (phase < 0.05) phase = 0.2;
+        if (recipe === 'photosynthesis_rate' && oxygen < 0.05) oxygen = 0.15;
+        compute();
+      },
+      reset: function(){
+        phase = 0.2;
+        oxygen = 0.15;
+        compute();
+      },
+      step: function(dt){
+        phase += dt;
+        if (recipe === 'photosynthesis_rate'){
+          oxygen += compute().rate * dt;
+          return;
+        }
+        if (recipe === 'enzyme_temp') compute();
+      },
       draw: function(ctx, canvas){
         if (!ctx || !canvas || typeof ctx.clearRect !== 'function') return;
         var s = compute();
@@ -695,14 +721,50 @@ _PARAM_FORMULA_JS = r"""
           ctx.fillText('rate', left + 4, top + 10);
           ctx.fillText('最适', Math.min(right - 28, Math.max(left + 4, tempX(44) - 10)), top + 10);
         } else if (s.kind === 'photo'){
-          ctx.beginPath(); ctx.moveTo(20, h-20);
-          for (var x=20;x<w-20;x+=6){
-            var t = (x-20)/(w-40);
-            var yy = h-20 - s.rate*h*0.55*(0.4+0.6*t);
-            ctx.lineTo(x, yy + 6*Math.sin(phase+t*6));
+          var light = Math.min(1, Math.max(0, s.I / 100));
+          var co2 = Math.min(1, Math.max(0, (s.C - 100) / 700));
+          function leaf(color, rx, ry){
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            if (typeof ctx.ellipse === 'function') ctx.ellipse(w*0.40, h*0.58, rx, ry, 0, 0, Math.PI*2);
+            else ctx.arc(w*0.40, h*0.58, Math.min(rx, ry), 0, Math.PI*2);
+            ctx.fill();
           }
-          ctx.stroke();
-          ctx.fillStyle = '#f97316'; ctx.fillRect(w*0.7, h-20 - s.rate*h*0.6, 10, 10);
+          leaf('#14532d', w*0.16, h*0.26);
+          leaf('#22c55e', w*0.12, h*0.20);
+          ctx.strokeStyle = '#facc15'; ctx.lineWidth = 2;
+          for (var ray=0; ray<5; ray++){
+            ctx.globalAlpha = 0.25 + 0.7*light;
+            ctx.beginPath();
+            ctx.moveTo(14, 12 + ray*4);
+            ctx.lineTo(w*0.28, h*0.34 + ray*6);
+            ctx.stroke();
+          }
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = '#64748b';
+          var dots = Math.max(2, Math.round(2 + co2*6));
+          for (var d=0; d<dots; d++){
+            ctx.beginPath();
+            ctx.arc(16 + (d%3)*9, h*0.68 + (d%4)*7, 3, 0, Math.PI*2);
+            ctx.fill();
+          }
+          var bubbles = 3 + Math.round(s.rate * 8);
+          ctx.fillStyle = '#7dd3fc';
+          for (var b=0; b<bubbles; b++){
+            var u = (phase * (0.45 + s.rate) + b * 0.16) % 1;
+            var bx = w*0.70 + 12*Math.sin(phase*2.4 + b);
+            var by = h*0.84 - u * (h*0.68);
+            ctx.beginPath(); ctx.arc(bx, by, 3 + 4*s.rate, 0, Math.PI*2); ctx.fill();
+          }
+          ctx.fillStyle = '#38bdf8';
+          ctx.fillRect(w*0.08, h-14, Math.max(8, (w*0.84) * s.rate), 6);
+          ctx.fillStyle = '#e2e8f0';
+          ctx.font = '11px sans-serif';
+          ctx.fillText('光照 I=' + s.I.toFixed(0) + '%', 10, 16);
+          ctx.fillText('叶', w*0.37, h*0.58);
+          ctx.fillText('O₂', w*0.72, 16);
+          ctx.fillText('CO₂', 10, h-20);
+          ctx.fillText('rate=' + s.rate.toFixed(2), w*0.55, h-20);
         } else {
           var x = 40 + (w-80) * (0.15 + 0.35*(1-Math.cos(phase * Math.min(2, s.a/4))));
           ctx.fillStyle = '#22c55e'; ctx.fillRect(x, h*0.45, 24, 24);
