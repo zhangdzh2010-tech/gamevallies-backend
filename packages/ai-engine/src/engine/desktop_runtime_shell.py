@@ -198,14 +198,21 @@ def _escape(value: Any) -> str:
 
 
 _DEFAULT_VISUAL_CSS = """
-html,body{box-sizing:border-box;max-width:100%;overflow-x:hidden}
-body{margin:0;padding:8px;font:16px/1.4 'Helvetica Neue',Arial,sans-serif;background:#f8fafc;color:#0f172a}
-h1{margin:4px 0;font-size:1.25rem}
+:root,body{--work-page:#f8fafc;--work-surface:#ffffff;--work-canvas-bg:#f1f5f9;--work-ink:#0f172a;--work-muted:#475569;--work-accent:#0f766e;--work-line:#94a3b8;--work-border:#cbd5e1;--work-warn:#c2410c}
+*,*::before,*::after{box-sizing:border-box}
+html,body{max-width:100%;overflow-x:hidden}
+html{font-size:clamp(14px,2.8vw,16px)}
+body{margin:0;padding:8px;font:16px/1.45 'Helvetica Neue',Arial,sans-serif;background:var(--work-page);color:var(--work-ink)}
+h1{margin:4px 0;font-size:clamp(1.05rem,4.2vw,1.25rem);font-weight:650}
 p{margin:4px 0}
-canvas{display:block;max-width:100%;max-height:min(38vh,240px);width:100%;height:auto;background:#0f172a;border-radius:8px}
+#work-summary{color:var(--work-muted)}
+canvas{display:block;max-width:100%;width:100%;min-height:clamp(100px,22vh,140px);max-height:min(38vh,240px);height:clamp(120px,28vh,220px);background:var(--work-canvas-bg);border:1px solid var(--work-border);border-radius:6px}
 form[data-work-controls]{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:8px}
-button,input,label,output{margin:4px 6px;padding:6px 8px;vertical-align:middle}
-details{margin:4px 0}
+button{background:var(--work-accent);color:var(--work-surface);border:1px solid var(--work-accent);border-radius:6px;padding:6px 10px;margin:0}
+form[data-work-controls] label{display:inline-flex;align-items:center;gap:6px;flex:1 1 140px;max-width:100%;border:1px solid var(--work-border);background:var(--work-surface);border-radius:6px;padding:4px 8px}
+input,select,output{margin:0;padding:4px 6px;max-width:100%;border:1px solid var(--work-border);border-radius:4px;background:var(--work-surface);color:var(--work-ink)}
+input[type=range]{flex:1 1 80px;min-width:80px;accent-color:var(--work-accent)}
+details{margin:4px 0;padding:6px 8px;background:var(--work-surface);border:1px solid var(--work-border);border-left:3px solid var(--work-accent);border-radius:6px}
 """
 
 # Keep the selector literal identical to CONVERTER_CONTROL_SEARCH.

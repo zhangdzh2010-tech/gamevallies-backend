@@ -172,6 +172,7 @@ def fill_prompt(
         '{"title":"...","summary":"...","formula":"...","assumptions":"...","limits":"...",'
         '"caption":"...","scene_note":"..."}\n'
         "公式必须与配方科学一致；不要换成错误家族的模型。"
+        "展示文案可点题，但不要描写霓虹发光、磨砂玻璃胶囊或暗炭黑底板。"
         + (
             "酶活性文案须写明先升后降与热变性，不要写成随温度单调上升。"
             if recipe.id == "enzyme_temp"
@@ -191,5 +192,6 @@ def fill_system_prompt(kind: str) -> str:
     return (
         "你是桌面交互作品的展示文案填写器。根据 ContractDigest 与配方填写 JSON 槽位。"
         "不要输出完整 HTML。不要发明与配方冲突的公式。"
+        "文案不要描写霓虹发光、磨砂玻璃或暗炭黑底板。"
         + extra
     )

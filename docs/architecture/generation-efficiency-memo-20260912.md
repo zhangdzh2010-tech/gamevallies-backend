@@ -84,7 +84,12 @@ Module: `packages/ai-engine/src/engine/interactive_short_path.py`
 - Asks the LLM for L3 JSON slots (`title`, `summary`, `formula`, assumptions,
   limits, caption). Not full HTML.
 - Uses `ContractDigest` instead of re-sending the full interactive system prompt.
-- Assembles shell + family plugin + visual pack CSS.
+- Assembles shell + family plugin + visual pack CSS. Science/tool chrome is
+  flattened `clean_edu` (paper surfaces, 1px borders, one teal accent). The
+  shell does not emit backdrop-filter, glow shadows, or pill chrome.
+- **Published works do not auto-restyle.** Already-shipped HTML stays as
+  stored. Only new generations and explicit regenerations pick up the flat
+  edu pack, family canvas tokens, and MISS-path visual guidance.
 - Fill output is **never** used as the playable document, even when the model
   returns a complete HTML page. JSON slots are merged when present; otherwise
   recipe defaults are assembled. This keeps `gas_law` / `population` on the
@@ -97,8 +102,10 @@ Module: `packages/ai-engine/src/engine/interactive_short_path.py`
 Module: `packages/ai-engine/src/engine/interactive_diversity.py`
 
 Fingerprint stem = family + recipe + title + formula. Accents = visual pack +
-creative anchor. Near-duplicate stem → swap anchor → raise visual tier →
-`fallback_to_full` (MISS / full generate).
+creative anchor. Science/tool short path pins `visual_pack=clean_edu` so
+diversity swaps anchors and tier rather than neon-glass / toy chrome.
+Near-duplicate stem → swap anchor → raise visual tier → `fallback_to_full`
+(MISS / full generate).
 
 ### Telemetry
 

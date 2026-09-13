@@ -11,7 +11,12 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from .visual_pack_catalog import select_visual_pack, visual_pack_direction_lines
+from .visual_pack_catalog import (
+    get_visual_pack,
+    pack_surface_tokens,
+    select_visual_pack,
+    visual_pack_direction_lines,
+)
 
 CREATIVE_ANCHORS = (
     "lab_bench",
@@ -26,7 +31,7 @@ ANCHOR_COPY = {
     "lab_bench": "实验台侧光，仪器读数优先",
     "classroom_board": "黑板示意，粉笔标注公式",
     "field_notebook": "田野速写本边注",
-    "night_observatory": "深色星图底板",
+    "night_observatory": "星图标注底板",
     "workshop_table": "木作台与量具",
     "greenhouse": "温室叶片与水珠",
 }
@@ -146,6 +151,25 @@ class DiversityLedger:
 _LEDGER = DiversityLedger()
 
 
+def _science_tool_visual_pack(
+    *,
+    family_id: str,
+    recipe_id: str,
+    generation_tier: str,
+    variation_seed: str,
+) -> Dict[str, Any]:
+    """Science/tool short path stays on flattened clean_edu, not neon glass."""
+    pinned = get_visual_pack("clean_edu")
+    if pinned:
+        return pinned
+    return select_visual_pack(
+        game_type="educational",
+        theme=f"science {family_id} {recipe_id} classroom",
+        generation_tier=generation_tier,
+        variation_seed=variation_seed,
+    )
+
+
 def plan_interactive_diversity(
     *,
     family_id: str,
@@ -159,9 +183,9 @@ def plan_interactive_diversity(
 ) -> DiversityPlan:
     store = ledger or _LEDGER
     seed = variation_seed or f"{family_id}:{recipe_id}"
-    pack = select_visual_pack(
-        game_type="educational",
-        theme=f"science {family_id} {recipe_id} classroom",
+    pack = _science_tool_visual_pack(
+        family_id=family_id,
+        recipe_id=recipe_id,
         generation_tier=generation_tier,
         variation_seed=seed,
     )
@@ -210,9 +234,9 @@ def plan_interactive_diversity(
 
     # 2) Raise visual tier / pick another pack.
     raised = "showcase" if generation_tier != "showcase" else "standard"
-    alt_pack = select_visual_pack(
-        game_type="educational",
-        theme=f"science {family_id} {recipe_id} classroom observatory",
+    alt_pack = _science_tool_visual_pack(
+        family_id=family_id,
+        recipe_id=recipe_id,
         generation_tier=raised,
         variation_seed=seed + ":raised",
     )
@@ -242,21 +266,51 @@ def plan_interactive_diversity(
 
 
 def visual_css_from_pack(pack: Dict[str, Any], anchor: str) -> str:
-    palette = list(pack.get("palette") or ["#0f172a", "#0ea5e9", "#f8fafc"])
-    bg = palette[0] if palette else "#0f172a"
-    accent = palette[1] if len(palette) > 1 else "#0ea5e9"
-    ink = palette[-1] if palette else "#f8fafc"
+    """Flat educational chrome for assembled science/tool documents.
+
+    Short-path CSS never emits backdrop-filter, glow shadows, or pill chrome.
+    Existing published HTML is unchanged until regenerated.
+    """
+    tokens = pack_surface_tokens(pack)
     font = pack.get("fontFamily") or "'Helvetica Neue', Arial, sans-serif"
+    page = tokens["page"]
+    surface = tokens["surface"]
+    canvas = tokens["canvas"]
+    ink = tokens["ink"]
+    muted = tokens["muted"]
+    accent = tokens["accent"]
+    border = tokens["border"]
+    line = tokens["line"]
+    warn = tokens["warn"]
+    safe_anchor = str(anchor or "").replace("\\", "").replace("'", "")
     return (
-        "html,body{box-sizing:border-box;max-width:100%;overflow-x:hidden}"
-        f"body{{margin:0;padding:8px;font:16px/1.4 {font};background:{ink};color:{bg}}}"
-        "h1{margin:4px 0;font-size:1.25rem}"
-        "p{margin:4px 0}"
-        f"canvas{{display:block;max-width:100%;max-height:min(38vh,240px);width:100%;"
-        f"height:auto;background:{bg};border-radius:8px}}"
+        ":root,body{"
+        f"--work-page:{page};--work-surface:{surface};--work-canvas-bg:{canvas};"
+        f"--work-ink:{ink};--work-muted:{muted};--work-accent:{accent};"
+        f"--work-line:{line};--work-border:{border};--work-warn:{warn}"
+        "}"
+        "*,*::before,*::after{box-sizing:border-box}"
+        "html,body{max-width:100%;overflow-x:hidden}"
+        "html{font-size:clamp(14px,2.8vw,16px)}"
+        f"body{{margin:0;padding:8px;font:16px/1.45 {font};background:{page};color:{ink}}}"
+        "h1{margin:4px 0;font-size:clamp(1.05rem,4.2vw,1.25rem);font-weight:650}"
+        f"p{{margin:4px 0;color:{ink}}}"
+        f"#work-summary{{color:{muted}}}"
+        "canvas{display:block;max-width:100%;width:100%;"
+        "min-height:clamp(100px,22vh,140px);max-height:min(38vh,240px);"
+        f"height:clamp(120px,28vh,220px);background:{canvas};border:1px solid {border};"
+        "border-radius:6px}"
         "form[data-work-controls]{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:8px}"
-        f"button{{background:{accent};color:{ink};border:0;border-radius:8px;padding:6px 10px}}"
-        "input,label,output{margin:4px 6px;padding:6px 8px}"
-        f"details{{margin:4px 0;border-left:3px solid {accent};padding-left:8px}}"
-        f"body::after{{content:'{anchor}';position:absolute;left:-9999px}}"
+        f"button{{background:{accent};color:{surface};border:1px solid {accent};"
+        "border-radius:6px;padding:6px 10px;margin:0}}"
+        f"button:focus-visible,input:focus-visible,select:focus-visible{{outline:2px solid {accent};outline-offset:2px}}"
+        "form[data-work-controls] label{display:inline-flex;align-items:center;gap:6px;"
+        f"flex:1 1 140px;max-width:100%;border:1px solid {border};background:{surface};"
+        f"border-radius:6px;padding:4px 8px;color:{ink}}}"
+        f"input,select,output{{margin:0;padding:4px 6px;max-width:100%;border:1px solid {border};"
+        f"border-radius:4px;background:{surface};color:{ink}}}"
+        f"input[type=range]{{flex:1 1 80px;min-width:80px;accent-color:{accent}}}"
+        f"details{{margin:4px 0;padding:6px 8px;background:{surface};border:1px solid {border};"
+        f"border-left:3px solid {accent};border-radius:6px}}"
+        f"body::after{{content:'{safe_anchor}';position:absolute;left:-9999px}}"
     )
