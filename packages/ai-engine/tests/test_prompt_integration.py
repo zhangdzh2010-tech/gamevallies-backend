@@ -1659,7 +1659,7 @@ class TestPromptIntegration(unittest.TestCase):
 
         self.assertEqual(gdd.ui_layout["style"]["visualPack"], "clean_edu")
         self.assertEqual(gdd.ui_layout["style"]["renderStyleIntensity"], "high")
-        self.assertEqual(gdd.ui_layout["style"]["hudStyle"], "clean_cards")
+        self.assertEqual(gdd.ui_layout["style"]["hudStyle"], "flat_cards")
         self.assertIn("Helvetica Neue", gdd.ui_layout["style"]["fontFamily"])
 
     def test_showcase_design_program_flows_into_prompt(self):
