@@ -396,6 +396,77 @@ def test_code_preflight_hoists_this_and_window_function_assigns():
     )
 
 
+def test_code_preflight_injects_resetgame_when_called_without_any_declaration():
+    validator = CodePreflightValidator()
+    html = _post_pr86_grid_puzzle_resetgame_residual_html()
+    contract = GameRuntimeContract(runtime_profile="puzzle_grid_match")
+    issues = validator.validate(html, runtime_contract=contract)
+    assert any(issue.code == "undefined_symbol:resetGame" for issue in issues)
+    assert any(
+        "referenced as a function call" in issue.message
+        for issue in issues
+        if issue.code == "undefined_symbol:resetGame"
+    )
+
+    repaired = validator.auto_repair(html, runtime_contract=contract)
+    remaining = validator.validate(repaired, runtime_contract=contract)
+    _assert_post_pr86_resetgame_residual_cleared(repaired, remaining)
+    assert validator.auto_repair(repaired, runtime_contract=contract, issues=remaining) == repaired
+
+
+def test_code_preflight_copies_resetgame_from_continue_generated_secondary_script():
+    validator = CodePreflightValidator()
+    html = """
+    <!DOCTYPE html>
+    <html>
+      <body>
+        <canvas id="gameCanvas"></canvas>
+        <script>
+          const canvas = document.getElementById('gameCanvas');
+          canvas.width = 360;
+          canvas.height = 640;
+          const ctx = canvas.getContext('2d');
+          function init() {
+            resetGame();
+          }
+          function loop() { requestAnimationFrame(loop); }
+          init();
+          requestAnimationFrame(loop);
+        </script>
+        <script>
+          function resetGame() { score = 0; selected = null; }
+        </script>
+      </body>
+    </html>
+    """
+    contract = GameRuntimeContract(runtime_profile="puzzle_grid_match")
+    issues = validator.validate(html, runtime_contract=contract)
+    assert any(issue.code == "undefined_symbol:resetGame" for issue in issues)
+    repaired = validator.auto_repair(html, runtime_contract=contract, issues=issues)
+    primary = repaired.split("</script>")[0]
+    assert "function resetGame(" in primary
+    assert "score = 0" in primary
+    remaining = validator.validate(repaired, runtime_contract=contract)
+    assert not any(issue.code == "undefined_symbol:resetGame" for issue in remaining)
+
+
+def test_code_preflight_does_not_invent_non_lifecycle_missing_helpers():
+    validator = CodePreflightValidator()
+    html = _preflight_canvas_html(
+        """
+          function tick() {
+            missingHelper(1);
+          }
+          tick();
+        """
+    )
+    issues = validator.validate(html, runtime_contract=GameRuntimeContract())
+    repaired = validator.auto_repair(html, issues=issues)
+    remaining = validator.validate(repaired, runtime_contract=GameRuntimeContract())
+    assert "function missingHelper" not in repaired
+    assert any(issue.code == "undefined_symbol:missingHelper" for issue in remaining)
+
+
 def test_code_preflight_declares_short_live_raf_timestamp_t():
     validator = CodePreflightValidator()
     html = _preflight_canvas_html(
@@ -940,6 +1011,44 @@ def test_code_preflight_auto_repair_targets_primary_script_not_just_first_script
     assert "grid[row][col].targetY" not in repaired
     assert not any(issue.code == "unsafe_nested_grid_read" for issue in issues)
     assert not any(issue.code == "undefined_symbol:__safeGridCell" for issue in issues)
+
+
+def _post_pr86_grid_puzzle_resetgame_residual_html() -> str:
+    """Continue-generate / MISS residual after PR #86 (grid_puzzle_en run 48).
+
+    The boot script calls `resetGame()` from init, but truncation continuation
+    closed the document without emitting a declaration. PR #83 hoist cannot
+    fire: there is no const/let/method binding to rewrite.
+    """
+    return _preflight_canvas_html(
+        """
+          let score = 0;
+          const grid = [[{ type: 1, anim: 0 }]];
+          function init() {
+            resetGame();
+          }
+          function update() {}
+          function loop(t) {
+            update(t);
+            requestAnimationFrame(loop);
+          }
+          function initGrid() {
+            grid[0][0].type = 1;
+          }
+          init();
+          requestAnimationFrame(loop);
+        """
+    )
+
+
+def _assert_post_pr86_resetgame_residual_cleared(repaired: str, remaining) -> None:
+    match = re.search(r"function resetGame\([^)]*\)\s*\{(?P<body>[^{}]*)\}", repaired)
+    assert match, repaired
+    body = match.group("body")
+    assert "initGrid();" in body
+    assert "score = 0;" in body
+    assert not any(issue.code == "undefined_symbol:resetGame" for issue in remaining)
+    assert not any(issue.code == "tdz_symbol:resetGame" for issue in remaining)
 
 
 def _post_pr84_grid_puzzle_residual_html() -> str:

@@ -128,6 +128,10 @@ _CONTROL_STATEMENT_NAMES = frozenset(
 _SHORT_LIVE_ALIAS_MAX_LEN = 2
 _GRID_DIMENSION_ALIASES = frozenset({"cols", "rows"})
 _SAFE_GRID_HELPER_DECL_RE = re.compile(r"\bfunction\s+__safeGridCell\s*\(")
+_SYNTHESIZE_CALL_HELPERS = frozenset({"resetGame", "restartGame", "startGame", "restart"})
+_FUNCTION_DECL_RE = re.compile(
+    rf"(?:async\s+)?function\s+(?P<name>{_IDENTIFIER_RE})\s*\((?P<params>[^)]*)\)\s*\{{"
+)
 _BARE_ASSIGNMENT_RE = re.compile(
     rf"(?<![\w$.])(?P<name>{_IDENTIFIER_RE})\s*(?:[+\-*/%]=|=(?!=))"
 )
@@ -1411,10 +1415,20 @@ class CodePreflightValidator:
     ) -> str:
         """Hoist function bindings and declare assigned-but-undeclared aliases."""
         html_assigned = self._collect_html_event_assigned_symbols(html_code)
+        sibling_scripts = [
+            match.group("body")
+            for match in _SCRIPT_BLOCK_RE.finditer(html_code or "")
+        ]
         def script_block(block):
             script = block.group("body")
             repaired = self._hoist_function_bindings(script, names)
             repaired = self._hoist_method_and_member_functions(repaired, names)
+            repaired = self._import_call_helpers_from_scripts(
+                repaired,
+                sibling_scripts,
+                names,
+            )
+            repaired = self._inject_missing_lifecycle_helpers(repaired, names)
             repaired = self._declare_assigned_symbols(
                 repaired,
                 names,
@@ -1427,6 +1441,118 @@ class CodePreflightValidator:
 
     def _repair_tdz_runtime_helpers(self, html_code: str) -> str:
         return self._repair_declare_before_use(html_code)
+
+    @staticmethod
+    def _has_function_declaration(script: str, name: str) -> bool:
+        if not name:
+            return False
+        return bool(re.search(rf"\bfunction\s+{re.escape(name)}\s*\(", script))
+
+    def _iter_missing_call_helpers(
+        self,
+        script: str,
+        names: set[str] | None,
+    ):
+        scan_script = self._sanitize_for_symbol_scan(script)
+        declared = self._collect_declared_symbols(scan_script)
+        candidates: set[str] = set(names) if names is not None else set()
+        if names is None:
+            for match in _CALL_RE.finditer(scan_script):
+                name = match.group("name")
+                if name:
+                    candidates.add(name)
+        for name in sorted(candidates):
+            if self._should_ignore_symbol(name, declared):
+                continue
+            if self._has_function_declaration(script, name):
+                continue
+            if not self._has_free_function_call(script, name):
+                continue
+            yield name
+
+    def _extract_function_declaration(self, script: str, name: str) -> str | None:
+        """Return a hoisted `function name(...) { ... }` copied from any binding shape."""
+        if not name:
+            return None
+        for match in _FUNCTION_DECL_RE.finditer(script):
+            if match.group("name") != name:
+                continue
+            body, _end = self._consume_balanced_block(script, match.end())
+            if body is None:
+                continue
+            async_prefix = "async " if match.group(0).lstrip().startswith("async") else ""
+            return f"{async_prefix}function {name}({match.group('params')}) {{{body}}}"
+        for binding in self._iter_function_bindings(script, {name}):
+            rewritten = self._rewrite_function_binding(script, binding)
+            if rewritten:
+                return rewritten[0]
+        for method_name, params, body, _start, _end in self._iter_method_shorthand_bindings(script):
+            if method_name == name:
+                return f"function {name}({params}) {{{body}}}"
+        for match in _MEMBER_FUNCTION_ASSIGN_RE.finditer(script):
+            if match.group("name") != name:
+                continue
+            rewritten = self._rewrite_function_binding(script, match)
+            if rewritten:
+                return rewritten[0]
+        for match in _OBJECT_PROPERTY_FUNCTION_RE.finditer(script):
+            if match.group("name") != name:
+                continue
+            rewritten = self._rewrite_function_binding(script, match)
+            if rewritten:
+                return rewritten[0]
+        return None
+
+    def _import_call_helpers_from_scripts(
+        self,
+        script: str,
+        sibling_scripts: list[str],
+        names: set[str] | None,
+    ) -> str:
+        extras: list[str] = []
+        seen: set[str] = set()
+        sources = [script, *[other for other in sibling_scripts if other != script]]
+        for name in self._iter_missing_call_helpers(script, names):
+            if name in seen:
+                continue
+            for source in sources:
+                extracted = self._extract_function_declaration(source, name)
+                if not extracted:
+                    continue
+                extras.append(extracted)
+                seen.add(name)
+                break
+        if not extras:
+            return script
+        return "\n".join(extras) + "\n" + script.lstrip()
+
+    def _synthesize_lifecycle_helper(self, name: str, script: str) -> str:
+        for sibling in ("resetGame", "restartGame", "startGame", "restart"):
+            if sibling != name and self._has_function_declaration(script, sibling):
+                return f"function {name}() {{ {sibling}(); }}"
+        parts: list[str] = []
+        if self._has_function_declaration(script, "initGrid"):
+            parts.append("initGrid();")
+        for var in ("score", "combo", "moves"):
+            if re.search(rf"\b(?:let|var)\s+{re.escape(var)}\b", script):
+                parts.append(f"{var} = 0;")
+        return f"function {name}() {{ {' '.join(parts)} }}"
+
+    def _inject_missing_lifecycle_helpers(
+        self,
+        script: str,
+        names: set[str] | None,
+    ) -> str:
+        extras: list[str] = []
+        seen: set[str] = set()
+        for name in self._iter_missing_call_helpers(script, names):
+            if name not in _SYNTHESIZE_CALL_HELPERS or name in seen:
+                continue
+            extras.append(self._synthesize_lifecycle_helper(name, script))
+            seen.add(name)
+        if not extras:
+            return script
+        return "\n".join(extras) + "\n" + script.lstrip()
 
     @classmethod
     def _iter_function_bindings(cls, script: str, names: set[str] | None):
