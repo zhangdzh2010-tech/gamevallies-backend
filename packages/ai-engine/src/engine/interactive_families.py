@@ -465,6 +465,26 @@ def render_converter_controls(recipe: Recipe) -> str:
     )
 
 
+_WORK_TOKENS_JS = r"""
+    function workTokens(){
+      var cs = (document.body && window.getComputedStyle) ? getComputedStyle(document.body) : null;
+      function read(name, fallback){
+        var v = cs ? String(cs.getPropertyValue(name) || '').trim() : '';
+        return v || fallback;
+      }
+      return {
+        bg: read('--work-canvas-bg', '#f1f5f9'),
+        ink: read('--work-ink', '#0f172a'),
+        accent: read('--work-accent', '#0f766e'),
+        muted: read('--work-muted', '#475569'),
+        line: read('--work-line', '#94a3b8'),
+        warn: read('--work-warn', '#c2410c'),
+        surface: read('--work-surface', '#ffffff')
+      };
+    }
+"""
+
+
 def family_plugin_js(family_id: str, recipe: Recipe) -> str:
     """Deterministic model plugin. Presentation copy is filled around it."""
     plugins = {
@@ -476,7 +496,14 @@ def family_plugin_js(family_id: str, recipe: Recipe) -> str:
         "bidirectional_converter": _CONVERTER_JS,
     }
     template = plugins.get(family_id, _PARAM_FORMULA_JS)
-    return template.replace("__RECIPE__", recipe.id)
+    script = template.replace("__RECIPE__", recipe.id)
+    if family_id != CONVERTER_FAMILY_ID:
+        script = script.replace(
+            "window.WorkFamily = (function(){",
+            "window.WorkFamily = (function(){" + _WORK_TOKENS_JS,
+            1,
+        )
+    return script
 
 
 def wave_superposition(x: float, t: float, *, amplitude1: float, amplitude2: float, wavelength: float, phase: float) -> float:
@@ -655,12 +682,13 @@ _PARAM_FORMULA_JS = r"""
         var w = canvas.width || 0, h = canvas.height || 0;
         if (w < 8 || h < 8) return;
         ctx.clearRect(0,0,w,h);
-        ctx.fillStyle = '#0f172a'; ctx.fillRect(0,0,w,h);
-        ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2;
+        var t = workTokens();
+        ctx.fillStyle = t.bg; ctx.fillRect(0,0,w,h);
+        ctx.strokeStyle = t.accent; ctx.lineWidth = 2;
         if (s.kind === 'ohm'){
           ctx.strokeRect(w*0.2, h*0.35, w*0.6, h*0.3);
           var pulse = 0.3 + 0.2 * Math.sin(phase * s.I);
-          ctx.fillStyle = '#facc15';
+          ctx.fillStyle = t.accent;
           ctx.beginPath(); ctx.arc(w*(0.25+pulse), h*0.5, 8, 0, Math.PI*2); ctx.fill();
         } else if (s.kind === 'gas'){
           var vNorm = Math.min(1, Math.max(0, (s.V - 0.01) / 0.04));
@@ -668,9 +696,9 @@ _PARAM_FORMULA_JS = r"""
           var chamberW = w * 0.26;
           var left = w * 0.08;
           var top = h - 14 - chamberH;
-          ctx.strokeStyle = '#94a3b8';
+          ctx.strokeStyle = t.line;
           ctx.strokeRect(left, top, chamberW, chamberH);
-          ctx.fillStyle = '#64748b';
+          ctx.fillStyle = t.muted;
           ctx.fillRect(left - 6, top - 8, chamberW + 12, 10);
           var count = Math.max(5, Math.round(s.n * 8));
           var speed = Math.sqrt(Math.max(80, s.T) / 298);
@@ -681,7 +709,7 @@ _PARAM_FORMULA_JS = r"""
             var py = top + 18 + (chamberH-30) * (0.5 + 0.46*Math.cos(phase*speed*2.4+i*1.3));
             ctx.beginPath(); ctx.arc(px, py, 4, 0, Math.PI*2); ctx.fill();
           }
-          ctx.fillStyle = '#e2e8f0';
+          ctx.fillStyle = t.ink;
           ctx.font = '12px sans-serif';
           ctx.fillText('活塞体积 ∝ V', left + chamberW + 16, 28);
           ctx.fillText('P=' + s.P.toFixed(0) + ' Pa', left + chamberW + 16, 48);
@@ -699,9 +727,9 @@ _PARAM_FORMULA_JS = r"""
           var tempX = function(tempC){
             return left + span * Math.min(1, Math.max(0, tempC / 80));
           };
-          ctx.strokeStyle = '#64748b'; ctx.lineWidth = 1;
+          ctx.strokeStyle = t.line; ctx.lineWidth = 1;
           ctx.beginPath(); ctx.moveTo(left, top); ctx.lineTo(left, bottom); ctx.lineTo(right, bottom); ctx.stroke();
-          ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2;
+          ctx.strokeStyle = t.accent; ctx.lineWidth = 2;
           ctx.beginPath();
           for (i = 0; i <= 80; i += 2){
             var px = tempX(i), py = rateY(enzymeRate(i, s.Ea));
@@ -709,13 +737,13 @@ _PARAM_FORMULA_JS = r"""
           }
           ctx.stroke();
           var markX = tempX(s.T), markY = rateY(s.rate);
-          ctx.fillStyle = '#f97316';
+          ctx.fillStyle = t.warn;
           ctx.beginPath(); ctx.arc(markX, markY, 5, 0, Math.PI * 2); ctx.fill();
           var scanT = (phase * 22) % 80;
           var scanX = tempX(scanT), scanY = rateY(enzymeRate(scanT, s.Ea));
-          ctx.fillStyle = '#facc15';
+          ctx.fillStyle = t.accent;
           ctx.beginPath(); ctx.arc(scanX, scanY, 3 + Math.sin(phase * 6), 0, Math.PI * 2); ctx.fill();
-          ctx.fillStyle = '#e2e8f0';
+          ctx.fillStyle = t.ink;
           ctx.font = '11px sans-serif';
           ctx.fillText('T/°C', right - 28, bottom - 4);
           ctx.fillText('rate', left + 4, top + 10);
@@ -732,7 +760,7 @@ _PARAM_FORMULA_JS = r"""
           }
           leaf('#14532d', w*0.16, h*0.26);
           leaf('#22c55e', w*0.12, h*0.20);
-          ctx.strokeStyle = '#facc15'; ctx.lineWidth = 2;
+          ctx.strokeStyle = t.warn; ctx.lineWidth = 2;
           for (var ray=0; ray<5; ray++){
             ctx.globalAlpha = 0.25 + 0.7*light;
             ctx.beginPath();
@@ -741,7 +769,7 @@ _PARAM_FORMULA_JS = r"""
             ctx.stroke();
           }
           ctx.globalAlpha = 1;
-          ctx.fillStyle = '#64748b';
+          ctx.fillStyle = t.muted;
           var dots = Math.max(2, Math.round(2 + co2*6));
           for (var d=0; d<dots; d++){
             ctx.beginPath();
@@ -756,9 +784,9 @@ _PARAM_FORMULA_JS = r"""
             var by = h*0.84 - u * (h*0.68);
             ctx.beginPath(); ctx.arc(bx, by, 3 + 4*s.rate, 0, Math.PI*2); ctx.fill();
           }
-          ctx.fillStyle = '#38bdf8';
+          ctx.fillStyle = t.accent;
           ctx.fillRect(w*0.08, h-14, Math.max(8, (w*0.84) * s.rate), 6);
-          ctx.fillStyle = '#e2e8f0';
+          ctx.fillStyle = t.ink;
           ctx.font = '11px sans-serif';
           ctx.fillText('光照 I=' + s.I.toFixed(0) + '%', 10, 16);
           ctx.fillText('叶', w*0.37, h*0.58);
@@ -824,8 +852,9 @@ _TIME_INTEGRATOR_JS = r"""
         if (!ctx || !canvas) return;
         var w = canvas.width, h = canvas.height;
         ctx.clearRect(0,0,w,h);
-        ctx.fillStyle = '#0f172a'; ctx.fillRect(0,0,w,h);
-        ctx.strokeStyle = '#e2e8f0'; ctx.fillStyle = '#38bdf8';
+        var t = workTokens();
+        ctx.fillStyle = t.bg; ctx.fillRect(0,0,w,h);
+        ctx.strokeStyle = t.ink; ctx.fillStyle = t.accent;
         if (recipe === 'pendulum'){
           var cx = w/2, cy = 16, Lpx = Math.min(h-36, 80 + num('param-L',1)*40);
           var x = cx + Lpx * Math.sin(theta), yb = cy + Lpx * Math.cos(theta);
@@ -838,23 +867,23 @@ _TIME_INTEGRATOR_JS = r"""
           var topY = pad + 10;
           var span = Math.max(40, groundY - topY);
           var py = topY + span * (1 - y / y0);
-          ctx.strokeStyle = '#94a3b8';
+          ctx.strokeStyle = t.line;
           ctx.beginPath(); ctx.moveTo(pad, topY); ctx.lineTo(pad, groundY); ctx.stroke();
           ctx.beginPath(); ctx.moveTo(w * 0.22, groundY); ctx.lineTo(w * 0.82, groundY); ctx.stroke();
-          ctx.fillStyle = '#e2e8f0';
+          ctx.fillStyle = t.ink;
           ctx.font = '12px sans-serif';
           ctx.fillText('y0', pad + 6, topY);
           ctx.fillText('地面', Math.max(pad + 6, w * 0.55), groundY - 6);
-          ctx.fillStyle = '#38bdf8';
+          ctx.fillStyle = t.accent;
           ctx.fillRect(w / 2 - 8, py, 16, 16);
-          ctx.fillStyle = '#f8fafc';
+          ctx.fillStyle = t.ink;
           ctx.fillText('m', w / 2 - 5, Math.max(topY, py - 6));
           var labelY = Math.min(groundY - 22, Math.max(topY + 14, py + 16));
           ctx.fillText('y=' + y.toFixed(1) + ' m', pad + 6, labelY);
           ctx.fillText('v=' + v.toFixed(1) + ' m/s', pad + 6, Math.min(groundY - 8, labelY + 14));
           if (v > 0.05){
             var tip = Math.min(groundY - 4, py + 16 + Math.min(36, v * 2));
-            ctx.strokeStyle = '#f97316';
+            ctx.strokeStyle = t.warn;
             ctx.beginPath(); ctx.moveTo(w / 2, py + 16); ctx.lineTo(w / 2, tip); ctx.stroke();
           }
         }
@@ -900,8 +929,9 @@ _WAVE_JS = r"""
           return A1*Math.sin(k*x - time) + A2*Math.sin(k*x - time + phi);
         }
         ctx.clearRect(0,0,w,h);
-        ctx.fillStyle = '#0f172a'; ctx.fillRect(0,0,w,h);
-        ctx.strokeStyle = '#64748b';
+        var t = workTokens();
+        ctx.fillStyle = t.bg; ctx.fillRect(0,0,w,h);
+        ctx.strokeStyle = t.line;
         ctx.beginPath(); ctx.moveTo(0,mid); ctx.lineTo(w,mid); ctx.stroke();
         function strokeWave(color, width, fn){
           ctx.strokeStyle = color; ctx.lineWidth = width; ctx.beginPath();
@@ -911,10 +941,10 @@ _WAVE_JS = r"""
           }
           ctx.stroke();
         }
-        strokeWave('#7dd3fc', 1.25, function(x){ return A1*Math.sin(k*x - time); });
-        strokeWave('#fdba74', 1.25, function(x){ return A2*Math.sin(k*x - time + phi); });
-        strokeWave('#e2e8f0', 2.2, sample);
-        ctx.fillStyle = '#e2e8f0';
+        strokeWave(t.accent, 1.25, function(x){ return A1*Math.sin(k*x - time); });
+        strokeWave(t.warn, 1.25, function(x){ return A2*Math.sin(k*x - time + phi); });
+        strokeWave(t.ink, 2.2, sample);
+        ctx.fillStyle = t.ink;
         ctx.font = '12px sans-serif';
         ctx.fillText('φ=' + phi.toFixed(2), 16, 18);
         ctx.fillText('λ=' + lam.toFixed(0), 16, 34);
@@ -971,28 +1001,29 @@ _RAY_OPTICS_JS = r"""
         var ry = cy + length * Math.sin(angleRad);
         var nx = mx - Math.min(length * 0.72, mx - pad);
         ctx.clearRect(0,0,w,h);
-        ctx.fillStyle = '#0f172a'; ctx.fillRect(0,0,w,h);
-        ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 3;
+        var t = workTokens();
+        ctx.fillStyle = t.bg; ctx.fillRect(0,0,w,h);
+        ctx.strokeStyle = t.ink; ctx.lineWidth = 3;
         ctx.beginPath(); ctx.moveTo(mx, pad); ctx.lineTo(mx, h-pad); ctx.stroke();
         ctx.lineWidth = 1.5;
-        ctx.strokeStyle = '#94a3b8'; ctx.setLineDash([5,4]);
+        ctx.strokeStyle = t.line; ctx.setLineDash([5,4]);
         ctx.beginPath(); ctx.moveTo(mx, cy); ctx.lineTo(nx, cy); ctx.stroke();
         ctx.setLineDash([]);
-        ctx.strokeStyle = '#38bdf8'; ctx.fillStyle = '#38bdf8';
+        ctx.strokeStyle = t.accent; ctx.fillStyle = t.accent;
         arrow(ctx, ix, iy, mx, cy);
-        ctx.strokeStyle = '#f97316'; ctx.fillStyle = '#f97316';
+        ctx.strokeStyle = t.warn; ctx.fillStyle = t.warn;
         arrow(ctx, mx, cy, rx, ry);
-        ctx.strokeStyle = '#e2e8f0';
+        ctx.strokeStyle = t.ink;
         ctx.beginPath(); ctx.arc(mx, cy, Math.min(36, length*0.28), Math.PI-angleRad, Math.PI, false); ctx.stroke();
         ctx.beginPath(); ctx.arc(mx, cy, Math.min(36, length*0.28), Math.PI, Math.PI+angleRad, false); ctx.stroke();
         if (pulse > 0){
           var u = pulse <= 1 ? pulse : pulse - 1;
           var px = pulse <= 1 ? ix + (mx-ix)*u : mx + (rx-mx)*u;
           var py = pulse <= 1 ? iy + (cy-iy)*u : cy + (ry-cy)*u;
-          ctx.fillStyle = '#facc15';
+          ctx.fillStyle = t.accent;
           ctx.beginPath(); ctx.arc(px, py, 5, 0, Math.PI*2); ctx.fill();
         }
-        ctx.fillStyle = '#e2e8f0';
+        ctx.fillStyle = t.ink;
         ctx.font = '12px sans-serif';
         ctx.fillText('镜', Math.max(pad, mx - 20), h - pad);
         ctx.fillText('法线', Math.max(pad, (nx + mx) / 2 - 12), Math.max(pad + 12, cy - 12));
@@ -1077,7 +1108,8 @@ _COMPARTMENT_JS = r"""
         var w = canvas.width || 0, h = canvas.height || 0;
         if (w < 8 || h < 8) return;
         ctx.clearRect(0,0,w,h);
-        ctx.fillStyle = '#0f172a'; ctx.fillRect(0,0,w,h);
+        var t = workTokens();
+        ctx.fillStyle = t.bg; ctx.fillRect(0,0,w,h);
         if (recipe === 'osmosis'){
           var cin = num('param-cin',0.8), cout = num('param-cout',0.2);
           var J = osmosisFlux();
@@ -1087,11 +1119,11 @@ _COMPARTMENT_JS = r"""
           ctx.fillStyle = '#14b8a6';
           ctx.fillRect(right, h*(1-vout), boxW, h*vout);
           if (ctx.setLineDash) ctx.setLineDash([3,3]);
-          ctx.strokeStyle = '#e2e8f0';
+          ctx.strokeStyle = t.ink;
           ctx.lineWidth = 2;
           ctx.strokeRect(mid, 12, 10, h-24);
           if (ctx.setLineDash) ctx.setLineDash([]);
-          ctx.fillStyle = '#f8fafc';
+          ctx.fillStyle = t.ink;
           ctx.font = '11px sans-serif';
           ctx.fillText('内侧', left + 6, 16);
           ctx.fillText('c=' + cin.toFixed(2), left + 6, 30);
@@ -1100,7 +1132,7 @@ _COMPARTMENT_JS = r"""
           ctx.fillText('半透膜', Math.max(left, mid - 18), h - 8);
           var dir = J >= 0 ? 1 : -1;
           var i, u, px, py;
-          ctx.fillStyle = '#facc15';
+          ctx.fillStyle = t.accent;
           for (i=0;i<5;i++){
             u = (flow * 0.7 + i * 0.18) % 1;
             if (dir < 0) u = 1 - u;
@@ -1112,10 +1144,10 @@ _COMPARTMENT_JS = r"""
           var pad = 22, mid = Math.floor(w * 0.58);
           ctx.font = '12px sans-serif';
           ctx.fillStyle = '#22c55e'; ctx.fillRect(pad, 6, 8, 8);
-          ctx.fillStyle = '#e2e8f0'; ctx.fillText('猎物 x', pad + 12, 14);
+          ctx.fillStyle = t.ink; ctx.fillText('猎物 x', pad + 12, 14);
           ctx.fillStyle = '#f97316'; ctx.fillRect(pad + 80, 6, 8, 8);
-          ctx.fillStyle = '#e2e8f0'; ctx.fillText('捕食者 y', pad + 92, 14);
-          ctx.strokeStyle = '#334155';
+          ctx.fillStyle = t.ink; ctx.fillText('捕食者 y', pad + 92, 14);
+          ctx.strokeStyle = t.line;
           ctx.beginPath(); ctx.moveTo(pad, h-pad); ctx.lineTo(mid-10, h-pad); ctx.stroke();
           ctx.beginPath(); ctx.moveTo(mid, h-pad); ctx.lineTo(w-12, h-pad); ctx.stroke();
           if (hist.length){
@@ -1136,7 +1168,7 @@ _COMPARTMENT_JS = r"""
               if (i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
             }
             ctx.stroke();
-            ctx.fillStyle = '#38bdf8';
+            ctx.fillStyle = t.accent;
             for (i=0;i<hist.length;i++){
               px = mid + (w-12-mid) * (hist[i][0]/maxX);
               py = h-pad - (h-2*pad) * (hist[i][1]/maxY);

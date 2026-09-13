@@ -11,6 +11,9 @@
 - [`architecture/game-path-telemetry-and-hit-soft.md`](./architecture/game-path-telemetry-and-hit-soft.md)
   Arcade/game full-path telemetry (`MISS` + runtime-profile `family_id`) and
   per-family HIT/SOFT stay-FULL assessment. Diversity gate unchanged.
+- [`architecture/science-tool-visual-pack.md`](./architecture/science-tool-visual-pack.md)
+  Flattened `clean_edu` chrome for science/tool works. Regenerations pick it
+  up; already published HTML does not auto-restyle.
 
 ## Top-Level Plans
 

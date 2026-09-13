@@ -77,6 +77,15 @@ def normalize_interactive_request(request):
         'rules':{'win_condition':'not_applicable','lose_condition':'not_applicable','scoring':'none'},
         'platform_constraints':{'platform':'desktop_web','input_mode':'pointer_and_keyboard','render_api':'dom_svg_canvas'},
         'difficulty_curve':'none',
+        'visual_style':{
+            'theme':'classroom',
+            'art_style':'flat_edu',
+            'background':'paper_surface',
+            'effects':[],
+            'visual_pack':'clean_edu',
+            'palette':['#f8fafc','#0f766e','#0f172a','#64748b','#ffffff'],
+            'render_style_intensity':'restrained',
+        },
     })
     return request
 
@@ -200,6 +209,7 @@ SYSTEM_PROMPT = '''你是桌面交互作品工程师。根据用户的原始创�
 光学反射中，入射箭头指向镜面交点，反射箭头离开交点；不能把两者都画成从镜面发出的光。Canvas中从-π/2-θ到-π/2的小弧使用顺时针方向(false)，不要反画成2π-θ大弧。
 角弧必须与对应光线在同一侧：反射角弧画在反射光所在的半平面，不能画在法线另一侧。先声明 angleDeg/angleRad 再绘图，禁止暂时性死区。法线、入射角、反射角标签留在画布内边距内，不能贴边裁切到完全不可见。开始后光线脉冲或模拟时间必须持续变化。
 为不同系统的字体度量留出布局余量，根字号增大12.5%时1000×600核心区域仍完整；优先缩小主图、压缩空白或响应式重排，不缩小字体或隐藏主操作。
+视觉用平面教材风：浅色实底、1px 实线描边、圆角不超过 8px，只用一种青绿/蓝色强调。禁止 backdrop-filter、毛玻璃胶囊、霓虹黄发光、暗炭黑底板和 999px 胶囊按钮。小预览与窄屏保持 max-width:100%，画布用 min/max 或 clamp 高度，不要巨大固定像素装饰。
 不要依赖宿主提供游戏 runtime、积分回调或 game_over 消息。遵从用户选择的方向和内容。'''
 
 SCIENCE_RUNTIME_GUIDANCE = '''
@@ -208,7 +218,8 @@ SCIENCE_RUNTIME_GUIDANCE = '''
 开始、暂停、重置必须是可见且可区分的独立控件，名称写在按钮文本或aria-label中，不要只用图标。
 摆长、重力、振幅、初角等参数须为带标签的range或number，并立即更新公式读数（如T=2π√(L/g)）；参数必须进入运动方程，不能只改标签。
 连续动画用requestAnimationFrame或setInterval，按真实经过时间累积并重绘Canvas/SVG或更新可见状态，不能只改按钮文案或只靠CSS。
-首屏用紧凑结构：说明/公式放details或短行，画布 max-width:100% 且 max-height:min(38vh,240px)，开始/暂停/重置与参数用flex-wrap留在画布下方。body padding不超过8px。根字号增大12.5%后1000×600核心图形与控件仍须完整可见；只能缩小主图、压缩空白或响应式重排，禁止缩小字号或隐藏主操作。'''
+首屏用紧凑结构：说明/公式放details或短行，画布 max-width:100%、min-height 与 max-height:min(38vh,240px)，开始/暂停/重置与参数用flex-wrap留在画布下方。body padding不超过8px。根字号增大12.5%后1000×600核心图形与控件仍须完整可见；只能缩小主图、压缩空白或响应式重排，禁止缩小字号或隐藏主操作。
+界面保持浅色平面教材风：实底卡片、清晰边框、一种青绿/蓝色强调；不要毛玻璃、霓虹发光或暗色炭黑底板。'''
 
 
 TOOL_RUNTIME_GUIDANCE = '''
@@ -218,7 +229,8 @@ TOOL_RUNTIME_GUIDANCE = '''
 不要只把结果写进另一个 input 的 value 而不更新可见文字；不要只改按钮文案；不要输出没有真实换算的空壳。
 单位换算至少要有数值输入和可切换的单位，以及 id="convertBtn" 与 id="resetBtn" 的可见按钮。
 输入或转换后结果区域立即变化；重置恢复完整初态。无效输入用页面内提示，禁止 alert。
-首屏用 flex-wrap 排列核心控件，body padding不超过8px。根字号增大12.5%后1000×600核心控件仍须完整可见；只能压缩空白或响应式重排，禁止缩小字号或隐藏主操作。'''
+首屏用 flex-wrap 排列核心控件，body padding不超过8px。根字号增大12.5%后1000×600核心控件仍须完整可见；只能压缩空白或响应式重排，禁止缩小字号或隐藏主操作。
+界面保持浅色平面教材风：实底、1px 边框、圆角≤8px；不要毛玻璃胶囊或霓虹发光。'''
 
 
 def interactive_system_prompt(kind: str) -> str:

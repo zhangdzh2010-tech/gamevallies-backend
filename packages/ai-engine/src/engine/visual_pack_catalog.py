@@ -83,18 +83,37 @@ DEFAULT_VISUAL_PACKS: List[Dict[str, Any]] = [
         "id": "clean_edu",
         "displayName": "Clean Edu",
         "fontFamily": "'Helvetica Neue', Arial, sans-serif",
-        "hudStyle": "clean_cards",
-        "buttonStyle": "soft_capsule",
-        "backgroundStyle": "airy_layers",
-        "particleStyle": "minimal_confetti",
-        "accentShapes": ["card", "underline"],
+        "hudStyle": "flat_cards",
+        "buttonStyle": "rounded_rect",
+        "backgroundStyle": "paper_surface",
+        "particleStyle": "none",
+        "accentShapes": ["card", "hairline"],
         "motionStyle": "gentle_slide",
-        "palette": ["#0f172a", "#0ea5e9", "#14b8a6", "#facc15", "#f8fafc"],
-        "effects": ["soft_glow"],
-        "preferredArtStyle": "clean",
-        "suitableThemes": ["ocean", "forest", "toy", "arcade"],
-        "suitableGameTypes": ["educational", "puzzle"],
-        "showcasePreferred": False,
+        "palette": ["#f8fafc", "#0f766e", "#0f172a", "#64748b", "#ffffff"],
+        "effects": [],
+        "preferredArtStyle": "flat_edu",
+        "suitableThemes": [
+            "ocean", "forest", "toy", "arcade", "classroom", "school",
+            "education", "science", "lab", "circuit", "physics",
+        ],
+        "suitableGameTypes": ["educational", "puzzle", "interactive_experience"],
+        "showcasePreferred": True,
+        "tokens": {
+            "page": "#f8fafc",
+            "surface": "#ffffff",
+            "canvas": "#f1f5f9",
+            "ink": "#0f172a",
+            "muted": "#475569",
+            "accent": "#0f766e",
+            "line": "#94a3b8",
+            "border": "#cbd5e1",
+            "warn": "#c2410c",
+        },
+        "directionNotes": [
+            "Solid paper/light-gray surfaces and 1px borders; no glass or frost",
+            "One teal/blue accent; no neon yellow glow or charcoal playfield",
+            "Rounded-rect controls (radius <= 8px); no pill chrome or backdrop-filter",
+        ],
     },
     {
         "id": "retro_terminal",
@@ -148,6 +167,40 @@ DEFAULT_VISUAL_PACKS: List[Dict[str, Any]] = [
         "showcasePreferred": True,
     },
 ]
+
+
+FLAT_EDU_TOKENS = {
+    "page": "#f8fafc",
+    "surface": "#ffffff",
+    "canvas": "#f1f5f9",
+    "ink": "#0f172a",
+    "muted": "#475569",
+    "accent": "#0f766e",
+    "line": "#94a3b8",
+    "border": "#cbd5e1",
+    "warn": "#c2410c",
+}
+
+EDUCATIONAL_GAME_TYPES = frozenset({"educational", "interactive_experience", "science", "tool"})
+
+
+def pack_surface_tokens(pack: Optional[Dict[str, Any]]) -> Dict[str, str]:
+    """Resolve chrome/canvas colors. Science/tool defaults stay light and flat."""
+    tokens = dict(FLAT_EDU_TOKENS)
+    if not pack:
+        return tokens
+    explicit = pack.get("tokens") if isinstance(pack.get("tokens"), dict) else {}
+    for key, value in explicit.items():
+        if isinstance(value, str) and value.strip():
+            tokens[str(key)] = value.strip()
+    return tokens
+
+
+def _normalize_pack_game_type(game_type: str) -> str:
+    text = str(game_type or "").strip().lower()
+    if text in EDUCATIONAL_GAME_TYPES:
+        return "educational"
+    return text
 
 
 def _catalog_path() -> Path:
@@ -252,6 +305,7 @@ def select_visual_pack(
     variation_seed: Optional[str] = None,
 ) -> Dict[str, Any]:
     catalog = list(get_visual_pack_catalog())
+    game_type = _normalize_pack_game_type(game_type)
     candidates = [pack for pack in catalog if game_type in (pack.get("suitableGameTypes") or [])] or catalog
     scored_pairs = sorted(
         (
@@ -276,7 +330,7 @@ def apply_visual_pack_defaults(
 ) -> GameSpec:
     generation_tier = str(getattr(getattr(spec, "generation_tier", "standard"), "value", getattr(spec, "generation_tier", "standard")) or "standard")
     selected_pack = get_visual_pack(spec.visual_style.visual_pack) or select_visual_pack(
-        game_type=spec.game_type,
+        game_type=_normalize_pack_game_type(spec.game_type),
         theme=spec.visual_style.theme,
         generation_tier=generation_tier,
         variation_seed=variation_seed,
@@ -305,7 +359,7 @@ def apply_visual_pack_defaults(
 def visual_pack_direction_lines(pack: Optional[Dict[str, Any]]) -> List[str]:
     if not pack:
         return []
-    return [
+    lines = [
         f"- Visual pack: {pack.get('displayName') or pack.get('id')}",
         f"- Font family direction: {pack.get('fontFamily')}",
         f"- HUD style: {pack.get('hudStyle')}",
@@ -315,3 +369,8 @@ def visual_pack_direction_lines(pack: Optional[Dict[str, Any]]) -> List[str]:
         f"- Particle style: {pack.get('particleStyle')}",
         f"- Accent shapes: {', '.join(pack.get('accentShapes') or [])}",
     ]
+    for note in pack.get("directionNotes") or []:
+        text = str(note or "").strip()
+        if text:
+            lines.append(f"- {text}")
+    return lines

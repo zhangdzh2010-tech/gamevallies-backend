@@ -841,6 +841,13 @@ def _visual_pack_cover_palette(pack: dict[str, Any] | None) -> tuple[str, str, s
     primary = palette[1] if len(palette) > 1 else palette[0]
     secondary = palette[2] if len(palette) > 2 else (palette[-1] if len(palette) > 1 else _mix_hex(primary, "#ffffff", 0.26))
     background_seed = palette[0]
+    pack_id = str((pack or {}).get("id") or "").strip().lower()
+    art_style = str((pack or {}).get("preferredArtStyle") or "").strip().lower()
+    if pack_id == "clean_edu" or art_style in {"clean", "flat_edu"}:
+        r, g, b = _hex_to_rgb(background_seed)
+        luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
+        background = background_seed if luminance > 0.55 else "#f8fafc"
+        return primary, secondary, background
     background = _mix_hex(background_seed, "#020617", 0.52)
     if _color_distance(background, primary) < 28:
         background = _mix_hex(background, "#020617", 0.34)
@@ -1042,10 +1049,10 @@ def _build_visual_pack_cover_scene(
 
     if pack_id == "clean_edu":
         return f"""
-  <rect x="{int(width * 0.12)}" y="{int(height * 0.20)}" width="{int(width * 0.26)}" height="{int(height * 0.12)}" rx="24" fill="{_mix_hex(primary, '#ffffff', 0.14)}" fill-opacity="0.40"/>
-  <rect x="{int(width * 0.60)}" y="{int(height * 0.18)}" width="{int(width * 0.16)}" height="{int(height * 0.10)}" rx="20" fill="{_mix_hex(secondary, '#ffffff', 0.10)}" fill-opacity="0.34"/>
-  <rect x="{int(width * 0.16)}" y="{int(height * 0.72)}" width="{int(width * 0.34)}" height="10" rx="999" fill="{accent_soft}" fill-opacity="0.46"/>
-  <rect x="{int(width * 0.16)}" y="{int(height * 0.76)}" width="{int(width * 0.24)}" height="6" rx="999" fill="{accent_warm}" fill-opacity="0.36"/>
+  <rect x="{int(width * 0.12)}" y="{int(height * 0.20)}" width="{int(width * 0.26)}" height="{int(height * 0.12)}" rx="6" fill="{_mix_hex(primary, '#ffffff', 0.72)}" fill-opacity="0.92" stroke="{primary}" stroke-opacity="0.35"/>
+  <rect x="{int(width * 0.60)}" y="{int(height * 0.18)}" width="{int(width * 0.16)}" height="{int(height * 0.10)}" rx="6" fill="{_mix_hex(secondary, '#ffffff', 0.78)}" fill-opacity="0.90" stroke="{secondary}" stroke-opacity="0.22"/>
+  <rect x="{int(width * 0.16)}" y="{int(height * 0.72)}" width="{int(width * 0.34)}" height="4" rx="2" fill="{accent_soft}" fill-opacity="0.70"/>
+  <rect x="{int(width * 0.16)}" y="{int(height * 0.78)}" width="{int(width * 0.24)}" height="4" rx="2" fill="{primary}" fill-opacity="0.45"/>
 """
 
     if pack_id == "retro_terminal":

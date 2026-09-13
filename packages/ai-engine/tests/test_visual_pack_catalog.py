@@ -30,6 +30,27 @@ class TestVisualPackCatalog(TestCase):
         )
         self.assertEqual(pack["id"], "clean_edu")
 
+    def test_clean_edu_is_flat_light_not_neon_frost(self) -> None:
+        pack = visual_pack_catalog.get_visual_pack("clean_edu")
+        self.assertIsNotNone(pack)
+        self.assertEqual(pack["buttonStyle"], "rounded_rect")
+        self.assertEqual(pack["hudStyle"], "flat_cards")
+        self.assertNotIn("soft_glow", pack.get("effects") or [])
+        self.assertNotEqual(pack["buttonStyle"], "soft_capsule")
+        tokens = visual_pack_catalog.pack_surface_tokens(pack)
+        self.assertEqual(tokens["canvas"], "#f1f5f9")
+        self.assertEqual(tokens["accent"], "#0f766e")
+        self.assertNotEqual(tokens["canvas"], "#0f172a")
+
+    def test_select_visual_pack_treats_interactive_experience_as_educational(self) -> None:
+        pack = visual_pack_catalog.select_visual_pack(
+            game_type="interactive_experience",
+            theme="science ohm law classroom circuit",
+            generation_tier="standard",
+            variation_seed="ohm-edu",
+        )
+        self.assertEqual(pack["id"], "clean_edu")
+
     def test_select_visual_pack_keeps_retro_terminal_for_neon_terminal_themes(self) -> None:
         pack = visual_pack_catalog.select_visual_pack(
             game_type="puzzle",
