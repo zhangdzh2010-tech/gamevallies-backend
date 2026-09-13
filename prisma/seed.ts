@@ -1025,11 +1025,11 @@ async function main() {
 ║  通知数:      ${String(notifCnt).padEnd(26)}║
 ╠══════════════════════════════════════════╣
 ║  测试账号 (密码均为 password123):         ║
-║  alice@zlspace.ai    (creator)      ║
-║  bob@zlspace.ai      (user)         ║
-║  carol@zlspace.ai    (creator)      ║
-║  david@zlspace.ai    (user)         ║
-║  emma@zlspace.ai     (creator)      ║
+║  alice@zlspace.ai         (creator)      ║
+║  bob@zlspace.ai           (user)         ║
+║  carol@zlspace.ai         (creator)      ║
+║  david@zlspace.ai         (user)         ║
+║  emma@zlspace.ai          (creator)      ║
 ╚══════════════════════════════════════════╝
 `);
 }
