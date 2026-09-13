@@ -513,10 +513,14 @@ class QAPipeline:
         """
         if cls._script_has_valid_syntax(script):
             return script
-        line, description = cls._parse_script_syntax_error(script)
+        raw = script or ""
+        body = raw.strip()
+        prefix_ws = raw[: len(raw) - len(raw.lstrip())] if raw else ""
+        suffix_ws = raw[len(raw.rstrip()):] if raw else ""
+        line, description = cls._parse_script_syntax_error(body)
         if line is None:
             return None
-        lines = (script or "").splitlines()
+        lines = body.splitlines()
         if not lines or line < 1 or line > len(lines):
             return None
         original_line = lines[line - 1]
@@ -529,7 +533,7 @@ class QAPipeline:
                 return None
             suffix = "\n" if original_line.endswith("\n") else ""
             updated = prefix + "; " + original_line[keyword.start():].lstrip() + suffix
-            candidate = "\n".join(lines[: line - 1] + [updated] + lines[line:])
+            candidate = prefix_ws + "\n".join(lines[: line - 1] + [updated] + lines[line:]) + suffix_ws
             if not cls._script_has_valid_syntax(candidate):
                 return None
             return candidate
@@ -555,7 +559,7 @@ class QAPipeline:
                 candidate_lines = lines[: line - 1] + [indent + updated + suffix] + lines[line:]
         else:
             return None
-        candidate = "\n".join(candidate_lines)
+        candidate = prefix_ws + "\n".join(candidate_lines) + suffix_ws
         if not cls._script_has_valid_syntax(candidate):
             return None
         return candidate
