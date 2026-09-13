@@ -694,7 +694,7 @@ function renderAppPromoConfig() {
       </div>
       <div class="form-group full">
         <label>Universal URL</label>
-        <input type="text" id="app-promo-universalUrl" value="${escAttr(links.universalUrl || '')}" placeholder="https://app.gamevallies.com/open">
+        <input type="text" id="app-promo-universalUrl" value="${escAttr(links.universalUrl || '')}" placeholder="https://app.zlspace.ai/open">
       </div>
 
       <div class="form-group">

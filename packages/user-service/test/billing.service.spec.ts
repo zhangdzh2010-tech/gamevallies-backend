@@ -66,7 +66,7 @@ describe('BillingService', () => {
           ALIPAY_APP_ID: '2021000000000000',
           ALIPAY_NOTIFY_URL: 'https://example.com/api/v1/subscription/alipay/notify',
           ALIPAY_PUBLIC_KEY: 'placeholder-public-key',
-          PUBLIC_WEB_BASE_URL: 'https://gamevallies.com',
+          PUBLIC_WEB_BASE_URL: 'https://www.zlspace.ai',
         };
         return values[key];
       }),
@@ -321,7 +321,7 @@ describe('BillingService', () => {
       {
         clientPlatform: 'h5',
         wechatPayFlow: 'mweb',
-        returnUrl: 'https://gamevallies.com/#/pages/subscription/index',
+        returnUrl: 'https://www.zlspace.ai/#/pages/subscription/index',
       },
     );
 
@@ -330,7 +330,7 @@ describe('BillingService', () => {
       tradeType: 'h5',
       openId: undefined,
       h5Info: expect.objectContaining({
-        appUrl: 'https://gamevallies.com',
+        appUrl: 'https://www.zlspace.ai',
       }),
     }));
     expect(result).toEqual({
@@ -435,7 +435,7 @@ describe('BillingService', () => {
       '127.0.0.1',
       {
         provider: 'alipay_wap',
-        returnUrl: 'https://gamevallies.com/payment/result',
+        returnUrl: 'https://www.zlspace.ai/payment/result',
       },
     );
 
@@ -445,7 +445,7 @@ describe('BillingService', () => {
       outTradeNo: expect.stringMatching(/^gv/),
       amount: 990,
       notifyUrl: 'https://example.com/api/v1/subscription/alipay/notify',
-      returnUrl: 'https://gamevallies.com/payment/result',
+      returnUrl: 'https://www.zlspace.ai/payment/result',
     });
     expect(prisma.subscriptionOrder.create).toHaveBeenCalledWith({
       data: expect.objectContaining({

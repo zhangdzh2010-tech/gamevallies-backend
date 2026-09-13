@@ -61,7 +61,7 @@ describe('Game locking behavior', () => {
       get: jest.fn((key: string, defaultValue?: string) => {
         const values: Record<string, string> = {
           AI_ENGINE_URL: 'http://ai-engine.test',
-          PUBLIC_API_BASE_URL: 'https://gamevallies.com',
+          PUBLIC_API_BASE_URL: 'https://www.zlspace.ai',
         };
         return values[key] ?? defaultValue;
       }),

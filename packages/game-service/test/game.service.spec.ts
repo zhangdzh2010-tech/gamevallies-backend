@@ -242,8 +242,8 @@ describe('GameService', () => {
       get: jest.fn((key: string, defaultValue?: string) => {
         const values: Record<string, string> = {
           AI_ENGINE_URL: 'http://ai-engine.test',
-          PUBLIC_API_BASE_URL: 'https://gamevallies.com',
-          APP_URL: 'https://gamevallies.com',
+          PUBLIC_API_BASE_URL: 'https://www.zlspace.ai',
+          APP_URL: 'https://www.zlspace.ai',
           ADMIN_TOKEN: 'test-admin-token',
         };
         return values[key] ?? defaultValue;
@@ -474,7 +474,7 @@ describe('GameService', () => {
     expect(wsGateway.emitGenerationComplete).toHaveBeenCalledWith(
       'user-network',
       'game-network',
-      expect.stringContaining('https://gamevallies.com/games/game-network/preview?previewToken='),
+      expect.stringContaining('https://www.zlspace.ai/games/game-network/preview?previewToken='),
     );
   });
 
@@ -830,7 +830,7 @@ describe('GameService', () => {
     expect(wsGateway.emitGenerationComplete).toHaveBeenCalledWith(
       'user-iter',
       'game-iter',
-      expect.stringContaining('https://gamevallies.com/games/game-iter/preview?previewToken='),
+      expect.stringContaining('https://www.zlspace.ai/games/game-iter/preview?previewToken='),
     );
   });
 
@@ -1048,8 +1048,8 @@ describe('GameService', () => {
     (configService.get as jest.Mock).mockImplementation((key: string, defaultValue?: string) => {
       const values: Record<string, string> = {
         AI_ENGINE_URL: 'http://ai-engine.test',
-        PUBLIC_API_BASE_URL: 'https://gamevallies.com',
-        APP_URL: 'https://gamevallies.com',
+        PUBLIC_API_BASE_URL: 'https://www.zlspace.ai',
+        APP_URL: 'https://www.zlspace.ai',
         ADMIN_TOKEN: 'test-admin-token',
         PIPELINE_VERSION: 'v2',
         PIPELINE_V2_ENTRYPOINTS: 'create,iterate',
@@ -1275,8 +1275,8 @@ describe('GameService', () => {
     (configService.get as jest.Mock).mockImplementation((key: string, defaultValue?: string) => {
       const values: Record<string, string> = {
         AI_ENGINE_URL: 'http://ai-engine.test',
-        PUBLIC_API_BASE_URL: 'https://gamevallies.com',
-        APP_URL: 'https://gamevallies.com',
+        PUBLIC_API_BASE_URL: 'https://www.zlspace.ai',
+        APP_URL: 'https://www.zlspace.ai',
         ADMIN_TOKEN: 'test-admin-token',
         PIPELINE_VERSION: 'v2',
         PIPELINE_V2_ENTRYPOINTS: 'create,iterate',
@@ -1343,8 +1343,8 @@ describe('GameService', () => {
     (configService.get as jest.Mock).mockImplementation((key: string, defaultValue?: string) => {
       const values: Record<string, string> = {
         AI_ENGINE_URL: 'http://ai-engine.test',
-        PUBLIC_API_BASE_URL: 'https://gamevallies.com',
-        APP_URL: 'https://gamevallies.com',
+        PUBLIC_API_BASE_URL: 'https://www.zlspace.ai',
+        APP_URL: 'https://www.zlspace.ai',
         ADMIN_TOKEN: 'test-admin-token',
         PIPELINE_VERSION: 'v2',
         PIPELINE_V2_ENTRYPOINTS: 'create,iterate',
@@ -1659,8 +1659,8 @@ describe('GameService', () => {
     (configService.get as jest.Mock).mockImplementation((key: string, defaultValue?: string) => {
       const values: Record<string, string> = {
         AI_ENGINE_URL: 'http://ai-engine.test',
-        PUBLIC_API_BASE_URL: 'https://gamevallies.com',
-        APP_URL: 'https://gamevallies.com',
+        PUBLIC_API_BASE_URL: 'https://www.zlspace.ai',
+        APP_URL: 'https://www.zlspace.ai',
         ADMIN_TOKEN: 'test-admin-token',
         PIPELINE_VERSION: 'v2',
         PIPELINE_TIMEOUT_S: '1800',
@@ -1712,8 +1712,8 @@ describe('GameService', () => {
     (configService.get as jest.Mock).mockImplementation((key: string, defaultValue?: string) => {
       const values: Record<string, string> = {
         AI_ENGINE_URL: 'http://ai-engine.test',
-        PUBLIC_API_BASE_URL: 'https://gamevallies.com',
-        APP_URL: 'https://gamevallies.com',
+        PUBLIC_API_BASE_URL: 'https://www.zlspace.ai',
+        APP_URL: 'https://www.zlspace.ai',
         ADMIN_TOKEN: 'test-admin-token',
         PIPELINE_VERSION: 'v2',
       };
@@ -2981,7 +2981,7 @@ describe('GameService', () => {
     });
 
     expect(gameState.thumbnailUrl).toBe(
-      'https://gamevallies.com/api/v1/games/game-cover-create/cover?taskId=task-cover-create&v=1',
+      'https://www.zlspace.ai/api/v1/games/game-cover-create/cover?taskId=task-cover-create&v=1',
     );
     expect(generationTaskService.markSucceeded).toHaveBeenCalledWith(expect.objectContaining({
       taskId: 'task-cover-create',
@@ -3028,7 +3028,7 @@ describe('GameService', () => {
       status: 'published',
       visibility: 'public',
       version: 2,
-        thumbnailUrl: 'https://gamevallies.com/api/v1/games/game-cover-live/cover?taskId=task-old&v=1',
+        thumbnailUrl: 'https://www.zlspace.ai/api/v1/games/game-cover-live/cover?taskId=task-old&v=1',
     });
     bundleService.getBundle.mockResolvedValue({
       gameId: 'game-cover-live',
@@ -3036,7 +3036,7 @@ describe('GameService', () => {
       htmlCode: '<!DOCTYPE html><html><body>live</body></html>',
       metadata: {
         coverTaskId: 'task-live',
-          coverUrl: 'https://gamevallies.com/api/v1/games/game-cover-live/cover?taskId=task-live&v=2',
+          coverUrl: 'https://www.zlspace.ai/api/v1/games/game-cover-live/cover?taskId=task-live&v=2',
       },
     });
     generationTaskService.findLatestArtifactForTask.mockImplementation(async (taskId: string) => (
@@ -3073,7 +3073,7 @@ describe('GameService', () => {
       visibility: 'public',
       version: 3,
       forkedFrom: null,
-      thumbnailUrl: 'https://gamevallies.com/api/v1/games/game-cover-artifact/cover?v=3',
+      thumbnailUrl: 'https://www.zlspace.ai/api/v1/games/game-cover-artifact/cover?v=3',
     });
     bundleService.getBundle.mockResolvedValue({
       gameId: 'game-cover-artifact',
@@ -3107,7 +3107,7 @@ describe('GameService', () => {
       visibility: 'public',
       version: 1,
       forkedFrom: 'game-cover-parent',
-      thumbnailUrl: 'https://gamevallies.com/api/v1/games/game-cover-fork/cover?taskId=task-parent-cover&v=1',
+      thumbnailUrl: 'https://www.zlspace.ai/api/v1/games/game-cover-fork/cover?taskId=task-parent-cover&v=1',
     });
     bundleService.getBundle.mockResolvedValue({
       gameId: 'game-cover-fork',
@@ -3160,7 +3160,7 @@ describe('GameService', () => {
         gameId: 'game-v2-journey-iter',
         version: 1,
         htmlCode: '<!DOCTYPE html><html><head><title>Journey Two</title></head><body>live-v1</body></html>',
-        previewUrl: 'https://gamevallies.com/games/game-v2-journey-iter/preview',
+        previewUrl: 'https://www.zlspace.ai/games/game-v2-journey-iter/preview',
         metadata: {},
       }],
     ]);
@@ -3312,8 +3312,8 @@ describe('GameService', () => {
       version: 2,
       wsChannel: 'game:game-status',
       pollUrl: '/api/v1/games/game-status/generation-status',
-      previewUrl: expect.stringContaining('https://gamevallies.com/games/game-status/preview?previewToken='),
-      gameUrl: expect.stringContaining('https://gamevallies.com/games/game-status/index.html?previewToken='),
+      previewUrl: expect.stringContaining('https://www.zlspace.ai/games/game-status/preview?previewToken='),
+      gameUrl: expect.stringContaining('https://www.zlspace.ai/games/game-status/index.html?previewToken='),
       failedReason: 'Generated code failed QA',
       retryCount: 2,
     }));
@@ -3778,7 +3778,7 @@ describe('GameService', () => {
       status: 'published',
       visibility: 'public',
       version: 2,
-        thumbnailUrl: 'https://gamevallies.com/api/v1/games/game-republish-cover/cover?taskId=task-old&v=2',
+        thumbnailUrl: 'https://www.zlspace.ai/api/v1/games/game-republish-cover/cover?taskId=task-old&v=2',
       forkedFrom: null,
       title: 'Published Game',
       description: 'Published description',
@@ -3792,7 +3792,7 @@ describe('GameService', () => {
       htmlCode: '<!DOCTYPE html><html><body>candidate</body></html>',
       metadata: {
         coverTaskId: 'task-new',
-          coverUrl: 'https://gamevallies.com/api/v1/games/game-republish-cover/cover?taskId=task-new&v=3',
+          coverUrl: 'https://www.zlspace.ai/api/v1/games/game-republish-cover/cover?taskId=task-new&v=3',
       },
     });
     prisma.game.update.mockResolvedValue({
@@ -3806,7 +3806,7 @@ describe('GameService', () => {
       where: { id: 'game-republish-cover' },
       data: expect.objectContaining({
         version: 3,
-        thumbnailUrl: 'https://gamevallies.com/api/v1/games/game-republish-cover/cover?taskId=task-new&v=3',
+        thumbnailUrl: 'https://www.zlspace.ai/api/v1/games/game-republish-cover/cover?taskId=task-new&v=3',
         status: 'published',
       }),
     }));
@@ -4264,8 +4264,8 @@ describe('GameService', () => {
     (configService.get as jest.Mock).mockImplementation((key: string, defaultValue?: string) => {
       const values: Record<string, string> = {
         AI_ENGINE_URL: 'http://ai-engine.test',
-        PUBLIC_API_BASE_URL: 'https://gamevallies.com',
-        APP_URL: 'https://gamevallies.com',
+        PUBLIC_API_BASE_URL: 'https://www.zlspace.ai',
+        APP_URL: 'https://www.zlspace.ai',
         ADMIN_TOKEN: 'test-admin-token',
         PIPELINE_VERSION: 'v2',
         PIPELINE_TIMEOUT_S: '1800',
@@ -4408,7 +4408,7 @@ describe('GameService', () => {
     expect(persistCall.updateData.gameType).toBeUndefined();
     expect(persistCall.updateData.thumbnailUrl).toBeUndefined();
     expect(persistCall.metadata.coverUrl).toBe(
-      'https://gamevallies.com/api/v1/games/game-published-live/cover?taskId=task-published-live&v=3',
+      'https://www.zlspace.ai/api/v1/games/game-published-live/cover?taskId=task-published-live&v=3',
     );
     expect(persistCall.metadata.coverTaskId).toBe('task-published-live');
     assertTaskCanPersistResultSpy.mockRestore();

@@ -44,7 +44,7 @@ OSS 对象路径：`gamevallies/prod/releases/<commit SHA>/<SHA256>/<function>.z
 | `ALIYUN_OSS_ENDPOINT` | `https://oss-cn-shenzhen.aliyuncs.com`（默认） |
 | `ALIYUN_OSS_PREFIX` | `gamevallies/prod/`（默认） |
 | `OBJECT_STORAGE_PROVIDER` | `aliyun-oss`（默认） |
-| `PUBLIC_ORIGIN` | `https://zlspace.ai`（默认） |
+| `PUBLIC_ORIGIN` | `https://www.zlspace.ai`（默认） |
 | `CONTENT_ORIGIN` | 独立作品 HTTPS origin，必填；例如确认 DNS/证书后使用 `https://content.zlspace.ai` |
 | `ALIYUN_FC_DEPLOY_ENABLED` | 首次验收前保持 `false` 或不设置；`true` 允许 main push 自动发布 |
 
@@ -133,4 +133,4 @@ OSS 对象路径：`gamevallies/prod/releases/<commit SHA>/<SHA256>/<function>.z
 
 ## zlspace.ai 域名切换
 
-生产工作流固定使用 `https://zlspace.ai` 和 `https://content.zlspace.ai`，旧 GitHub PUBLIC_ORIGIN / CONTENT_ORIGIN 变量不会覆盖这两个域名。主域名绑定 frontend 函数，content 子域名绑定 content 函数；两个域名均需配置 HTTPS 证书与 DNS。FC_API_URL 仍使用 game-service 的函数触发器地址，不能改成网站域名。域名绑定与 DNS 切换不由代码合并自动执行。
+生产工作流固定使用 `https://www.zlspace.ai` 和 `https://content.zlspace.ai`，旧 GitHub PUBLIC_ORIGIN / CONTENT_ORIGIN 变量不会覆盖这两个域名。主域名绑定 frontend 函数，content 子域名绑定 content 函数；两个域名均需配置 HTTPS 证书与 DNS。FC_API_URL 仍使用 game-service 的函数触发器地址，不能改成网站域名。域名绑定与 DNS 切换不由代码合并自动执行。

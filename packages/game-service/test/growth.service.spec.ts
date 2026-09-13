@@ -41,8 +41,8 @@ describe('GrowthService', () => {
     configService = {
       get: jest.fn((key: string, defaultValue?: string) => {
         const values: Record<string, string> = {
-          APP_URL: 'https://gamevallies.com',
-          PUBLIC_API_BASE_URL: 'https://api.gamevallies.com',
+          APP_URL: 'https://www.zlspace.ai',
+          PUBLIC_API_BASE_URL: 'https://api.zlspace.ai',
           APP_RELEASE_UPLOAD_DIR: uploadDir,
         };
         return values[key] ?? defaultValue;
@@ -86,8 +86,8 @@ describe('GrowthService', () => {
         platform: 'android',
         versionName: '2.0.0',
         buildNumber: '200',
-        downloadUrl: 'https://cdn.gamevallies.com/app.apk',
-        qrCodeUrl: 'https://cdn.gamevallies.com/app-qr.png',
+        downloadUrl: 'https://cdn.zlspace.ai/app.apk',
+        qrCodeUrl: 'https://cdn.zlspace.ai/app-qr.png',
         storageKey: 'tos:app-releases/android/android-1/app.apk',
         sourceType: 'upload',
         publishedAt: new Date('2026-04-13T11:00:00.000Z'),
@@ -102,7 +102,7 @@ describe('GrowthService', () => {
     expect(result.copy.playNudge.primaryCta).toBeTruthy();
     expect(result.links).toEqual(expect.objectContaining({
       iosUrl: 'https://apps.apple.com/app/id123',
-      androidUrl: 'https://api.gamevallies.com/api/v1/growth/app-releases/android-1/download',
+      androidUrl: 'https://api.zlspace.ai/api/v1/growth/app-releases/android-1/download',
       universalUrl: 'https://apps.apple.com/app/id123',
     }));
     expect(result.releases.ios).toEqual(expect.objectContaining({
@@ -112,7 +112,7 @@ describe('GrowthService', () => {
     }));
     expect(result.releases.android).toEqual(expect.objectContaining({
       id: 'android-1',
-      qrCodeUrl: 'https://cdn.gamevallies.com/app-qr.png',
+      qrCodeUrl: 'https://cdn.zlspace.ai/app-qr.png',
       sourceType: 'upload',
     }));
   });
@@ -204,7 +204,7 @@ describe('GrowthService', () => {
         platform: 'android',
         channel: 'production',
         sourceType: 'external_url',
-        downloadUrl: 'https://cdn.gamevallies.com/app.apk',
+        downloadUrl: 'https://cdn.zlspace.ai/app.apk',
         publishedAt: null,
       })
       .mockResolvedValueOnce({
@@ -269,7 +269,7 @@ describe('GrowthService', () => {
       data: expect.objectContaining({
         sourceType: 'upload',
         fileName: 'GameVallies.apk',
-        downloadUrl: 'https://api.gamevallies.com/api/v1/growth/app-releases/release-android/download',
+        downloadUrl: 'https://api.zlspace.ai/api/v1/growth/app-releases/release-android/download',
       }),
     }));
 
@@ -280,7 +280,7 @@ describe('GrowthService', () => {
     expect(updatePayload.storageKey).toMatch(/^local:android\/release-android\/\d+-GameVallies\.apk$/);
     expect(fs.existsSync(absolutePath)).toBe(true);
     expect(fs.readFileSync(absolutePath)).toEqual(Buffer.from('apk-data'));
-    expect(result.downloadUrl).toBe('https://api.gamevallies.com/api/v1/growth/app-releases/release-android/download');
+    expect(result.downloadUrl).toBe('https://api.zlspace.ai/api/v1/growth/app-releases/release-android/download');
   });
 
   it('persists OSS uploads and signs private downloads without writing local files', async () => {
@@ -383,7 +383,7 @@ describe('GrowthService', () => {
         storageKey: expect.stringMatching(/^tos:app-releases\/android\/release-android\/\d+-GameVallies\.apk$/),
       }),
     }));
-    expect(result.downloadUrl).toBe('https://api.gamevallies.com/api/v1/growth/app-releases/release-android/download');
+    expect(result.downloadUrl).toBe('https://api.zlspace.ai/api/v1/growth/app-releases/release-android/download');
   });
 
   it('stores uploaded ios packages and returns the backend download url', async () => {
@@ -407,10 +407,10 @@ describe('GrowthService', () => {
       data: expect.objectContaining({
         sourceType: 'upload',
         fileName: 'GameVallies.ipa',
-        downloadUrl: 'https://api.gamevallies.com/api/v1/growth/app-releases/release-ios/download',
+        downloadUrl: 'https://api.zlspace.ai/api/v1/growth/app-releases/release-ios/download',
       }),
     }));
-    expect(result.downloadUrl).toBe('https://api.gamevallies.com/api/v1/growth/app-releases/release-ios/download');
+    expect(result.downloadUrl).toBe('https://api.zlspace.ai/api/v1/growth/app-releases/release-ios/download');
   });
 
   it('resolves tos uploads to signed download urls', async () => {
@@ -422,7 +422,7 @@ describe('GrowthService', () => {
       mimeType: 'application/vnd.android.package-archive',
     });
 
-    const getPreSignedUrl = jest.fn().mockReturnValue('https://signed.gamevallies.com/app.apk');
+    const getPreSignedUrl = jest.fn().mockReturnValue('https://signed.zlspace.ai/app.apk');
     jest.spyOn(service as any, 'getAppReleaseTosConfig').mockReturnValue({
       accessKeyId: 'ak',
       accessKeySecret: 'sk',
@@ -446,7 +446,7 @@ describe('GrowthService', () => {
     }));
     expect(result).toEqual(expect.objectContaining({
       type: 'redirect',
-      downloadUrl: 'https://signed.gamevallies.com/app.apk',
+      downloadUrl: 'https://signed.zlspace.ai/app.apk',
     }));
   });
 });

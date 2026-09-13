@@ -1124,7 +1124,7 @@ export class BillingService {
     return (
       this.configService.get<string>('PUBLIC_WEB_BASE_URL')
       || process.env.PUBLIC_WEB_BASE_URL
-      || 'https://gamevallies.com'
+      || 'https://www.zlspace.ai'
     ).replace(/\/$/, '');
   }
 

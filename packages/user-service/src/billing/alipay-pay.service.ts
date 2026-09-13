@@ -88,7 +88,7 @@ export class AlipayPayService {
   private async createMockPayment(
     input: AlipayCreatePaymentInput,
   ): Promise<AlipayCreatePaymentResult> {
-    const payUrl = `https://pay.mock.gamevallies.com/alipay/${input.flow}/${input.outTradeNo}`;
+    const payUrl = `https://pay.mock.zlspace.ai/alipay/${input.flow}/${input.outTradeNo}`;
     return {
       payment: {
         provider: 'alipay',
