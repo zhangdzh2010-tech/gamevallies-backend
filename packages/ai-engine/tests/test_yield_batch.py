@@ -17,7 +17,57 @@ from run_generation_yield_batch import (
     ledger_row,
     resolve_ledger_kind,
 )
-from run_live_generation_e2e import DEFAULT_CASES
+from run_live_generation_e2e import (
+    DEFAULT_CASES,
+    is_generation_quota_conflict_error,
+    request_json_with_quota_conflict_retry,
+)
+
+
+def test_generation_quota_conflict_is_retried_instead_of_script_error():
+    conflict = RuntimeError(
+        "HTTP 409 https://www.zlspace.ai/api/v1/games/generate: "
+        "{'statusCode': 409, 'message': 'Generation quota changed concurrently; please retry'}"
+    )
+    assert is_generation_quota_conflict_error(conflict)
+    assert not is_generation_quota_conflict_error(RuntimeError("HTTP 409 already exists"))
+    assert not is_generation_quota_conflict_error(RuntimeError("HTTP 500 upstream timeout"))
+
+    calls = {"n": 0}
+
+    def fake_http(*_args, **_kwargs):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise conflict
+        return {"data": {"gameId": "game-retry", "taskId": "task-retry"}}
+
+    result = request_json_with_quota_conflict_retry(
+        "POST",
+        "https://www.zlspace.ai/api/v1/games/generate",
+        payload={"title": "Yield Temp Converter"},
+        request_fn=fake_http,
+        sleep=lambda _seconds: None,
+        attempts=4,
+        backoff_s=0,
+    )
+    assert result["data"]["gameId"] == "game-retry"
+    assert calls["n"] == 3
+
+    calls["n"] = 0
+    try:
+        request_json_with_quota_conflict_retry(
+            "POST",
+            "https://www.zlspace.ai/api/v1/games/generate",
+            request_fn=fake_http,
+            sleep=lambda _seconds: None,
+            attempts=2,
+            backoff_s=0,
+        )
+        raise AssertionError("expected quota conflict after retries are exhausted")
+    except RuntimeError as exc:
+        assert "HTTP 409" in str(exc)
+        assert "quota changed concurrently" in str(exc)
+    assert calls["n"] == 2
 
 
 def test_generation_maintenance_is_classified_as_infra_not_script_error():

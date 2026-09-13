@@ -4727,10 +4727,42 @@ describe('GameService', () => {
     prisma.userSubscription.findFirst.mockResolvedValue(null);
     prisma.userQuota.update.mockRejectedValue({ code: 'P2025', message: 'concurrent quota change' });
     await expect(service.create('user-cas', { prompt: 'a puzzle' })).rejects.toThrow('Generation quota changed concurrently');
+    expect(prisma.userQuota.update).toHaveBeenCalledTimes(3);
     expect(prisma.userQuota.update).toHaveBeenCalledWith(expect.objectContaining({
       where: { userId: 'user-cas', usedFreeQuota: 0, totalFreeQuota: 1 },
     }));
     expect(generationTaskService.createTask).not.toHaveBeenCalled();
+  });
+
+  it('retries a single concurrent quota CAS and still creates the task', async () => {
+    const runPipelineSpy = jest.spyOn(service as any, 'executePipelineTask').mockResolvedValue(undefined);
+    generationQueueService.enqueueJob.mockResolvedValue(true);
+    prisma.userSubscription.updateMany.mockResolvedValue({ count: 0 });
+    prisma.userQuota.upsert.mockResolvedValue({
+      userId: 'user-cas-retry',
+      totalFreeQuota: 2,
+      usedFreeQuota: 0,
+    });
+    prisma.userSubscription.findFirst.mockResolvedValue(null);
+    prisma.userQuota.update
+      .mockRejectedValueOnce({ code: 'P2025', message: 'concurrent quota change' })
+      .mockResolvedValueOnce({
+        userId: 'user-cas-retry',
+        totalFreeQuota: 2,
+        usedFreeQuota: 1,
+      });
+    prisma.game.create.mockResolvedValue({ id: 'game-cas-retry' });
+
+    const result = await service.create('user-cas-retry', { prompt: 'a puzzle' });
+
+    expect(prisma.userQuota.update).toHaveBeenCalledTimes(2);
+    expect(generationTaskService.createTask).toHaveBeenCalled();
+    expect(result).toEqual(expect.objectContaining({
+      canPlay: true,
+      quotaRemaining: 1,
+      requireSubscription: false,
+    }));
+    runPipelineSpy.mockRestore();
   });
 
 });

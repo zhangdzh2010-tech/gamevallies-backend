@@ -448,6 +448,97 @@ def test_code_preflight_declares_t_used_as_update_argument():
     assert not any(issue.code == "undefined_symbol:t" for issue in remaining)
 
 
+def test_code_preflight_hoists_puzzle_helpers_declared_after_const_let_calls():
+    validator = CodePreflightValidator()
+    html = _preflight_canvas_html(
+        """
+          function init() {
+            initGrid();
+            const pos = getEventPos({ clientX: 1, clientY: 2 });
+            const cell = getCellAt(0, 0);
+            return isAdjacent(0, 1) ? cell : pos;
+          }
+          init();
+          const initGrid = () => {
+            grid.length = 0;
+          };
+          const getEventPos = (e) => ({ x: e.clientX, y: e.clientY });
+          let getCellAt = function(r, c) {
+            return grid[r] && grid[r][c];
+          };
+          const isAdjacent = (a, b) => Math.abs(a - b) === 1;
+        """
+    )
+    issues = validator.validate(html, runtime_contract=GameRuntimeContract(runtime_profile="puzzle_grid_match"))
+    assert {issue.code for issue in issues} >= {
+        "tdz_symbol:initGrid",
+        "tdz_symbol:getEventPos",
+        "tdz_symbol:getCellAt",
+        "tdz_symbol:isAdjacent",
+    }
+    repaired = validator.auto_repair(html, issues=issues, runtime_contract=GameRuntimeContract(runtime_profile="puzzle_grid_match"))
+    assert "function initGrid(" in repaired
+    assert "function getEventPos(" in repaired
+    assert "function getCellAt(" in repaired
+    assert "function isAdjacent(" in repaired
+    assert "const initGrid =" not in repaired
+    assert "let getCellAt =" not in repaired
+    remaining = validator.validate(repaired, runtime_contract=GameRuntimeContract(runtime_profile="puzzle_grid_match"))
+    assert not any(
+        issue.code.startswith(("tdz_symbol:", "undefined_symbol:"))
+        and issue.code.split(":", 1)[-1] in {"initGrid", "getEventPos", "getCellAt", "isAdjacent"}
+        for issue in remaining
+    )
+
+
+def test_code_preflight_hoists_puzzle_helpers_from_object_methods_and_properties():
+    validator = CodePreflightValidator()
+    html = _preflight_canvas_html(
+        """
+          function handle(e) {
+            initGrid();
+            const pos = getEventPos(e);
+            const cell = getCellAt(0, 0);
+            return isAdjacent(0, 1) ? cell : pos;
+          }
+          handle({ clientX: 1, clientY: 2 });
+          const board = {
+            // puzzle helpers used as free calls before this object
+            initGrid() { grid = []; },
+            getEventPos: function(e) { return { x: e.clientX, y: e.clientY }; },
+            getCellAt: (r, c) => grid[r] && grid[r][c],
+            isAdjacent(a, b) { return Math.abs(a - b) === 1; }
+          };
+        """
+    )
+    issues = validator.validate(html, runtime_contract=GameRuntimeContract(runtime_profile="puzzle_grid_match"))
+    assert {issue.code for issue in issues} >= {
+        "undefined_symbol:initGrid",
+        "undefined_symbol:getEventPos",
+        "undefined_symbol:getCellAt",
+        "undefined_symbol:isAdjacent",
+    }
+    repaired = validator.auto_repair(html, issues=issues, runtime_contract=GameRuntimeContract(runtime_profile="puzzle_grid_match"))
+    assert "function initGrid(" in repaired
+    assert "function getEventPos(" in repaired
+    assert "function getCellAt(" in repaired
+    assert "function isAdjacent(" in repaired
+    remaining = validator.validate(repaired, runtime_contract=GameRuntimeContract(runtime_profile="puzzle_grid_match"))
+    assert not any(
+        issue.code in {
+            "undefined_symbol:initGrid",
+            "undefined_symbol:getEventPos",
+            "undefined_symbol:getCellAt",
+            "undefined_symbol:isAdjacent",
+            "tdz_symbol:initGrid",
+            "tdz_symbol:getEventPos",
+            "tdz_symbol:getCellAt",
+            "tdz_symbol:isAdjacent",
+        }
+        for issue in remaining
+    )
+
+
 def test_code_preflight_guidance_names_resetgame_update_as_function_declarations():
     guidance = CodePreflightValidator().render_guidance(
         [

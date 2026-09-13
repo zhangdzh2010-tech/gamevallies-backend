@@ -99,6 +99,52 @@ def http_json(
         raise RuntimeError(f"HTTP {exc.code} {url}: {detail}") from exc
 
 
+GENERATION_QUOTA_CONFLICT_ATTEMPTS = 4
+GENERATION_QUOTA_CONFLICT_BACKOFF_S = 0.2
+
+
+def is_generation_quota_conflict_error(exc: BaseException) -> bool:
+    message = str(exc or "")
+    if "HTTP 409" not in message:
+        return False
+    lowered = message.lower()
+    return "quota changed concurrently" in lowered or (
+        "generation quota" in lowered and "retry" in lowered
+    )
+
+
+def request_json_with_quota_conflict_retry(
+    method: str,
+    url: str,
+    *,
+    payload: Any | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: int = 30,
+    attempts: int = GENERATION_QUOTA_CONFLICT_ATTEMPTS,
+    backoff_s: float = GENERATION_QUOTA_CONFLICT_BACKOFF_S,
+    request_fn=http_json,
+    sleep=time.sleep,
+) -> Any:
+    """Retry transient generate 409 CAS races instead of failing the batch slot."""
+    last_exc: Exception | None = None
+    total = max(1, int(attempts))
+    for attempt in range(1, total + 1):
+        try:
+            return request_fn(
+                method,
+                url,
+                payload=payload,
+                headers=headers,
+                timeout=timeout,
+            )
+        except RuntimeError as exc:
+            last_exc = exc
+            if attempt >= total or not is_generation_quota_conflict_error(exc):
+                raise
+            sleep(backoff_s * attempt)
+    raise last_exc or RuntimeError("Generate request failed")
+
+
 def http_status(url: str, *, headers: dict[str, str] | None = None, timeout: int = 30) -> tuple[int, str]:
     req = request.Request(url, method="GET")
     for key, value in (headers or {}).items():
@@ -280,7 +326,7 @@ def run_case(
     }
     if case.get("orientation") in {"portrait", "landscape"}:
         create_payload["orientation"] = case["orientation"]
-    create_response = http_json(
+    create_response = request_json_with_quota_conflict_retry(
         "POST",
         f"{base_url}/api/v1/games/generate",
         payload=create_payload,

@@ -18,6 +18,7 @@ from run_live_generation_e2e import (
     load_env,
     login,
     now_iso,
+    request_json_with_quota_conflict_retry,
     resolve_task_id,
     wait_for_terminal_status,
 )
@@ -227,7 +228,7 @@ def run_full_flow_case(
         "ok": False,
     }
 
-    create_response = http_json(
+    create_response = request_json_with_quota_conflict_retry(
         "POST",
         f"{base_url}/api/v1/games/generate",
         payload={

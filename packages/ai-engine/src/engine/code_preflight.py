@@ -77,29 +77,53 @@ _LANE_HELPER_CALL_RE = re.compile(r"\.\s*(?P<name>laneX|laneCenterX|laneY)\s*\("
 _GRID_CELL_PROPERTY_READ_RE = re.compile(
     r"\bgrid\s*\[\s*(?P<row>[^\]]+?)\s*\]\s*\[\s*(?P<col>[^\]]+?)\s*\]\s*\.(?P<prop>[A-Za-z_$][A-Za-z0-9_$]*)"
 )
+_COMMENT_OR_WS = r"(?:\s|//[^\n]*(?:\n|$)|/\*[\s\S]*?\*/)*"
+_FUNCTION_BODY_TOKEN = (
+    rf"(?P<prefix>async\s+)?(?P<body>function\b|\([^)]*\)\s*=>|(?P<single>{_IDENTIFIER_RE})\s*=>)"
+)
 _FUNCTION_BINDING_RE = re.compile(
     rf"\b(?P<kind>const|let|var)\s+(?P<name>{_IDENTIFIER_RE})\s*=\s*"
-    rf"(?P<prefix>async\s+)?(?P<body>function\b|\([^)]*\)\s*=>|(?P<single>{_IDENTIFIER_RE})\s*=>)",
+    rf"{_COMMENT_OR_WS}{_FUNCTION_BODY_TOKEN}",
     re.MULTILINE,
 )
 _BARE_FUNCTION_ASSIGN_RE = re.compile(
     rf"(?<![\w$.])(?P<name>{_IDENTIFIER_RE})\s*=\s*"
-    rf"(?P<prefix>async\s+)?(?P<body>function\b|\([^)]*\)\s*=>|(?P<single>{_IDENTIFIER_RE})\s*=>)",
+    rf"{_COMMENT_OR_WS}{_FUNCTION_BODY_TOKEN}",
     re.MULTILINE,
 )
 _MEMBER_FUNCTION_ASSIGN_RE = re.compile(
     rf"(?<![\w$])(?:this|window|self|globalThis|{_IDENTIFIER_RE})\s*\.\s*"
     rf"(?P<name>{_IDENTIFIER_RE})\s*=\s*"
-    rf"(?P<prefix>async\s+)?(?P<body>function\b|\([^)]*\)\s*=>|(?P<single>{_IDENTIFIER_RE})\s*=>)",
+    rf"{_COMMENT_OR_WS}{_FUNCTION_BODY_TOKEN}",
     re.MULTILINE,
 )
 _METHOD_SHORTHAND_RE = re.compile(
-    rf"(?:^|[{{,;])\s*(?:async\s+)?(?P<name>{_IDENTIFIER_RE})\s*"
+    rf"(?:^|[{{,;]){_COMMENT_OR_WS}(?:async\s+)?(?P<name>{_IDENTIFIER_RE})\s*"
     rf"\((?P<params>[^)]*)\)\s*\{{",
     re.MULTILINE,
 )
+_OBJECT_PROPERTY_FUNCTION_RE = re.compile(
+    rf"(?:^|[{{,;]){_COMMENT_OR_WS}(?P<name>{_IDENTIFIER_RE})\s*:\s*"
+    rf"{_COMMENT_OR_WS}{_FUNCTION_BODY_TOKEN}",
+    re.MULTILINE,
+)
 _CONTROL_STATEMENT_NAMES = frozenset(
-    {"if", "for", "while", "switch", "catch", "function", "class", "with", "do"}
+    {
+        "if",
+        "for",
+        "while",
+        "switch",
+        "catch",
+        "function",
+        "class",
+        "with",
+        "do",
+        "case",
+        "default",
+        "else",
+        "try",
+        "finally",
+    }
 )
 _SHORT_LIVE_ALIAS_MAX_LEN = 2
 _BARE_ASSIGNMENT_RE = re.compile(
@@ -575,11 +599,25 @@ class CodePreflightValidator:
             visible.append(
                 "- Declare `resetGame()` / `restartGame()` / `startGame()` as function declarations "
                 "in the same script (`function resetGame() { ... }`). Object-method shorthand "
-                "(`resetGame() {` inside `{ ... }`) and `this.resetGame = () => {}` do not bind a "
-                "free `resetGame()` call."
+                "(`resetGame() {` inside `{ ... }`), `name: () => {}` properties, and "
+                "`this.resetGame = () => {}` do not bind a free `resetGame()` call."
             )
         hoist_names = tdz_symbols | call_undefined | (
-            undefined_symbols & {"resize", "loop", "update", "render", "init", "resetGame", "restartGame", "startGame"}
+            undefined_symbols
+            & {
+                "resize",
+                "loop",
+                "update",
+                "render",
+                "init",
+                "resetGame",
+                "restartGame",
+                "startGame",
+                "initGrid",
+                "getEventPos",
+                "getCellAt",
+                "isAdjacent",
+            }
         )
         if tdz_symbols or hoist_names:
             helpers = ", ".join(f"`{name}`" for name in sorted(tdz_symbols or hoist_names))
@@ -1258,7 +1296,13 @@ class CodePreflightValidator:
         after_paren = rest[index:].lstrip()
         if not after_paren.startswith("{"):
             return False
-        return bool(re.search(r"(?:^|[{,;])\s*(?:async\s+)?$", prefix, re.MULTILINE))
+        return bool(
+            re.search(
+                rf"(?:^|[{{,;]){_COMMENT_OR_WS}(?:async\s+)?$",
+                prefix,
+                re.MULTILINE,
+            )
+        )
 
     @classmethod
     def _is_function_like_definition(cls, script: str, match: re.Match[str]) -> bool:
@@ -1319,6 +1363,20 @@ class CodePreflightValidator:
         for match in _MEMBER_FUNCTION_ASSIGN_RE.finditer(script):
             name = match.group("name")
             if not _want(name, free_call_required=True):
+                continue
+            rewritten = self._rewrite_function_binding(script, match)
+            if rewritten is None:
+                continue
+            extras.append(rewritten[0])
+            seen.add(name)
+
+        for match in _OBJECT_PROPERTY_FUNCTION_RE.finditer(script):
+            name = match.group("name")
+            if (
+                not name
+                or name.lower() in _CONTROL_STATEMENT_NAMES
+                or not _want(name, free_call_required=True)
+            ):
                 continue
             rewritten = self._rewrite_function_binding(script, match)
             if rewritten is None:
