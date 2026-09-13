@@ -1862,6 +1862,57 @@ def test_generate_create_code_auto_repairs_post_pr84_grid_puzzle_residual():
     )
 
 
+def test_generate_create_code_auto_repairs_continue_miss_resetgame_call_before_declare():
+    runner = V2PipelineRunner()
+    request = RunPipelineV2Request(
+        game_id="game-preflight-resetgame-continue",
+        user_id="user-preflight-resetgame-continue",
+        raw_user_input="make an english match-3 grid puzzle",
+    )
+    spec = GameSpec(game_type="puzzle", core_mechanics=[{"type": "match"}])
+    runtime_contract = GameRuntimeContract(runtime_profile="puzzle_grid_match")
+    generated = GenerateCodeResult(
+        html_code=(
+            "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas>"
+            "<button onclick='resetGame()'>Restart</button><script>"
+            "const canvas=document.getElementById('gameCanvas');"
+            "canvas.width=360;canvas.height=640;"
+            "const ctx=canvas.getContext('2d');"
+            "let score=0;"
+            "const grid=[[{type:1,anim:0}]];"
+            "function init(){resetGame();}"
+            "function update(){}"
+            "function loop(t){update(t);requestAnimationFrame(loop);}"
+            "function initGrid(){grid[0][0].type=1;}"
+            "init();requestAnimationFrame(loop);"
+            "</script></body></html>"
+        ),
+        strategy="llm",
+        generation_time_ms=10,
+        code_size_bytes=100,
+    )
+
+    with patch.object(
+        runner.code_generator,
+        "generate",
+        new=AsyncMock(return_value=generated),
+    ):
+        result, preflight_issues = asyncio.run(
+            runner._generate_create_code(
+                request,
+                spec,
+                GDD(),
+                runtime_contract,
+                budget_override="simple",
+            )
+        )
+
+    assert "function resetGame(" in result.html_code
+    assert "initGrid();" in result.html_code
+    assert not any(issue.code == "undefined_symbol:resetGame" for issue in preflight_issues)
+    assert not any(issue.code == "tdz_symbol:resetGame" for issue in preflight_issues)
+
+
 def test_generate_create_code_auto_repairs_dynamic_alpha_suffix_before_preflight_failure():
     runner = V2PipelineRunner()
     request = RunPipelineV2Request(
