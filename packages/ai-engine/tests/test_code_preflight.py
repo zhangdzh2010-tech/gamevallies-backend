@@ -895,9 +895,11 @@ def test_code_preflight_auto_repair_wraps_nested_grid_reads_with_safe_helper():
         runtime_contract=GameRuntimeContract(runtime_profile="puzzle_grid_match"),
     )
 
-    assert "__safeGridCell" in repaired
+    assert repaired.count("function __safeGridCell(") == 1
+    assert "__safeGridCell(grid," in repaired
     assert "grid[row][col].type" not in repaired
     assert not any(issue.code == "unsafe_nested_grid_read" for issue in issues)
+    assert not any(issue.code == "undefined_symbol:__safeGridCell" for issue in issues)
 
 
 def test_code_preflight_auto_repair_targets_primary_script_not_just_first_script():
@@ -932,10 +934,257 @@ def test_code_preflight_auto_repair_targets_primary_script_not_just_first_script
     )
 
     assert "window.__BOOT = true;" in repaired
-    assert "__safeGridCell" in repaired
+    assert repaired.count("function __safeGridCell(") == 1
+    assert "__safeGridCell(grid," in repaired
     assert "grid[row][col].targetX" not in repaired
     assert "grid[row][col].targetY" not in repaired
     assert not any(issue.code == "unsafe_nested_grid_read" for issue in issues)
+    assert not any(issue.code == "undefined_symbol:__safeGridCell" for issue in issues)
+
+
+def _post_pr84_grid_puzzle_residual_html() -> str:
+    """Mirror the overnight yield residual after PR #84 (grid_puzzle_en run 48)."""
+    return _preflight_canvas_html(
+        """
+          const grid = [[{ type: 1, anim: 0 }]];
+          function drawBoard() {
+            for (let row = 0; row < rows; row++) {
+              for (let col = 0; col < cols; col++) {
+                const kind = grid[row][col].type;
+                const motion = grid[row][col].anim;
+                if (kind && motion > 0) {
+                  continue;
+                }
+              }
+            }
+          }
+          drawBoard();
+        """
+    )
+
+
+def _assert_post_pr84_grid_residual_cleared(repaired: str, remaining) -> None:
+    assert repaired.count("function __safeGridCell(") == 1
+    assert "__safeGridCell(grid," in repaired
+    assert "grid[row][col].type" not in repaired
+    assert "grid[row][col].anim" not in repaired
+    assert "let cols = 0, rows = 0;" in repaired or (
+        "let cols = 0;" in repaired and "let rows = 0;" in repaired
+    )
+    blocking = {
+        "unsafe_nested_grid_read",
+        "undefined_symbol:__safeGridCell",
+        "undefined_symbol:cols",
+        "undefined_symbol:rows",
+    }
+    assert not any(issue.code in blocking for issue in remaining)
+    assert not any(issue.code.startswith(("tdz_symbol:", "undefined_symbol:")) for issue in remaining)
+
+
+def test_code_preflight_repairs_post_pr84_nested_grid_helper_and_cols_rows_residual():
+    validator = CodePreflightValidator()
+    html = _post_pr84_grid_puzzle_residual_html()
+    contract = GameRuntimeContract(runtime_profile="puzzle_grid_match")
+
+    issues = validator.validate(html, runtime_contract=contract)
+    messages = " ".join(issue.message for issue in issues)
+    assert any(issue.code == "unsafe_nested_grid_read" for issue in issues)
+    assert "grid[row][col].type" in messages
+    assert "grid[row][col].anim" in messages
+    assert any(issue.code == "undefined_symbol:__safeGridCell" for issue in issues) is False
+    assert {issue.code for issue in issues} >= {
+        "undefined_symbol:cols",
+        "undefined_symbol:rows",
+    }
+    assert any("live expression" in issue.message for issue in issues if issue.code == "undefined_symbol:cols")
+    assert any("live expression" in issue.message for issue in issues if issue.code == "undefined_symbol:rows")
+
+    repaired = validator.auto_repair(html, runtime_contract=contract, issues=issues)
+    remaining = validator.validate(repaired, runtime_contract=contract)
+    _assert_post_pr84_grid_residual_cleared(repaired, remaining)
+    assert validator.auto_repair(repaired, runtime_contract=contract, issues=remaining) == repaired
+
+    guidance = validator.render_guidance(issues)
+    assert "let rows = 0; let cols = 0;" in guidance
+    assert "function __safeGridCell" not in guidance or "getCell" in guidance
+
+
+def test_code_preflight_injects_safe_grid_helper_when_call_sites_exist_without_definition():
+    validator = CodePreflightValidator()
+    html = _preflight_canvas_html(
+        """
+          const grid = [[{ type: 1, anim: 0 }]];
+          function readCell(row, col) {
+            return (__safeGridCell(grid, row, col)?.type) + ':' + (__safeGridCell(grid, row, col)?.anim);
+          }
+        """
+    )
+    contract = GameRuntimeContract(runtime_profile="puzzle_grid_match")
+    issues = validator.validate(html, runtime_contract=contract)
+    assert any(issue.code == "undefined_symbol:__safeGridCell" for issue in issues)
+    assert not any(issue.code == "unsafe_nested_grid_read" for issue in issues)
+
+    repaired = validator.auto_repair(html, runtime_contract=contract, issues=issues)
+    remaining = validator.validate(repaired, runtime_contract=contract)
+    assert repaired.count("function __safeGridCell(") == 1
+    assert not any(issue.code == "undefined_symbol:__safeGridCell" for issue in remaining)
+    assert validator.auto_repair(repaired, runtime_contract=contract) == repaired
+
+
+def test_code_preflight_does_not_duplicate_existing_safe_grid_helper_definition():
+    validator = CodePreflightValidator()
+    html = _preflight_canvas_html(
+        """
+          function __safeGridCell(gridRef, row, col) {
+            const rowBucket = gridRef && gridRef[row];
+            return rowBucket ? rowBucket[col] : null;
+          }
+          const grid = [[{ type: 1, anim: 0 }]];
+          function readCell(row, col) {
+            return grid[row][col].type + ':' + grid[row][col].anim;
+          }
+        """
+    )
+    contract = GameRuntimeContract(runtime_profile="puzzle_grid_match")
+    repaired = validator.auto_repair(html, runtime_contract=contract)
+    remaining = validator.validate(repaired, runtime_contract=contract)
+    assert repaired.count("function __safeGridCell(") == 1
+    assert "grid[row][col].type" not in repaired
+    assert "grid[row][col].anim" not in repaired
+    assert not any(issue.code == "unsafe_nested_grid_read" for issue in remaining)
+    assert not any(issue.code == "undefined_symbol:__safeGridCell" for issue in remaining)
+
+
+def test_code_preflight_declares_live_cols_rows_without_redeclaring_existing_bindings():
+    validator = CodePreflightValidator()
+    html = _preflight_canvas_html(
+        """
+          const rows = 8;
+          const cols = 8;
+          const grid = [[{ type: 1 }]];
+          function readCell(row, col) {
+            if (row < rows && col < cols) {
+              return grid[row][col].type;
+            }
+            return null;
+          }
+        """
+    )
+    contract = GameRuntimeContract(runtime_profile="puzzle_grid_merge")
+    repaired = validator.auto_repair(html, runtime_contract=contract)
+    remaining = validator.validate(repaired, runtime_contract=contract)
+    assert "const rows = 8;" in repaired
+    assert "const cols = 8;" in repaired
+    assert "let cols = 0" not in repaired
+    assert "let rows = 0" not in repaired
+    assert repaired.count("function __safeGridCell(") == 1
+    assert not any(
+        issue.code in {
+            "unsafe_nested_grid_read",
+            "undefined_symbol:__safeGridCell",
+            "undefined_symbol:cols",
+            "undefined_symbol:rows",
+        }
+        for issue in remaining
+    )
+
+
+def test_code_preflight_keeps_puzzle_helper_hoist_when_repairing_nested_grid_residual():
+    validator = CodePreflightValidator()
+    html = _preflight_canvas_html(
+        """
+          function init() {
+            initGrid();
+            const pos = getEventPos({ clientX: 1, clientY: 2 });
+            const cell = getCellAt(0, 0);
+            return isAdjacent(0, 1) ? cell : pos;
+          }
+          init();
+          const initGrid = () => {
+            for (let row = 0; row < rows; row++) {
+              for (let col = 0; col < cols; col++) {
+                grid[row][col].type = 1;
+              }
+            }
+          };
+          const getEventPos = (e) => ({ x: e.clientX, y: e.clientY });
+          let getCellAt = function(r, c) {
+            return grid[r] && grid[r][c];
+          };
+          const isAdjacent = (a, b) => Math.abs(a - b) === 1;
+          function paint() {
+            return grid[0][0].anim;
+          }
+        """
+    )
+    contract = GameRuntimeContract(runtime_profile="puzzle_grid_match")
+    issues = validator.validate(html, runtime_contract=contract)
+    assert {issue.code for issue in issues} >= {
+        "tdz_symbol:initGrid",
+        "tdz_symbol:getEventPos",
+        "tdz_symbol:getCellAt",
+        "tdz_symbol:isAdjacent",
+        "undefined_symbol:cols",
+        "undefined_symbol:rows",
+        "unsafe_nested_grid_read",
+    }
+    repaired = validator.auto_repair(html, runtime_contract=contract, issues=issues)
+    remaining = validator.validate(repaired, runtime_contract=contract)
+    assert "function initGrid(" in repaired
+    assert "function getEventPos(" in repaired
+    assert "function getCellAt(" in repaired
+    assert "function isAdjacent(" in repaired
+    assert "const initGrid =" not in repaired
+    assert "let getCellAt =" not in repaired
+    assert repaired.count("function __safeGridCell(") == 1
+    assert "grid[0][0].anim" not in repaired
+    assert not any(
+        issue.code.startswith(("tdz_symbol:", "undefined_symbol:"))
+        and issue.code.split(":", 1)[-1]
+        in {"initGrid", "getEventPos", "getCellAt", "isAdjacent", "__safeGridCell", "cols", "rows"}
+        for issue in remaining
+    )
+    assert not any(issue.code == "unsafe_nested_grid_read" for issue in remaining)
+
+
+def test_code_preflight_does_not_flag_nested_grid_property_writes():
+    validator = CodePreflightValidator()
+    html = _preflight_canvas_html(
+        """
+          const grid = [[{ type: 0, anim: 0 }]];
+          function resetCell(row, col) {
+            grid[row][col].type = 1;
+            grid[row][col].anim = 0;
+          }
+        """
+    )
+    issues = validator.validate(html, runtime_contract=GameRuntimeContract(runtime_profile="puzzle_grid_match"))
+    assert not any(issue.code == "unsafe_nested_grid_read" for issue in issues)
+
+
+def test_code_preflight_repairs_nested_grid_equality_compares_but_not_writes():
+    validator = CodePreflightValidator()
+    html = _preflight_canvas_html(
+        """
+          const grid = [[{ type: 1, anim: 0 }]];
+          function inspect(row, col) {
+            grid[row][col].anim = 0;
+            return grid[row][col].type === 1;
+          }
+        """
+    )
+    contract = GameRuntimeContract(runtime_profile="puzzle_grid_match")
+    issues = validator.validate(html, runtime_contract=contract)
+    assert any(issue.code == "unsafe_nested_grid_read" for issue in issues)
+    assert any("grid[row][col].type" in issue.message for issue in issues)
+    repaired = validator.auto_repair(html, runtime_contract=contract, issues=issues)
+    remaining = validator.validate(repaired, runtime_contract=contract)
+    assert "grid[row][col].anim = 0;" in repaired
+    assert "grid[row][col].type" not in repaired
+    assert "(__safeGridCell(grid, row, col)?.type) === 1" in repaired
+    assert repaired.count("function __safeGridCell(") == 1
+    assert not any(issue.code == "unsafe_nested_grid_read" for issue in remaining)
+    assert not any(issue.code == "undefined_symbol:__safeGridCell" for issue in remaining)
 
 
 def test_code_preflight_auto_repairs_null_ctx_before_the_main_loop():

@@ -1794,8 +1794,72 @@ def test_generate_create_code_auto_repairs_nested_grid_reads_before_preflight_fa
             )
         )
 
-    assert "__safeGridCell" in result.html_code
+    assert result.html_code.count("function __safeGridCell(") == 1
     assert not any(issue.code == "unsafe_nested_grid_read" for issue in preflight_issues)
+    assert not any(issue.code == "undefined_symbol:__safeGridCell" for issue in preflight_issues)
+
+
+def test_generate_create_code_auto_repairs_post_pr84_grid_puzzle_residual():
+    runner = V2PipelineRunner()
+    request = RunPipelineV2Request(
+        game_id="game-preflight-grid-residual",
+        user_id="user-preflight-grid-residual",
+        raw_user_input="make a match-3 puzzle grid",
+    )
+    spec = GameSpec(game_type="puzzle", core_mechanics=[{"type": "match"}])
+    runtime_contract = GameRuntimeContract(runtime_profile="puzzle_grid_match")
+    generated = GenerateCodeResult(
+        html_code=(
+            "<!DOCTYPE html><html><body><canvas id='gameCanvas'></canvas><script>"
+            "const canvas=document.getElementById('gameCanvas');"
+            "canvas.width=360;canvas.height=640;"
+            "const grid=[[{type:1,anim:0}]];"
+            "function drawBoard(){"
+            "for(let row=0;row<rows;row++){"
+            "for(let col=0;col<cols;col++){"
+            "const kind=grid[row][col].type;"
+            "const motion=grid[row][col].anim;"
+            "if(kind&&motion>0){continue;}"
+            "}}"
+            "}"
+            "drawBoard();"
+            "</script></body></html>"
+        ),
+        strategy="llm",
+        generation_time_ms=10,
+        code_size_bytes=100,
+    )
+
+    with patch.object(
+        runner.code_generator,
+        "generate",
+        new=AsyncMock(return_value=generated),
+    ):
+        result, preflight_issues = asyncio.run(
+            runner._generate_create_code(
+                request,
+                spec,
+                GDD(),
+                runtime_contract,
+                budget_override="simple",
+            )
+        )
+
+    assert result.html_code.count("function __safeGridCell(") == 1
+    assert "grid[row][col].type" not in result.html_code
+    assert "grid[row][col].anim" not in result.html_code
+    assert "let cols = 0, rows = 0;" in result.html_code or (
+        "let cols = 0;" in result.html_code and "let rows = 0;" in result.html_code
+    )
+    assert not any(
+        issue.code in {
+            "unsafe_nested_grid_read",
+            "undefined_symbol:__safeGridCell",
+            "undefined_symbol:cols",
+            "undefined_symbol:rows",
+        }
+        for issue in preflight_issues
+    )
 
 
 def test_generate_create_code_auto_repairs_dynamic_alpha_suffix_before_preflight_failure():
