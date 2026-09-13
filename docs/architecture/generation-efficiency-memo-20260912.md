@@ -29,8 +29,12 @@ brief + artifact_kind
     → same validate_interactive_html + structured review + seed_worthy labels
 ```
 
-Arcade/game generation is unchanged. Game family skeletons are stubbed as
-`arcade_loop` on the registry only.
+Arcade/game generation still uses full `logic_generate`. Game family skeletons
+remain stubbed as `arcade_loop` on the registry only — no HIT/SOFT short path.
+The game path now **labels** that full generate as `template_route=MISS`
+(`route_reason=game_full_generate`) plus `family_id` = runtime profile so yield
+rows are no longer MISSING. See
+[`game-path-telemetry-and-hit-soft.md`](./game-path-telemetry-and-hit-soft.md).
 
 ### L0 — `DesktopRuntimeShell`
 
@@ -207,9 +211,20 @@ Use this list for a later exhaustive matrix.
 | K1 | LLM concurrency default 12 | knobs |
 | K2 | Runtime QA concurrency default 6 (non-FC) | knobs |
 | G1 | Game arcade path not rewritten; `arcade_loop` stub only | out of scope |
+| G2 | Game full path always emits `template_route=MISS` + `family_id` | telemetry |
+| G3 | Yield extraction reads nested / camelCase / `task_meta` route fields | yield |
+
+## Game-path HIT/SOFT (assessment only)
+
+Default: **stay FULL** for dodge / snake / memory / grid. Do not lower
+`visual_pack`, `variation_seed`, `creative_anchors`, or `gameplay_fingerprint`.
+SOFT only if a skeleton is proven presentation-only with those slots forced;
+HIT only if a deterministic core + diversity slots are proven like science
+recipes. None of the four yield families meet that bar today. Full table:
+[`game-path-telemetry-and-hit-soft.md`](./game-path-telemetry-and-hit-soft.md).
 
 ## Out of scope (still deferred)
 
 - Full auto-promote of templates to production without review
-- Rewriting the arcade/game generation path
+- Rewriting the arcade/game generation path (HIT/SOFT shells)
 - Exhaustive experiment catalogs beyond subject × family recipes

@@ -534,6 +534,9 @@ def test_near_miss_uses_patch_repair_and_skips_full_regeneration():
     assert response.quality_breakdown["pipeline_success"] is True
     assert response.quality_breakdown["seed_worthy"] is True
     assert response.quality_breakdown["reviewRan"] is True
+    assert response.quality_breakdown["template_route"] == "MISS"
+    assert response.quality_breakdown["family_id"] == "casual_lane_dash"
+    assert response.quality_breakdown["recipe_id"] == "lane_survival"
 
 
 def test_patch_format_failure_gets_one_correction_then_full_regeneration():

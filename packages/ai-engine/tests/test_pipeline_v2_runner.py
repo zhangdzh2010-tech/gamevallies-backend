@@ -3870,6 +3870,9 @@ def test_run_iterate_impl_attaches_quality_fields_when_assessment_succeeds():
     assert response.quality_breakdown["review_bonus"] == 1.2
     assert response.quality_breakdown["runtime_profile"] == "casual_arcade"
     assert response.quality_breakdown["iteration_type"] == IterationType.element_change.value
+    assert response.quality_breakdown["template_route"] == "MISS"
+    assert response.quality_breakdown["family_id"] == "casual_arcade"
+    assert response.quality_breakdown["recipe_id"] == "clear_feedback_loop"
     assert mock_review.await_count == 1
     assert mock_compute.call_count == 1
     assert mock_compute.call_args.kwargs["review"] is review
@@ -3897,7 +3900,10 @@ def test_run_iterate_impl_succeeds_without_quality_fields_when_review_raises():
 
     assert response.html_code == qa_success.code
     assert response.quality_score is None
-    assert response.quality_breakdown is None
+    assert response.quality_breakdown is not None
+    assert response.quality_breakdown["template_route"] == "MISS"
+    assert response.quality_breakdown["family_id"] == "casual_arcade"
+    assert "review_fun_score" not in response.quality_breakdown
     assert mock_compute.call_count == 0
 
 
@@ -3927,7 +3933,10 @@ def test_run_iterate_impl_abandons_quality_assessment_on_timeout():
 
     assert response.html_code == qa_success.code
     assert response.quality_score is None
-    assert response.quality_breakdown is None
+    assert response.quality_breakdown is not None
+    assert response.quality_breakdown["template_route"] == "MISS"
+    assert response.quality_breakdown["family_id"] == "casual_arcade"
+    assert "review_fun_score" not in response.quality_breakdown
     assert mock_compute.call_count == 0
 
 
@@ -3954,7 +3963,10 @@ def test_run_iterate_impl_skips_quality_assessment_when_flag_disabled():
 
     assert response.html_code == qa_success.code
     assert response.quality_score is None
-    assert response.quality_breakdown is None
+    assert response.quality_breakdown is not None
+    assert response.quality_breakdown["template_route"] == "MISS"
+    assert response.quality_breakdown["family_id"] == "casual_arcade"
+    assert "review_fun_score" not in response.quality_breakdown
     assert mock_review.await_count == 0
     assert mock_compute.call_count == 0
 

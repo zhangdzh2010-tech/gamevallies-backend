@@ -144,6 +144,7 @@ jobs:
           tests/test_code_reviewer.py
           tests/test_review_evidence.py
           tests/test_yield_batch.py
+          tests/test_game_path_telemetry.py
           tests/test_generation_efficiency.py
           tests/test_quality_scorer.py
           tests/test_section_patch.py
