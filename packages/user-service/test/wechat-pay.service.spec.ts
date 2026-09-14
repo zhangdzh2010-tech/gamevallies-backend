@@ -152,4 +152,84 @@ describe('WechatPayService', () => {
       clientIp: '127.0.0.1',
     })).rejects.toThrow('WeChat Pay request failed: HTTP 502 <html>bad gateway</html>');
   });
+
+  it('creates a real-mode H5 mweb order against /v3/pay/transactions/h5', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      text: async () => JSON.stringify({ h5_url: 'https://wx.tenpay.com/cgi-bin/mmpayweb-bin/checkmweb?prepay_id=1' }),
+    });
+
+    const result = await service.createPayment({
+      appId: 'wx-h5-app',
+      description: 'GameVallies 基础月卡',
+      outTradeNo: 'gv202603210003',
+      amount: 990,
+      notifyUrl: 'https://www.zlspace.ai/api/v1/subscription/wechat/notify',
+      clientIp: '203.0.113.10',
+      tradeType: 'h5',
+      h5Info: {
+        type: 'Wap',
+        appName: 'GameVallies',
+        appUrl: 'https://www.zlspace.ai',
+      },
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.mch.weixin.qq.com/v3/pay/transactions/h5',
+      expect.objectContaining({
+        method: 'POST',
+      }),
+    );
+    const [, request] = fetchMock.mock.calls[0];
+    const body = JSON.parse(request.body);
+    expect(body.notify_url).toBe('https://www.zlspace.ai/api/v1/subscription/wechat/notify');
+    expect(body.appid).toBe('wx-h5-app');
+    expect(body.scene_info.h5_info.app_url).toBe('https://www.zlspace.ai');
+    expect(result.payment).toEqual({
+      mwebUrl: 'https://wx.tenpay.com/cgi-bin/mmpayweb-bin/checkmweb?prepay_id=1',
+    });
+  });
+
+  it('accepts leftover zltokens pack env aliases in real mode', async () => {
+    configService = {
+      get: jest.fn((key: string) => {
+        const values: Record<string, string> = {
+          WECHAT_PAY_MODE: 'real',
+          WECHAT_MCH_ID: '1900001111',
+          WECHAT_PAY_NOTIFY_URL: 'https://www.zlspace.ai/api/v1/subscription/wechat/notify',
+          WECHAT_CERT_SERIAL: 'SERIAL123',
+          WECHAT_PAY_PRIVATE_KEY: privateKeyPem,
+          WECHAT_PAY_PUBLIC_KEY: publicKeyPem,
+          WECHAT_API_V3_KEY: '12345678901234567890123456789012',
+          WECHAT_PAY_API_BASE: 'https://api.mch.weixin.qq.com',
+        };
+        return values[key];
+      }),
+    } as unknown as ConfigService;
+    service = new WechatPayService(configService);
+    fetchMock.mockResolvedValue({
+      ok: true,
+      text: async () => JSON.stringify({ prepay_id: 'wx_prepay_alias' }),
+    });
+
+    const result = await service.createPayment({
+      appId: 'wx1234567890',
+      openId: 'openid-123',
+      description: 'GameVallies 基础月卡',
+      outTradeNo: 'gv202603210004',
+      amount: 990,
+      notifyUrl: 'https://www.zlspace.ai/api/v1/subscription/wechat/notify',
+      clientIp: '127.0.0.1',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.mch.weixin.qq.com/v3/pay/transactions/jsapi',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: expect.stringContaining('mchid="1900001111"'),
+        }),
+      }),
+    );
+    expect(result.prepayId).toBe('wx_prepay_alias');
+  });
 });

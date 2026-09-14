@@ -41,6 +41,13 @@ jobs:
         run: node test/database-migration.integration.cjs
       - name: Build shared user service for quota integration
         run: npm run build --workspace=@gamevallies/user-service
+      - name: Verify billing notify routes and payment env aliases
+        run: >-
+          npm test --workspace=@gamevallies/user-service -- --runInBand
+          test/payment-env.spec.ts
+          test/billing.service.spec.ts
+          test/wechat-pay.service.spec.ts
+          test/alipay-pay.service.spec.ts
       - name: Verify concurrent creation quota grants on MySQL 8
         run: node test/creation-quota-grant.integration.cjs
 

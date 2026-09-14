@@ -15,6 +15,7 @@ import { ConfigService } from '@nestjs/config';
 import { randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { AlipayPayService, AlipayTradeFlow } from './alipay-pay.service';
+import { resolvePaymentEnv } from './payment-env';
 import { WechatPayService } from './wechat-pay.service';
 import { CreateSubscriptionOrderDto } from './dto/create-subscription-order.dto';
 
@@ -1032,7 +1033,7 @@ export class BillingService {
       return {
         provider: 'wechat_pay',
         tradeType: 'h5',
-        appId: this.configService.get<string>('WECHAT_H5_APP_ID') || '',
+        appId: this.resolveWechatAppId('WECHAT_H5_APP_ID'),
         clientPlatform,
         wechatPayFlow,
         returnUrl: options.returnUrl,
@@ -1047,7 +1048,7 @@ export class BillingService {
       const h5OpenId = options.authContext?.wechatPlatform === 'h5'
         ? options.authContext?.wechatOpenId
         : undefined;
-      const h5AppId = this.configService.get<string>('WECHAT_H5_APP_ID') || '';
+      const h5AppId = this.resolveWechatAppId('WECHAT_H5_APP_ID');
 
       if (!h5AppId || !h5OpenId) {
         throw new BadRequestException('当前微信内 H5 支付需要先完成微信授权登录');
@@ -1064,7 +1065,7 @@ export class BillingService {
       };
     }
 
-    const miniappAppId = this.configService.get<string>('WECHAT_MINIAPP_APP_ID') || '';
+    const miniappAppId = this.resolveWechatAppId('WECHAT_MINIAPP_APP_ID');
     const miniappOpenId = options.authContext?.wechatPlatform === 'miniapp'
       ? options.authContext?.wechatOpenId
       : user.wxOpenId || undefined;
@@ -1118,6 +1119,13 @@ export class BillingService {
       tradeType: paymentDecision.tradeType,
       returnUrl: paymentDecision.returnUrl || null,
     } as unknown as Prisma.InputJsonValue;
+  }
+
+  private resolveWechatAppId(key: 'WECHAT_H5_APP_ID' | 'WECHAT_MINIAPP_APP_ID') {
+    return resolvePaymentEnv(
+      (name) => this.configService.get<string>(name),
+      key,
+    ) || '';
   }
 
   private resolveWebBaseUrl() {

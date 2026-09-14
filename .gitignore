@@ -74,6 +74,10 @@ packages/game-service/dist-verify/
 
 # Sensitive payment credentials (NEVER commit)
 docs/integration/微信支付/
+secrets/
+.env.payments.local
+.env.payments*
+*.pem
 
 # Production credentials remain outside Git
 .env.production
