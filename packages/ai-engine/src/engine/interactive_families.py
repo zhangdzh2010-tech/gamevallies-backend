@@ -829,11 +829,11 @@ _PARAM_FORMULA_JS = r"""
             ctx.stroke();
           }
           ctx.globalAlpha = 1;
-          var lightR = 11, lightCx = Math.max(lightR + 8, 20), lightCy = Math.max(lightR + 8, 20);
-          ctx.fillStyle = t.surface; ctx.strokeStyle = t.line; ctx.lineWidth = 1;
+          var lightR = 12, lightCx = Math.max(lightR + 8, 20), lightCy = Math.max(lightR + 8, 20);
+          ctx.fillStyle = '#fef3c7'; ctx.strokeStyle = t.line; ctx.lineWidth = 1.5;
           ctx.beginPath(); ctx.arc(lightCx, lightCy, lightR, 0, Math.PI*2); ctx.fill(); ctx.stroke();
           ctx.fillStyle = t.ink;
-          ctx.font = '12px sans-serif';
+          ctx.font = '13px sans-serif';
           ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
           ctx.fillText('光', lightCx, lightCy);
           ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
