@@ -367,6 +367,34 @@ describe('AuthService', () => {
         'oauth-state',
       )).toThrow(BadRequestException);
     });
+
+    it('allows www and apex redirect origins from the CORS allowlist', () => {
+      const previousOrigin = process.env.CORS_ORIGIN;
+      const previousOrigins = process.env.CORS_ORIGINS;
+      process.env.CORS_ORIGIN = 'https://www.zlspace.ai,https://zlspace.ai';
+      delete process.env.CORS_ORIGINS;
+      try {
+        expect(service.buildWechatH5AuthorizeUrl(
+          'https://www.zlspace.ai/#/pages/login/index',
+          'oauth-state',
+        ).authorizeUrl).toContain('redirect_uri=https%3A%2F%2Fwww.zlspace.ai');
+        expect(service.buildWechatH5AuthorizeUrl(
+          'https://zlspace.ai/#/pages/login/index',
+          'oauth-state',
+        ).authorizeUrl).toContain('redirect_uri=https%3A%2F%2Fzlspace.ai');
+      } finally {
+        if (previousOrigin === undefined) {
+          delete process.env.CORS_ORIGIN;
+        } else {
+          process.env.CORS_ORIGIN = previousOrigin;
+        }
+        if (previousOrigins === undefined) {
+          delete process.env.CORS_ORIGINS;
+        } else {
+          process.env.CORS_ORIGINS = previousOrigins;
+        }
+      }
+    });
   });
 
   describe('refreshToken', () => {

@@ -1,4 +1,5 @@
 import { INestApplication, RequestMethod, ValidationPipe } from '@nestjs/common';
+import { resolveCorsOrigin } from './common/utils/cors-origin';
 import { registerUnifiedApiProxy } from './edge/unified-api-proxy';
 
 const CORS_ALLOWED_HEADERS = [
@@ -20,7 +21,7 @@ const WECHAT_DOMAIN_VERIFICATIONS = [
 
 export function configureApp(app: INestApplication, options: { proxy?: boolean; unified?: boolean } = {}): void {
   app.enableCors({
-    origin: process.env.CORS_ORIGIN || '*',
+    origin: resolveCorsOrigin(),
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: CORS_ALLOWED_HEADERS,

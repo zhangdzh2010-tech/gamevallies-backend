@@ -1,3 +1,5 @@
+import { resolveCorsOrigin } from '../common/utils/cors-origin';
+
 export default () => ({
   node_env: process.env.NODE_ENV || 'development',
   port: parseInt(process.env.PORT || '3001', 10),
@@ -11,8 +13,8 @@ export default () => ({
     refresh_expires_in: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
   },
   cors: {
-    origin: process.env.CORS_ORIGIN || '*',
-    credentials: process.env.CORS_CREDENTIALS === 'true',
+    origin: resolveCorsOrigin(),
+    credentials: true,
   },
   redis: {
     url: process.env.REDIS_URL,

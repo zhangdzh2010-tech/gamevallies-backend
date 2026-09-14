@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import zipfile
+from urllib.parse import urlsplit
 from deploy import need, origin
 
 
@@ -31,6 +32,20 @@ def package_index(directory, manifest, env):
     return result
 
 
+def site_cors_origins(public):
+    """Allow the canonical origin plus its www/apex sibling for credentialed CORS."""
+    parsed = urlsplit(public)
+    host = parsed.hostname or ''
+    origins = [public]
+    if host.startswith('www.'):
+        sibling = f'{parsed.scheme}://{host[4:]}'
+        if sibling != public:
+            origins.append(sibling)
+    elif host.count('.') == 1:
+        origins.append(f'{parsed.scheme}://www.{host}')
+    return origins
+
+
 def runtime_config(env, backend):
     runtime = {'common': {}, 'services': {}}
     public = origin(env.get('PUBLIC_ORIGIN') or 'https://www.zlspace.ai')
@@ -42,7 +57,8 @@ def runtime_config(env, backend):
         common[key] = need(env, key)
     common['ADMIN_USERNAME'] = env.get('ADMIN_USERNAME', 'admin').strip() or 'admin'
     common['ADMIN_PASSWORD'] = env.get('ADMIN_PASSWORD', 'admin123').strip() or 'admin123'
-    common.update(CORS_ORIGIN=public, CORS_ORIGINS=json.dumps([public]), FRONTEND_URL=public,
+    allowed = site_cors_origins(public)
+    common.update(CORS_ORIGIN=','.join(allowed), CORS_ORIGINS=json.dumps(allowed), FRONTEND_URL=public,
                   PUBLIC_API_BASE_URL=public, PUBLIC_WEB_BASE_URL=public, APP_URL=public,
                   BUNDLE_CDN_ENABLED='false')
     runtime['services']['ai-engine'] = {k: env[k].strip() for k in ('LLM_API_KEY', 'LLM_BASE_URL', 'LLM_MODEL') if env.get(k, '').strip()}

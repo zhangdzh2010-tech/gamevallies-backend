@@ -13,6 +13,7 @@ import * as bcrypt from 'bcryptjs';
 import { randomUUID } from 'crypto';
 import Redis from 'ioredis';
 import { AuthResponse, AuthRefreshResponse } from './dto';
+import { allowedBrowserOrigins } from '../common/utils/cors-origin';
 import { PrismaService } from '../prisma/prisma.service';
 import { SmsService } from './sms.service';
 
@@ -230,19 +231,22 @@ export class AuthService {
   }
 
   private assertSafeWechatH5RedirectUri(redirectUri: string) {
-    const normalizedAllowedBase = (
-      this.configService.get<string>('PUBLIC_WEB_BASE_URL')
-      || this.configService.get<string>('PUBLIC_API_BASE_URL')
-      || process.env.PUBLIC_WEB_BASE_URL
-      || process.env.PUBLIC_API_BASE_URL
-      || 'https://www.zlspace.ai'
-    ).replace(/\/$/, '');
+    const allowed = new Set(allowedBrowserOrigins([
+      this.configService.get<string>('PUBLIC_WEB_BASE_URL'),
+      this.configService.get<string>('PUBLIC_API_BASE_URL'),
+      this.configService.get<string>('FRONTEND_URL'),
+      process.env.PUBLIC_WEB_BASE_URL,
+      process.env.PUBLIC_API_BASE_URL,
+      process.env.FRONTEND_URL,
+    ]));
+    if (allowed.size === 0) {
+      allowed.add('https://www.zlspace.ai');
+    }
 
     try {
       const redirect = new URL(redirectUri);
-      const allowed = new URL(normalizedAllowedBase);
 
-      if (redirect.origin !== allowed.origin) {
+      if (!allowed.has(redirect.origin)) {
         throw new BadRequestException('微信 H5 授权回调地址不在允许域名内');
       }
     } catch (error) {
