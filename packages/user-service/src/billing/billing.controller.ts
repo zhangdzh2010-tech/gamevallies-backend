@@ -105,6 +105,7 @@ export class BillingController {
     return ok(await this.billingService.mockPayOrder(req.user.userId, id));
   }
 
+  // Public URL: https://www.zlspace.ai/api/v1/subscription/wechat/notify
   @Post('subscription/wechat/notify')
   @HttpCode(HttpStatus.OK)
   async handleWechatNotify(
@@ -125,6 +126,7 @@ export class BillingController {
     );
   }
 
+  // Public URL: https://www.zlspace.ai/api/v1/subscription/alipay/notify
   @Post('subscription/alipay/notify')
   @HttpCode(HttpStatus.OK)
   async handleAlipayNotify(@Body() body: Record<string, string | string[] | undefined>) {

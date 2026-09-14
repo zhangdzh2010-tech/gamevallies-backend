@@ -341,6 +341,57 @@ describe('BillingService', () => {
     });
   });
 
+  it('falls back to WECHAT_APP_ID for H5 mweb when WECHAT_H5_APP_ID is unset', async () => {
+    (configService.get as jest.Mock).mockImplementation((key: string) => {
+      const values: Record<string, string> = {
+        BILLING_DEFAULT_FREE_QUOTA: '5',
+        WECHAT_APP_ID: 'wx-alias-app',
+        WECHAT_PAY_NOTIFY_URL: 'https://www.zlspace.ai/api/v1/subscription/wechat/notify',
+        ALIPAY_NOTIFY_URL: 'https://www.zlspace.ai/api/v1/subscription/alipay/notify',
+        PUBLIC_WEB_BASE_URL: 'https://www.zlspace.ai',
+      };
+      return values[key];
+    });
+    prisma.subscriptionPlan.upsert.mockResolvedValue(undefined);
+    prisma.subscriptionOrder.updateMany.mockResolvedValue({ count: 0 });
+    prisma.subscriptionOrder.findFirst.mockResolvedValue(null);
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'user-1',
+      wxOpenId: null,
+    });
+    prisma.subscriptionPlan.findFirst.mockResolvedValue({
+      id: 'plan_monthly_basic',
+      name: '基础月卡',
+      price: 990,
+      currency: 'CNY',
+      period: SubscriptionPeriod.monthly,
+      quota: 10,
+    });
+    wechatPayService.createPayment.mockResolvedValue({
+      prepayId: null,
+      rawResponse: { h5_url: 'https://wx.tenpay.com/mock-h5-pay' },
+      payment: {
+        mwebUrl: 'https://wx.tenpay.com/mock-h5-pay',
+      },
+    });
+    prisma.subscriptionOrder.create.mockResolvedValue(undefined);
+
+    await service.createOrder(
+      'user-1',
+      { planId: 'plan_monthly_basic' },
+      '127.0.0.1',
+      {
+        clientPlatform: 'h5',
+        wechatPayFlow: 'mweb',
+      },
+    );
+
+    expect(wechatPayService.createPayment).toHaveBeenCalledWith(expect.objectContaining({
+      appId: 'wx-alias-app',
+      tradeType: 'h5',
+    }));
+  });
+
   it('requires h5 oauth identity for wechat h5 jsapi payment', async () => {
     prisma.subscriptionPlan.upsert.mockResolvedValue(undefined);
     prisma.subscriptionOrder.updateMany.mockResolvedValue({ count: 0 });
@@ -402,6 +453,69 @@ describe('BillingService', () => {
         },
       ),
     ).rejects.toThrow('微信内 H5 支付必须使用 JSAPI');
+  });
+
+  it('creates a wechat in-app H5 JSAPI order with the H5 appId and openId', async () => {
+    prisma.subscriptionPlan.upsert.mockResolvedValue(undefined);
+    prisma.subscriptionOrder.updateMany.mockResolvedValue({ count: 0 });
+    prisma.subscriptionOrder.findFirst.mockResolvedValue(null);
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'user-1',
+      wxOpenId: null,
+    });
+    prisma.subscriptionPlan.findFirst.mockResolvedValue({
+      id: 'plan_monthly_basic',
+      name: '基础月卡',
+      price: 990,
+      currency: 'CNY',
+      period: SubscriptionPeriod.monthly,
+      quota: 10,
+    });
+    wechatPayService.isMockMode.mockReturnValue(false);
+    wechatPayService.createPayment.mockResolvedValue({
+      prepayId: 'wx_h5_jsapi',
+      rawResponse: { prepay_id: 'wx_h5_jsapi' },
+      payment: {
+        timeStamp: '1742534400',
+        nonceStr: 'nonce-h5',
+        package: 'prepay_id=wx_h5_jsapi',
+        signType: 'RSA',
+        paySign: 'h5-sign',
+      },
+    });
+    prisma.subscriptionOrder.create.mockResolvedValue(undefined);
+
+    const result = await service.createOrder(
+      'user-1',
+      { planId: 'plan_monthly_basic' },
+      '127.0.0.1',
+      {
+        clientPlatform: 'wechat_h5',
+        wechatPayFlow: 'jsapi',
+        authContext: {
+          wechatPlatform: 'h5',
+          wechatOpenId: 'openid-h5',
+          wechatAppId: 'wx-h5-app',
+        },
+      },
+    );
+
+    expect(wechatPayService.createPayment).toHaveBeenCalledWith(expect.objectContaining({
+      appId: 'wx-h5-app',
+      openId: 'openid-h5',
+      tradeType: 'jsapi',
+      notifyUrl: 'https://example.com/api/v1/subscription/wechat/notify',
+    }));
+    expect(result).toEqual({
+      orderId: expect.stringMatching(/^order_/),
+      payment: {
+        timeStamp: '1742534400',
+        nonceStr: 'nonce-h5',
+        package: 'prepay_id=wx_h5_jsapi',
+        signType: 'RSA',
+        paySign: 'h5-sign',
+      },
+    });
   });
 
   it('creates an alipay wap order and stores the provider-specific payload', async () => {

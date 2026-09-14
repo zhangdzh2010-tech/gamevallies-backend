@@ -11,6 +11,9 @@ build/
 .env
 .env.local
 .env.*.local
+.env.payments.local
+.env.payments*
+secrets/
 
 # IDE
 .vscode/

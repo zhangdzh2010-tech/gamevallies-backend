@@ -25,11 +25,14 @@
 
 ## 2. 当前线上状态
 
-截至 2026-04-05，后端支付宝代码已经上线，但**生产环境已临时切回 mock 安全态**。
+生产异步通知地址（与 `BillingController` + 全局前缀 `api/v1` 对齐）：
 
-原因是这轮真实联调发现生产验签公钥配置有误，存在“伪造回调被验过”的风险，因此真实支付入口已被主动回退，等待后端修正 `ALIPAY_PUBLIC_KEY` 后再恢复真实收款。
+- 微信：`https://www.zlspace.ai/api/v1/subscription/wechat/notify`
+- 支付宝：`https://www.zlspace.ai/api/v1/subscription/alipay/notify`
 
-所以前端现在可以先完成接口对接，但**不要把真实支付宝支付入口正式放量**，等后端确认“已切回 `ALIPAY_MODE=real` 且通过复测”再打开。
+`WECHAT_PAY_*` / `ALIPAY_*` 凭据在 GitHub Secrets 中配置，不进仓库。部署工作流把 notify URL 写成上面两个地址。真实收款取决于 Secrets 里的 `WECHAT_PAY_MODE=real` 与 `ALIPAY_MODE=real`，不是前端仓库改动。
+
+前端继续只对接后端订阅接口；不要自己调支付宝开放平台，也不要自己打 notify。
 
 ## 3. 前端需要调用的接口
 
@@ -387,13 +390,13 @@ PC 推荐：
 H5：
 
 ```text
-POST /api/v1/subscription/order?provider=alipay_wap&returnUrl=https://你的前端域名/billing/result
+POST /api/v1/subscription/order?provider=alipay_wap&returnUrl=https://www.zlspace.ai/billing/result
 ```
 
 PC：
 
 ```text
-POST /api/v1/subscription/order?provider=alipay_page&returnUrl=https://你的前端域名/billing/result
+POST /api/v1/subscription/order?provider=alipay_page&returnUrl=https://www.zlspace.ai/billing/result
 ```
 
 ## 10. 联调完成标准
@@ -408,6 +411,6 @@ POST /api/v1/subscription/order?provider=alipay_page&returnUrl=https://你的前
 
 ## 11. 后端对应代码位置
 
-- 控制器入口：[D:\Project\gamevallies\gamevallies-backend\packages\user-service\src\billing\billing.controller.ts](D:\Project\gamevallies\gamevallies-backend\packages\user-service\src\billing\billing.controller.ts)
-- 订单主逻辑：[D:\Project\gamevallies\gamevallies-backend\packages\user-service\src\billing\billing.service.ts](D:\Project\gamevallies\gamevallies-backend\packages\user-service\src\billing\billing.service.ts)
-- 支付宝签名与回调解析：[D:\Project\gamevallies\gamevallies-backend\packages\user-service\src\billing\alipay-pay.service.ts](D:\Project\gamevallies\gamevallies-backend\packages\user-service\src\billing\alipay-pay.service.ts)
+- 控制器入口：`packages/user-service/src/billing/billing.controller.ts`
+- 订单主逻辑：`packages/user-service/src/billing/billing.service.ts`
+- 支付宝签名与回调解析：`packages/user-service/src/billing/alipay-pay.service.ts`

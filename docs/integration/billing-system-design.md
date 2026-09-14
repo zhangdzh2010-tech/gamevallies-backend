@@ -212,6 +212,20 @@ Content-Type: application/json
 
 > **后端处理**：创建订单时，后端需要记录当前待解锁的 gameId（如果有的话），以便支付成功后自动关联解锁。
 
+H5 / 支付宝下单用 query 选通道，响应形状不同（前端 `src` 订阅页已按此对接，本仓库不改 FE）：
+
+| 场景 | Query | `data.payment` |
+|------|-------|----------------|
+| 小程序 / 微信内 H5 JSAPI | `clientPlatform=weapp` 或 `wechat_h5`，`wechatPayFlow=jsapi` | `{ timeStamp, nonceStr, package, signType, paySign }` → `wx.requestPayment` |
+| 普通 H5 mweb | `clientPlatform=h5&wechatPayFlow=mweb` | `{ mwebUrl }` |
+| 支付宝 H5 | `provider=alipay_wap` | `{ provider: "alipay", flow: "wap", payUrl }` |
+| 支付宝 PC | `provider=alipay_page` | `{ provider: "alipay", flow: "page", payUrl }` |
+
+生产异步通知（`BillingController` + `api/v1`）：
+
+- `https://www.zlspace.ai/api/v1/subscription/wechat/notify`
+- `https://www.zlspace.ai/api/v1/subscription/alipay/notify`
+
 ---
 
 ### 3.4 查询订阅状态

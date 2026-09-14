@@ -12,6 +12,7 @@ import {
 } from 'crypto';
 import { existsSync, readFileSync } from 'fs';
 import { resolve } from 'path';
+import { resolvePaymentEnv } from './payment-env';
 
 type UnifiedOrderInput = {
   appId: string;
@@ -378,7 +379,10 @@ export class WechatPayService {
   }
 
   private getRequiredConfig(key: string): string {
-    const value = this.configService.get<string>(key);
+    const value = resolvePaymentEnv(
+      (name) => this.configService.get<string>(name),
+      key,
+    );
     if (!value) {
       throw new InternalServerErrorException(`${key} is not configured`);
     }
