@@ -58,6 +58,7 @@ jobs:
       ALIYUN_OSS_ENDPOINT: ${{ vars.ALIYUN_OSS_ENDPOINT || 'https://oss-cn-shenzhen.aliyuncs.com' }}
       ALIYUN_OSS_PREFIX: ${{ vars.ALIYUN_OSS_PREFIX || 'gamevallies/prod/' }}
       OBJECT_STORAGE_PROVIDER: ${{ vars.OBJECT_STORAGE_PROVIDER || 'aliyun-oss' }}
+      # Canonical site is www. configure.py also allows https://zlspace.ai in CORS.
       PUBLIC_ORIGIN: https://www.zlspace.ai
       ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_ID }}
       ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_SECRET }}

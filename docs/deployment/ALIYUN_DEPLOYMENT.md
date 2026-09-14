@@ -44,7 +44,7 @@ OSS 对象路径：`gamevallies/prod/releases/<commit SHA>/<SHA256>/<function>.z
 | `ALIYUN_OSS_ENDPOINT` | `https://oss-cn-shenzhen.aliyuncs.com`（默认） |
 | `ALIYUN_OSS_PREFIX` | `gamevallies/prod/`（默认） |
 | `OBJECT_STORAGE_PROVIDER` | `aliyun-oss`（默认） |
-| `PUBLIC_ORIGIN` | `https://www.zlspace.ai`（默认） |
+| `PUBLIC_ORIGIN` | `https://www.zlspace.ai`（canonical 站点；默认。CORS 另外放行 apex `https://zlspace.ai`） |
 | `CONTENT_ORIGIN` | 独立作品 HTTPS origin，必填；例如确认 DNS/证书后使用 `https://content.zlspace.ai` |
 | `ALIYUN_FC_DEPLOY_ENABLED` | 首次验收前保持 `false` 或不设置；`true` 允许 main push 自动发布 |
 
@@ -133,4 +133,10 @@ OSS 对象路径：`gamevallies/prod/releases/<commit SHA>/<SHA256>/<function>.z
 
 ## zlspace.ai 域名切换
 
-生产工作流固定使用 `https://www.zlspace.ai` 和 `https://content.zlspace.ai`，旧 GitHub PUBLIC_ORIGIN / CONTENT_ORIGIN 变量不会覆盖这两个域名。主域名绑定 frontend 函数，content 子域名绑定 content 函数；两个域名均需配置 HTTPS 证书与 DNS。FC_API_URL 仍使用 game-service 的函数触发器地址，不能改成网站域名。域名绑定与 DNS 切换不由代码合并自动执行。
+生产工作流固定使用 `https://www.zlspace.ai` 作为 canonical `PUBLIC_ORIGIN`，以及独立作品域名 `https://content.zlspace.ai`。旧 GitHub PUBLIC_ORIGIN / CONTENT_ORIGIN 变量不会覆盖这两个域名。
+
+浏览器 CORS 允许名单同时包含 `https://www.zlspace.ai` 与 apex `https://zlspace.ai`，并保持 `credentials: true`。Creative Square 等页面若从 apex 调用 `https://www.zlspace.ai/api/v1/feed/*`（或反向），ACAO 才能与 `Origin` 对齐，避免「Failed to fetch」。`FRONTEND_URL` / `PUBLIC_WEB_BASE_URL` 仍是单值 canonical www，供回调与链接生成；微信 H5 授权回调额外读取 CORS 允许名单，因此 apex 回跳也被接受。
+
+canonical 站点是 www。apex 应在可能时 301/302 到 `https://www.zlspace.ai`；该跳转由前端仓库 / DNS / 函数域名绑定侧负责，本后端不配置 apex 跳转。未跳转前 CORS 仍放行 apex。不要把支付回调域名改成 apex。
+
+主域名绑定 frontend 函数，content 子域名绑定 content 函数；两个域名均需配置 HTTPS 证书与 DNS。FC_API_URL 仍使用 game-service 的函数触发器地址，不能改成网站域名。域名绑定与 DNS 切换不由代码合并自动执行。

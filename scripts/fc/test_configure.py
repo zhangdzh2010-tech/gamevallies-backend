@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -60,6 +61,22 @@ class PackageConfigTests(unittest.TestCase):
         game = runtime['services']['game-service']
         self.assertTrue(required.issubset(game))
         self.assertEqual(runtime['common']['PUBLIC_WEB_BASE_URL'], 'https://www.example.com')
+
+    def test_cors_allowlist_includes_www_and_apex(self):
+        env = dict(PUBLIC_ORIGIN='https://www.zlspace.ai', CONTENT_ORIGIN='https://content.zlspace.ai',
+            FC_REGION='cn-shenzhen', ALIYUN_OSS_REGION='cn-shenzhen',
+            ALIYUN_OSS_ENDPOINT='https://oss-cn-shenzhen.aliyuncs.com')
+        with patch.object(c, 'need', side_effect=lambda values, key: values.get(key, 'configured')):
+            runtime = c.runtime_config(env, True)
+        common = runtime['common']
+        self.assertEqual(common['CORS_ORIGIN'], 'https://www.zlspace.ai,https://zlspace.ai')
+        self.assertEqual(json.loads(common['CORS_ORIGINS']),
+                         ['https://www.zlspace.ai', 'https://zlspace.ai'])
+        self.assertEqual(common['FRONTEND_URL'], 'https://www.zlspace.ai')
+        self.assertEqual(common['PUBLIC_WEB_BASE_URL'], 'https://www.zlspace.ai')
+        self.assertEqual(c.site_cors_origins('https://zlspace.ai'),
+                         ['https://zlspace.ai', 'https://www.zlspace.ai'])
+        self.assertEqual(c.site_cors_origins('https://app.example.com'), ['https://app.example.com'])
 
     def test_zip_bootstrap_digest_and_path_guards(self):
         with tempfile.TemporaryDirectory() as folder:
