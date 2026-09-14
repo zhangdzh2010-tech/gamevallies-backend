@@ -558,6 +558,57 @@ def photosynthesis_oxygen_rate(light_pct: float, co2_ppm: float) -> float:
     return (light / (PHOTOSYNTHESIS_K_LIGHT + light)) * (co2 / (PHOTOSYNTHESIS_K_CO2 + co2))
 
 
+# Canvas fractions shared with the photosynthesis draw plugin.
+PHOTOSYNTHESIS_SUN = (0.86, 0.16)
+PHOTOSYNTHESIS_LEAF = (0.42, 0.56)
+PHOTOSYNTHESIS_RAY_COUNT = 5
+PHOTOSYNTHESIS_RAY_SPREAD = 0.09
+PHOTOSYNTHESIS_RAY_REACH = 0.72
+
+
+def photosynthesis_light_rays(
+    width: float,
+    height: float,
+    *,
+    sun: Tuple[float, float] = PHOTOSYNTHESIS_SUN,
+    leaf: Tuple[float, float] = PHOTOSYNTHESIS_LEAF,
+    count: int = PHOTOSYNTHESIS_RAY_COUNT,
+    spread: float = PHOTOSYNTHESIS_RAY_SPREAD,
+    reach: float = PHOTOSYNTHESIS_RAY_REACH,
+) -> Dict[str, Any]:
+    """Sun and leaf centers plus rays that leave the sun and end on the leaf."""
+    w, h = max(8.0, float(width)), max(8.0, float(height))
+    sun_xy = (w * float(sun[0]), h * float(sun[1]))
+    leaf_xy = (w * float(leaf[0]), h * float(leaf[1]))
+    dx, dy = leaf_xy[0] - sun_xy[0], leaf_xy[1] - sun_xy[1]
+    aim = math.atan2(dy, dx)
+    length = math.hypot(dx, dy) * float(reach)
+    sun_r = max(8.0, min(w, h) * 0.055)
+    rays = []
+    n = max(1, int(count))
+    for index in range(n):
+        ang = aim + (index - (n - 1) / 2.0) * float(spread)
+        start = (sun_xy[0] + math.cos(ang) * sun_r, sun_xy[1] + math.sin(ang) * sun_r)
+        end = (sun_xy[0] + math.cos(ang) * length, sun_xy[1] + math.sin(ang) * length)
+        rays.append({"start": start, "end": end, "angle": ang})
+    return {"sun": sun_xy, "leaf": leaf_xy, "sun_r": sun_r, "aim": aim, "rays": rays}
+
+
+def pendulum_bob_center(
+    theta: float,
+    *,
+    pivot: Tuple[float, float] = (0.0, 0.0),
+    length_px: float = 1.0,
+) -> Tuple[float, float]:
+    """String end and bob center share this point — never the bob top-left."""
+    cx, cy = pivot
+    length = max(0.0, float(length_px))
+    return (
+        float(cx) + length * math.sin(float(theta)),
+        float(cy) + length * math.cos(float(theta)),
+    )
+
+
 def enzyme_activity_rate(temp_c: float, ea_kj_mol: float = ENZYME_DEFAULT_EA_KJ) -> float:
     """rate = exp(-Ea/R·(1/T-1/Tref)) / (1+exp((T-Td)/w))."""
     tk = float(temp_c) + 273.15
@@ -751,24 +802,41 @@ _PARAM_FORMULA_JS = r"""
         } else if (s.kind === 'photo'){
           var light = Math.min(1, Math.max(0, s.I / 100));
           var co2 = Math.min(1, Math.max(0, (s.C - 100) / 700));
+          var leafX = w*0.42, leafY = h*0.56;
+          var sunX = w*0.86, sunY = h*0.16;
+          var sunR = Math.max(8, Math.min(w, h)*0.055);
           function leaf(color, rx, ry){
             ctx.fillStyle = color;
             ctx.beginPath();
-            if (typeof ctx.ellipse === 'function') ctx.ellipse(w*0.40, h*0.58, rx, ry, 0, 0, Math.PI*2);
-            else ctx.arc(w*0.40, h*0.58, Math.min(rx, ry), 0, Math.PI*2);
+            if (typeof ctx.ellipse === 'function') ctx.ellipse(leafX, leafY, rx, ry, 0, 0, Math.PI*2);
+            else ctx.arc(leafX, leafY, Math.min(rx, ry), 0, Math.PI*2);
             ctx.fill();
           }
           leaf('#14532d', w*0.16, h*0.26);
           leaf('#22c55e', w*0.12, h*0.20);
+          ctx.fillStyle = t.warn;
+          ctx.beginPath(); ctx.arc(sunX, sunY, sunR, 0, Math.PI*2); ctx.fill();
+          var dx = leafX - sunX, dy = leafY - sunY;
+          var aim = Math.atan2(dy, dx);
+          var reach = Math.sqrt(dx*dx + dy*dy) * 0.72;
           ctx.strokeStyle = t.warn; ctx.lineWidth = 2;
           for (var ray=0; ray<5; ray++){
+            var ang = aim + (ray - 2) * 0.09;
             ctx.globalAlpha = 0.25 + 0.7*light;
             ctx.beginPath();
-            ctx.moveTo(14, 12 + ray*4);
-            ctx.lineTo(w*0.28, h*0.34 + ray*6);
+            ctx.moveTo(sunX + Math.cos(ang)*sunR, sunY + Math.sin(ang)*sunR);
+            ctx.lineTo(sunX + Math.cos(ang)*reach, sunY + Math.sin(ang)*reach);
             ctx.stroke();
           }
           ctx.globalAlpha = 1;
+          var lightR = 12, lightCx = Math.max(lightR + 8, 20), lightCy = Math.max(lightR + 8, 20);
+          ctx.fillStyle = '#fef3c7'; ctx.strokeStyle = t.line; ctx.lineWidth = 1.5;
+          ctx.beginPath(); ctx.arc(lightCx, lightCy, lightR, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+          ctx.fillStyle = t.ink;
+          ctx.font = '13px sans-serif';
+          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillText('光', lightCx, lightCy);
+          ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
           ctx.fillStyle = t.muted;
           var dots = Math.max(2, Math.round(2 + co2*6));
           for (var d=0; d<dots; d++){
@@ -788,8 +856,8 @@ _PARAM_FORMULA_JS = r"""
           ctx.fillRect(w*0.08, h-14, Math.max(8, (w*0.84) * s.rate), 6);
           ctx.fillStyle = t.ink;
           ctx.font = '11px sans-serif';
-          ctx.fillText('光照 I=' + s.I.toFixed(0) + '%', 10, 16);
-          ctx.fillText('叶', w*0.37, h*0.58);
+          ctx.fillText('光照 I=' + s.I.toFixed(0) + '%', 10, 36);
+          ctx.fillText('叶', leafX - 6, leafY + 4);
           ctx.fillText('O₂', w*0.72, 16);
           ctx.fillText('CO₂', 10, h-20);
           ctx.fillText('rate=' + s.rate.toFixed(2), w*0.55, h-20);
@@ -859,7 +927,7 @@ _TIME_INTEGRATOR_JS = r"""
           var cx = w/2, cy = 16, Lpx = Math.min(h-36, 80 + num('param-L',1)*40);
           var x = cx + Lpx * Math.sin(theta), yb = cy + Lpx * Math.cos(theta);
           ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(x,yb); ctx.stroke();
-          ctx.beginPath(); ctx.arc(x,yb,10,0,Math.PI*2); ctx.fill();
+          ctx.beginPath(); ctx.arc(x,yb,10,0,Math.PI*2); ctx.fill(); // bob center = string end
         } else {
           var y0 = Math.max(1, num('param-y0',20));
           var pad = 20;

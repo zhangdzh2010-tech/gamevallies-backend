@@ -42,6 +42,8 @@ def test_science_brief_is_science_artifact_not_mobile_game_contract():
     assert "Mobile-first portrait" not in prompt
     assert "桌面浏览器" in prompt
     assert "不要套用问答、关卡、积分、生命或输赢机制" in prompt
+    assert "光线从光源/太阳指向叶片中心" in prompt
+    assert "摆线终点必须落在摆球圆心" in prompt
 
 
 def test_photosynthesis_experiment_uses_interactive_science_path():
