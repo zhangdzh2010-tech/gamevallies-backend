@@ -74,6 +74,10 @@ def test_science_repair_guidance_is_tied_to_observed_runtime_defects():
     assert '先升后降' in enzyme and '37–50' in enzyme
     osmosis = science_runtime_repair_guidance(['渗透隔室在开始后体积未变化，半透膜不清晰。'])
     assert 'vin≠vout' in osmosis and '半透膜' in osmosis
+    photo = science_runtime_repair_guidance(['光合作用产氧光线未指向叶片，光标裁切。'])
+    assert '太阳指向叶片' in photo and '光' in photo
+    pendulum = science_runtime_repair_guidance(['单摆摆球没有落在摆线终点。'])
+    assert '圆心' in pendulum and 'arc(x,yb)' in pendulum
     tool_hint = tool_runtime_repair_guidance(['未检测到可操作且能改变作品内容的交互控件。'])
     assert '<output>' in tool_hint
     assert '空壳' in tool_hint

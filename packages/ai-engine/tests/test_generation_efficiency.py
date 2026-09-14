@@ -40,6 +40,8 @@ from src.engine.interactive_families import (
     family_plugin_js,
     get_recipe,
     osmosis_volume_step,
+    pendulum_bob_center,
+    photosynthesis_light_rays,
     photosynthesis_oxygen_rate,
     plane_mirror_rays,
     recipes_for_family,
@@ -541,6 +543,46 @@ class ResidualFamilyContracts(unittest.IsolatedAsyncioTestCase):
         self.assertIn("k*x - time + phi", plugin)
         self.assertNotIn("2*Math.PI*x/lam - phi) + A2*Math.sin(2*Math.PI*x/lam - phi)", plugin)
 
+    def test_photosynthesis_rays_converge_on_the_leaf(self):
+        import math
+        scene = photosynthesis_light_rays(720, 220)
+        sx, sy = scene["sun"]
+        lx, ly = scene["leaf"]
+        self.assertGreater(sx, lx)
+        self.assertLess(sy, ly)
+        self.assertEqual(len(scene["rays"]), 5)
+        mid = scene["rays"][2]
+        mid_end = mid["end"]
+        self.assertLess(
+            math.hypot(mid_end[0] - lx, mid_end[1] - ly),
+            math.hypot(mid["start"][0] - lx, mid["start"][1] - ly),
+        )
+        self.assertAlmostEqual(scene["aim"], math.atan2(ly - sy, lx - sx), places=9)
+        for ray in scene["rays"]:
+            self.assertLess(
+                math.hypot(ray["end"][0] - lx, ray["end"][1] - ly),
+                math.hypot(sx - lx, sy - ly) * 0.45,
+            )
+        plugin = family_plugin_js("param_formula_panel", get_recipe("photosynthesis_rate"))
+        self.assertIn("sunX + Math.cos(ang)*reach", plugin)
+        self.assertIn("fillText('光', lightCx, lightCy)", plugin)
+
+    def test_pendulum_bob_center_is_the_string_end(self):
+        import math
+        pivot = (360.0, 16.0)
+        length = 120.0
+        theta = 0.35
+        x, y = pendulum_bob_center(theta, pivot=pivot, length_px=length)
+        self.assertAlmostEqual(x, pivot[0] + length * math.sin(theta))
+        self.assertAlmostEqual(y, pivot[1] + length * math.cos(theta))
+        rest = pendulum_bob_center(0.0, pivot=pivot, length_px=length)
+        self.assertAlmostEqual(rest[0], pivot[0])
+        self.assertAlmostEqual(rest[1], pivot[1] + length)
+        plugin = family_plugin_js("time_integrator_1d", get_recipe("pendulum"))
+        self.assertIn("ctx.lineTo(x,yb)", plugin)
+        self.assertIn("ctx.arc(x,yb,10,0,Math.PI*2)", plugin)
+        self.assertIn("bob center = string end", plugin)
+
     def test_plane_mirror_rays_keep_incident_toward_and_reflected_away(self):
         import math
         rays = plane_mirror_rays(math.radians(30), hit=(200.0, 100.0), length=80.0)
@@ -861,6 +903,12 @@ class ResidualFamilyContracts(unittest.IsolatedAsyncioTestCase):
         self.assertIn("t=' + phase.toFixed(2)", plugin)
         self.assertIn("oxygen += compute().rate * dt", plugin)
         self.assertIn("ellipse", plugin)
+        self.assertIn("var leafX = w*0.42, leafY = h*0.56", plugin)
+        self.assertIn("var sunX = w*0.86, sunY = h*0.16", plugin)
+        self.assertIn("Math.atan2(dy, dx)", plugin)
+        self.assertIn("ctx.fillText('光', lightCx, lightCy)", plugin)
+        self.assertIn("textBaseline = 'middle'", plugin)
+        self.assertNotIn("ctx.moveTo(14, 12 + ray*4)", plugin)
         prompt = fill_prompt(
             kind="science",
             brief="光合作用实验",
