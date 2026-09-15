@@ -2201,6 +2201,92 @@ export class AdminService {
     return this.getGame(id);
   }
 
+  private async deleteGameRecords(
+    tx: Prisma.TransactionClient,
+    gameIds: string[],
+  ) {
+    if (!gameIds.length) {
+      return;
+    }
+
+    const gameIdSet = new Set(gameIds);
+    const commentsToDelete = await tx.comment.findMany({
+      where: { gameId: { in: gameIds } },
+      select: { id: true },
+    });
+    const commentIds = commentsToDelete.map((item) => item.id);
+
+    if (commentIds.length) {
+      await tx.comment.updateMany({
+        where: { parentId: { in: commentIds } },
+        data: { parentId: null },
+      });
+    }
+
+    const interactionTargets: Prisma.SocialInteractionWhereInput[] = [
+      {
+        targetType: InteractionTargetType.game,
+        targetId: { in: gameIds },
+      },
+    ];
+    if (commentIds.length) {
+      interactionTargets.push({
+        targetType: InteractionTargetType.comment,
+        targetId: { in: commentIds },
+      });
+    }
+    await tx.socialInteraction.deleteMany({
+      where: { OR: interactionTargets },
+    });
+
+    await tx.notification.deleteMany({
+      where: {
+        OR: [
+          { targetId: { in: gameIds } },
+          ...(commentIds.length ? [{ targetId: { in: commentIds } }] : []),
+        ],
+      },
+    });
+
+    await tx.creatorEarning.deleteMany({
+      where: { gameId: { in: gameIds } },
+    });
+
+    if (commentIds.length) {
+      await tx.comment.deleteMany({
+        where: { id: { in: commentIds } },
+      });
+    }
+
+    const survivingForkRows = await tx.game.findMany({
+      where: {
+        forkedFrom: { in: gameIds },
+        id: { notIn: gameIds },
+      },
+      select: { id: true },
+    });
+    const survivingForkRoots = survivingForkRows.filter(
+      (item) => !gameIdSet.has(item.id),
+    );
+
+    if (survivingForkRoots.length) {
+      await tx.game.updateMany({
+        where: {
+          forkedFrom: { in: gameIds },
+          id: { notIn: gameIds },
+        },
+        data: { forkedFrom: null, forkDepth: 0 },
+      });
+      await this.recalculateForkDepths(
+        tx,
+        survivingForkRoots.map((item) => item.id),
+      );
+    }
+
+    await tx.gameBundle.deleteMany({ where: { gameId: { in: gameIds } } });
+    await tx.game.deleteMany({ where: { id: { in: gameIds } } });
+  }
+
   async deleteGame(id: string) {
     const game = await this.prisma.game.findUnique({ where: { id } });
     if (!game) {
@@ -2211,9 +2297,9 @@ export class AdminService {
       reason: "Task canceled because the game was deleted by admin",
     });
 
-    // Delete bundles first (cascade should handle this, but be explicit)
-    await this.prisma.gameBundle.deleteMany({ where: { gameId: id } });
-    await this.prisma.game.delete({ where: { id } });
+    await this.prisma.$transaction(async (tx) => {
+      await this.deleteGameRecords(tx, [id]);
+    });
     await this.invalidateFeedCache();
 
     return { deleted: true };
@@ -2291,8 +2377,7 @@ export class AdminService {
 
     if (foundIds.length > 0) {
       await this.prisma.$transaction(async (tx) => {
-        await tx.gameBundle.deleteMany({ where: { gameId: { in: foundIds } } });
-        await tx.game.deleteMany({ where: { id: { in: foundIds } } });
+        await this.deleteGameRecords(tx, foundIds);
       });
       await this.invalidateFeedCache();
     }

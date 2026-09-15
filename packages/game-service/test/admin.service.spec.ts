@@ -44,12 +44,28 @@ describe("AdminService", () => {
         aggregate: jest.fn(),
         groupBy: jest.fn(),
         create: jest.fn(),
+        updateMany: jest.fn(),
+        delete: jest.fn(),
       },
       gameBundle: {
         create: jest.fn(),
         findMany: jest.fn(),
         findFirst: jest.fn(),
         update: jest.fn(),
+        deleteMany: jest.fn(),
+      },
+      comment: {
+        findMany: jest.fn().mockResolvedValue([]),
+        updateMany: jest.fn(),
+        deleteMany: jest.fn(),
+      },
+      socialInteraction: {
+        deleteMany: jest.fn(),
+      },
+      notification: {
+        deleteMany: jest.fn(),
+      },
+      creatorEarning: {
         deleteMany: jest.fn(),
       },
       generationArtifact: {
@@ -2707,11 +2723,86 @@ describe("AdminService", () => {
     expect(invalidateFeedCacheSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("deletes a game after removing comments and other non-cascading dependents", async () => {
+    prisma.game.findUnique.mockResolvedValue({ id: "game-1" });
+    prisma.comment.findMany.mockResolvedValue([{ id: "comment-1" }]);
+    prisma.comment.updateMany.mockResolvedValue({ count: 0 });
+    prisma.comment.deleteMany.mockResolvedValue({ count: 1 });
+    prisma.socialInteraction.deleteMany.mockResolvedValue({ count: 1 });
+    prisma.notification.deleteMany.mockResolvedValue({ count: 1 });
+    prisma.creatorEarning.deleteMany.mockResolvedValue({ count: 0 });
+    prisma.game.findMany.mockResolvedValue([]);
+    prisma.gameBundle.deleteMany.mockResolvedValue({ count: 1 });
+    prisma.game.deleteMany.mockResolvedValue({ count: 1 });
+    const invalidateFeedCacheSpy = jest
+      .spyOn(service as any, "invalidateFeedCache")
+      .mockResolvedValue(undefined);
+
+    const result = await service.deleteGame("game-1");
+
+    expect(gameService.terminateActiveTasksForGame).toHaveBeenCalledWith(
+      "game-1",
+      {
+        reason: "Task canceled because the game was deleted by admin",
+      },
+    );
+    expect(prisma.comment.findMany).toHaveBeenCalledWith({
+      where: { gameId: { in: ["game-1"] } },
+      select: { id: true },
+    });
+    expect(prisma.comment.updateMany).toHaveBeenCalledWith({
+      where: { parentId: { in: ["comment-1"] } },
+      data: { parentId: null },
+    });
+    expect(prisma.socialInteraction.deleteMany).toHaveBeenCalledWith({
+      where: {
+        OR: [
+          {
+            targetType: "game",
+            targetId: { in: ["game-1"] },
+          },
+          {
+            targetType: "comment",
+            targetId: { in: ["comment-1"] },
+          },
+        ],
+      },
+    });
+    expect(prisma.notification.deleteMany).toHaveBeenCalledWith({
+      where: {
+        OR: [
+          { targetId: { in: ["game-1"] } },
+          { targetId: { in: ["comment-1"] } },
+        ],
+      },
+    });
+    expect(prisma.creatorEarning.deleteMany).toHaveBeenCalledWith({
+      where: { gameId: { in: ["game-1"] } },
+    });
+    expect(prisma.comment.deleteMany).toHaveBeenCalledWith({
+      where: { id: { in: ["comment-1"] } },
+    });
+    expect(prisma.gameBundle.deleteMany).toHaveBeenCalledWith({
+      where: { gameId: { in: ["game-1"] } },
+    });
+    expect(prisma.game.deleteMany).toHaveBeenCalledWith({
+      where: { id: { in: ["game-1"] } },
+    });
+    expect(result).toEqual({ deleted: true });
+    expect(invalidateFeedCacheSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("batch deletes games after terminating active tasks", async () => {
     prisma.game.findMany.mockResolvedValue([
       { id: "game-1" },
       { id: "game-2" },
     ]);
+    prisma.comment.findMany.mockResolvedValue([{ id: "comment-1" }]);
+    prisma.comment.updateMany.mockResolvedValue({ count: 0 });
+    prisma.comment.deleteMany.mockResolvedValue({ count: 1 });
+    prisma.socialInteraction.deleteMany.mockResolvedValue({ count: 0 });
+    prisma.notification.deleteMany.mockResolvedValue({ count: 0 });
+    prisma.creatorEarning.deleteMany.mockResolvedValue({ count: 0 });
     prisma.gameBundle.deleteMany.mockResolvedValue({ count: 2 });
     prisma.game.deleteMany.mockResolvedValue({ count: 2 });
     const invalidateFeedCacheSpy = jest
@@ -2725,6 +2816,16 @@ describe("AdminService", () => {
     ]);
 
     expect(gameService.terminateActiveTasksForGame).toHaveBeenCalledTimes(2);
+    expect(prisma.comment.findMany).toHaveBeenCalledWith({
+      where: { gameId: { in: ["game-1", "game-2"] } },
+      select: { id: true },
+    });
+    expect(prisma.comment.deleteMany).toHaveBeenCalledWith({
+      where: { id: { in: ["comment-1"] } },
+    });
+    expect(prisma.creatorEarning.deleteMany).toHaveBeenCalledWith({
+      where: { gameId: { in: ["game-1", "game-2"] } },
+    });
     expect(prisma.gameBundle.deleteMany).toHaveBeenCalledWith({
       where: { gameId: { in: ["game-1", "game-2"] } },
     });
