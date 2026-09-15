@@ -4,7 +4,7 @@ import json
 import unittest
 from pathlib import Path
 from types import SimpleNamespace as NS
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 spec = importlib.util.spec_from_file_location('fc_deploy', Path(__file__).with_name('deploy.py'))
 d = importlib.util.module_from_spec(spec); spec.loader.exec_module(d)
@@ -17,6 +17,71 @@ MANIFEST = json.loads(Path('deploy/fc/functions.json').read_text())
 RUNTIME['artifacts'] = {f['name']: {'sha256': 'b'*64, 'object': 'gamevallies/prod/releases/' + 'a'*40 + '/' + 'b'*64 + '/' + f['name'] + '.zip'} for f in MANIFEST['functions']}
 
 class ConfigTests(unittest.TestCase):
+    def test_parse_services_accepts_all_and_catalog_ordered_subsets(self):
+        catalog = ('ai-engine', 'game-service', 'content')
+        self.assertEqual(d.parse_services('all'), catalog)
+        self.assertEqual(d.parse_services(''), catalog)
+        self.assertEqual(d.parse_services(None), catalog)
+        self.assertEqual(d.parse_services('game-service'), ('game-service',))
+        self.assertEqual(d.parse_services('content, ai-engine'), ('ai-engine', 'content'))
+        self.assertEqual(d.parse_services('game-service game-service,content'), ('game-service', 'content'))
+        self.assertEqual(d.parse_services('all,game-service'), catalog)
+        with self.assertRaisesRegex(ValueError, 'Unknown FC service'):
+            d.parse_services('frontend')
+        with self.assertRaisesRegex(ValueError, 'Unknown FC service'):
+            d.parse_services('game-service,gateway')
+
+    def test_filter_manifest_keeps_unselected_functions_out_of_validation(self):
+        subset = d.filter_manifest(MANIFEST, 'game-service')
+        self.assertEqual([item['name'] for item in subset['functions']], ['game-service'])
+        runtime = copy.deepcopy(RUNTIME)
+        runtime['artifacts'] = {name: runtime['artifacts'][name] for name in ('game-service',)}
+        d.validate(subset, runtime, ENV)
+        with self.assertRaisesRegex(ValueError, 'Missing verified package digest: ai-engine'):
+            d.validate(MANIFEST, runtime, ENV)
+
+    def test_selective_apply_leaves_unselected_functions_untouched(self):
+        import tempfile
+        client = Mock()
+        code = {'ossBucketName': 'old-bucket', 'ossObjectName': 'old.zip'}
+        existing = NS(body=m.Function(
+            runtime='custom.debian12',
+            description='GameVallies OSS ' + json.dumps(code),
+            disable_ondemand=False))
+        deployment = d.Deployment(client, m, sleep=lambda _: None)
+        deployment.optional = Mock(return_value=existing)
+        deployment.service_is_stopped = Mock(return_value=False)
+        deployment.version = Mock(return_value='3')
+        deployment.wait_function = Mock(return_value=NS(disable_ondemand=False))
+        deployment.provision = Mock()
+        deployment.migrate_database = Mock()
+        deployment.trigger = Mock(return_value='https://content.example.com')
+        deployment.existing_http_origin = Mock(side_effect=lambda name: {
+            ENV['FC_PREFIX'] + '-ai-engine': 'https://ai.example.com',
+            ENV['FC_PREFIX'] + '-game-service': 'https://game.example.com',
+        }.get(name))
+        subset = d.filter_manifest(MANIFEST, 'content')
+        with tempfile.NamedTemporaryFile('w+') as release, patch.object(d, 'http_json', return_value={}) as http:
+            deployment.apply(subset, RUNTIME, ENV, release.name, catalog=MANIFEST['functions'])
+            release.seek(0)
+            recorded = json.loads(release.read())
+        self.assertEqual([item['service'] for item in recorded['functions']], ['content'])
+        updated = [item.args[0] for item in client.update_function.call_args_list]
+        self.assertTrue(updated)
+        self.assertTrue(all(name.endswith('-content') for name in updated))
+        self.assertFalse(any('ai-engine' in name or 'game-service' in name for name in updated))
+        client.create_function.assert_not_called()
+        deployment.trigger.assert_called_once_with(ENV['FC_PREFIX'] + '-content')
+        self.assertEqual(deployment.existing_http_origin.call_args_list, [
+            call(ENV['FC_PREFIX'] + '-ai-engine'),
+            call(ENV['FC_PREFIX'] + '-game-service'),
+        ])
+        body = client.update_function.call_args.args[1].body.to_map()
+        self.assertEqual(body['environmentVariables']['GAME_UPSTREAM'], 'https://game.example.com')
+        self.assertEqual(body['environmentVariables']['AI_UPSTREAM'], 'https://ai.example.com')
+        self.assertFalse(any('/__fc/drain' in str(item) for item in http.call_args_list))
+        deployment.migrate_database.assert_called_once()
+
     def test_drain_includes_sql_tasks_with_old_queue_only_endpoint(self):
         with patch.object(d, 'http_json', side_effect=[
             {'pending':0,'maintenance':True}, {'data':{'total':0}}, {'data':{'total':1}},

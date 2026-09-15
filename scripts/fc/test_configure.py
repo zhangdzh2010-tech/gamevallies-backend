@@ -1,10 +1,13 @@
 import json
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 import zipfile
 import configure as c
+from deploy import filter_manifest, parse_services
 
 class PackageConfigTests(unittest.TestCase):
     def test_backend_log_configuration_keeps_metrics_enabled(self):
@@ -95,6 +98,33 @@ class PackageConfigTests(unittest.TestCase):
             for entry in ('../outside', '.env.production', '/absolute'):
                 write(extra=entry)
                 with self.assertRaisesRegex(ValueError,'Unsafe'): c.package_index(folder,{'functions':[{'name':'frontend'}]},{'RELEASE_SHA':'a'*40})
+
+    def test_package_index_follows_filtered_manifest(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'game-service.zip'
+            with zipfile.ZipFile(path, 'w') as archive:
+                info = zipfile.ZipInfo('bootstrap')
+                info.external_attr = (0o100000 | 0o755) << 16
+                archive.writestr(info, '#!/bin/sh\nexit 0\n')
+            catalog = json.loads(Path('deploy/fc/functions.json').read_text())
+            selected = filter_manifest(catalog, 'game-service')
+            result = c.package_index(folder, selected, {'RELEASE_SHA': 'a' * 40})
+            self.assertEqual(list(result), ['game-service'])
+            self.assertTrue(result['game-service']['object'].endswith('/game-service.zip'))
+            with self.assertRaises(FileNotFoundError):
+                c.package_index(folder, catalog, {'RELEASE_SHA': 'a' * 40})
+
+    def test_build_script_lists_selected_targets_without_docker(self):
+        env = {**os.environ, 'FC_SERVICES': 'content, ai-engine', 'FC_BUILD_LIST_ONLY': '1'}
+        listed = subprocess.check_output(['bash', 'scripts/fc/build.sh'], env=env, text=True)
+        self.assertEqual(listed.splitlines(), ['ai-engine', 'content'])
+        self.assertEqual(parse_services('content, ai-engine'), ('ai-engine', 'content'))
+        failed = subprocess.run(
+            ['bash', 'scripts/fc/build.sh', 'frontend'],
+            env={**os.environ, 'FC_BUILD_LIST_ONLY': '1'},
+            capture_output=True, text=True)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn('Unknown FC service', failed.stderr)
 
     def test_upload_rejects_changed_package_before_writing(self):
         with tempfile.TemporaryDirectory() as folder:
