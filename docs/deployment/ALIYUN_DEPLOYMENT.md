@@ -96,6 +96,24 @@ OSS 对象路径：`gamevallies/prod/releases/<commit SHA>/<SHA256>/<function>.z
 
 首次部署无需 NAS；已有挂载不会被自动移除。历史 local/TOS 下载记录仍兼容，历史文件必须迁移并核验后再停用旧存储。新 OSS 配置不完整或写入失败直接报错，不回退 FC 临时磁盘。作品 HTML 的现有数据库持久化和独立内容函数继续使用，未将私有 OSS URL 误当公共作品 URL。
 
+## 按需发布
+
+`main` 上的 push 始终构建并发布清单中的全部后端函数（`ai-engine`、`game-service`、`content`），不按路径猜测，避免共享脚本或交叉依赖漏发。
+
+手动 Actions → **Deploy OSS packages to Alibaba FC** → `workflow_dispatch` 可填写 `services`：
+
+| 输入 | 行为 |
+| --- | --- |
+| `all`（默认）或留空 | 构建、上传并 apply 三个函数 |
+| `game-service` | 只构建/上传/apply `game-service` |
+| `ai-engine,content` | 只处理列出的函数（逗号或空格分隔，顺序无关） |
+
+未选中的函数不会被更新或删除。`game-service` 的 drain、数据库迁移和失败回滚只在该函数被选中时执行；选中函数仍走原有健康检查与版本记录。Apply 会只读读取未选中函数的现有 HTTP 触发器 URL，写入选中函数的上游环境，避免把 `AI_ENGINE_URL` / `GAME_UPSTREAM` 写成占位地址。
+
+以下变更应继续使用 `all`（push 已如此）：`scripts/fc/`、`deploy/fc/`、`.github/workflows/`、根目录打包/CI 脚本，以及同时影响多个服务的共享契约或 Prisma schema。只改 `packages/game-service`（或 `packages/ai-engine` / content 网关）时，可用手动 dispatch 只发对应函数。`apply=false` 时校验与构建仍只针对所选函数，但 Aliyun 环境完整性检查始终覆盖全套配置。
+
+本地同样可通过 `FC_SERVICES` 或 `bash scripts/fc/build.sh game-service` 限制打包。`python scripts/fc/deploy.py validate --runtime ... --services game-service` 与 `configure.py prepare/upload` 读取同一选择。
+
 ## 发布顺序
 
 1. 配齐 Aliyun 环境。先运行 Actions → Deploy OSS packages to Alibaba FC，保留 `apply=false`：检查参数、构建和校验，不写云资源。
@@ -117,7 +135,7 @@ OSS 对象路径：`gamevallies/prod/releases/<commit SHA>/<SHA256>/<function>.z
 
 发布前记录函数版本，先阻止新任务并等待已提交任务排空，再更新函数。失败自动恢复已修改函数的前一版；已有代码包函数通过版本描述中的 OSS Bucket/Object 恢复代码，不能只恢复 GetFunction 返回的配置。首次从自定义容器迁移仍支持恢复原镜像；不要提前删除旧镜像。
 
-手动回滚：使用失败发布对应的 `fc-release.json`、同账号/地域/前缀及独立参数重新生成私有配置，再执行 `python scripts/fc/deploy.py rollback --runtime "$config" --release fc-release.json`。保留原提交及 ZIP；无上一版本的首次安装不能回滚成不存在的函数。未知来源、未记录 OSS 引用的现有代码函数会在修改前停止，需先导出并保留其代码。
+手动回滚：使用失败发布对应的 `fc-release.json`、同账号/地域/前缀及独立参数重新生成私有配置，再执行 `python scripts/fc/deploy.py rollback --runtime "$config" --release fc-release.json`。按需发布的 release 只记录被选中的函数，回滚也只恢复这些函数，不会改动未出现在该文件中的服务。保留原提交及 ZIP；无上一版本的首次安装不能回滚成不存在的函数。未知来源、未记录 OSS 引用的现有代码函数会在修改前停止，需先导出并保留其代码。
 
 临时运行配置权限 0600，退出时清除，不上传 Actions Artifact。发布记录只含版本、函数名与 URL；不要将函数环境变量导出到公开日志。
 

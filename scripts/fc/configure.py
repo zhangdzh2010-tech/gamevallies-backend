@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import zipfile
 from urllib.parse import urlsplit
-from deploy import need, origin
+from deploy import need, origin, filter_manifest
 
 
 def package_index(directory, manifest, env):
@@ -148,17 +148,22 @@ def main():
     p.add_argument('command', choices=['check', 'prepare', 'upload'])
     p.add_argument('--packages', default='fc-packages')
     p.add_argument('--runtime')
+    p.add_argument('--services', default=os.environ.get('FC_SERVICES', 'all'),
+                   help='all (default) or comma-separated: ai-engine, game-service, content')
     args = p.parse_args()
-    manifest = json.loads(Path('deploy/fc/functions.json').read_text())
+    catalog = json.loads(Path('deploy/fc/functions.json').read_text())
+    selected = filter_manifest(catalog, args.services)
+    print('FC selected services: ' + ','.join(f['name'] for f in selected['functions']))
     if args.command == 'check':
-        check_settings(os.environ, manifest)
+        # Always validate the full Aliyun environment, even for a subset publish.
+        check_settings(os.environ, catalog)
         print('Individual configuration validated; no cloud calls.')
         return
     if not args.runtime: raise ValueError('--runtime is required')
     if args.command == 'prepare':
-        check_settings(os.environ, manifest)
-        runtime = runtime_config(os.environ, any(f['name'] == 'game-service' for f in manifest['functions']))
-        runtime['artifacts'] = package_index(args.packages, manifest, os.environ)
+        check_settings(os.environ, catalog)
+        runtime = runtime_config(os.environ, any(f['name'] == 'game-service' for f in catalog['functions']))
+        runtime['artifacts'] = package_index(args.packages, selected, os.environ)
         # Caller uses mktemp; enforce 0600 even when a path is provided manually.
         descriptor = os.open(args.runtime, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         os.fchmod(descriptor, 0o600)
@@ -167,7 +172,7 @@ def main():
     else:
         runtime = json.loads(Path(args.runtime).read_text())
         from deploy import validate
-        validate(manifest, runtime, os.environ)
+        validate(selected, runtime, os.environ)
         upload(args.packages, runtime['artifacts'], os.environ)
 
 if __name__ == '__main__':

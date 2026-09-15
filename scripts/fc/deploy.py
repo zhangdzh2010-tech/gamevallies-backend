@@ -14,6 +14,37 @@ from urllib.parse import urlsplit
 
 METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
 TRIGGER = 'gamevallies-http'
+KNOWN_BACKEND_SERVICES = ('ai-engine', 'game-service', 'content')
+
+
+def parse_services(selection, known=None):
+    """Return catalog-ordered names for 'all' or a comma/whitespace-separated subset."""
+    catalog = tuple(known) if known is not None else KNOWN_BACKEND_SERVICES
+    if not catalog:
+        raise ValueError('FC function catalog is empty')
+    text = str(selection or '').strip()
+    if not text or text.lower() == 'all':
+        return catalog
+    parts = [part for part in re.split(r'[\s,;]+', text) if part]
+    if not parts or any(part.lower() == 'all' for part in parts):
+        return catalog
+    unknown = [part for part in parts if part not in catalog]
+    if unknown:
+        raise ValueError('Unknown FC service: ' + ', '.join(unknown) + '; expected all or subset of ' + ', '.join(catalog))
+    chosen = []
+    for part in parts:
+        if part not in chosen:
+            chosen.append(part)
+    return tuple(name for name in catalog if name in chosen)
+
+
+def filter_manifest(manifest, selection):
+    catalog = tuple(item['name'] for item in manifest['functions'])
+    names = set(parse_services(selection, catalog))
+    selected = [item for item in manifest['functions'] if item['name'] in names]
+    if not selected:
+        raise ValueError('No matching FC functions for selection')
+    return {**manifest, 'functions': selected}
 
 
 def need(env, key):
@@ -184,6 +215,13 @@ class Deployment:
         except Exception as e:
             if getattr(e, 'status_code', None) == 404 or getattr(e, 'code', '') in ('FunctionNotFound', 'TriggerNotFound'): return None
             raise
+
+    def existing_http_origin(self, name):
+        """Read an existing HTTP trigger URL without creating or updating it."""
+        trigger = self.optional(lambda: self.c.get_trigger(name, TRIGGER))
+        if not trigger:
+            return None
+        return origin(trigger.body.http_trigger.url_internet)
 
     def service_is_stopped(self, name):
         """Skip HTTP drain only when FC confirms no current or future capacity."""
@@ -359,16 +397,20 @@ class Deployment:
             # No provisioned instances or public trigger; block invocation between releases.
             self.c.update_function(name, self.m.UpdateFunctionRequest(body=self.m.UpdateFunctionInput(disable_ondemand=True)))
 
-    def apply(self, manifest, runtime, env, output):
+    def apply(self, manifest, runtime, env, output, catalog=None):
         entries, endpoints, touched = [], {}, []
         stopped_snapshots = {}
         prefix = env['FC_PREFIX']
         token = runtime.get('common', {}).get('FC_INTERNAL_TOKEN', '')
+        selected = list(manifest['functions'])
+        catalog_functions = list(catalog) if catalog is not None else selected
+        selected_names = {f['name'] for f in selected}
+        print('FC selected services: ' + ','.join(f['name'] for f in selected), flush=True)
         old_game_url = None
-        if any(f['name'] == 'game-service' for f in manifest['functions']):
+        if 'game-service' in selected_names:
             previous = self.optional(lambda: self.c.get_trigger(prefix + '-game-service', TRIGGER))
             if previous: old_game_url = origin(previous.body.http_trigger.url_internet)
-        for f in manifest['functions']:
+        for f in selected:
             old = self.optional(lambda: self.c.get_function(prefix + '-' + f['name'], self.m.GetFunctionRequest()))
             if old and old.body.runtime != 'custom-container': checkpoint_code(old.body.to_map())
         drained = False
@@ -388,8 +430,15 @@ class Deployment:
                 else: raise TimeoutError('Tasks did not drain; no functions updated')
             stage = 'discover-endpoints'
             # Discover real FC trigger URLs without overwriting existing service configuration.
-            for f in manifest['functions']:
+            for f in catalog_functions:
                 name = prefix + '-' + f['name']
+                if f['name'] not in selected_names:
+                    # Read-only: keep unselected functions untouched on FC.
+                    url = self.existing_http_origin(name)
+                    if url:
+                        endpoints[f['name']] = url
+                    print(f'FC leave untouched: {name}', flush=True)
+                    continue
                 old = self.optional(lambda: self.c.get_function(name, self.m.GetFunctionRequest()))
                 stopped = bool(old) and self.service_is_stopped(name)
                 previous_code = checkpoint_code(old.body.to_map()) if old and old.body.runtime != 'custom-container' else None
@@ -479,9 +528,18 @@ def main():
     p.add_argument('--manifest', default='deploy/fc/functions.json')
     p.add_argument('--runtime', required=True)
     p.add_argument('--release', default='fc-release.json')
+    p.add_argument('--services', default=os.environ.get('FC_SERVICES', 'all'),
+                   help='all (default) or comma-separated: ai-engine, game-service, content')
     args = p.parse_args()
-    manifest = json.loads(Path(args.manifest).read_text())
+    catalog = json.loads(Path(args.manifest).read_text())
     runtime = json.loads(Path(args.runtime).read_text())
+    release = None
+    if args.command == 'rollback':
+        release = json.loads(Path(args.release).read_text())
+        recorded = [entry.get('service', '') for entry in release.get('functions', [])]
+        manifest = filter_manifest(catalog, ','.join(recorded) if recorded else args.services)
+    else:
+        manifest = filter_manifest(catalog, args.services)
     validate(manifest, runtime, os.environ)
     if args.command == 'validate':
         # Validate against official SDK field types without making any API call.
@@ -495,9 +553,8 @@ def main():
     config.endpoint = f"fcv3.{os.environ['FC_REGION']}.aliyuncs.com"
     config.connect_timeout, config.read_timeout = 10000, 60000
     deployment = Deployment(Client(config), m)
-    if args.command == 'apply': deployment.apply(manifest, runtime, os.environ, args.release)
+    if args.command == 'apply': deployment.apply(manifest, runtime, os.environ, args.release, catalog=catalog['functions'])
     else:
-        release = json.loads(Path(args.release).read_text())
         if release['region'] != os.environ['FC_REGION'] or release['accountId'] != os.environ['FC_ACCOUNT_ID']: raise ValueError('Rollback account/region mismatch')
         game = next((x for x in release['functions'] if x['service'] == 'game-service'), None)
         token = runtime.get('common', {}).get('FC_INTERNAL_TOKEN', '')

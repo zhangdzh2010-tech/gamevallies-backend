@@ -8,6 +8,10 @@ on:
         description: Publish packages and update FC (false validates configuration only)
         type: boolean
         default: false
+      services:
+        description: 'FC functions to build and apply. Use all (default) or a comma-separated subset: ai-engine, game-service, content'
+        type: string
+        default: all
 permissions:
   contents: read
 concurrency:
@@ -103,6 +107,9 @@ jobs:
       ALIPAY_SIGN_TYPE: ${{ secrets.ALIPAY_SIGN_TYPE }}
       ALIPAY_SELLER_ID: ${{ secrets.ALIPAY_SELLER_ID }}
       RELEASE_SHA: ${{ github.sha }}
+      # Push to main always publishes every backend function. Manual dispatch may
+      # pass a comma-separated subset; empty/all keeps the full catalog.
+      FC_SERVICES: ${{ github.event_name == 'workflow_dispatch' && inputs.services || 'all' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -114,7 +121,7 @@ jobs:
       - run: pip install -r scripts/fc/requirements.txt
       - name: Check individual Aliyun settings before packaging
         run: python scripts/fc/configure.py check
-      - name: Build Linux ZIP packages (no registry push)
+      - name: Build Linux ZIP packages (selected services)
         run: bash scripts/fc/build.sh
       - name: Validate configuration and optionally publish
         env:
